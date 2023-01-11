@@ -195,5 +195,5 @@ class LoRANetwork(torch.nn.Module):
     else:
       torch.save(state_dict, file)
       if metadata is not None:
-        with zipfile.ZipFile(file, "w") as zipf:
-          zipf.writestr(LoRANetwork.METADATA_FILENAME, json.dumps(metadata))
+        with zipfile.ZipFile(file, "a") as zipf:
+          zipf.writestr(os.path.join("archive", LoRANetwork.METADATA_FILENAME), json.dumps(metadata))
