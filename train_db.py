@@ -198,8 +198,13 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("dreambooth")
 
+  train_dataset.dropout_rate = args.dropout_rate
+  train_dataset.dropout_every_n_epochs = args.dropout_every_n_epochs
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
+
+    train_dataset.epoch_current = epoch + 1
 
     # 指定したステップ数までText Encoderを学習する：epoch最初の状態
     unet.train()

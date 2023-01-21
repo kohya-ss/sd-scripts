@@ -82,6 +82,10 @@ class BaseDataset(torch.utils.data.Dataset):
 
     self.tokenizer_max_length = self.tokenizer.model_max_length if max_token_length is None else max_token_length + 2
 
+    self.epoch_current:int = int(0)
+    self.dropout_rate:float = 0
+    self.dropout_every_n_epochs:int = 0
+
     # augmentation
     flip_p = 0.5 if flip_aug else 0.0
     if color_aug:
@@ -415,8 +419,20 @@ class BaseDataset(torch.utils.data.Dataset):
       images.append(image)
       latents_list.append(latents)
 
-      caption = self.process_caption(image_info.caption)
+      is_drop_out = False
+      if self.dropout_rate > 0 and self.dropout_rate < random.random() :
+        is_drop_out = True
+      if self.dropout_every_n_epochs > 0 and self.epoch_current % self.dropout_every_n_epochs == 0 :
+        is_drop_out = True
+
+      if is_drop_out:    
+        #print(f"Caption Dropout key={os.path.basename(image_info.image_key)}, epoch={self.epoch_current}")
+        caption = ""
+      else:        
+        #print(f"Caption Load key={os.path.basename(image_info.image_key)}, epoch={self.epoch_current}")
+        caption = self.process_caption(image_info.caption)              
       captions.append(caption)
+      
       if not self.token_padding_disabled:                     # this option might be omitted in future
         input_ids_list.append(self.get_input_ids(caption))
 
@@ -1067,6 +1083,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
                       help="scheduler to use for learning rate / 学習率のスケジューラ: linear, cosine, cosine_with_restarts, polynomial, constant (default), constant_with_warmup")
   parser.add_argument("--lr_warmup_steps", type=int, default=0,
                       help="Number of steps for the warmup in the lr scheduler (default is 0) / 学習率のスケジューラをウォームアップするステップ数（デフォルト0）")
+  parser.add_argument("--dropout_rate", type=float, default=0,
+                      help="Rate out dropout caption(0~1)")
+  parser.add_argument("--dropout_every_n_epochs", type=int, default=0,
+                      help="Dropout all captions N epochs")
+
 
   if support_dreambooth:
     # DreamBooth training

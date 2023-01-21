@@ -16,7 +16,7 @@ from huggingface_hub import hf_hub_download
 # from wd14 tagger
 IMAGE_SIZE = 448
 
-WD14_TAGGER_REPO = 'SmilingWolf/wd-v1-4-vit-tagger'
+WD14_TAGGER_REPO = 'SmilingWolf/wd-v1-4-convnext-tagger' #'SmilingWolf/wd-v1-4-vit-tagger'
 FILES = ["keras_metadata.pb", "saved_model.pb", "selected_tags.csv"]
 SUB_DIR = "variables"
 SUB_DIR_FILES = ["variables.data-00000-of-00001", "variables.index"]
