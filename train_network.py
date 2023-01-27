@@ -301,8 +301,14 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("network_train")
 
+  train_dataset.dropout_rate = args.dropout_rate
+  train_dataset.dropout_every_n_epochs = args.dropout_every_n_epochs
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
+
+    train_dataset.epoch_current = epoch + 1
+    
     metadata["ss_epoch"] = str(epoch+1)
 
     network.on_epoch_start(text_encoder, unet)
