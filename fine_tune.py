@@ -223,13 +223,16 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("finetuning")
 
+  print(f"Loading train data")
+  preload_train_data = list(enumerate(train_dataloader))
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
     for m in training_models:
       m.train()
 
     loss_total = 0
-    for step, batch in enumerate(train_dataloader):
+    for step, batch in preload_train_data:
       with accelerator.accumulate(training_models[0]):  # 複数モデルに対応していない模様だがとりあえずこうしておく
         with torch.no_grad():
           if "latents" in batch and batch["latents"] is not None:

@@ -200,6 +200,9 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("dreambooth")
 
+  print(f"Loading train data")
+  preload_train_data = list(enumerate(train_dataloader))
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
 
@@ -210,7 +213,7 @@ def train(args):
       text_encoder.train()
 
     loss_total = 0
-    for step, batch in enumerate(train_dataloader):
+    for step, batch in preload_train_data:
       # 指定したステップ数でText Encoderの学習を止める
       if global_step == args.stop_text_encoder_training:
         print(f"stop text encoder training at step {global_step}")

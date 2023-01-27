@@ -301,6 +301,9 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("network_train")
 
+  print(f"Loading train data")
+  preload_train_data = list(enumerate(train_dataloader))
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
     metadata["ss_epoch"] = str(epoch+1)
@@ -308,7 +311,7 @@ def train(args):
     network.on_epoch_start(text_encoder, unet)
 
     loss_total = 0
-    for step, batch in enumerate(train_dataloader):
+    for step, batch in preload_train_data:
       with accelerator.accumulate(network):
         with torch.no_grad():
           if "latents" in batch and batch["latents"] is not None:

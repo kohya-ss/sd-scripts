@@ -292,6 +292,9 @@ def train(args):
   if accelerator.is_main_process:
     accelerator.init_trackers("textual_inversion")
 
+  print(f"Loading train data")
+  preload_train_data = list(enumerate(train_dataloader))
+
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
 
@@ -299,7 +302,7 @@ def train(args):
 
     loss_total = 0
     bef_epo_embs = unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
-    for step, batch in enumerate(train_dataloader):
+    for step, batch in preload_train_data:
       with accelerator.accumulate(text_encoder):
         with torch.no_grad():
           if "latents" in batch and batch["latents"] is not None:
