@@ -23,7 +23,6 @@ huggingface-hub
 # for OFA captioning
 g2p_en
 protobuf==3.19.6 # tensorflow 2.10.1 requirement
-datasets
 -e ./finetune/ofa/fairseq
 # for kohya_ss library
 .

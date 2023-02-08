@@ -131,9 +131,13 @@ def main(args):
   use_fp16 = args.fp16
 
   print(f"load images from {args.train_data_dir}")
-  image_paths = train_util.glob_images(args.train_data_dir)
-  image_paths = [i for i in image_paths if not os.path.isfile(
-        os.path.splitext(i)[0] + args.caption_extension)]
+  image_paths = []
+  # using set will speed up the filtering process
+  caption_paths = set(glob.glob(os.path.join(args.train_data_dir, "*" + args.caption_extension)))
+  for ip in train_util.glob_images(args.train_data_dir):
+    caption_path = "".join([os.path.splitext(ip)[0], ".caption"])
+    if caption_path not in caption_paths:
+      image_paths.append(ip)
   print(f"Need to process {len(image_paths)} images.")
 
   print(f"loading OFA caption: {args.caption_weights}")
