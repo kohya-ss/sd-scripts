@@ -8,6 +8,7 @@ diffusers[torch]==0.10.2
 pytorch_lightning
 bitsandbytes==0.35.0
 tensorboard
+tensorboardX==2.4.1
 safetensors==0.2.6
 gradio
 altair
@@ -19,5 +20,10 @@ fairscale==0.4.4
 # for WD14 captioning
 tensorflow<2.11
 huggingface-hub
+# for OFA captioning
+g2p_en
+protobuf==3.19.6 # tensorflow 2.10.1 requirement
+datasets
+-e ./finetune/ofa/fairseq
 # for kohya_ss library
 .
