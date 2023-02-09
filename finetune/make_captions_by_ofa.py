@@ -246,17 +246,17 @@ def main(args):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument("train_data_dir", type=str, help="directory for train images / 学習画像データのディレクトリ")
-  parser.add_argument("--caption_weights", type=str, default="https://huggingface.co/sheldonxxxx/ofa_for_repo/resolve/main/caption_huge_best.pt",
+  parser.add_argument("--caption_weights", type=str, default="https://huggingface.co/sheldonxxxx/OFA_model_weights/resolve/main/caption_huge_best.pt",
                       help="OFA caption weights (caption_huge_best.pth) / OFA captionの重みファイル(model_large_caption.pth)")
   parser.add_argument("--caption_extention", type=str, default=None,
                       help="extension of caption file (for backward compatibility) / 出力されるキャプションファイルの拡張子（スペルミスしていたのを残してあります）")
   parser.add_argument("--caption_extension", type=str, default=".caption", help="extension of caption file / 出力されるキャプションファイルの拡張子")
-  parser.add_argument("--batch_size", type=int, default=3, help="batch size in inference / 推論時のバッチサイズ")
+  parser.add_argument("--batch_size", type=int, default=1, help="batch size in inference / 推論時のバッチサイズ")
   parser.add_argument("--max_data_loader_n_workers", type=int, default=None,
                       help="enable image reading by DataLoader with this number of workers (faster) / DataLoaderによる画像読み込みを有効にしてこのワーカー数を適用する（読み込みを高速化）")
-  parser.add_argument("--num_beams", type=int, default=5, help="num of beams in beam search /beam search時のビーム数（多いと精度が上がるが時間がかかる）")
-  parser.add_argument("--temperature", type=float, default=0.5, help="top_p in Nucleus sampling / Nucleus sampling時のtop_p")
-  parser.add_argument("--max_length", type=int, default=75, help="max length of caption / captionの最大長")
+  parser.add_argument("--num_beams", type=int, default=1, help="num of beams in beam search /beam search時のビーム数（多いと精度が上がるが時間がかかる）")
+  parser.add_argument("--temperature", type=float, default=1, help="temperature")
+  parser.add_argument("--max_length", type=int, default=16, help="max length of caption / captionの最大長")
   parser.add_argument("--min_length", type=int, default=5, help="min length of caption / captionの最小長")
   parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility / 再現性を確保するための乱数seed')
   parser.add_argument('--no_repeat_ngram_size', default=3, type=int, help='')
