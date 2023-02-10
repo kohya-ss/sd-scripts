@@ -234,6 +234,22 @@ def train(args):
             latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
           latents = latents * 0.18215
 
+          if batch["masks"] is not None:
+            masked_latents = vae.encode(
+                batch["masked_images"].reshape(batch["images"].shape).to(dtype=weight_dtype)
+            ).latent_dist.sample()
+            masked_latents = masked_latents * 0.18215
+
+            masks = batch["masks"]
+            # Resize the mask to latents shape as we concatenate the mask to the latents
+            mask = torch.stack(
+                [
+                    torch.nn.functional.interpolate(mask, size=(args.resolution // 8, args.resolution // 8))
+                    for mask in masks
+                ]
+            )
+            mask = mask.reshape(-1, 1, args.resolution // 8, args.resolution // 8)
+
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents, device=latents.device)
         b_size = latents.shape[0]
@@ -251,6 +267,9 @@ def train(args):
         # Add noise to the latents according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+        if batch["masks"] is not None:
+          # Concatenate the noised latents with the mask and the masked latents
+          noisy_latents = torch.cat([noisy_latents, mask, masked_latents], dim=1)
 
         # Predict the noise residual
         noise_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
