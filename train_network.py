@@ -123,7 +123,7 @@ def train(args):
                                       args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
                                       args.bucket_reso_steps, args.bucket_no_upscale,
                                       args.prior_loss_weight, args.flip_aug, args.color_aug, args.face_crop_aug_range,
-                                      args.random_crop, args.debug_dataset)
+                                      args.random_crop, args.train_inpainting, args.debug_dataset)
   else:
     print("Train with captions.")
     train_dataset = FineTuningDataset(args.in_json, args.train_batch_size, args.train_data_dir,
@@ -131,7 +131,7 @@ def train(args):
                                       args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
                                       args.bucket_reso_steps, args.bucket_no_upscale,
                                       args.flip_aug, args.color_aug, args.face_crop_aug_range, args.random_crop,
-                                      args.dataset_repeats, args.debug_dataset)
+                                      args.dataset_repeats, args.train_inpainting, args.debug_dataset)
 
   # 学習データのdropout率を設定する
   train_dataset.set_caption_dropout(args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)
