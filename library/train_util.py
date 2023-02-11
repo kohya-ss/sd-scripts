@@ -22,7 +22,7 @@ import diffusers
 from diffusers import DDPMScheduler, StableDiffusionPipeline
 import albumentations as albu
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 import cv2
 from einops import rearrange
 from torch import einsum
@@ -195,7 +195,7 @@ class BucketBatchIndex(NamedTuple):
 
 
 class BaseDataset(torch.utils.data.Dataset):
-  def __init__(self, tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens, resolution, flip_aug: bool, color_aug: bool, face_crop_aug_range, random_crop, debug_dataset: bool) -> None:
+  def __init__(self, tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens, resolution, flip_aug: bool, color_aug: bool, face_crop_aug_range, random_crop, train_inpainting: bool, debug_dataset: bool) -> None:
     super().__init__()
     self.tokenizer: CLIPTokenizer = tokenizer
     self.max_token_length = max_token_length
@@ -226,6 +226,7 @@ class BaseDataset(torch.utils.data.Dataset):
     self.current_epoch: int = 0            # インスタンスがepochごとに新しく作られるようなので外側から渡さないとダメ
     self.dropout_rate: float = 0
     self.dropout_every_n_epochs: int = None
+    self.train_inpainting = train_inpainting
 
     # augmentation
     flip_p = 0.5 if flip_aug else 0.0
@@ -564,6 +565,47 @@ class BaseDataset(torch.utils.data.Dataset):
 
     return image
 
+  def prepare_mask_and_masked_image(image, mask):
+    image = np.array(image.convert("RGB"))
+    image = image[None].transpose(0, 3, 1, 2)
+    image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+
+    mask = np.array(mask.convert("L"))
+    mask = mask.astype(np.float32) / 255.0
+    mask = mask[None, None]
+    mask[mask < 0.5] = 0
+    mask[mask >= 0.5] = 1
+    mask = torch.from_numpy(mask)
+
+    masked_image = image * (mask < 0.5)
+
+    return mask, masked_image
+
+
+  # generate random masks
+  def random_mask(im_shape, ratio=1, mask_full_image=False):
+    mask = Image.new("L", im_shape, 0)
+    draw = ImageDraw.Draw(mask)
+    size = (random.randint(0, int(im_shape[0] * ratio)), random.randint(0, int(im_shape[1] * ratio)))
+    # use this to always mask the whole image
+    if mask_full_image:
+      size = (int(im_shape[0] * ratio), int(im_shape[1] * ratio))
+    limits = (im_shape[0] - size[0] // 2, im_shape[1] - size[1] // 2)
+    center = (random.randint(size[0] // 2, limits[0]), random.randint(size[1] // 2, limits[1]))
+    draw_type = random.randint(0, 1)
+    if draw_type == 0 or mask_full_image:
+      draw.rectangle(
+          (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
+          fill=255,
+      )
+    else:
+      draw.ellipse(
+          (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
+          fill=255,
+      )
+
+    return 
+
   def load_latents_from_npz(self, image_info: ImageInfo, flipped):
     npz_file = image_info.latents_npz_flipped if flipped else image_info.latents_npz
     if npz_file is None:
@@ -586,6 +628,8 @@ class BaseDataset(torch.utils.data.Dataset):
     input_ids_list = []
     latents_list = []
     images = []
+    masks = []
+    masked_images = []
 
     for image_key in bucket[image_index:image_index + bucket_batch_size]:
       image_info = self.image_data[image_key]
@@ -625,10 +669,18 @@ class BaseDataset(torch.utils.data.Dataset):
         if self.aug is not None:
           img = self.aug(image=img)['image']
 
+        if self.train_inpainting:
+          pil_image = transforms.functional.ToPILImage(img)
+          mask = self.random_mask(pil_image.size, 1, False)
+          mask, masked_image = self.prepare_mask_and_masked_image(pil_image, mask)
+          
+          masks.append(mask)
+          masked_images.append(masked_image)
+
         latents = None
         image = self.image_transforms(img)      # -1.0~1.0のtorch.Tensorになる
 
-      images.append(image)
+      images.append(image) 
       latents_list.append(latents)
 
       caption = self.process_caption(image_info.caption)
@@ -652,6 +704,8 @@ class BaseDataset(torch.utils.data.Dataset):
     else:
       images = None
     example['images'] = images
+    example['masks'] = torch.stack(masks) if masks[0] is not None else None
+    example['masked_images'] = torch.stack(masked_images) if masked_images[0] is not None else None
 
     example['latents'] = torch.stack(latents_list) if latents_list[0] is not None else None
 
@@ -662,9 +716,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
 
 class DreamBoothDataset(BaseDataset):
-  def __init__(self, batch_size, train_data_dir, reg_data_dir, tokenizer, max_token_length, caption_extension, shuffle_caption, shuffle_keep_tokens, resolution, enable_bucket, min_bucket_reso, max_bucket_reso, bucket_reso_steps, bucket_no_upscale, prior_loss_weight, flip_aug, color_aug, face_crop_aug_range, random_crop, debug_dataset) -> None:
+  def __init__(self, batch_size, train_data_dir, reg_data_dir, tokenizer, max_token_length, caption_extension, shuffle_caption, shuffle_keep_tokens, resolution, enable_bucket, min_bucket_reso, max_bucket_reso, bucket_reso_steps, bucket_no_upscale, prior_loss_weight, flip_aug, color_aug, face_crop_aug_range, random_crop, train_inpainting, debug_dataset) -> None:
     super().__init__(tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens,
-                     resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, debug_dataset)
+                     resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, train_inpainting, debug_dataset)
 
     assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
@@ -794,10 +848,11 @@ class DreamBoothDataset(BaseDataset):
     self.num_reg_images = num_reg_images
 
 
+
 class FineTuningDataset(BaseDataset):
-  def __init__(self, json_file_name, batch_size, train_data_dir, tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens, resolution, enable_bucket, min_bucket_reso, max_bucket_reso, bucket_reso_steps, bucket_no_upscale, flip_aug, color_aug, face_crop_aug_range, random_crop, dataset_repeats, debug_dataset) -> None:
+  def __init__(self, json_file_name, batch_size, train_data_dir, tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens, resolution, enable_bucket, min_bucket_reso, max_bucket_reso, bucket_reso_steps, bucket_no_upscale, flip_aug, color_aug, face_crop_aug_range, random_crop, dataset_repeats, train_inpainting, debug_dataset) -> None:
     super().__init__(tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens,
-                     resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, debug_dataset)
+                     resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, train_inpainting, debug_dataset)
 
     # メタデータを読み込む
     if os.path.exists(json_file_name):
@@ -1443,6 +1498,7 @@ def add_dataset_arguments(parser: argparse.ArgumentParser, support_dreambooth: b
                       help="steps of resolution for buckets, divisible by 8 is recommended / bucketの解像度の単位、8で割り切れる値を推奨します")
   parser.add_argument("--bucket_no_upscale", action="store_true",
                       help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します")
+  parser.add_argument("--train_inpainting", action="store_true", help="train an inpainting model / インペイントモデルを学習する")
 
   if support_caption_dropout:
     # Textual Inversion はcaptionのdropoutをsupportしない
