@@ -1,0 +1,32 @@
+# もし dataset.items, dataset.subset に同名オプションの記述があった場合にはそちらが優先される
+[dataset.general]
+shuffle_caption = true
+caption_extension = ".txt"
+keep_tokens = 1
+
+# もし dataset.subset に同名オプションの記述があった場合にはそちらが優先される
+[[dataset.items]]
+resolution = 512
+batch_size = 4
+keep_tokens = 2
+
+  [[dataset.items.subset]]
+  image_dir = "C:\\hoge"
+  # このサブセットは keep_tokens = 2 （dataset.items の値が使われる）
+
+  [[dataset.items.subset]]
+  image_dir = "C:\\fuga"
+  keep_tokens = 3
+
+  [[dataset.items.subset]]
+  is_reg = true
+  image_dir = "C:\\reg"
+  keep_tokens = 1
+
+[[dataset.items]]
+resolution = 768
+batch_size = 2
+
+  [[dataset.items.subset]]
+  image_dir = "C:\\piyo"
+  # このサブセットは keep_tokens = 1 （dataset.general の値が使われる）
