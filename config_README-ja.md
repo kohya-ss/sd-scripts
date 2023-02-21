@@ -8,7 +8,7 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 設定ファイルを渡すことにより、ユーザが細かい設定を行えるようにします。
 
 * 複数のデータセットを指定できるようになります。
-  * 例えば `resolution` や `keep_tokens` をデータセットごとに設定して、それらを混合して学習できます。
+    * 例えば `resolution` や `keep_tokens` をデータセットごとに設定して、それらを混合して学習できます。
 
 `--config` オプションは `--train_data_dir`, `--reg_data_dir` オプションとは併用不可です。
 
@@ -19,18 +19,18 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 
 データセットに関する設定として登録可能なアイテムを説明します。
 
-* `dataset.general`
+* `general`
     * 全データセットに適用されるオプションを指定します。
-* `dataset.items`
+* `dataset`
     * 特定のデータセットに適用されるオプションを指定します。
-* `dataset.items.subset`
+* `dataset.subset`
     * データセット内の特定のサブセットのオプションを指定します。
     * 学習データのディレクトリの登録はここで行います。
-      * ディレクトリごとにクラストークンや繰り返し回数を設定できるようにするためにサブセットとして記述する仕様にしています。
+        * ディレクトリごとにクラストークンや繰り返し回数を設定できるようにするためにサブセットとして記述する仕様にしています。
 
 各アイテムは指定可能なオプションが以下のように決まっています。
 
-| オプション名 | dataset.general | dataset.items | dataset.items.subset |
+| オプション名 | general | dataset | dataset.subset |
 | ---- | ---- | ---- | ---- |
 | `batch_size` | o | o | - |
 | `bucket_no_upscale` | o | o | - |
@@ -42,7 +42,6 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 | `caption_tag_dropout_rate` | o | o | o |
 | `class_tokens` | - | - | o |
 | `color_aug` | o | o | o |
-| `debug_dataset` | o | - | - |
 | `enable_bucket` | o | o | - |
 | `face_crop_aug_range` | o | o | o |
 | `flip_aug` | o | o | o |
@@ -61,6 +60,8 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 
 ここでは設定ファイル特有のオプションのみ説明します。
 
+* `batch_size`
+    * バッチサイズを指定します。コマンドライン引数の `--train_batch_size` と同等です。
 * `class_tokens`
     * クラストークンを設定します。例えば `sks girl` などを指定します。
     * 画像と対応する caption ファイルが存在しない場合にのみ学習時に使われます。判定は画像ごとに行います。
@@ -73,4 +74,4 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 
 ## 設定ファイルの例
 
-[samples](../samples) に例を載せているので、そちらを参照してください。
+[samples](./samples/config_sample.toml) に例を載せているので、そちらを参照してください。

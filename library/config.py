@@ -41,9 +41,7 @@ def verify_config(config: dict) -> dict:
         {Optional('subset'): [subset_schema], },
     )
 
-    general_schema = subset_common_schema.extend(item_common_schema.schema).extend({
-        Optional('debug_dataset'): bool,
-    })
+    general_schema = subset_common_schema.extend(item_common_schema.schema)
 
     dataset_schema = Schema({
         Optional('general'): general_schema,
@@ -65,4 +63,4 @@ def load_config(fname: str) -> dict:
     elif fname.lower().endswith('.toml'):
         return verify_config(toml.load(fname))
     else:
-        raise ValueError(f'not supported config file type: {fname}')
+        raise ValueError(f'not supported config file format / 対応していない設定ファイルの形式です: {fname}')
