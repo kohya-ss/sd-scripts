@@ -34,6 +34,7 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 | ---- | ---- | ---- | ---- |
 | `batch_size` | o | o | - |
 | `bucket_no_upscale` | o | o | - |
+| `bucket_reso_range` | o | o | - |
 | `bucket_reso_steps` | o | o | - |
 | `cache_latents` | o | o | o |
 | `caption_dropout_every_n_epochs` | o | o | o |
@@ -45,15 +46,13 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 | `enable_bucket` | o | o | - |
 | `face_crop_aug_range` | o | o | o |
 | `flip_aug` | o | o | o |
-| `keep_tokens` | o | o | o |
 | `is_reg` | - | - | o |
-| `max_bucket_reso` | o | o | - |
-| `min_bucket_reso` | o | o | - |
 | `num_repeats` | o | o | o |
 | `image_dir` | - | - | o（必須） |
 | `random_crop` | o | o | o |
 | `resolution` | o | o | - |
 | `shuffle_caption` | o | o | o |
+| `shuffle_keep_tokens` | o | o | o |
 
 コマンドライン引数と共通のオプションの説明は割愛します。
 他の README を参照してください。
@@ -61,7 +60,9 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 ここでは設定ファイル特有のオプションのみ説明します。
 
 * `batch_size`
-    * バッチサイズを指定します。コマンドライン引数の `--train_batch_size` と同等です。
+    * コマンドライン引数の `--train_batch_size` と同等です。
+* `bucket_reso_range`
+    * コマンドライン引数の `--min_bucket_reso` と `--max_bucket_reso` を組み合わせたものです。
 * `class_tokens`
     * クラストークンを設定します。例えば `sks girl` などを指定します。
     * 画像と対応する caption ファイルが存在しない場合にのみ学習時に使われます。判定は画像ごとに行います。
@@ -71,6 +72,8 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
     * サブセットの画像の繰り返し回数を指定します。
 * `image_dir`
     * 画像が入ったディレクトリパスを指定します。画像はディレクトリ直下に置かれている必要があります。
+* `shuffle_keep_tokens`
+    *コマンドライン引数の `--keep_tokens` と同等です。
 
 ## 設定ファイルの例
 

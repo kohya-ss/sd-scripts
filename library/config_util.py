@@ -1,5 +1,6 @@
 from voluptuous import Schema, Optional, Required, Any, ExactSequence
 
+
 class ConfigManager:
   def __init__(self, user_config: dict) -> None:
     self.user_config = user_config
@@ -16,20 +17,19 @@ class ConfigManager:
       Optional('color_aug'): bool,
       Optional('face_crop_aug_range'): ExactSequence([float, float]),
       Optional('flip_aug'): bool,
-      Optional('keep_tokens'): int,
       Optional('num_repeats'): int,
       Optional('random_crop'): bool,
       Optional('shuffle_caption'): bool,
+      Optional('shuffle_keep_tokens'): int,
     }
 
     # common among general, dataset
     dataset_common_options = {
       Optional('batch_size'): int,
       Optional('bucket_no_upscale'): bool,
+      Optional('bucket_reso_range'): ExactSequence([int, int]),
       Optional('bucket_reso_steps'): int,
       Optional('enable_bucket'): bool,
-      Optional('max_bucket_reso'): int,
-      Optional('min_bucket_reso'): int,
       Optional('resolution'): Any(int, ExactSequence([int, int])),
     }
 
