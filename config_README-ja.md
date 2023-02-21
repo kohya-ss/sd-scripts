@@ -32,10 +32,9 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 
 | オプション名 | general | dataset | dataset.subset |
 | ---- | ---- | ---- | ---- |
-| `batch_size` | o | o | - |
 | `bucket_no_upscale` | o | o | - |
 | `bucket_reso_steps` | o | o | - |
-| `cache_latents` | o | - | - |
+| `cache_latents` | o | o | - |
 | `caption_dropout_every_n_epochs` | o | o | o |
 | `caption_dropout_rate` | o | o | o |
 | `caption_extension` | o | o | o |
@@ -54,14 +53,13 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 | `random_crop` | o | o | o |
 | `resolution` | o | o | - |
 | `shuffle_caption` | o | o | o |
+| `train_batch_size` | o | o | - |
 
 コマンドライン引数と共通のオプションの説明は割愛します。
 他の README を参照してください。
 
 ここでは設定ファイル特有のオプションのみ説明します。
 
-* `batch_size`
-    * バッチサイズを指定します。コマンドライン引数の `--train_batch_size` と同等です。
 * `class_tokens`
     * クラストークンを設定します。例えば `sks girl` などを指定します。
     * 画像と対応する caption ファイルが存在しない場合にのみ学習時に使われます。判定は画像ごとに行います。

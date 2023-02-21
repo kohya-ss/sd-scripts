@@ -23,13 +23,14 @@ class ConfigManager:
 
         # common among general, dataset
         dataset_common_options = {
-            Optional('batch_size'): int,
+            Optional('cache_latents'): bool,
             Optional('bucket_no_upscale'): bool,
             Optional('bucket_reso_steps'): int,
             Optional('enable_bucket'): bool,
             Optional('max_bucket_reso'): int,
             Optional('min_bucket_reso'): int,
             Optional('resolution'): Any(int, ExactSequence([int, int])),
+            Optional('train_batch_size'): int,
         }
 
         subset_options = subset_common_options + {
