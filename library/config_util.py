@@ -8,6 +8,7 @@ class ConfigManager:
   def verify_user_config(self):
     # common among general, dataset, subset
     subset_common_options = {
+      Optional('cache_latents'): bool,
       Optional('caption_dropout_every_n_epochs'): int,
       Optional('caption_dropout_rate'): float,
       Optional('caption_extension'): str,
@@ -24,7 +25,6 @@ class ConfigManager:
     # common among general, dataset
     dataset_common_options = {
       Optional('batch_size'): int,
-      Optional('cache_latents'): bool,
       Optional('bucket_no_upscale'): bool,
       Optional('bucket_reso_steps'): int,
       Optional('enable_bucket'): bool,

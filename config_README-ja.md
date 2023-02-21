@@ -35,7 +35,7 @@ fine tuning の手法に関わる設定及びデータセットに関わらな�
 | `batch_size` | o | o | - |
 | `bucket_no_upscale` | o | o | - |
 | `bucket_reso_steps` | o | o | - |
-| `cache_latents` | o | o | - |
+| `cache_latents` | o | o | o |
 | `caption_dropout_every_n_epochs` | o | o | o |
 | `caption_dropout_rate` | o | o | o |
 | `caption_extension` | o | o | o |
