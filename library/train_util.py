@@ -5,8 +5,15 @@ import importlib
 import json
 import shutil
 import time
-from typing import Dict, List, NamedTuple, Tuple
-from typing import Optional, Union, Sequence
+from typing import (
+  Dict,
+  List,
+  NamedTuple,
+  Optional,
+  Sequence,
+  Tuple,
+  Union,
+)
 from accelerate import Accelerator
 from torch.autograd.function import Function
 import glob
