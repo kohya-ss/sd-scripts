@@ -33,17 +33,14 @@ def train(args):
 
   tokenizer = train_util.load_tokenizer(args)
 
-  train_dataset = DreamBoothDataset(args.train_batch_size, args.train_data_dir, args.reg_data_dir,
-                                    tokenizer, args.max_token_length, args.caption_extension, args.shuffle_caption, args.keep_tokens,
-                                    args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
-                                    args.bucket_reso_steps, args.bucket_no_upscale,
-                                    args.prior_loss_weight, args.flip_aug, args.color_aug, args.face_crop_aug_range, args.random_crop, args.debug_dataset)
+  subsets = []
+  subsets += train_util.dreambooth_subdirs_to_subsets(args.train_data_dir, False, args)
+  subsets += train_util.dreambooth_subdirs_to_subsets(args.reg_data_dir, True, args)
+  train_dataset = DreamBoothDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
+                                    args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.prior_loss_weight, args.debug_dataset)
 
   if args.no_token_padding:
     train_dataset.disable_token_padding()
-
-  # 学習データのdropout率を設定する
-  train_dataset.set_caption_dropout(args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)
 
   train_dataset.make_buckets()
 

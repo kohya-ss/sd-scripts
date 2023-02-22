@@ -16,7 +16,7 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-from library.train_util import DreamBoothDataset, FineTuningDataset
+from library.train_util import DreamBoothDataset, FineTuningDataset, FineTuningSubset
 
 
 def collate_fn(examples):
@@ -58,23 +58,17 @@ def train(args):
   # データセットを準備する
   if use_dreambooth_method:
     print("Use DreamBooth method.")
-    train_dataset = DreamBoothDataset(args.train_batch_size, args.train_data_dir, args.reg_data_dir,
-                                      tokenizer, args.max_token_length, args.caption_extension, args.shuffle_caption, args.keep_tokens,
-                                      args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
-                                      args.bucket_reso_steps, args.bucket_no_upscale,
-                                      args.prior_loss_weight, args.flip_aug, args.color_aug, args.face_crop_aug_range,
-                                      args.random_crop, args.debug_dataset)
+    subsets = []
+    subsets += train_util.dreambooth_subdirs_to_subsets(args.train_data_dir, False, args)
+    subsets += train_util.dreambooth_subdirs_to_subsets(args.reg_data_dir, True, args)
+    train_dataset = DreamBoothDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
+                                      args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.prior_loss_weight, args.debug_dataset)
   else:
     print("Train with captions.")
-    train_dataset = FineTuningDataset(args.in_json, args.train_batch_size, args.train_data_dir,
-                                      tokenizer, args.max_token_length, args.shuffle_caption, args.keep_tokens,
-                                      args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
-                                      args.bucket_reso_steps, args.bucket_no_upscale,
-                                      args.flip_aug, args.color_aug, args.face_crop_aug_range, args.random_crop,
-                                      args.dataset_repeats, args.debug_dataset)
-
-  # 学習データのdropout率を設定する
-  train_dataset.set_caption_dropout(args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)
+    subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug,
+                                args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
+    train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
+                                      args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
 
   train_dataset.make_buckets()
 
