@@ -283,7 +283,7 @@ class BaseDataset(torch.utils.data.Dataset):
     self.width, self.height = (None, None) if resolution is None else resolution
     self.debug_dataset = debug_dataset
 
-    self.valid_subsets = []
+    self.subsets = []
 
     self.token_padding_disabled = False
     self.dataset_dirs_info = {}
@@ -831,7 +831,7 @@ class DreamBoothDataset(BaseDataset):
         else:
           self.register_image(info, subset)
 
-      self.valid_subsets.append(subset)
+      self.subsets.append(subset)
 
     print(f"{num_train_images} train images with repeating.")
     self.num_train_images = num_train_images
@@ -919,10 +919,10 @@ class FineTuningDataset(BaseDataset):
       # TODO do not record tag freq when no tag
       self.set_tag_frequency(os.path.basename(subset.json_file_name), tags_list)
       self.dataset_dirs_info[os.path.basename(subset.json_file_name)] = {"n_repeats": subset.num_repeats, "img_count": len(metadata)}
-      self.valid_subsets.append(subset)
+      self.subsets.append(subset)
 
     # check existence of all npz files
-    use_npz_latents = all([not(subset.color_aug or subset.random_crop) for subset in self.valid_subsets])
+    use_npz_latents = all([not(subset.color_aug or subset.random_crop) for subset in self.subsets])
     if use_npz_latents:
       flip_aug_in_subset = False
 
