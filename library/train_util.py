@@ -275,14 +275,15 @@ class FineTuningSubset(BaseSubset):
 
 
 class BaseDataset(torch.utils.data.Dataset):
-  def __init__(self, subsets: Sequence[BaseSubset], tokenizer: CLIPTokenizer, max_token_length: int, resolution: Optional[Tuple[int, int]], debug_dataset: bool) -> None:
+  def __init__(self, tokenizer: CLIPTokenizer, max_token_length: int, resolution: Optional[Tuple[int, int]], debug_dataset: bool) -> None:
     super().__init__()
-    self.subsets = subsets
     self.tokenizer = tokenizer
     self.max_token_length = max_token_length
     # width/height is used when enable_bucket==False
     self.width, self.height = (None, None) if resolution is None else resolution
     self.debug_dataset = debug_dataset
+
+    self.valid_subsets = []
 
     self.token_padding_disabled = False
     self.dataset_dirs_info = {}
@@ -737,7 +738,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
 class DreamBoothDataset(BaseDataset):
   def __init__(self, subsets: Sequence[DreamBoothSubset], batch_size: int, tokenizer, max_token_length, resolution, enable_bucket: bool, min_bucket_reso: int, max_bucket_reso: int, bucket_reso_steps: int, bucket_no_upscale: bool, prior_loss_weight: float, debug_dataset) -> None:
-    super().__init__(subsets, tokenizer, max_token_length, resolution, debug_dataset)
+    super().__init__(tokenizer, max_token_length, resolution, debug_dataset)
 
     assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
@@ -809,7 +810,13 @@ class DreamBoothDataset(BaseDataset):
     num_reg_images = 0
     reg_infos: List[ImageInfo] = []
     for subset in subsets:
+      if subset.num_repeats < 1:
+        continue
+
       img_paths, captions = load_dreambooth_dir(subset)
+      if len(img_paths) < 1:
+        continue
+
       if subset.is_reg:
         num_reg_images += subset.num_repeats * len(img_paths)
         self.reg_dataset_dirs_info[os.path.basename(subset.image_dir)] = {"n_repeats": subset.num_repeats, "img_count": len(img_paths)}
@@ -823,6 +830,8 @@ class DreamBoothDataset(BaseDataset):
           reg_infos.append(info)
         else:
           self.register_image(info, subset)
+
+      self.valid_subsets.append(subset)
 
     print(f"{num_train_images} train images with repeating.")
     self.num_train_images = num_train_images
@@ -854,7 +863,7 @@ class DreamBoothDataset(BaseDataset):
 
 class FineTuningDataset(BaseDataset):
   def __init__(self, subsets: Sequence[FineTuningSubset], batch_size: int, tokenizer, max_token_length, resolution, enable_bucket: bool, min_bucket_reso: int, max_bucket_reso: int, bucket_reso_steps: int, bucket_no_upscale: bool, debug_dataset) -> None:
-    super().__init__(subsets, tokenizer, max_token_length, resolution, debug_dataset)
+    super().__init__(tokenizer, max_token_length, resolution, debug_dataset)
 
     self.batch_size = batch_size
 
@@ -862,6 +871,9 @@ class FineTuningDataset(BaseDataset):
     self.num_reg_images = 0
 
     for subset in subsets:
+      if subset.num_repeats < 1:
+        continue
+
       # メタデータを読み込む
       if os.path.exists(subset.json_file_name):
         print(f"loading existing metadata: {subset.json_file_name}")
@@ -869,6 +881,9 @@ class FineTuningDataset(BaseDataset):
           metadata = json.load(f)
       else:
         raise ValueError(f"no metadata / メタデータファイルがありません: {subset.json_file_name}")
+
+      if len(metadata) < 1:
+        continue
 
       tags_list = []
       for image_key, img_md in metadata.items():
@@ -904,9 +919,10 @@ class FineTuningDataset(BaseDataset):
       # TODO do not record tag freq when no tag
       self.set_tag_frequency(os.path.basename(subset.json_file_name), tags_list)
       self.dataset_dirs_info[os.path.basename(subset.json_file_name)] = {"n_repeats": subset.num_repeats, "img_count": len(metadata)}
+      self.valid_subsets.append(subset)
 
     # check existence of all npz files
-    use_npz_latents = all([not(subset.color_aug or subset.random_crop) for subset in subsets])
+    use_npz_latents = all([not(subset.color_aug or subset.random_crop) for subset in self.valid_subsets])
     if use_npz_latents:
       flip_aug_in_subset = False
 
@@ -1054,28 +1070,34 @@ def glob_images_pathlib(dir_path, recursive):
   return image_paths
 
 
-def extract_dreambooth_params_from_dirname(dir) -> Tuple[int, str]:
-  tokens = os.path.basename(dir).split('_')
-  try:
-    n_repeats = int(tokens[0])
-  except ValueError as e:
-    print(f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {dir}")
-    return 0, ""
-
-  caption_by_folder = '_'.join(tokens[1:])
-
-  return n_repeats, caption_by_folder
-
-
 # XXX: supports only argparse options
 def dreambooth_subdirs_to_subsets(base_dir: Optional[str], is_reg: bool, args: argparse.Namespace) -> Sequence[DreamBoothSubset]:
+  def extract_dreambooth_params_from_dirname(dir: str) -> Tuple[int, str]:
+    tokens = os.path.basename(dir).split('_')
+    try:
+      n_repeats = int(tokens[0])
+    except ValueError as e:
+      print(f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {dir}")
+      return 0, ""
+
+    caption_by_folder = '_'.join(tokens[1:])
+
+    return n_repeats, caption_by_folder
+
   if base_dir is None or not os.path.isdir(base_dir):
     return []
 
   subsets = []
-  for subdir in os.listdir(base_dir):
-    num_repeats, class_tokens = extract_dreambooth_params_from_dirname(subdir)
-    subset = DreamBoothSubset(os.path.join(base_dir, subdir), is_reg, class_tokens, args.caption_extension, num_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug, args.flip_aug,
+  for subdir_name in os.listdir(base_dir):
+    subdir_path = os.path.join(base_dir, subdir_name)
+    if not os.path.isdir(subdir_path):
+      continue
+
+    num_repeats, class_tokens = extract_dreambooth_params_from_dirname(subdir_name)
+    if num_repeats < 1:
+      continue
+
+    subset = DreamBoothSubset(subdir_path, is_reg, class_tokens, args.caption_extension, num_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug, args.flip_aug,
                               args.face_crop_aug_range, args.random_crop, getattr(args, "caption_dropout_rate", 0.0), getattr(args, "caption_dropout_every_n_epochs", None), getattr(args, "caption_tag_dropout_rate", 0.0))
     subsets.append(subset)
 
