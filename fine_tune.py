@@ -13,7 +13,11 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-
+from library.train_util import (
+  FineTuningDataset,
+  FineTuningSubset,
+  DatasetGroup,
+)
 
 def collate_fn(examples):
   return examples[0]
@@ -30,17 +34,18 @@ def train(args):
 
   tokenizer = train_util.load_tokenizer(args)
 
-  subsets = [train_util.FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug,
-                                         args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
-  train_dataset = train_util.FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution,
-                                               args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
+  subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug,
+                              args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
+  train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
+                                    args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
 
   train_dataset.make_buckets()
+  train_dataset_group = DatasetGroup([train_dataset])
 
   if args.debug_dataset:
-    train_util.debug_dataset(train_dataset)
+    train_util.debug_dataset(train_dataset_group)
     return
-  if len(train_dataset) == 0:
+  if len(train_dataset_group) == 0:
     print("No data found. Please verify the metadata file and train_data_dir option. / 画像がありません。メタデータおよびtrain_data_dirオプションを確認してください。")
     return
 
@@ -104,7 +109,7 @@ def train(args):
     vae.requires_grad_(False)
     vae.eval()
     with torch.no_grad():
-      train_dataset.cache_latents(vae)
+      train_dataset_group.cache_latents(vae)
     vae.to("cpu")
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
@@ -150,7 +155,7 @@ def train(args):
   # DataLoaderのプロセス数：0はメインプロセスになる
   n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)      # cpu_count-1 ただし最大で指定された数まで
   train_dataloader = torch.utils.data.DataLoader(
-      train_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
+      train_dataset_group, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
 
   # 学習ステップ数を計算する
   if args.max_train_epochs is not None:
@@ -194,7 +199,7 @@ def train(args):
   # 学習する
   total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
   print("running training / 学習開始")
-  print(f"  num examples / サンプル数: {train_dataset.num_train_images}")
+  print(f"  num examples / サンプル数: {train_dataset_group.num_train_images}")
   print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
   print(f"  num epochs / epoch数: {num_train_epochs}")
   print(f"  batch size per device / バッチサイズ: {args.train_batch_size}")
@@ -213,7 +218,7 @@ def train(args):
 
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
-    train_dataset.set_current_epoch(epoch + 1)
+    train_dataset_group.set_current_epoch(epoch + 1)
 
     for m in training_models:
       m.train()

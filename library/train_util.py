@@ -255,6 +255,8 @@ class BaseSubset:
     self.caption_dropout_every_n_epochs = caption_dropout_every_n_epochs
     self.caption_tag_dropout_rate = caption_tag_dropout_rate
 
+    self.img_count = 0
+
 
 class DreamBoothSubset(BaseSubset):
   def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
@@ -286,8 +288,6 @@ class BaseDataset(torch.utils.data.Dataset):
     self.subsets = []
 
     self.token_padding_disabled = False
-    self.dataset_dirs_info = {}
-    self.reg_dataset_dirs_info = {}
     self.tag_frequency = {}
 
     self.enable_bucket = False
@@ -819,10 +819,8 @@ class DreamBoothDataset(BaseDataset):
 
       if subset.is_reg:
         num_reg_images += subset.num_repeats * len(img_paths)
-        self.reg_dataset_dirs_info[os.path.basename(subset.image_dir)] = {"n_repeats": subset.num_repeats, "img_count": len(img_paths)}
       else:
         num_train_images += subset.num_repeats * len(img_paths)
-        self.dataset_dirs_info[os.path.basename(subset.image_dir)] = {"n_repeats": subset.num_repeats, "img_count": len(img_paths)}
 
       for img_path, caption in zip(img_paths, captions):
         info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
@@ -831,6 +829,7 @@ class DreamBoothDataset(BaseDataset):
         else:
           self.register_image(info, subset)
 
+      subset.img_count = len(img_paths)
       self.subsets.append(subset)
 
     print(f"{num_train_images} train images with repeating.")
@@ -918,7 +917,7 @@ class FineTuningDataset(BaseDataset):
 
       # TODO do not record tag freq when no tag
       self.set_tag_frequency(os.path.basename(subset.json_file_name), tags_list)
-      self.dataset_dirs_info[os.path.basename(subset.json_file_name)] = {"n_repeats": subset.num_repeats, "img_count": len(metadata)}
+      subset.img_count = len(metadata)
       self.subsets.append(subset)
 
     # check existence of all npz files
@@ -1014,6 +1013,42 @@ class FineTuningDataset(BaseDataset):
       npz_file_flip = None
 
     return npz_file_norm, npz_file_flip
+
+
+# behave as Dataset mock
+class DatasetGroup(torch.utils.data.ConcatDataset):
+  def __init__(self, datasets: Sequence[BaseDataset]):
+    super().__init__(datasets)
+
+    self.image_data = {}
+    self.num_train_images = 0
+    self.num_reg_images = 0
+
+    # simply concat together
+    for dataset in datasets:
+      self.image_data.update(dataset.image_data)
+      self.num_train_images += dataset.num_train_images
+      self.num_reg_images += dataset.num_reg_images
+
+  def add_replacement(self, str_from, str_to):
+    for dataset in self.datasets:
+      dataset.add_replacement(str_from, str_to)
+
+  def make_buckets(self):
+    for dataset in self.datasets:
+      dataset.make_buckets()
+
+  def cache_latents(self, vae):
+    for dataset in self.datasets:
+      dataset.cache_latents(vae)
+
+  def set_current_epoch(self, epoch):
+    for dataset in self.datasets:
+      dataset.set_current_epoch(epoch)
+
+  def disable_token_padding(self):
+    for dataset in self.datasets:
+      dataset.disable_token_padding()
 
 
 def debug_dataset(train_dataset, show_input_ids=False):

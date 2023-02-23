@@ -15,7 +15,10 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-from library.train_util import DreamBoothDataset
+from library.train_util import (
+  DreamBoothDataset,
+  DatasetGroup,
+)
 
 
 def collate_fn(examples):
@@ -39,13 +42,14 @@ def train(args):
   train_dataset = DreamBoothDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
                                     args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.prior_loss_weight, args.debug_dataset)
 
-  if args.no_token_padding:
-    train_dataset.disable_token_padding()
-
   train_dataset.make_buckets()
+  train_dataset_group = DatasetGroup([train_dataset])
+
+  if args.no_token_padding:
+    train_dataset_group.disable_token_padding()
 
   if args.debug_dataset:
-    train_util.debug_dataset(train_dataset)
+    train_util.debug_dataset(train_dataset_group)
     return
 
   # acceleratorを準備する
@@ -88,7 +92,7 @@ def train(args):
     vae.requires_grad_(False)
     vae.eval()
     with torch.no_grad():
-      train_dataset.cache_latents(vae)
+      train_dataset_group.cache_latents(vae)
     vae.to("cpu")
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
@@ -123,7 +127,7 @@ def train(args):
   # DataLoaderのプロセス数：0はメインプロセスになる
   n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)      # cpu_count-1 ただし最大で指定された数まで
   train_dataloader = torch.utils.data.DataLoader(
-      train_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
+      train_dataset_group, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
 
   # 学習ステップ数を計算する
   if args.max_train_epochs is not None:
@@ -173,8 +177,8 @@ def train(args):
   # 学習する
   total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
   print("running training / 学習開始")
-  print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset.num_train_images}")
-  print(f"  num reg images / 正則化画像の数: {train_dataset.num_reg_images}")
+  print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
+  print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
   print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
   print(f"  num epochs / epoch数: {num_train_epochs}")
   print(f"  batch size per device / バッチサイズ: {args.train_batch_size}")
@@ -195,7 +199,7 @@ def train(args):
   loss_total = 0.0
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
-    train_dataset.set_current_epoch(epoch + 1)
+    train_dataset_group.set_current_epoch(epoch + 1)
 
     # 指定したステップ数までText Encoderを学習する：epoch最初の状態
     unet.train()

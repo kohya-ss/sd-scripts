@@ -16,7 +16,12 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-from library.train_util import DreamBoothDataset, FineTuningDataset, FineTuningSubset
+from library.train_util import (
+  DreamBoothDataset,
+  FineTuningDataset,
+  FineTuningSubset,
+  DatasetGroup,
+)
 
 
 def collate_fn(examples):
@@ -71,11 +76,12 @@ def train(args):
                                       args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
 
   train_dataset.make_buckets()
+  train_dataset_group = DatasetGroup([train_dataset])
 
   if args.debug_dataset:
-    train_util.debug_dataset(train_dataset)
+    train_util.debug_dataset(train_dataset_group)
     return
-  if len(train_dataset) == 0:
+  if len(train_dataset_group) == 0:
     print("No data found. Please verify arguments (train_data_dir must be the parent of folders with images) / 画像がありません。引数指定を確認してください（train_data_dirには画像があるフォルダではなく、画像があるフォルダの親フォルダを指定する必要があります）")
     return
 
@@ -103,7 +109,7 @@ def train(args):
     vae.requires_grad_(False)
     vae.eval()
     with torch.no_grad():
-      train_dataset.cache_latents(vae)
+      train_dataset_group.cache_latents(vae)
     vae.to("cpu")
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
@@ -147,7 +153,7 @@ def train(args):
   # DataLoaderのプロセス数：0はメインプロセスになる
   n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)      # cpu_count-1 ただし最大で指定された数まで
   train_dataloader = torch.utils.data.DataLoader(
-      train_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
+      train_dataset_group, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=n_workers, persistent_workers=args.persistent_data_loader_workers)
 
   # 学習ステップ数を計算する
   if args.max_train_epochs is not None:
@@ -225,14 +231,15 @@ def train(args):
     args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
 
   # 学習する
-  total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+  # TODO: handle total batch size
+  #total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
   print("running training / 学習開始")
-  print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset.num_train_images}")
-  print(f"  num reg images / 正則化画像の数: {train_dataset.num_reg_images}")
+  print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
+  print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
   print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
   print(f"  num epochs / epoch数: {num_train_epochs}")
   print(f"  batch size per device / バッチサイズ: {args.train_batch_size}")
-  print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
+  #print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
   print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
   print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
@@ -243,12 +250,10 @@ def train(args):
       "ss_learning_rate": args.learning_rate,
       "ss_text_encoder_lr": args.text_encoder_lr,
       "ss_unet_lr": args.unet_lr,
-      "ss_num_train_images": train_dataset.num_train_images,          # includes repeating
-      "ss_num_reg_images": train_dataset.num_reg_images,
+      "ss_datasets": [], # fill later
       "ss_num_batches_per_epoch": len(train_dataloader),
       "ss_num_epochs": num_train_epochs,
-      "ss_batch_size_per_device": args.train_batch_size,
-      "ss_total_batch_size": total_batch_size,
+      #"ss_total_batch_size": total_batch_size,
       "ss_gradient_checkpointing": args.gradient_checkpointing,
       "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
       "ss_max_train_steps": args.max_train_steps,
@@ -260,28 +265,46 @@ def train(args):
       "ss_mixed_precision": args.mixed_precision,
       "ss_full_fp16": bool(args.full_fp16),
       "ss_v2": bool(args.v2),
-      "ss_resolution": args.resolution,
       "ss_clip_skip": args.clip_skip,
       "ss_max_token_length": args.max_token_length,
-      "ss_color_aug": bool(args.color_aug),
-      "ss_flip_aug": bool(args.flip_aug),
-      "ss_random_crop": bool(args.random_crop),
-      "ss_shuffle_caption": bool(args.shuffle_caption),
-      "ss_cache_latents": bool(args.cache_latents),
-      "ss_enable_bucket": bool(train_dataset.enable_bucket),
-      "ss_min_bucket_reso": train_dataset.min_bucket_reso,
-      "ss_max_bucket_reso": train_dataset.max_bucket_reso,
       "ss_seed": args.seed,
-      "ss_keep_tokens": args.keep_tokens,
       "ss_noise_offset": args.noise_offset,
-      "ss_dataset_dirs": json.dumps(train_dataset.dataset_dirs_info),
-      "ss_reg_dataset_dirs": json.dumps(train_dataset.reg_dataset_dirs_info),
-      "ss_tag_frequency": json.dumps(train_dataset.tag_frequency),
-      "ss_bucket_info": json.dumps(train_dataset.bucket_info),
       "ss_training_comment": args.training_comment,       # will not be updated after training
       "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
       "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else "")
   }
+  for dataset in train_dataset_group.datasets:
+    is_dreambooth_dataset =isinstance(dataset, DreamBoothDataset)
+    dataset_metadata = {
+      "is_dreambooth": is_dreambooth_dataset,
+      "batch_size_per_device": dataset.batch_size,
+      "num_train_images": dataset.num_train_images,          # includes repeating
+      "num_reg_images": dataset.num_reg_images,
+      "resolution": (dataset.width, dataset.height),
+      "enable_bucket": bool(dataset.enable_bucket),
+      "min_bucket_reso": dataset.min_bucket_reso,
+      "max_bucket_reso": dataset.max_bucket_reso,
+      "tag_frequency": json.dumps(dataset.tag_frequency),
+      "bucket_info": json.dumps(dataset.bucket_info),
+      "subsets": []
+    }
+    for subset in dataset.subsets:
+      subset_metadata = {
+        "image_dir": os.path.basename(subset.image_dir),
+        "img_count": subset.img_count,
+        "num_repeats": subset.num_repeats,
+        "color_aug": bool(subset.color_aug),
+        "flip_aug": bool(subset.flip_aug),
+        "random_crop": bool(subset.random_crop),
+        "shuffle_caption": bool(subset.shuffle_caption),
+        "cache_latents": bool(subset.cache_latents),
+        "keep_tokens": subset.shuffle_keep_tokens,
+      }
+      if is_dreambooth_dataset:
+        subset_metadata["class_tokens"] = subset.class_tokens
+        subset_metadata["is_reg"] = subset.is_reg
+      dataset_metadata["subsets"].append(subset_metadata)
+    metadata["ss_datasets"].append(dataset_metadata)
 
   # uncomment if another network is added
   # for key, value in net_kwargs.items():
@@ -318,7 +341,7 @@ def train(args):
   loss_total = 0.0
   for epoch in range(num_train_epochs):
     print(f"epoch {epoch+1}/{num_train_epochs}")
-    train_dataset.set_current_epoch(epoch + 1)
+    train_dataset_group.set_current_epoch(epoch + 1)
 
     metadata["ss_epoch"] = str(epoch+1)
 
