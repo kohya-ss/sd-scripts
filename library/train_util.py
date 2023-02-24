@@ -547,8 +547,6 @@ class BaseDataset(torch.utils.data.Dataset):
     print("caching latents.")
     for info in tqdm(self.image_data.values()):
       subset = self.image_to_subset[info.image_key]
-      if not subset.cache_latents:
-        continue
 
       if info.latents_npz is not None:
         info.latents = self.load_latents_from_npz(info, False)
