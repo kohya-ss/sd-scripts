@@ -1015,6 +1015,7 @@ class FineTuningDataset(BaseDataset):
 
 
 # behave as Dataset mock
+# TODO: supports inter-dataset shuffling
 class DatasetGroup(torch.utils.data.ConcatDataset):
   def __init__(self, datasets: Sequence[BaseDataset]):
     super().__init__(datasets)
