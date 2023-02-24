@@ -236,16 +236,11 @@ class AugHelper:
 
 
 class BaseSubset:
-  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
-    if cache_latents:
-      assert not color_aug, "when caching latents, color_aug cannot be used / latentをキャッシュするときはcolor_augは使えません"
-      assert not random_crop, "when caching latents, random_crop cannot be used / latentをキャッシュするときはrandom_cropは使えません"
-
+  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, keep_tokens: int, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
     self.image_dir = image_dir
     self.num_repeats = num_repeats
     self.shuffle_caption = shuffle_caption
     self.keep_tokens = keep_tokens
-    self.cache_latents = cache_latents
     self.color_aug = color_aug
     self.flip_aug = flip_aug
     self.face_crop_aug_range = face_crop_aug_range
@@ -258,8 +253,8 @@ class BaseSubset:
 
 
 class DreamBoothSubset(BaseSubset):
-  def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
-    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug,
+  def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
     self.is_reg = is_reg
@@ -272,8 +267,8 @@ class DreamBoothSubset(BaseSubset):
     return self.image_dir == other.image_dir
 
 class FineTuningSubset(BaseSubset):
-  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
-    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug,
+  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
     self.metadata_file = metadata_file
@@ -292,7 +287,7 @@ class BaseDataset(torch.utils.data.Dataset):
     self.width, self.height = (None, None) if resolution is None else resolution
     self.debug_dataset = debug_dataset
 
-    self.subsets = []
+    self.subsets: List[Union[DreamBoothSubset, FineTuningSubset]] = []
 
     self.token_padding_disabled = False
     self.tag_frequency = {}
@@ -543,6 +538,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
     assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
     return image
+
+  def is_latent_cachable(self):
+    return all([not subset.color_aug and not subset.random_crop for subset in self.subsets])
 
   def cache_latents(self, vae):
     # TODO ここを高速化したい
@@ -1031,7 +1029,9 @@ class FineTuningDataset(BaseDataset):
 # behave as Dataset mock
 # TODO: supports inter-dataset shuffling
 class DatasetGroup(torch.utils.data.ConcatDataset):
-  def __init__(self, datasets: Sequence[BaseDataset]):
+  def __init__(self, datasets: Sequence[Union[DreamBoothDataset, FineTuningDataset]]):
+    self.datasets: List[Union[DreamBoothDataset, FineTuningDataset]]
+
     super().__init__(datasets)
 
     self.image_data = {}
@@ -1055,6 +1055,9 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
   def cache_latents(self, vae):
     for dataset in self.datasets:
       dataset.cache_latents(vae)
+
+  def is_latent_cachable(self) -> bool:
+    return all([dataset.is_latent_cachable() for dataset in self.datasets])
 
   def set_current_epoch(self, epoch):
     for dataset in self.datasets:
@@ -1146,7 +1149,7 @@ def dreambooth_subdirs_to_subsets(base_dir: Optional[str], is_reg: bool, args: a
     if num_repeats < 1:
       continue
 
-    subset = DreamBoothSubset(subdir_path, is_reg, class_tokens, args.caption_extension, num_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug, args.flip_aug,
+    subset = DreamBoothSubset(subdir_path, is_reg, class_tokens, args.caption_extension, num_repeats, args.shuffle_caption, args.keep_tokens, args.color_aug, args.flip_aug,
                               args.face_crop_aug_range, args.random_crop, getattr(args, "caption_dropout_rate", 0.0), getattr(args, "caption_dropout_every_n_epochs", None), getattr(args, "caption_tag_dropout_rate", 0.0))
     subsets.append(subset)
 

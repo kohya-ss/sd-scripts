@@ -52,6 +52,9 @@ def train(args):
     train_util.debug_dataset(train_dataset_group)
     return
 
+  if cache_latents:
+    assert train_dataset_group.is_latent_cachable(), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
+
   # acceleratorを準備する
   print("prepare accelerator")
 

@@ -34,7 +34,7 @@ def train(args):
 
   tokenizer = train_util.load_tokenizer(args)
 
-  subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug,
+  subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.color_aug,
                               args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
   train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
                                     args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
@@ -48,6 +48,9 @@ def train(args):
   if len(train_dataset_group) == 0:
     print("No data found. Please verify the metadata file and train_data_dir option. / 画像がありません。メタデータおよびtrain_data_dirオプションを確認してください。")
     return
+
+  if cache_latents:
+    assert train_dataset_group.is_latent_cachable(), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
   # acceleratorを準備する
   print("prepare accelerator")

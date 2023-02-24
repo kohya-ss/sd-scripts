@@ -154,7 +154,7 @@ def train(args):
   else:
     print("Train with captions.")
     subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens,
-                                args.cache_latents, args.color_aug, args.flip_aug, args.face_crop_aug_range, args.random_crop, 0.0, None, 0.0)]
+                                args.color_aug, args.flip_aug, args.face_crop_aug_range, args.random_crop, 0.0, None, 0.0)]
     train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
                                       args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
 
@@ -180,6 +180,9 @@ def train(args):
   if len(train_dataset_group) == 0:
     print("No data found. Please verify arguments / 画像がありません。引数指定を確認してください")
     return
+
+  if cache_latents:
+    assert train_dataset_group.is_latent_cachable(), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
   # モデルに xformers とか memory efficient attention を組み込む
   train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)

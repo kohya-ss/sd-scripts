@@ -70,7 +70,7 @@ def train(args):
                                       args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.prior_loss_weight, args.debug_dataset)
   else:
     print("Train with captions.")
-    subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.cache_latents, args.color_aug,
+    subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.color_aug,
                                 args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
     train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket, args.min_bucket_reso, args.max_bucket_reso,
                                       args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
@@ -84,6 +84,9 @@ def train(args):
   if len(train_dataset_group) == 0:
     print("No data found. Please verify arguments (train_data_dir must be the parent of folders with images) / 画像がありません。引数指定を確認してください（train_data_dirには画像があるフォルダではなく、画像があるフォルダの親フォルダを指定する必要があります）")
     return
+
+  if cache_latents:
+    assert train_dataset_group.is_latent_cachable(), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
   # acceleratorを準備する
   print("prepare accelerator")
@@ -267,6 +270,7 @@ def train(args):
       "ss_v2": bool(args.v2),
       "ss_clip_skip": args.clip_skip,
       "ss_max_token_length": args.max_token_length,
+      "ss_cache_latents": bool(args.cache_latents),
       "ss_seed": args.seed,
       "ss_noise_offset": args.noise_offset,
       "ss_training_comment": args.training_comment,       # will not be updated after training
@@ -297,7 +301,6 @@ def train(args):
         "flip_aug": bool(subset.flip_aug),
         "random_crop": bool(subset.random_crop),
         "shuffle_caption": bool(subset.shuffle_caption),
-        "cache_latents": bool(subset.cache_latents),
         "keep_tokens": subset.shuffle_keep_tokens,
       }
       if is_dreambooth_dataset:
