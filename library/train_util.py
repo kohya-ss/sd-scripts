@@ -236,7 +236,7 @@ class AugHelper:
 
 
 class BaseSubset:
-  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, keep_tokens: int, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
+  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, keep_tokens: int, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: int, caption_tag_dropout_rate: float) -> None:
     self.image_dir = image_dir
     self.num_repeats = num_repeats
     self.shuffle_caption = shuffle_caption
@@ -336,7 +336,7 @@ class BaseDataset(torch.utils.data.Dataset):
   def process_caption(self, subset: BaseSubset, caption):
     # dropoutの決定：tag dropがこのメソッド内にあるのでここで行うのが良い
     is_drop_out = subset.caption_dropout_rate > 0 and random.random() < subset.caption_dropout_rate
-    is_drop_out = is_drop_out or subset.caption_dropout_every_n_epochs and self.current_epoch % subset.caption_dropout_every_n_epochs == 0
+    is_drop_out = is_drop_out or subset.caption_dropout_every_n_epochs > 0 and self.current_epoch % subset.caption_dropout_every_n_epochs == 0
 
     if is_drop_out:
       caption = ""
@@ -1640,11 +1640,11 @@ def add_dataset_arguments(parser: argparse.ArgumentParser, support_dreambooth: b
   if support_caption_dropout:
     # Textual Inversion はcaptionのdropoutをsupportしない
     # いわゆるtensorのDropoutと紛らわしいのでprefixにcaptionを付けておく　every_n_epochsは他と平仄を合わせてdefault Noneに
-    parser.add_argument("--caption_dropout_rate", type=float, default=0,
+    parser.add_argument("--caption_dropout_rate", type=float, default=0.0,
                         help="Rate out dropout caption(0.0~1.0) / captionをdropoutする割合")
-    parser.add_argument("--caption_dropout_every_n_epochs", type=int, default=None,
+    parser.add_argument("--caption_dropout_every_n_epochs", type=int, default=0,
                         help="Dropout all captions every N epochs / captionを指定エポックごとにdropoutする")
-    parser.add_argument("--caption_tag_dropout_rate", type=float, default=0,
+    parser.add_argument("--caption_tag_dropout_rate", type=float, default=0.0,
                         help="Rate out dropout comma separated tokens(0.0~1.0) / カンマ区切りのタグをdropoutする割合")
 
   if support_dreambooth:
