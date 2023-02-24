@@ -340,9 +340,6 @@ class BlueprintGenerator:
 
 
 def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlueprint):
-  # TODO: just for DEBUG, delete this
-  print(dataset_group_blueprint)
-
   datasets= []
   for dataset_blueprint in dataset_group_blueprint.datasets:
     if dataset_blueprint.is_dreambooth:
