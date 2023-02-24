@@ -310,7 +310,7 @@ class BaseDataset(torch.utils.data.Dataset):
     self.image_transforms = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5]), ])
 
     self.image_data: Dict[str, ImageInfo] = {}
-    self.image_to_subset: Dict[str, BaseSubset] = {}
+    self.image_to_subset: Dict[str, Union[DreamBoothSubset, FineTuningSubset]] = {}
 
     self.replacements = {}
 
