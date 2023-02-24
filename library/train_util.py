@@ -266,6 +266,10 @@ class DreamBoothSubset(BaseSubset):
     self.class_tokens = class_tokens
     self.caption_extension = caption_extension
 
+  def __eq__(self, other) -> bool:
+    if not isinstance(other, DreamBoothSubset):
+      return NotImplemented
+    return self.image_dir == other.image_dir
 
 class FineTuningSubset(BaseSubset):
   def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
@@ -274,6 +278,10 @@ class FineTuningSubset(BaseSubset):
 
     self.metadata_file = metadata_file
 
+  def __eq__(self, other) -> bool:
+    if not isinstance(other, FineTuningSubset):
+      return NotImplemented
+    return self.metadata_file == other.metadata_file
 
 class BaseDataset(torch.utils.data.Dataset):
   def __init__(self, tokenizer: CLIPTokenizer, max_token_length: int, resolution: Optional[Tuple[int, int]], debug_dataset: bool) -> None:
@@ -809,6 +817,9 @@ class DreamBoothDataset(BaseDataset):
       if subset.image_dir is None:
         continue
 
+      if subset in self.subsets:
+        continue
+
       img_paths, captions = load_dreambooth_dir(subset)
       if len(img_paths) < 1:
         continue
@@ -870,6 +881,9 @@ class FineTuningDataset(BaseDataset):
         continue
 
       if subset.metadata_file is None:
+        continue
+
+      if subset in self.subsets:
         continue
 
       # メタデータを読み込む
