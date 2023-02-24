@@ -812,6 +812,9 @@ class DreamBoothDataset(BaseDataset):
       if subset.num_repeats < 1:
         continue
 
+      if subset.image_dir is None:
+        continue
+
       img_paths, captions = load_dreambooth_dir(subset)
       if len(img_paths) < 1:
         continue
