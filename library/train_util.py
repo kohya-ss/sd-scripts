@@ -236,7 +236,7 @@ class AugHelper:
 
 
 class BaseSubset:
-  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, shuffle_keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
+  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
     if cache_latents:
       assert not color_aug, "when caching latents, color_aug cannot be used / latentをキャッシュするときはcolor_augは使えません"
       assert not random_crop, "when caching latents, random_crop cannot be used / latentをキャッシュするときはrandom_cropは使えません"
@@ -244,7 +244,7 @@ class BaseSubset:
     self.image_dir = image_dir
     self.num_repeats = num_repeats
     self.shuffle_caption = shuffle_caption
-    self.shuffle_keep_tokens = shuffle_keep_tokens
+    self.keep_tokens = keep_tokens
     self.cache_latents = cache_latents
     self.color_aug = color_aug
     self.flip_aug = flip_aug
@@ -258,8 +258,8 @@ class BaseSubset:
 
 
 class DreamBoothSubset(BaseSubset):
-  def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
-    super().__init__(image_dir, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug,
+  def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
     self.is_reg = is_reg
@@ -268,8 +268,8 @@ class DreamBoothSubset(BaseSubset):
 
 
 class FineTuningSubset(BaseSubset):
-  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
-    super().__init__(image_dir, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug,
+  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, cache_latents, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
     self.metadata_file = metadata_file
@@ -348,24 +348,18 @@ class BaseDataset(torch.utils.data.Dataset):
               l.append(token)
           return l
 
-        tokens = [t.strip() for t in caption.strip().split(",")]
-        if subset.shuffle_keep_tokens is None:
-          if subset.shuffle_caption:
-            random.shuffle(tokens)
+        fixed_tokens = []
+        flex_tokens = [t.strip() for t in caption.strip().split(",")]
+        if subset.keep_tokens >= 0:
+          fixed_tokens = flex_tokens[:subset.keep_tokens]
+          flex_tokens = flex_tokens[subset.keep_tokens:]
 
-          tokens = dropout_tags(tokens)
-        else:
-          if len(tokens) > subset.shuffle_keep_tokens:
-            keep_tokens = tokens[:subset.shuffle_keep_tokens]
-            tokens = tokens[subset.shuffle_keep_tokens:]
+        if subset.shuffle_caption:
+          random.shuffle(flex_tokens)
 
-            if subset.shuffle_caption:
-              random.shuffle(tokens)
+        flex_tokens = dropout_tags(flex_tokens)
 
-            tokens = dropout_tags(tokens)
-
-            tokens = keep_tokens + tokens
-        caption = ", ".join(tokens)
+        caption = ", ".join(fixed_tokens + flex_tokens)
 
       # textual inversion対応
       for str_from, str_to in self.replacements.items():
@@ -1605,7 +1599,7 @@ def add_dataset_arguments(parser: argparse.ArgumentParser, support_dreambooth: b
   parser.add_argument("--caption_extension", type=str, default=".caption", help="extension of caption files / 読み込むcaptionファイルの拡張子")
   parser.add_argument("--caption_extention", type=str, default=None,
                       help="extension of caption files (backward compatibility) / 読み込むcaptionファイルの拡張子（スペルミスを残してあります）")
-  parser.add_argument("--keep_tokens", type=int, default=None,
+  parser.add_argument("--keep_tokens", type=int, default=0,
                       help="keep heading N tokens when shuffling caption tokens / captionのシャッフル時に、先頭からこの個数のトークンをシャッフルしないで残す")
   parser.add_argument("--color_aug", action="store_true", help="enable weak color augmentation / 学習時に色合いのaugmentationを有効にする")
   parser.add_argument("--flip_aug", action="store_true", help="enable horizontal flip augmentation / 学習時に左右反転のaugmentationを有効にする")
