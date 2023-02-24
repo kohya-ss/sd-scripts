@@ -236,7 +236,7 @@ class AugHelper:
 
 
 class BaseSubset:
-  def __init__(self, image_dir: str, num_repeats: int, shuffle_caption: bool, shuffle_keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
+  def __init__(self, image_dir: Optional[str], num_repeats: int, shuffle_caption: bool, shuffle_keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
     if cache_latents:
       assert not color_aug, "when caching latents, color_aug cannot be used / latentをキャッシュするときはcolor_augは使えません"
       assert not random_crop, "when caching latents, random_crop cannot be used / latentをキャッシュするときはrandom_cropは使えません"
@@ -268,7 +268,7 @@ class DreamBoothSubset(BaseSubset):
 
 
 class FineTuningSubset(BaseSubset):
-  def __init__(self, image_dir, json_file_name: str, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+  def __init__(self, image_dir, json_file_name: Optional[str], num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
     super().__init__(image_dir, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
@@ -870,6 +870,9 @@ class FineTuningDataset(BaseDataset):
 
     for subset in subsets:
       if subset.num_repeats < 1:
+        continue
+
+      if subset.json_file_name is None:
         continue
 
       # メタデータを読み込む
