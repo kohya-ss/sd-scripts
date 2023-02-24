@@ -1,108 +1,220 @@
-`--config` で渡すことができる設定ファイルに関する説明です。
-
-現在は DreamBooth の手法向けのデータセットの設定のみに対応しています。
-fine tuning の手法に関わる設定及びデータセットに関わらない設定には未対応です。
+`--config_file` で渡すことができる設定ファイルに関する説明です。
 
 ## 概要
 
 設定ファイルを渡すことにより、ユーザが細かい設定を行えるようにします。
 
-* 複数のデータセットを指定できるようになります。
-    * 例えば `resolution` や `shuffle_keep_tokens` をデータセットごとに設定して、それらを混合して学習できます。
+* 複数のデータセットが設定可能になります
+    * 例えば `resolution` をデータセットごとに設定して、それらを混合して学習できます。
+    * DreamBooth の手法と fine tuning の手法の両方に対応している学習方法では、DreamBooth 方式と fine tuning 方式のデータセットを混合することが可能です。
+* サブセットごとに設定を変更することが可能になります
+    * データセットを画像ディレクトリ別に分割したものがサブセットです。いくつかのサブセットが集まってデータセットを構成します。
+    * `keep_tokens` や `flip_aug` 等のオプションはサブセットごとに設定可能です。一方、`resolution` や `batch_size` といったオプションはデータセットごとに設定可能で、同じデータセットに属するサブセットでは値が共通になります。詳しくは後述します。
 
-`--config` オプションを使った場合、役割が重複しているコマンドライン引数は無視されます。
+設定ファイルの形式は JSON か TOML を利用できます。記述のしやすさを考えると [TOML](https://toml.io/ja/v1.0.0-rc.2) を利用するのがオススメです。以下、TOML の利用を前提に説明します。
 
-設定ファイルの形式は JSON か TOML を利用できます。
-記述のしやすさを考えると [TOML](https://toml.io/ja/v1.0.0-rc.2) を利用するのがオススメです。
+TOML で記述した設定ファイルの例です。
 
-## データセットに関する設定
+```toml
+[general]
+shuffle_caption = true
+caption_extension = '.txt'
+keep_tokens = 1
 
-データセットに関する設定として登録可能なアイテムを説明します。
+# これは DreamBooth 方式のデータセット
+[[datasets]]
+resolution = 512
+batch_size = 4
+keep_tokens = 2
 
-* `general`
-    * 全データセットに適用されるオプションを指定します。
-* `dataset`
-    * 特定のデータセットに適用されるオプションを指定します。
-* `dataset.subset`
-    * データセット内のサブセットのオプションを指定します。
-    * 1つのディレクトリが1つのサブセットに対応します。
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+  class_tokens = 'hoge girl'
+  # このサブセットは keep_tokens = 2 （所属する datasets の値が使われる）
 
-各アイテムは指定可能なオプションが決まっています。
-また、学習方法が対応しているモードによって指定可能なオプションが変化します。
+  [[datasets.subsets]]
+  image_dir = 'C:\fuga'
+  class_tokens = 'fuga boy'
+  keep_tokens = 3
 
-* DreamBooth の手法が使えるモード
-* fine tuning の手法が使えるモード
-* caption dropout が使えるモード
+  [[datasets.subsets]]
+  is_reg = true
+  image_dir = 'C:\reg'
+  class_tokens = 'human'
+  keep_tokens = 1
 
-以下、各アイテム及び各モードで利用可能なオプションを説明します。
+# これは fine tuning 方式のデータセット
+[[datasets]]
+resolution = [768, 768]
+batch_size = 2
 
-コマンドライン引数と共通のオプションの説明については割愛します。
-他の README を参照してください。
+  [[datasets.subsets]]
+  image_dir = 'C:\piyo'
+  metadata_file = 'C:\piyo\piyo_md.json'
+  # このサブセットは keep_tokens = 1 （general の値が使われる）
+```
 
-### 全モード共通オプション
+この例では、DreamBooth 方式のデータセットを 512x512 (batch size 4) で、fine tuning 方式のデータセットを 768x768 (batch size 2) で学習させます。
 
-| オプション名 | general | dataset | dataset.subset |
+## データセット・サブセットに関する設定
+
+データセット・サブセットに関する設定は、登録可能な箇所がいくつかに分かれています。
+
+* `[general]`
+    * 全データセットまたは全サブセットに適用されるオプションを指定する箇所です。
+    * データセットごとの設定及びサブセットごとの設定に同名のオプションが存在していた場合には、データセット・サブセットごとの設定が優先されます。
+* `[[datasets]]`
+    * `datasets` はデータセットに関する設定の登録箇所になります。各データセットに個別に適用されるオプションを指定する箇所です。
+    * サブセットごとの設定が存在していた場合には、サブセットごとの設定が優先されます。
+* `[[datasets.subsets]]`
+    * `datasets.subsets` はサブセットに関する設定の登録箇所になります。各サブセットに個別に適用されるオプションを指定する箇所です。
+
+先程の例における、画像ディレクトリと登録箇所の対応に関するイメージ図です。
+
+```
+C:\
+├─ hoge  ->  [[datasets.subsets]] No.1  ┐                        ┐
+├─ fuga  ->  [[datasets.subsets]] No.2  |->  [[datasets]] No.1   |->  [general]
+├─ reg   ->  [[datasets.subsets]] No.3  ┘                        |
+└─ piyo  ->  [[datasets.subsets]] No.4  -->  [[datasets]] No.2   ┘
+```
+
+画像ディレクトリがそれぞれ1つの `[[datasets.subsets]]` に対応しています。そして `[[datasets.subsets]]` が1つ以上組み合わさって1つの `[[datasets]]` を構成します。`[general]` には全ての `[[datasets]]`, `[[datasets.subsets]]` が属します。
+
+登録箇所ごとに指定可能なオプションは異なりますが、同名のオプションが指定された場合は下位の登録箇所にある値が優先されます。先程の例の `keep_tokens` オプションの扱われ方を確認してもらうと理解しやすいかと思います。
+
+加えて、学習方法が対応している手法によっても指定可能なオプションが変化します。
+
+* DreamBooth の手法が使える場合のオプション
+* fine tuning の手法が使える場合のオプション
+* caption dropout の手法が使える場合のオプション
+
+以下、利用可能なオプションを説明します。コマンドライン引数と名称が同一のオプションについては、基本的に説明を割愛します。他の README を参照してください。
+
+### 全学習方法で共通のオプション
+
+学習方法によらずに指定可能なオプションです。
+
+#### データセット向けオプション
+
+データセットの設定に関わるオプションです。`datasets.subsets` には記述できません。
+
+| オプション名 | 設定例 | general | datasets |
 | ---- | ---- | ---- | ---- |
-| `batch_size` | o | o | - |
-| `bucket_no_upscale` | o | o | - |
-| `bucket_reso_steps` | o | o | - |
-| `cache_latents` | o | o | o |
-| `color_aug` | o | o | o |
-| `enable_bucket` | o | o | - |
-| `face_crop_aug_range` | o | o | o |
-| `flip_aug` | o | o | o |
-| `max_bucket_reso` | o | o | - |
-| `min_bucket_reso` | o | o | - |
-| `num_repeats` | o | o | o | o |
-| `image_dir` | - | - | o（必須） |
-| `random_crop` | o | o | o |
-| `resolution` | o | o | - |
-| `shuffle_caption` | o | o | o |
-| `shuffle_keep_tokens` | o | o | o |
+| `batch_size` | `1` | o | o |
+| `bucket_no_upscale` | `true` | o | o |
+| `bucket_reso_steps` | `64` | o | o |
+| `enable_bucket` | `true` | o | o |
+| `max_bucket_reso` | `1024` | o | o |
+| `min_bucket_reso` | `128` | o | o |
+| `resolution` | `256`, `[512, 512]` | o | o |
 
 * `batch_size`
     * コマンドライン引数の `--train_batch_size` と同等です。
-* `num_repeats`
-    * サブセットの画像の繰り返し回数を指定します。デフォルトは 1 です。
+
+#### サブセット向けオプション
+
+サブセットの設定に関わるオプションです。
+
+| オプション名 | 設定例 | general | datasets | datasets.subsets |
+| ---- | ---- | ---- | ---- | ---- |
+| `color_aug` | `false` | o | o | o |
+| `face_crop_aug_range` | `[1.0, 3.0]` | o | o | o |
+| `flip_aug` | `true` | o | o | o |
+| `image_dir` | `‘C:\hoge’` | - | - | o（必須） |
+| `keep_tokens` | `2` | o | o | o |
+| `num_repeats` | `10` | o | o | o |
+| `random_crop` | `false` | o | o | o |
+| `shuffle_caption` | `true` | o | o | o |
+
 * `image_dir`
-    * 画像が入ったディレクトリパスを指定します。画像はディレクトリ直下に置かれている必要があります。
-* `shuffle_keep_tokens`
-    * コマンドライン引数の `--keep_tokens` と同等です。
+    * 画像ディレクトリのパスを指定します。指定必須オプションです。
+    * 学習方法に関わらず、画像はディレクトリ直下に置かれている必要があります。
+* `num_repeats`
+    * サブセットの画像の繰り返し回数を指定します。fine tuning における `--dataset_repeats` に相当しますが、`num_repeats` はどの学習方法でも指定可能です。
 
-### DreamBooth の手法が使えるモードで追加で利用可能なオプション
+### DreamBooth の手法が使える場合に指定可能なオプション
 
-| オプション名 | general | dataset | dataset.subset |
-| ---- | ---- | ---- | ---- |
-| `caption_extension` | o | o | o |
-| `class_tokens` | - | - | o |
-| `is_reg` | - | - | o |
+DreamBooth の手法が使える場合のオプションは、サブセット向けオプションのみ存在します。
+
+#### サブセット向けオプション
+
+DreamBooth 方式のサブセットの設定に関わるオプションです。
+
+| オプション名 | 設定例 | general | datasets | dataset.subsets |
+| ---- | ---- | ---- | ---- | ---- |
+| `caption_extension` | `.txt` | o | o | o |
+| `class_tokens` | `“sks girl”` | - | - | o |
+| `is_reg` | `false` | - | - | o |
+
+まず注意点として、既に説明した通り `image_dir` には画像ファイルが直下に置かれているパスを指定する必要があります。従来の DreamBooth の手法ではサブディレクトリに画像を置く必要がありましたが、そちらとは仕様に互換性がありません。また、`5_cat` のようなフォルダ名にしても、画像の繰り返し回数とクラス名は反映されません。これらを個別に設定したい場合、`num_repeats` と `class_tokens` で明示的に指定する必要があることに注意してください。
 
 * `class_tokens`
-    * クラストークンを設定します。例えば `sks girl` などを指定します。
-    * 画像と対応する caption ファイルが存在しない場合にのみ学習時に使われます。判定は画像ごとに行います。
+    * クラストークンを設定します。
+    * 画像に対応する caption ファイルが存在しない場合にのみ学習時に利用されます。利用するかどうかの判定は画像ごとに行います。`class_tokens` を指定しなかった場合に caption ファイルも見つからなかった場合にはエラーになります。
 * `is_reg`
-    * サブセットが正規化用かどうかを指定します。デフォルトは false です。
+    * サブセットの画像が正規化用かどうかを指定します。指定しなかった場合は `false` として、つまり正規化画像ではないとして扱います。
 
-### fine tuning の手法が使えるモードで追加で利用可能なオプション
+### fine tuning の手法が使える場合に指定可能なオプション
 
-| オプション名 | general | dataset | dataset.subset |
-| ---- | ---- | ---- | ---- |
-| `in_json` | - | - | o |
+fine tuning の手法が使える場合のオプションは、サブセット向けオプションのみ存在します。
 
-### caption dropout 対応モードで追加で利用可能なオプション
+#### サブセット向けオプション
 
-| オプション名 | general | dataset | dataset.subset |
+fine tuning 方式のサブセットの設定に関わるオプションです。
+
+| オプション名 | 設定例 | general | datasets | dataset.subsets |
+| ---- | ---- | ---- | ---- | ---- |
+| `metadata_file` | `'C:\piyo\piyo_md.json'` | - | - | o（必須） |
+
+* `metadata_file`
+    * サブセットで利用されるメタデータファイルのパスを指定します。指定必須オプションです。
+        * コマンドライン引数の `--in_json` と同等です。
+    * サブセットごとにメタデータファイルを指定する必要がある仕様上、ディレクトリを跨いだメタデータを1つのメタデータファイルとして作成することは避けた方が良いでしょう。画像ディレクトリごとにメタデータファイルを用意し、それらを別々のサブセットとして登録することを強く推奨します。
+
+### caption dropout の手法が使える場合に指定可能なオプション
+
+caption dropout の手法が使える場合のオプションは、サブセット向けオプションのみ存在します。
+
+#### サブセット向けオプション
+
+caption dropout が使えるサブセットの設定に関わるオプションです。
+
+| オプション名 | general | datasets | dataset.subsets |
 | ---- | ---- | ---- | ---- |
 | `caption_dropout_every_n_epochs` | o | o | o |
 | `caption_dropout_rate` | o | o | o |
 | `caption_tag_dropout_rate` | o | o | o |
 
-## 設定ファイルの例
+## コマンドライン引数との併用
 
-[samples](./samples/config_sample.toml) に例を載せているので、そちらを参照してください。
+設定ファイルのオプションの中には、コマンドライン引数のオプションと役割が重複しているものがあります。
 
-## 無視されるコマンドライン引数
+以下に挙げるコマンドライン引数のオプションは、設定ファイルを渡した場合には無視されます。
 
-`--config` オプションを使った場合に無視されるコマンドライン引数について説明します。
+* `--train_data_dir`
+* `--reg_data_dir`
+* `--in_json`
 
-TODO: 説明を書く
+以下に挙げるコマンドライン引数のオプションは、コマンドライン引数と設定ファイルで同時に指定された場合、コマンドライン引数の値よりも設定ファイルの値が優先されます。特に断りがなければ同名のオプションとなります。
+
+| コマンドライン引数のオプション     | 優先される設定ファイルのオプション |
+| ---------------------------------- | ---------------------------------- |
+| `--bucket_no_upscale`              |                                    |
+| `--bucket_reso_steps`              |                                    |
+| `--caption_dropout_every_n_epochs` |                                    |
+| `--caption_dropout_rate`           |                                    |
+| `--caption_extension`              |                                    |
+| `--caption_tag_dropout_rate`       |                                    |
+| `--color_aug`                      |                                    |
+| `--dataset_repeats`                | `num_repeats`                      |
+| `--enable_bucket`                  |                                    |
+| `--face_crop_aug_range`            |                                    |
+| `--flip_aug`                       |                                    |
+| `--keep_tokens`                    |                                    |
+| `--min_bucket_reso`                |                                    |
+| `--random_crop`                    |                                    |
+| `--resolution`                     |                                    |
+| `--shuffle_caption`                |                                    |
+| `--train_batch_size`               | `batch_size`                       |
+
