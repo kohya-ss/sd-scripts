@@ -278,7 +278,7 @@ def train(args):
       "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else "")
   }
   for dataset in train_dataset_group.datasets:
-    is_dreambooth_dataset =isinstance(dataset, DreamBoothDataset)
+    is_dreambooth_dataset = isinstance(dataset, DreamBoothDataset)
     dataset_metadata = {
       "is_dreambooth": is_dreambooth_dataset,
       "batch_size_per_device": dataset.batch_size,
