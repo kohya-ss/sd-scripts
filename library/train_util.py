@@ -268,11 +268,11 @@ class DreamBoothSubset(BaseSubset):
 
 
 class FineTuningSubset(BaseSubset):
-  def __init__(self, image_dir, json_file_name: Optional[str], num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
     super().__init__(image_dir, num_repeats, shuffle_caption, shuffle_keep_tokens, cache_latents, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
-    self.json_file_name = json_file_name
+    self.metadata_file = metadata_file
 
 
 class BaseDataset(torch.utils.data.Dataset):
@@ -872,16 +872,16 @@ class FineTuningDataset(BaseDataset):
       if subset.num_repeats < 1:
         continue
 
-      if subset.json_file_name is None:
+      if subset.metadata_file is None:
         continue
 
       # メタデータを読み込む
-      if os.path.exists(subset.json_file_name):
-        print(f"loading existing metadata: {subset.json_file_name}")
-        with open(subset.json_file_name, "rt", encoding='utf-8') as f:
+      if os.path.exists(subset.metadata_file):
+        print(f"loading existing metadata: {subset.metadata_file}")
+        with open(subset.metadata_file, "rt", encoding='utf-8') as f:
           metadata = json.load(f)
       else:
-        raise ValueError(f"no metadata / メタデータファイルがありません: {subset.json_file_name}")
+        raise ValueError(f"no metadata / メタデータファイルがありません: {subset.metadata_file}")
 
       if len(metadata) < 1:
         continue
@@ -918,7 +918,7 @@ class FineTuningDataset(BaseDataset):
       self.num_train_images += len(metadata) * subset.num_repeats
 
       # TODO do not record tag freq when no tag
-      self.set_tag_frequency(os.path.basename(subset.json_file_name), tags_list)
+      self.set_tag_frequency(os.path.basename(subset.metadata_file), tags_list)
       subset.img_count = len(metadata)
       self.subsets.append(subset)
 
