@@ -13,10 +13,10 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-from library.train_util import (
-  FineTuningDataset,
-  FineTuningSubset,
-  DatasetGroup,
+import library.config_util as config_util
+from library.config_util import (
+  ConfigSanitizer,
+  BlueprintGenerator,
 )
 
 def collate_fn(examples):
@@ -34,13 +34,25 @@ def train(args):
 
   tokenizer = train_util.load_tokenizer(args)
 
-  subsets = [FineTuningSubset(args.train_data_dir, args.in_json, args.dataset_repeats, args.shuffle_caption, args.keep_tokens, args.color_aug,
-                              args.flip_aug, args.face_crop_aug_range, args.random_crop, args.caption_dropout_rate, args.caption_dropout_every_n_epochs, args.caption_tag_dropout_rate)]
-  train_dataset = FineTuningDataset(subsets, args.train_batch_size, tokenizer, args.max_token_length, args.resolution, args.enable_bucket,
-                                    args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps, args.bucket_no_upscale, args.debug_dataset)
+  blueprint_generator = BlueprintGenerator(ConfigSanitizer(False, True, True))
+  if args.config_file is not None:
+    print(f"Load config file from {args.config_file}")
+    user_config = config_util.load_user_config(args.config_file)
+    ignored = ["train_data_dir", "in_json"]
+    if any(getattr(args, attr) is not None for attr in ignored):
+      print("ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(', '.join(ignored)))
+  else:
+    user_config = {
+      "datasets": [{
+        "subsets": [{
+          "image_dir": args.train_data_dir,
+          "metadata_file": args.in_json,
+        }]
+      }]
+    }
 
-  train_dataset.make_buckets()
-  train_dataset_group = DatasetGroup([train_dataset])
+  blueprint = blueprint_generator.generate(user_config, args, tokenizer=tokenizer)
+  train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
 
   if args.debug_dataset:
     train_util.debug_dataset(train_dataset_group)
@@ -339,6 +351,7 @@ if __name__ == '__main__':
   train_util.add_training_arguments(parser, False)
   train_util.add_sd_saving_arguments(parser)
   train_util.add_optimizer_arguments(parser)
+  config_util.add_config_arguments(parser)
 
   parser.add_argument("--diffusers_xformers", action='store_true',
                       help='use xformers by diffusers / Diffusersでxformersを使用する')
