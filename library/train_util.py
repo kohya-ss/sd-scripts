@@ -237,7 +237,6 @@ class AugHelper:
 
 class BaseSubset:
   def __init__(self, image_dir: str, num_repeats: int, shuffle_caption: bool, shuffle_keep_tokens: int, cache_latents: bool, color_aug: bool, flip_aug: bool, face_crop_aug_range: Optional[Tuple[float, float]], random_crop: bool, caption_dropout_rate: float, caption_dropout_every_n_epochs: Optional[int], caption_tag_dropout_rate: float) -> None:
-    # prepare_dataset_args may not be used, so we had better check here
     if cache_latents:
       assert not color_aug, "when caching latents, color_aug cannot be used / latentをキャッシュするときはcolor_augは使えません"
       assert not random_crop, "when caching latents, random_crop cannot be used / latentをキャッシュするときはrandom_cropは使えません"
@@ -1891,10 +1890,6 @@ def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
   if args.caption_extention is not None:
     args.caption_extension = args.caption_extention
     args.caption_extention = None
-
-  if args.cache_latents:
-    assert not args.color_aug, "when caching latents, color_aug cannot be used / latentをキャッシュするときはcolor_augは使えません"
-    assert not args.random_crop, "when caching latents, random_crop cannot be used / latentをキャッシュするときはrandom_cropは使えません"
 
   # assert args.resolution is not None, f"resolution is required / resolution（解像度）を指定してください"
   if args.resolution is not None:
