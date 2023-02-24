@@ -301,7 +301,7 @@ def train(args):
         "flip_aug": bool(subset.flip_aug),
         "random_crop": bool(subset.random_crop),
         "shuffle_caption": bool(subset.shuffle_caption),
-        "keep_tokens": subset.shuffle_keep_tokens,
+        "keep_tokens": subset.keep_tokens,
       }
       if is_dreambooth_dataset:
         subset_metadata["class_tokens"] = subset.class_tokens
