@@ -3,10 +3,12 @@ from dataclasses import (
   asdict,
   dataclass,
 )
+from textwrap import dedent, indent
 import json
 from pathlib import Path
 from toolz import curry
 from typing import (
+  List,
   Optional,
   Sequence,
   Tuple,
@@ -340,7 +342,8 @@ class BlueprintGenerator:
 
 
 def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlueprint):
-  datasets= []
+  datasets: List[Union[DreamBoothDataset, FineTuningDataset]] = []
+
   for dataset_blueprint in dataset_group_blueprint.datasets:
     if dataset_blueprint.is_dreambooth:
       subset_klass = DreamBoothSubset
@@ -352,6 +355,57 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
     subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
     dataset = dataset_klass(subsets=subsets, **asdict(dataset_blueprint.params))
     datasets.append(dataset)
+
+  # print info
+  info = ""
+  for i, dataset in enumerate(datasets):
+    is_dreambooth = isinstance(dataset, DreamBoothDataset)
+    info += dedent(f"""\
+      [Dataset {i}]
+        batch_size: {dataset.batch_size}
+        resolution: {(dataset.width, dataset.height)}
+        enable_bucket: {dataset.enable_bucket}
+    """)
+
+    if dataset.enable_bucket:
+      info += indent(dedent(f"""\
+        min_bucket_reso: {dataset.min_bucket_reso}
+        max_bucket_reso: {dataset.max_bucket_reso}
+        bucket_reso_steps: {dataset.bucket_reso_steps}
+        bucket_no_upscale: {dataset.bucket_no_upscale}
+      \n"""), "  ")
+    else:
+      info += "\n"
+
+    for j, subset in enumerate(dataset.subsets):
+      info += indent(dedent(f"""\
+        [Subset {j} of Dataset {i}]
+          image_dir: "{subset.image_dir}"
+          image_count: {subset.img_count}
+          num_repeats: {subset.num_repeats}
+          shuffle_caption: {subset.shuffle_caption}
+          keep_tokens: {subset.keep_tokens}
+          caption_dropout_rate: {subset.caption_dropout_rate}
+          caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
+          caption_tag_dropout_rate: {subset.caption_tag_dropout_rate})
+          color_aug: {subset.color_aug}
+          flip_aug: {subset.flip_aug}
+          face_crop_aug_range: {subset.face_crop_aug_range}
+          random_crop: {subset.random_crop})
+      """), "  ")
+
+      if is_dreambooth:
+        info += indent(dedent(f"""\
+          is_reg: {subset.is_reg}
+          class_tokens: {subset.class_tokens}
+          caption_extension: {subset.caption_extension}
+        \n"""), "    ")
+      else:
+        info += indent(dedent(f"""\
+          metadata_file: {subset.metadata_file}
+        \n"""), "    ")
+
+  print(info)
 
   # make buckets first because it determines the length of dataset
   for dataset in datasets:
