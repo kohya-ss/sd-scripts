@@ -1117,40 +1117,6 @@ def glob_images_pathlib(dir_path, recursive):
   # image_paths.sort()
   return image_paths
 
-
-# XXX: supports only argparse options
-def dreambooth_subdirs_to_subsets(base_dir: Optional[str], is_reg: bool, args: argparse.Namespace) -> Sequence[DreamBoothSubset]:
-  def extract_dreambooth_params_from_dirname(dir: str) -> Tuple[int, str]:
-    tokens = os.path.basename(dir).split('_')
-    try:
-      n_repeats = int(tokens[0])
-    except ValueError as e:
-      print(f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {dir}")
-      return 0, ""
-
-    caption_by_folder = '_'.join(tokens[1:])
-
-    return n_repeats, caption_by_folder
-
-  if base_dir is None or not os.path.isdir(base_dir):
-    return []
-
-  subsets = []
-  for subdir_name in os.listdir(base_dir):
-    subdir_path = os.path.join(base_dir, subdir_name)
-    if not os.path.isdir(subdir_path):
-      continue
-
-    num_repeats, class_tokens = extract_dreambooth_params_from_dirname(subdir_name)
-    if num_repeats < 1:
-      continue
-
-    subset = DreamBoothSubset(subdir_path, is_reg, class_tokens, args.caption_extension, num_repeats, args.shuffle_caption, args.keep_tokens, args.color_aug, args.flip_aug,
-                              args.face_crop_aug_range, args.random_crop, getattr(args, "caption_dropout_rate", 0.0), getattr(args, "caption_dropout_every_n_epochs", None), getattr(args, "caption_tag_dropout_rate", 0.0))
-    subsets.append(subset)
-
-  return subsets
-
 # endregion
 
 
