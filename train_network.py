@@ -255,7 +255,7 @@ def train(args):
   print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
   print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
   print(f"  num epochs / epoch数: {num_train_epochs}")
-  print(f"  batch size per device / バッチサイズ: {', '.join([d.batch_size for d in train_dataset_group.datasets])}")
+  print(f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}")
   #print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
   print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
   print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
