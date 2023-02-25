@@ -1600,8 +1600,6 @@ def add_dataset_arguments(parser: argparse.ArgumentParser, support_dreambooth: b
                       help="steps of resolution for buckets, divisible by 8 is recommended / bucketの解像度の単位、8で割り切れる値を推奨します")
   parser.add_argument("--bucket_no_upscale", action="store_true",
                       help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します")
-  parser.add_argument("--bucket_shuffle_across_dataset", action="store_true",
-                      help="shuffle bucket images across dataset when there are multiple datasets / 複数のデータセットが存在する時にbucket shuffleをデータセット間でも行います")
 
   if support_caption_dropout:
     # Textual Inversion はcaptionのdropoutをsupportしない
