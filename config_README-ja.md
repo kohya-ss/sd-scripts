@@ -143,7 +143,7 @@ DreamBooth 方式のサブセットの設定に関わるオプションです。
 
 | オプション名 | 設定例 | `[general]` | `[[datasets]]` | `[[dataset.subsets]]` |
 | ---- | ---- | ---- | ---- | ---- |
-| `caption_extension` | `.txt` | o | o | o |
+| `caption_extension` | `".txt"` | o | o | o |
 | `class_tokens` | `“sks girl”` | - | - | o |
 | `is_reg` | `false` | - | - | o |
 
