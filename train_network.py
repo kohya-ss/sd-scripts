@@ -55,6 +55,8 @@ def train(args):
   train_util.prepare_dataset_args(args, True)
 
   cache_latents = args.cache_latents
+  use_dreambooth_method = args.in_json is None
+  use_user_config = args.config_file is not None
 
   if args.seed is not None:
     set_seed(args.seed)
@@ -63,14 +65,13 @@ def train(args):
 
   # データセットを準備する
   blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, True))
-  if args.config_file is not None:
+  if use_user_config:
     print(f"Load config file from {args.config_file}")
     user_config = config_util.load_user_config(args.config_file)
     ignored = ["train_data_dir", "reg_data_dir", "in_json"]
     if any(getattr(args, attr) is not None for attr in ignored):
       print("ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(', '.join(ignored)))
   else:
-    use_dreambooth_method = args.in_json is None
     if use_dreambooth_method:
       print("Use DreamBooth method.")
       user_config = {
@@ -248,8 +249,8 @@ def train(args):
     args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
 
   # 学習する
-  # TODO: handle total batch size
-  #total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+  # TODO: find a way to handle total batch size when there are multiple datasets
+  total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
   print("running training / 学習開始")
   print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
   print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
@@ -267,10 +268,10 @@ def train(args):
       "ss_learning_rate": args.learning_rate,
       "ss_text_encoder_lr": args.text_encoder_lr,
       "ss_unet_lr": args.unet_lr,
-      "ss_datasets": [], # fill later
+      "ss_num_train_images": train_dataset_group.num_train_images,
+      "ss_num_reg_images": train_dataset_group.num_reg_images,
       "ss_num_batches_per_epoch": len(train_dataloader),
       "ss_num_epochs": num_train_epochs,
-      #"ss_total_batch_size": total_batch_size,
       "ss_gradient_checkpointing": args.gradient_checkpointing,
       "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
       "ss_max_train_steps": args.max_train_steps,
@@ -298,37 +299,89 @@ def train(args):
       "ss_face_crop_aug_range": args.face_crop_aug_range,
       "ss_prior_loss_weight": args.prior_loss_weight,
   }
-  for dataset in train_dataset_group.datasets:
-    is_dreambooth_dataset = isinstance(dataset, DreamBoothDataset)
-    dataset_metadata = {
-      "is_dreambooth": is_dreambooth_dataset,
-      "batch_size_per_device": dataset.batch_size,
-      "num_train_images": dataset.num_train_images,          # includes repeating
-      "num_reg_images": dataset.num_reg_images,
-      "resolution": (dataset.width, dataset.height),
-      "enable_bucket": bool(dataset.enable_bucket),
-      "min_bucket_reso": dataset.min_bucket_reso,
-      "max_bucket_reso": dataset.max_bucket_reso,
-      "tag_frequency": json.dumps(dataset.tag_frequency),
-      "bucket_info": json.dumps(dataset.bucket_info),
-      "subsets": []
-    }
-    for subset in dataset.subsets:
-      subset_metadata = {
-        "image_dir": os.path.basename(subset.image_dir),
-        "img_count": subset.img_count,
-        "num_repeats": subset.num_repeats,
-        "color_aug": bool(subset.color_aug),
-        "flip_aug": bool(subset.flip_aug),
-        "random_crop": bool(subset.random_crop),
-        "shuffle_caption": bool(subset.shuffle_caption),
-        "keep_tokens": subset.keep_tokens,
+
+  if use_user_config:
+    # save metadata of multiple datasets
+    # NOTE: pack "ss_datasets" value as json one time
+    #   or should also pack nested collections as json?
+    datasets_metadata = []
+
+    for dataset in train_dataset_group.datasets:
+      is_dreambooth_dataset = isinstance(dataset, DreamBoothDataset)
+      dataset_metadata = {
+        "is_dreambooth": is_dreambooth_dataset,
+        "batch_size_per_device": dataset.batch_size,
+        "num_train_images": dataset.num_train_images,          # includes repeating
+        "num_reg_images": dataset.num_reg_images,
+        "resolution": (dataset.width, dataset.height),
+        "enable_bucket": bool(dataset.enable_bucket),
+        "min_bucket_reso": dataset.min_bucket_reso,
+        "max_bucket_reso": dataset.max_bucket_reso,
+        "tag_frequency": dataset.tag_frequency,
+        "bucket_info": dataset.bucket_info,
       }
-      if is_dreambooth_dataset:
-        subset_metadata["class_tokens"] = subset.class_tokens
-        subset_metadata["is_reg"] = subset.is_reg
-      dataset_metadata["subsets"].append(subset_metadata)
-    metadata["ss_datasets"].append(dataset_metadata)
+
+      subsets_metadata = []
+      for subset in dataset.subsets:
+        subset_metadata = {
+          "image_dir": os.path.basename(subset.image_dir),
+          "img_count": subset.img_count,
+          "num_repeats": subset.num_repeats,
+          "color_aug": bool(subset.color_aug),
+          "flip_aug": bool(subset.flip_aug),
+          "random_crop": bool(subset.random_crop),
+          "shuffle_caption": bool(subset.shuffle_caption),
+          "keep_tokens": subset.keep_tokens,
+        }
+        if is_dreambooth_dataset:
+          subset_metadata["class_tokens"] = subset.class_tokens
+          subset_metadata["is_reg"] = subset.is_reg
+        subsets_metadata.append(subset_metadata)
+
+      dataset_metadata["subsets"] = subsets_metadata
+      datasets_metadata.append(dataset_metadata)
+
+    metadata["ss_datasets"] = json.dumps(datasets_metadata)
+  else:
+    # conserving backward compatiblity when using train_dataset_dir and reg_dataset_dir
+    assert len(train_dataset_group.datasets) == 1, f"There should be a single dataset but {len(train_dataset_group.datasets)} found. This seems to be a bug. / データセットは1個だけ存在するはずですが、実際には{len(train_dataset_group.datasets)}個でした。プログラムのバグかもしれません。"
+
+    dataset = train_dataset_group.datasets[0]
+
+    dataset_dirs_info = {}
+    reg_dataset_dirs_info = {}
+    if use_dreambooth_method:
+      for subset in dataset.subsets:
+        info = reg_dataset_dirs_info if subset.is_reg else dataset_dirs_info
+        info[os.path.basename(subset.image_dir)] = {
+          "n_repeats": subset.num_repeats,
+          "img_count": subset.img_count
+        }
+    else:
+      for subset in dataset.subsets:
+        dataset_dirs_info[os.path.basename(subset.metadata_file)] = {
+          "n_repeats": subset.num_repeats,
+          "img_count": subset.img_count
+        }
+
+    metadata |= {
+      "ss_batch_size_per_device": args.train_batch_size,
+      "ss_total_batch_size": total_batch_size,
+      "ss_resolution": args.resolution,
+      "ss_color_aug": bool(args.color_aug),
+      "ss_flip_aug": bool(args.flip_aug),
+      "ss_random_crop": bool(args.random_crop),
+      "ss_shuffle_caption": bool(args.shuffle_caption),
+      "ss_enable_bucket": bool(dataset.enable_bucket),
+      "ss_bucket_no_upscale": bool(dataset.bucket_no_upscale),
+      "ss_min_bucket_reso": dataset.min_bucket_reso,
+      "ss_max_bucket_reso": dataset.max_bucket_reso,
+      "ss_keep_tokens": args.keep_tokens,
+      "ss_dataset_dirs": json.dumps(dataset_dirs_info),
+      "ss_reg_dataset_dirs": json.dumps(reg_dataset_dirs_info),
+      "ss_tag_frequency": json.dumps(dataset.tag_frequency),
+      "ss_bucket_info": json.dumps(dataset.bucket_info),
+    }
 
   # uncomment if another network is added
   # for key, value in net_kwargs.items():
