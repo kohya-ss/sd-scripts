@@ -508,11 +508,12 @@ def save_weights(file, updated_embs, save_dtype, metadata={}):
 
     if metadata is None:
       metadata = {}
+
+    metadata = {k: str(v) for k, v in metadata.items()}
     model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
     metadata["sshs_model_hash"] = model_hash
     metadata["sshs_legacy_hash"] = legacy_hash
 
-    metadata = {k: str(v) for k, v in metadata.items()}
     save_file(state_dict, file, metadata)
   else:
     state_dict = {**state_dict, **metadata}
