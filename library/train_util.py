@@ -1034,6 +1034,8 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     self.num_reg_images = 0
 
     # simply concat together
+    # TODO: handling image_data key duplication among dataset
+    #   In practical, this is not the big issue because image_data is accessed from outside of dataset only for debug_dataset.
     for dataset in datasets:
       self.image_data.update(dataset.image_data)
       self.num_train_images += dataset.num_train_images
