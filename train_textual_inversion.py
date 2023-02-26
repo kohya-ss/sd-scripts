@@ -203,43 +203,8 @@ def train(args):
 
   # 学習に必要なクラスを準備する
   print("prepare optimizer, data loader etc.")
-
-  # 8-bit Adamを使う
-  if args.use_8bit_adam:
-    try:
-      import bitsandbytes as bnb
-    except ImportError:
-      raise ImportError("No bitsand bytes / bitsandbytesがインストールされていないようです")
-    print("use 8-bit Adam optimizer")
-    optimizer_class = bnb.optim.AdamW8bit
-  elif args.use_lion_optimizer:
-    try:
-      import lion_pytorch
-    except ImportError:
-      raise ImportError("No lion_pytorch / lion_pytorch がインストールされていないようです")
-    print("use Lion optimizer")
-    optimizer_class = lion_pytorch.Lion
-  elif args.use_dadaptation_optimizer:
-    try:
-      import dadaptation
-    except ImportError:
-      raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
-    print("use dadaptation optimizer")
-    optimizer_class = dadaptation.DAdaptAdam
-    if args.learning_rate <= 0.1:
-      print('learning rate is too low. If using dadaptaion, set learning rate around 1.0.')
-      print('recommend option: lr=1.0, unet_lr=1.0, txtencoder_lr=0.5')
-  else:
-    optimizer_class = torch.optim.AdamW
-
-  optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
-
   trainable_params = text_encoder.get_input_embeddings().parameters()
-
-  # betaやweight decayはdiffusers DreamBoothもDreamBooth SDもデフォルト値のようなのでオプションはとりあえず省略
-  optimizer = optimizer_class(trainable_params, lr=args.learning_rate)
-
-  _, _, optimizer = train_util.get_optimizer(args, trainable_params)
+  optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
   # dataloaderを準備する
   # DataLoaderのプロセス数：0はメインプロセスになる
@@ -340,9 +305,11 @@ def train(args):
     "ss_shuffle_caption": bool(args.shuffle_caption),
     "ss_cache_latents": bool(args.cache_latents),
     "ss_enable_bucket": bool(train_dataset.enable_bucket),
+    "ss_bucket_no_upscale": bool(train_dataset.bucket_no_upscale),
     "ss_min_bucket_reso": train_dataset.min_bucket_reso,
     "ss_max_bucket_reso": train_dataset.max_bucket_reso,
     "ss_seed": args.seed,
+    "ss_lowram": args.lowram,
     "ss_keep_tokens": args.keep_tokens,
     "ss_noise_offset": args.noise_offset,
     "ss_dataset_dirs": json.dumps(train_dataset.dataset_dirs_info),
@@ -351,7 +318,9 @@ def train(args):
     "ss_bucket_info": json.dumps(train_dataset.bucket_info),
     "ss_training_comment": args.training_comment,       # will not be updated after training
     "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
-    "ss_optimizer": optimizer_name
+    "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else ""),
+    "ss_face_crop_aug_range": args.face_crop_aug_range,
+    "ss_prior_loss_weight": args.prior_loss_weight,
   }
 
   if args.pretrained_model_name_or_path is not None:
@@ -484,6 +453,7 @@ def train(args):
         ckpt_name = train_util.EPOCH_FILE_NAME.format(model_name, epoch + 1) + '.' + args.save_model_as
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
         print(f"saving checkpoint: {ckpt_file}")
+        metadata["ss_training_finished_at"] = str(time.time())
         save_weights(ckpt_file, updated_embs, save_dtype, None if args.no_metadata else metadata)
 
       def remove_old_func(old_epoch_no):
@@ -520,6 +490,7 @@ def train(args):
     ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
     print(f"save trained model to {ckpt_file}")
+    metadata["ss_training_finished_at"] = str(time.time())
     save_weights(ckpt_file, updated_embs, save_dtype, None if args.no_metadata else metadata)
 
     print("model saved.")
