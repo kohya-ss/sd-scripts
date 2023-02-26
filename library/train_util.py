@@ -1023,7 +1023,6 @@ class FineTuningDataset(BaseDataset):
 
 
 # behave as Dataset mock
-# TODO: supports inter-dataset shuffling
 class DatasetGroup(torch.utils.data.ConcatDataset):
   def __init__(self, datasets: Sequence[Union[DreamBoothDataset, FineTuningDataset]]):
     self.datasets: List[Union[DreamBoothDataset, FineTuningDataset]]
