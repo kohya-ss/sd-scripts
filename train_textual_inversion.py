@@ -3,6 +3,9 @@ import argparse
 import gc
 import math
 import os
+import json
+import random
+import time
 
 from tqdm import tqdm
 import torch
@@ -71,6 +74,8 @@ def collate_fn(examples):
 
 
 def train(args):
+  session_id = random.randint(0, 2**32)
+  training_started_at = time.time()
   if args.output_name is None:
     args.output_name = args.token_string
   use_template = args.use_object_template or args.use_style_template
@@ -198,7 +203,42 @@ def train(args):
 
   # 学習に必要なクラスを準備する
   print("prepare optimizer, data loader etc.")
+
+  # 8-bit Adamを使う
+  if args.use_8bit_adam:
+    try:
+      import bitsandbytes as bnb
+    except ImportError:
+      raise ImportError("No bitsand bytes / bitsandbytesがインストールされていないようです")
+    print("use 8-bit Adam optimizer")
+    optimizer_class = bnb.optim.AdamW8bit
+  elif args.use_lion_optimizer:
+    try:
+      import lion_pytorch
+    except ImportError:
+      raise ImportError("No lion_pytorch / lion_pytorch がインストールされていないようです")
+    print("use Lion optimizer")
+    optimizer_class = lion_pytorch.Lion
+  elif args.use_dadaptation_optimizer:
+    try:
+      import dadaptation
+    except ImportError:
+      raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
+    print("use dadaptation optimizer")
+    optimizer_class = dadaptation.DAdaptAdam
+    if args.learning_rate <= 0.1:
+      print('learning rate is too low. If using dadaptaion, set learning rate around 1.0.')
+      print('recommend option: lr=1.0, unet_lr=1.0, txtencoder_lr=0.5')
+  else:
+    optimizer_class = torch.optim.AdamW
+
+  optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
+
   trainable_params = text_encoder.get_input_embeddings().parameters()
+
+  # betaやweight decayはdiffusers DreamBoothもDreamBooth SDもデフォルト値のようなのでオプションはとりあえず省略
+  optimizer = optimizer_class(trainable_params, lr=args.learning_rate)
+
   _, _, optimizer = train_util.get_optimizer(args, trainable_params)
 
   # dataloaderを準備する
@@ -269,8 +309,66 @@ def train(args):
   print(f"  num epochs / epoch数: {num_train_epochs}")
   print(f"  batch size per device / バッチサイズ: {args.train_batch_size}")
   print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
-  print(f"  gradient ccumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
+  print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
   print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
+
+  metadata = {
+    "ss_session_id": session_id,            # random integer indicating which group of epochs the model came from
+    "ss_training_started_at": training_started_at,          # unix timestamp
+    "ss_output_name": args.output_name,
+    "ss_learning_rate": args.learning_rate,
+    "ss_num_train_images": train_dataset.num_train_images,          # includes repeating
+    "ss_num_reg_images": train_dataset.num_reg_images,
+    "ss_num_batches_per_epoch": len(train_dataloader),
+    "ss_num_epochs": num_train_epochs,
+    "ss_batch_size_per_device": args.train_batch_size,
+    "ss_total_batch_size": total_batch_size,
+    "ss_gradient_checkpointing": args.gradient_checkpointing,
+    "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
+    "ss_max_train_steps": args.max_train_steps,
+    "ss_lr_warmup_steps": args.lr_warmup_steps,
+    "ss_lr_scheduler": args.lr_scheduler,
+    "ss_mixed_precision": args.mixed_precision,
+    "ss_full_fp16": bool(args.full_fp16),
+    "ss_v2": bool(args.v2),
+    "ss_resolution": args.resolution,
+    "ss_clip_skip": args.clip_skip,
+    "ss_max_token_length": args.max_token_length,
+    "ss_color_aug": bool(args.color_aug),
+    "ss_flip_aug": bool(args.flip_aug),
+    "ss_random_crop": bool(args.random_crop),
+    "ss_shuffle_caption": bool(args.shuffle_caption),
+    "ss_cache_latents": bool(args.cache_latents),
+    "ss_enable_bucket": bool(train_dataset.enable_bucket),
+    "ss_min_bucket_reso": train_dataset.min_bucket_reso,
+    "ss_max_bucket_reso": train_dataset.max_bucket_reso,
+    "ss_seed": args.seed,
+    "ss_keep_tokens": args.keep_tokens,
+    "ss_noise_offset": args.noise_offset,
+    "ss_dataset_dirs": json.dumps(train_dataset.dataset_dirs_info),
+    "ss_reg_dataset_dirs": json.dumps(train_dataset.reg_dataset_dirs_info),
+    "ss_tag_frequency": json.dumps(train_dataset.tag_frequency),
+    "ss_bucket_info": json.dumps(train_dataset.bucket_info),
+    "ss_training_comment": args.training_comment,       # will not be updated after training
+    "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
+    "ss_optimizer": optimizer_name
+  }
+
+  if args.pretrained_model_name_or_path is not None:
+    sd_model_name = args.pretrained_model_name_or_path
+    if os.path.exists(sd_model_name):
+      metadata["ss_sd_model_hash"] = train_util.model_hash(sd_model_name)
+      sd_model_name = os.path.basename(sd_model_name)
+    metadata["ss_sd_model_name"] = sd_model_name
+
+  if args.vae is not None:
+    vae_name = args.vae
+    if os.path.exists(vae_name):
+      metadata["ss_vae_hash"] = train_util.model_hash(vae_name)
+      vae_name = os.path.basename(vae_name)
+    metadata["ss_vae_name"] = vae_name
+
+  metadata = {k: str(v) for k, v in metadata.items()}
 
   progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
   global_step = 0
@@ -386,7 +484,7 @@ def train(args):
         ckpt_name = train_util.EPOCH_FILE_NAME.format(model_name, epoch + 1) + '.' + args.save_model_as
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
         print(f"saving checkpoint: {ckpt_file}")
-        save_weights(ckpt_file, updated_embs, save_dtype)
+        save_weights(ckpt_file, updated_embs, save_dtype, None if args.no_metadata else metadata)
 
       def remove_old_func(old_epoch_no):
         old_ckpt_name = train_util.EPOCH_FILE_NAME.format(model_name, old_epoch_no) + '.' + args.save_model_as
@@ -422,11 +520,12 @@ def train(args):
     ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
     print(f"save trained model to {ckpt_file}")
-    save_weights(ckpt_file, updated_embs, save_dtype)
+    save_weights(ckpt_file, updated_embs, save_dtype, None if args.no_metadata else metadata)
+
     print("model saved.")
 
 
-def save_weights(file, updated_embs, save_dtype):
+def save_weights(file, updated_embs, save_dtype, metadata={}):
   state_dict = {"emb_params": updated_embs}
 
   if save_dtype is not None:
@@ -437,9 +536,17 @@ def save_weights(file, updated_embs, save_dtype):
 
   if os.path.splitext(file)[1] == '.safetensors':
     from safetensors.torch import save_file
-    save_file(state_dict, file)
+
+    if metadata is None:
+      metadata = {}
+    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+    metadata["sshs_model_hash"] = model_hash
+    metadata["sshs_legacy_hash"] = legacy_hash
+
+    save_file(state_dict, file, metadata)
   else:
-    torch.save(state_dict, file)                    # can be loaded in Web UI
+    state_dict = {**state_dict, **metadata}
+    torch.save(state_dict, file)                            # can be loaded in Web UI
 
 
 def load_weights(file):
@@ -475,6 +582,7 @@ if __name__ == '__main__':
   train_util.add_training_arguments(parser, True)
   train_util.add_optimizer_arguments(parser)
 
+  parser.add_argument("--no_metadata", action='store_true', help="do not save metadata in output model / メタデータを出力先モデルに保存しない")
   parser.add_argument("--save_model_as", type=str, default="pt", choices=[None, "ckpt", "pt", "safetensors"],
                       help="format to save the model (default is .pt) / モデル保存時の形式（デフォルトはpt）")
 
@@ -490,6 +598,8 @@ if __name__ == '__main__':
                       help="ignore caption and use default templates for object / キャプションは使わずデフォルトの物体用テンプレートで学習する")
   parser.add_argument("--use_style_template", action='store_true',
                       help="ignore caption and use default templates for stype / キャプションは使わずデフォルトのスタイル用テンプレートで学習する")
+  parser.add_argument("--training_comment", type=str, default=None,
+                      help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列")
 
   args = parser.parse_args()
   train(args)
