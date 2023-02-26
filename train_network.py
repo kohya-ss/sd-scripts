@@ -1,5 +1,6 @@
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.nn.functional
 import importlib
 import argparse
 import gc
@@ -377,6 +378,25 @@ def train(args):
           target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
           target = noise
+          
+        if args.masked_loss and batch['masks'] is not None:
+            
+          mask = (
+              batch['masks']
+              .to(noise_pred.device)
+              .reshape(
+                  noise_pred.shape[0], 1, noise_pred.shape[2] * 8, noise_pred.shape[3] * 8
+              )
+          )
+          # resize to match noise_pred
+          mask = torch.nn.functional.interpolate(
+              mask.float(),
+              size=noise_pred.shape[-2:],
+              mode="nearest",
+          )
+
+          noise_pred = noise_pred * mask
+          target = target * mask
 
         loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
         loss = loss.mean([1, 2, 3])
@@ -408,7 +428,11 @@ def train(args):
         loss_list[step] = current_loss
       loss_total += current_loss
       avr_loss = loss_total / len(loss_list)
-      logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+
+      if args.masked_loss and batch['masks'] is not None:
+        logs = {"loss": avr_loss, "Batch Mask Average Weight": batch['masks'].mean().item()}  # , "lr": lr_scheduler.get_last_lr()[0]}
+      else:
+        logs = {"loss": avr_loss}
       progress_bar.set_postfix(**logs)
 
       if args.logging_dir is not None:
