@@ -337,8 +337,6 @@ def train(args):
       vae_name = os.path.basename(vae_name)
     metadata["ss_vae_name"] = vae_name
 
-  metadata = {k: str(v) for k, v in metadata.items()}
-
   progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
   global_step = 0
 
@@ -514,6 +512,7 @@ def save_weights(file, updated_embs, save_dtype, metadata={}):
     metadata["sshs_model_hash"] = model_hash
     metadata["sshs_legacy_hash"] = legacy_hash
 
+    metadata = {k: str(v) for k, v in metadata.items()}
     save_file(state_dict, file, metadata)
   else:
     state_dict = {**state_dict, **metadata}
