@@ -140,8 +140,8 @@ class ConfigSanitizer:
   # DO means DropOut
   DO_SUBSET_ASCENDABLE_SCHEMA = {
     "caption_dropout_every_n_epochs": int,
-    "caption_dropout_rate": float,
-    "caption_tag_dropout_rate": float,
+    "caption_dropout_rate": Any(float, int),
+    "caption_tag_dropout_rate": Any(float, int),
   }
   # DB means DreamBooth
   DB_SUBSET_ASCENDABLE_SCHEMA = {
@@ -171,7 +171,7 @@ class ConfigSanitizer:
   ARGPARSE_SPECIFIC_SCHEMA = {
     "debug_dataset": bool,
     "max_token_length": Any(None, int),
-    "prior_loss_weight": float,
+    "prior_loss_weight": Any(float, int),
   }
   # for handling default None value of argparse
   ARGPARSE_NULLABLE_OPTNAMES = [
