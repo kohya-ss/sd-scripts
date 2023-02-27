@@ -785,7 +785,7 @@ class DreamBoothDataset(BaseDataset):
 
     def load_dreambooth_dir(subset: DreamBoothSubset):
       if not os.path.isdir(subset.image_dir):
-        print(f"subset ignored, not directory: {subset.image_dir}")
+        print(f"not directory: {subset.image_dir}")
         return [], []
 
       img_paths = glob_images(subset.image_dir, "*")
@@ -810,16 +810,16 @@ class DreamBoothDataset(BaseDataset):
     reg_infos: List[ImageInfo] = []
     for subset in subsets:
       if subset.num_repeats < 1:
-        continue
-
-      if subset.image_dir is None:
+        print(f"ignore subset with image_dir='{subset.image_dir}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}")
         continue
 
       if subset in self.subsets:
+        print(f"ignore duplicated subset with image_dir='{subset.image_dir}': use the first one / 既にサブセットが登録されているため、重複した後発のサブセットを無視します")
         continue
 
       img_paths, captions = load_dreambooth_dir(subset)
       if len(img_paths) < 1:
+        print(f"ignore subset with image_dir='{subset.image_dir}': no images found / 画像が見つからないためサブセットを無視します")
         continue
 
       if subset.is_reg:
@@ -876,12 +876,11 @@ class FineTuningDataset(BaseDataset):
 
     for subset in subsets:
       if subset.num_repeats < 1:
-        continue
-
-      if subset.metadata_file is None:
+        print(f"ignore subset with metadata_file='{subset.metadata_file}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}")
         continue
 
       if subset in self.subsets:
+        print(f"ignore duplicated subset with metadata_file='{subset.metadata_file}': use the first one / 既にサブセットが登録されているため、重複した後発のサブセットを無視します")
         continue
 
       # メタデータを読み込む
@@ -893,6 +892,7 @@ class FineTuningDataset(BaseDataset):
         raise ValueError(f"no metadata / メタデータファイルがありません: {subset.metadata_file}")
 
       if len(metadata) < 1:
+        print(f"ignore subset with '{subset.metadata_file}': no image entries found / 画像に関するデータが見つからないためサブセットを無視します")
         continue
 
       tags_list = []
