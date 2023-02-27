@@ -253,7 +253,9 @@ class BaseSubset:
 
 
 class DreamBoothSubset(BaseSubset):
-  def __init__(self, image_dir, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+  def __init__(self, image_dir: str, is_reg: bool, class_tokens: Optional[str], caption_extension: str, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
+
     super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
@@ -267,7 +269,9 @@ class DreamBoothSubset(BaseSubset):
     return self.image_dir == other.image_dir
 
 class FineTuningSubset(BaseSubset):
-  def __init__(self, image_dir, metadata_file: Optional[str], num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+  def __init__(self, image_dir, metadata_file: str, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug, face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate) -> None:
+    assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
+
     super().__init__(image_dir, num_repeats, shuffle_caption, keep_tokens, color_aug, flip_aug,
           face_crop_aug_range, random_crop, caption_dropout_rate, caption_dropout_every_n_epochs, caption_tag_dropout_rate)
 
