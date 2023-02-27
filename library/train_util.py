@@ -931,6 +931,8 @@ class FineTuningDataset(BaseDataset):
     use_npz_latents = all([not(subset.color_aug or subset.random_crop) for subset in self.subsets])
     if use_npz_latents:
       flip_aug_in_subset = False
+      npz_any = False
+      npz_all = True
 
       for image_info in self.image_data.values():
         subset = self.image_to_subset[image_info.image_key]
