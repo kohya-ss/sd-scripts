@@ -251,7 +251,7 @@ class ConfigSanitizer:
       sanitized_user_config = self.user_config_validator(user_config)
     except Exception as e:
       print("Invalid user config / ユーザ設定の形式が正しくないようです")
-      raise e
+      raise
 
     # convert argparse namespace to dict like config
     # NOTE: list comprehension would be messy, so we use normal for statement
