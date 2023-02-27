@@ -137,9 +137,6 @@ class ConfigSanitizer:
     "shuffle_caption": bool,
     "keep_tokens": int,
   }
-  SUBSET_DISTINCT_SCHEMA = {
-    Required("image_dir"): str,
-  }
   # DO means DropOut
   DO_SUBSET_ASCENDABLE_SCHEMA = {
     "caption_dropout_every_n_epochs": int,
@@ -152,11 +149,13 @@ class ConfigSanitizer:
     "class_tokens": str,
   }
   DB_SUBSET_DISTINCT_SCHEMA = {
+    Required("image_dir"): str,
     "is_reg": bool,
   }
   # FT means FineTuning
   FT_SUBSET_DISTINCT_SCHEMA = {
     Required("metadata_file"): str,
+    "image_dir": str,
   }
 
   # datasets schema
@@ -191,7 +190,6 @@ class ConfigSanitizer:
     assert support_dreambooth or support_finetuning, "Neither DreamBooth mode nor fine tuning mode specified. Please specify one mode or more. / DreamBooth モードか fine tuning モードのどちらも指定されていません。1つ以上指定してください。"
 
     self.db_subset_schema = self.__merge_dict(
-      self.SUBSET_DISTINCT_SCHEMA,
       self.SUBSET_ASCENDABLE_SCHEMA,
       self.DB_SUBSET_DISTINCT_SCHEMA,
       self.DB_SUBSET_ASCENDABLE_SCHEMA,
@@ -199,7 +197,6 @@ class ConfigSanitizer:
     )
 
     self.ft_subset_schema = self.__merge_dict(
-      self.SUBSET_DISTINCT_SCHEMA,
       self.SUBSET_ASCENDABLE_SCHEMA,
       self.FT_SUBSET_DISTINCT_SCHEMA,
       self.DO_SUBSET_ASCENDABLE_SCHEMA if support_dropout else {},
