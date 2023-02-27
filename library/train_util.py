@@ -665,7 +665,7 @@ class BaseDataset(torch.utils.data.Dataset):
         latents = image_info.latents if not subset.flip_aug or random.random() < .5 else image_info.latents_flipped
         image = None
       elif image_info.latents_npz is not None:
-        latents = self.load_latents_from_npz(image_info, self.flip_aug and random.random() >= .5)
+        latents = self.load_latents_from_npz(image_info, subset.flip_aug and random.random() >= .5)
         latents = torch.FloatTensor(latents)
         image = None
       else:
