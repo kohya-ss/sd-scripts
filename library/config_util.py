@@ -16,9 +16,12 @@ from typing import (
 )
 
 import toml
+import voluptuous
 from voluptuous import (
   Any,
   ExactSequence,
+  MultipleInvalid,
+  Object,
   Required,
   Schema,
 )
@@ -217,6 +220,8 @@ class ConfigSanitizer:
       {"subsets": [self.ft_subset_schema]},
     )
 
+    # TODO: determine whether dataset is DB or FT deterministically
+    #   by checking whether "metadata_file" exists in subsets
     if support_dreambooth and support_finetuning:
       self.dataset_schema = Any(self.db_dataset_schema, self.ft_dataset_schema)
     elif support_dreambooth:
@@ -239,37 +244,29 @@ class ConfigSanitizer:
     self.argparse_schema = self.__merge_dict(
       self.general_schema,
       self.ARGPARSE_SPECIFIC_SCHEMA,
-      {optname: Any(None, self.general_schema[optname]) for optname in self.ARGPARSE_NULLABLE_OPTNAMES}
+      {optname: Any(None, self.general_schema[optname]) for optname in self.ARGPARSE_NULLABLE_OPTNAMES},
+      {a_name: self.general_schema[c_name] for a_name, c_name in self.ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME.items()},
     )
 
-    self.argparse_config_validator = Schema(self.argparse_schema)
+    self.argparse_config_validator = Schema(Object(self.argparse_schema), extra=voluptuous.ALLOW_EXTRA)
 
-  # unify user config and argparse namespace into sanitized config
-  # TODO: エラー発生時のメッセージをわかりやすくする
-  def sanitize(self, user_config: dict, argparse_namespace: argparse.Namespace) -> dict:
+  def sanitize_user_config(self, user_config: dict) -> dict:
     try:
-      sanitized_user_config = self.user_config_validator(user_config)
-    except Exception as e:
+      return self.user_config_validator(user_config)
+    except MultipleInvalid:
+      # TODO: エラー発生時のメッセージをわかりやすくする
       print("Invalid user config / ユーザ設定の形式が正しくないようです")
       raise
 
-    # convert argparse namespace to dict like config
-    # NOTE: list comprehension would be messy, so we use normal for statement
-    argparse_config = {}
-    for optname, value in vars(argparse_namespace).items():
-      mapped_optname = self.ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME.get(optname, optname)
-      # only extract option in schema, because argparse contains many other options
-      if mapped_optname in self.argparse_config_validator.schema:
-        argparse_config[mapped_optname] = value
-
+  # NOTE: In nature, argument parser result is not needed to be sanitize
+  #   However this will help us to detect program bug
+  def sanitize_argparse_namespace(self, argparse_namespace: argparse.Namespace) -> argparse.Namespace:
     try:
-      sanitized_argparse_config = self.argparse_config_validator(argparse_config)
-    except Exception as e:
+      return self.argparse_config_validator(argparse_namespace)
+    except MultipleInvalid:
       # XXX: this should be a bug
       print("Invalid cmdline parsed arguments. This should be a bug. / コマンドラインのパース結果が正しくないようです。プログラムのバグの可能性が高いです。")
-      raise e
-
-    return self.__merge_dict(sanitized_user_config, {"argparse": sanitized_argparse_config})
+      raise
 
   # NOTE: value would be overwritten by latter dict if there is already the same key
   @staticmethod
@@ -289,13 +286,18 @@ class BlueprintGenerator:
 
   # runtime_params is for parameters which is only configurable on runtime, such as tokenizer
   def generate(self, user_config: dict, argparse_namespace: argparse.Namespace, **runtime_params) -> Blueprint:
-    sanitized_config = self.sanitizer.sanitize(user_config, argparse_namespace)
+    sanitized_user_config = self.sanitizer.sanitize_user_config(user_config)
+    sanitized_argparse_namespace = self.sanitizer.sanitize_argparse_namespace(argparse_namespace)
 
-    general_config = sanitized_config.get("general", {})
-    argparse_config = sanitized_config.get("argparse", {})
+    # convert argparse namespace to dict like config
+    # NOTE: it is ok to have extra entries in dict
+    optname_map = self.sanitizer.ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME
+    argparse_config = {optname_map.get(optname, optname): value for optname, value in vars(sanitized_argparse_namespace).items()}
+
+    general_config = sanitized_user_config.get("general", {})
 
     dataset_blueprints = []
-    for dataset_config in sanitized_config.get("datasets", []):
+    for dataset_config in sanitized_user_config.get("datasets", []):
       # NOTE: if subsets have no "metadata_file", these are DreamBooth datasets/subsets
       subsets = dataset_config.get("subsets", [])
       is_dreambooth = all(["metadata_file" not in subset for subset in subsets])
@@ -484,15 +486,21 @@ if __name__ == "__main__":
   argparse_namespace = parser.parse_args(remain)
   train_util.prepare_dataset_args(argparse_namespace, config_args.support_finetuning)
 
-  user_config = load_user_config(config_args.config_file)
-
-  sanitizer = ConfigSanitizer(config_args.support_dreambooth, config_args.support_finetuning, config_args.support_dropout)
-  sanitized_config = sanitizer.sanitize(user_config, argparse_namespace)
-  blueprint = BlueprintGenerator(sanitizer).generate(user_config, argparse_namespace)
-
   print("[argparse_namespace]")
   print(vars(argparse_namespace))
-  print("\n[sanitized_config]")
-  print(sanitized_config)
+
+  user_config = load_user_config(config_args.config_file)
+
+  print("\n[user_config]")
+  print(user_config)
+
+  sanitizer = ConfigSanitizer(config_args.support_dreambooth, config_args.support_finetuning, config_args.support_dropout)
+  sanitized_user_config = sanitizer.sanitize_user_config(user_config)
+
+  print("\n[sanitized_user_config]")
+  print(sanitized_user_config)
+
+  blueprint = BlueprintGenerator(sanitizer).generate(user_config, argparse_namespace)
+
   print("\n[blueprint]")
   print(blueprint)
