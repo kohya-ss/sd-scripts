@@ -27,8 +27,8 @@ from voluptuous import (
 )
 from transformers import CLIPTokenizer
 
-import library.train_util as train_util
-from library.train_util import (
+from . import train_util
+from .train_util import (
   DreamBoothSubset,
   FineTuningSubset,
   DreamBoothDataset,
