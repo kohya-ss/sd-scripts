@@ -4,18 +4,32 @@ from diffusers import UNet2DConditionModel, AutoencoderKL
 from transformers import CLIPTextConfig, CLIPTextModel
 
 from .bootstrap import create_unet_diffusers_config, create_vae_diffusers_config
-from .converters import convert_ldm_unet_checkpoint, convert_ldm_vae_checkpoint, convert_ldm_clip_checkpoint_v2, \
-    convert_ldm_clip_checkpoint_v1
+from .converters import (
+    convert_ldm_unet_checkpoint,
+    convert_ldm_vae_checkpoint,
+    convert_ldm_clip_checkpoint_v2,
+    convert_ldm_clip_checkpoint_v1,
+)
 from .dataset.common import KohyaException
 from .model_utils2 import is_safetensors
 import torch
 
+
 def load_checkpoint_with_text_encoder_conversion(ckpt_path):
     # text encoderの格納形式が違うモデルに対応する ('text_model'がない)
     TEXT_ENCODER_KEY_REPLACEMENTS = [
-        ('cond_stage_model.transformer.embeddings.', 'cond_stage_model.transformer.text_model.embeddings.'),
-        ('cond_stage_model.transformer.encoder.', 'cond_stage_model.transformer.text_model.encoder.'),
-        ('cond_stage_model.transformer.final_layer_norm.', 'cond_stage_model.transformer.text_model.final_layer_norm.')
+        (
+            "cond_stage_model.transformer.embeddings.",
+            "cond_stage_model.transformer.text_model.embeddings.",
+        ),
+        (
+            "cond_stage_model.transformer.encoder.",
+            "cond_stage_model.transformer.text_model.encoder.",
+        ),
+        (
+            "cond_stage_model.transformer.final_layer_norm.",
+            "cond_stage_model.transformer.text_model.final_layer_norm.",
+        ),
     ]
 
     if is_safetensors(ckpt_path):
@@ -33,7 +47,7 @@ def load_checkpoint_with_text_encoder_conversion(ckpt_path):
     for rep_from, rep_to in TEXT_ENCODER_KEY_REPLACEMENTS:
         for key in state_dict.keys():
             if key.startswith(rep_from):
-                new_key = rep_to + key[len(rep_from):]
+                new_key = rep_to + key[len(rep_from) :]
                 key_reps.append((key, new_key))
 
     for key, new_key in key_reps:
@@ -69,7 +83,9 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, dtype=None):
 
     # convert text_model
     if v2:
-        converted_text_encoder_checkpoint = convert_ldm_clip_checkpoint_v2(state_dict, 77)
+        converted_text_encoder_checkpoint = convert_ldm_clip_checkpoint_v2(
+            state_dict, 77
+        )
         cfg = CLIPTextConfig(
             vocab_size=49408,
             hidden_size=1024,
@@ -101,7 +117,9 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, dtype=None):
 
     return text_model, vae, unet
 
+
 VAE_PREFIX = "first_stage_model."
+
 
 def load_vae(vae_id, dtype):
     vae_id = pathlib.Path(vae_id)
@@ -111,11 +129,15 @@ def load_vae(vae_id, dtype):
     if vae_id.is_dir() or not vae_id.is_file():
         # Diffusers local/remote
         try:
-            vae = AutoencoderKL.from_pretrained(vae_id, subfolder=None, torch_dtype=dtype)
+            vae = AutoencoderKL.from_pretrained(
+                vae_id, subfolder=None, torch_dtype=dtype
+            )
         except EnvironmentError as e:
             print(f"exception occurs in loading vae: {e}")
             print("retry with subfolder='vae'")
-            vae = AutoencoderKL.from_pretrained(vae_id, subfolder="vae", torch_dtype=dtype)
+            vae = AutoencoderKL.from_pretrained(
+                vae_id, subfolder="vae", torch_dtype=dtype
+            )
         return vae
 
     # local
@@ -126,9 +148,12 @@ def load_vae(vae_id, dtype):
         converted_vae_checkpoint = torch.load(vae_id, map_location="cpu")
     else:
         # StableDiffusion
-        vae_model = (load_file(vae_id, "cpu") if is_safetensors(vae_id)
-                     else torch.load(vae_id, map_location="cpu"))
-        vae_sd = vae_model['state_dict'] if 'state_dict' in vae_model else vae_model
+        vae_model = (
+            load_file(vae_id, "cpu")
+            if is_safetensors(vae_id)
+            else torch.load(vae_id, map_location="cpu")
+        )
+        vae_sd = vae_model["state_dict"] if "state_dict" in vae_model else vae_model
 
         # vae only or full model
         full_model = False

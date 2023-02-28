@@ -1,49 +1,70 @@
 import pathlib
 import random
+from typing import List
 
 import torch
 
 from .base_datasets import BaseDataset
-from typing import Union, List
 from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS
 
 
 class VAEDataset(BaseDataset):
+    def __init__(
+        self,
+        batch_size,
+        root_train_data_dir,
+        resolution,
+        enable_bucket,
+        min_bucket_reso,
+        max_bucket_reso,
+        bucket_reso_steps,
+        bucket_no_upscale,
+        flip_aug,
+        color_aug,
+        face_crop_aug_range,
+        random_crop,
+        debug_dataset,
+        shuffling,
+        gradient_accumulation_steps,
+    ) -> None:
+        """
+        Training dataset for VAE.
 
-    def load_vae_dir(self, booth_dir: pathlib.Path):
-        if not booth_dir.exists() and not booth_dir.is_dir():
-            # print(f"ignore file: {dir}")
-            return 0, [], []
+        From my understanding of the code, there is no tokenization involved.
 
-        tokens = booth_dir.name.split('_')
-        try:
-            n_repeats = int(tokens[0])
-        except ValueError as e:
-            print(f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {booth_dir}")
-            return 0, [], []
-
-        folder_caption = '_'.join(tokens[1:])
-
-        img_paths: List[pathlib.Path] = []
-        for file in booth_dir.iterdir():
-            if file.suffix.lower() in IMAGE_EXTENSIONS:
-                img_paths.append(file)
-
-        print(f"found directory {n_repeats}_{folder_caption} contains {len(img_paths)} image files")
-
-        return n_repeats, img_paths
-
-    def __init__(self, batch_size, root_train_data_dir,
-                 resolution, enable_bucket, min_bucket_reso, max_bucket_reso,
-                 bucket_reso_steps, bucket_no_upscale, flip_aug, color_aug, face_crop_aug_range,
-                 random_crop, debug_dataset, shuffling) -> None:
-        super().__init__(None, 255, False, False,
-                         resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, debug_dataset)
+        :param batch_size:
+        :param root_train_data_dir:
+        :param resolution:
+        :param enable_bucket:
+        :param min_bucket_reso:
+        :param max_bucket_reso:
+        :param bucket_reso_steps:
+        :param bucket_no_upscale:
+        :param flip_aug:
+        :param color_aug:
+        :param face_crop_aug_range:
+        :param random_crop:
+        :param debug_dataset:
+        :param shuffling:
+        """
+        super().__init__(
+            None,
+            255,
+            False,
+            False,
+            resolution,
+            flip_aug,
+            color_aug,
+            face_crop_aug_range,
+            random_crop,
+            debug_dataset,
+        )
 
         self.batch_size = batch_size
         self.size = min(self.width, self.height)  # 短いほう
         self.num_train_images = 0
-        self.shuffling:bool = shuffling
+        self.shuffling: bool = shuffling
+        self.gradient_accumulation_steps = gradient_accumulation_steps
 
         self.enable_bucket = enable_bucket
 
@@ -77,10 +98,47 @@ class VAEDataset(BaseDataset):
                 repeats, image_paths = self.load_vae_dir(concept_dir)
                 train_counts += repeats * len(image_paths)
                 for image_pth in image_paths:
-                    image_info = ImageInfo(image_pth.name, repeats, "", False, str(image_pth))
+                    image_info = ImageInfo(
+                        image_pth.name, repeats, "", False, str(image_pth)
+                    )
                     self.register_image(image_info)
-                self.dataset_dirs_info[concept_dir.name] = {"n_repeats": repeats, "img_count": len(image_paths)}
+                self.dataset_dirs_info[concept_dir.name] = {
+                    "n_repeats": repeats,
+                    "img_count": len(image_paths),
+                }
 
+    def load_vae_dir(self, booth_dir: pathlib.Path):
+        if not booth_dir.exists() and not booth_dir.is_dir():
+            # print(f"ignore file: {dir}")
+            return 0, [], []
+
+        tokens = booth_dir.name.split("_")
+        try:
+            n_repeats = int(tokens[0])
+        except ValueError as e:
+            print(
+                f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {booth_dir}"
+            )
+            return 0, [], []
+
+        folder_caption = "_".join(tokens[1:])
+
+        img_paths: List[pathlib.Path] = []
+        for file in booth_dir.iterdir():
+            if file.suffix.lower() in IMAGE_EXTENSIONS:
+                img_paths.append(file)
+
+        print(
+            f"found directory {n_repeats}_{folder_caption} contains {len(img_paths)} image files"
+        )
+
+        return n_repeats, img_paths
+
+    def make_buckets(self):
+        super(VAEDataset, self).make_buckets()
+        self._data_len_add = self.gradient_accumulation_steps - (
+            self._data_len % self.gradient_accumulation_steps
+        )
 
     def __len__(self):
         return self._data_len + self._data_len_add
@@ -95,7 +153,7 @@ class VAEDataset(BaseDataset):
         latents_list = []
         images = []
 
-        for image_key in bucket[image_index: image_index + bucket_batch_size]:
+        for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
 
             # image/latentsを処理する
@@ -113,8 +171,10 @@ class VAEDataset(BaseDataset):
                 latents = torch.FloatTensor(latents)
                 image = None
             else:
-                raise KohyaDatasetException("Latents are required to be cached for VAE dataset! "
-                                            "Missing Latents.")
+                raise KohyaDatasetException(
+                    "Latents are required to be cached for VAE dataset! "
+                    "Missing Latents."
+                )
 
             images.append(image)
             latents_list.append(latents)
@@ -133,5 +193,5 @@ class VAEDataset(BaseDataset):
         )
 
         if self.debug_dataset:
-            example["image_keys"] = bucket[image_index: image_index + self.batch_size]
+            example["image_keys"] = bucket[image_index : image_index + self.batch_size]
         return example

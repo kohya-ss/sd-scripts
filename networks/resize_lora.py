@@ -17,7 +17,7 @@ def load_state_dict(file_name, dtype):
         with safe_open(file_name, framework="pt") as f:
             metadata = f.metadata()
     else:
-        sd = torch.load(file_name, map_location='cpu')
+        sd = torch.load(file_name, map_location="cpu")
         metadata = None
 
     for key in list(sd.keys()):
@@ -48,9 +48,9 @@ def resize_lora_model(lora_sd, new_rank, save_dtype, device, verbose):
 
     # Extract loaded lora dim and alpha
     for key, value in lora_sd.items():
-        if network_alpha is None and 'alpha' in key:
+        if network_alpha is None and "alpha" in key:
             network_alpha = value
-        if network_dim is None and 'lora_down' in key and len(value.size()) == 2:
+        if network_dim is None and "lora_down" in key and len(value.size()) == 2:
             network_dim = value.size()[0]
         if network_alpha is not None and network_dim is not None:
             break
@@ -60,7 +60,9 @@ def resize_lora_model(lora_sd, new_rank, save_dtype, device, verbose):
     scale = network_alpha / network_dim
     new_alpha = float(scale * new_rank)  # calculate new alpha from scale
 
-    print(f"old dimension: {network_dim}, old alpha: {network_alpha}, new alpha: {new_alpha}")
+    print(
+        f"old dimension: {network_dim}, old alpha: {network_alpha}, new alpha: {new_alpha}"
+    )
 
     lora_down_weight = None
     lora_up_weight = None
@@ -72,18 +74,18 @@ def resize_lora_model(lora_sd, new_rank, save_dtype, device, verbose):
     print("resizing lora...")
     with torch.no_grad():
         for key, value in tqdm(lora_sd.items()):
-            if 'lora_down' in key:
+            if "lora_down" in key:
                 block_down_name = key.split(".")[0]
                 lora_down_weight = value
-            if 'lora_up' in key:
+            if "lora_up" in key:
                 block_up_name = key.split(".")[0]
                 lora_up_weight = value
 
-            weights_loaded = (lora_down_weight is not None and lora_up_weight is not None)
+            weights_loaded = lora_down_weight is not None and lora_up_weight is not None
 
             if (block_down_name == block_up_name) and weights_loaded:
 
-                conv2d = (len(lora_down_weight.size()) == 4)
+                conv2d = len(lora_down_weight.size()) == 4
 
                 if conv2d:
                     lora_down_weight = lora_down_weight.squeeze()
@@ -125,9 +127,15 @@ def resize_lora_model(lora_sd, new_rank, save_dtype, device, verbose):
                     U = U.to(org_device)
                     Vh = Vh.to(org_device)
 
-                o_lora_sd[block_down_name + "." + "lora_down.weight"] = Vh.to(save_dtype).contiguous()
-                o_lora_sd[block_up_name + "." + "lora_up.weight"] = U.to(save_dtype).contiguous()
-                o_lora_sd[block_up_name + "." "alpha"] = torch.tensor(new_alpha).to(save_dtype)
+                o_lora_sd[block_down_name + "." + "lora_down.weight"] = Vh.to(
+                    save_dtype
+                ).contiguous()
+                o_lora_sd[block_up_name + "." + "lora_up.weight"] = U.to(
+                    save_dtype
+                ).contiguous()
+                o_lora_sd[block_up_name + "." "alpha"] = torch.tensor(new_alpha).to(
+                    save_dtype
+                )
 
                 block_down_name = None
                 block_up_name = None
@@ -143,15 +151,17 @@ def resize_lora_model(lora_sd, new_rank, save_dtype, device, verbose):
 
 def resize(args):
     def str_to_dtype(p):
-        if p == 'float':
+        if p == "float":
             return torch.float
-        if p == 'fp16':
+        if p == "fp16":
             return torch.float16
-        if p == 'bf16':
+        if p == "bf16":
             return torch.bfloat16
         return None
 
-    merge_dtype = str_to_dtype('float')  # matmul method above only seems to work in float32
+    merge_dtype = str_to_dtype(
+        "float"
+    )  # matmul method above only seems to work in float32
     save_dtype = str_to_dtype(args.save_precision)
     if save_dtype is None:
         save_dtype = merge_dtype
@@ -160,18 +170,24 @@ def resize(args):
     lora_sd, metadata = load_state_dict(args.model, merge_dtype)
 
     print("resizing rank...")
-    state_dict, old_dim, new_alpha = resize_lora_model(lora_sd, args.new_rank, save_dtype, args.device, args.verbose)
+    state_dict, old_dim, new_alpha = resize_lora_model(
+        lora_sd, args.new_rank, save_dtype, args.device, args.verbose
+    )
 
     # update metadata
     if metadata is None:
         metadata = {}
 
     comment = metadata.get("ss_training_comment", "")
-    metadata["ss_training_comment"] = f"dimension is resized from {old_dim} to {args.new_rank}; {comment}"
+    metadata[
+        "ss_training_comment"
+    ] = f"dimension is resized from {old_dim} to {args.new_rank}; {comment}"
     metadata["ss_network_dim"] = str(args.new_rank)
     metadata["ss_network_alpha"] = str(new_alpha)
 
-    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(
+        state_dict, metadata
+    )
     metadata["sshs_model_hash"] = model_hash
     metadata["sshs_legacy_hash"] = legacy_hash
 
@@ -179,21 +195,45 @@ def resize(args):
     save_to_file(args.save_to, state_dict, state_dict, save_dtype, metadata)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--save_precision", type=str, default=None,
-                        choices=[None, "float", "fp16", "bf16"],
-                        help="precision in saving, float if omitted / 保存時の精度、未指定時はfloat")
-    parser.add_argument("--new_rank", type=int, default=4,
-                        help="Specify rank of output LoRA / 出力するLoRAのrank (dim)")
-    parser.add_argument("--save_to", type=str, default=None,
-                        help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors")
-    parser.add_argument("--model", type=str, default=None,
-                        help="LoRA model to resize at to new rank: ckpt or safetensors file / 読み込むLoRAモデル、ckptまたはsafetensors")
-    parser.add_argument("--device", type=str, default=None, help="device to use, cuda for GPU / 計算を行うデバイス、cuda でGPUを使う")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Display verbose resizing information / rank変更時の詳細情報を出力する")
+    parser.add_argument(
+        "--save_precision",
+        type=str,
+        default=None,
+        choices=[None, "float", "fp16", "bf16"],
+        help="precision in saving, float if omitted / 保存時の精度、未指定時はfloat",
+    )
+    parser.add_argument(
+        "--new_rank",
+        type=int,
+        default=4,
+        help="Specify rank of output LoRA / 出力するLoRAのrank (dim)",
+    )
+    parser.add_argument(
+        "--save_to",
+        type=str,
+        default=None,
+        help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LoRA model to resize at to new rank: ckpt or safetensors file / 読み込むLoRAモデル、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="device to use, cuda for GPU / 計算を行うデバイス、cuda でGPUを使う",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Display verbose resizing information / rank変更時の詳細情報を出力する",
+    )
 
     args = parser.parse_args()
     resize(args)

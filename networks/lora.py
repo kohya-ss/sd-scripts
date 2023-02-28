@@ -13,16 +13,23 @@ from library import train_util
 
 class LoRAModule(torch.nn.Module):
     """
-  replaces forward method of the original Linear, instead of replacing the original Linear module.
-  """
+    replaces forward method of the original Linear, instead of replacing the original Linear module.
+    """
 
-    def __init__(self, lora_name, org_module: torch.nn.Module, multiplier=1.0, lora_dim=4, alpha=1):
-        """ if alpha == 0 or None, alpha is rank (no scaling). """
+    def __init__(
+        self,
+        lora_name,
+        org_module: torch.nn.Module,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=1,
+    ):
+        """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
         self.lora_name = lora_name
         self.lora_dim = lora_dim
 
-        if org_module.__class__.__name__ == 'Conv2d':
+        if org_module.__class__.__name__ == "Conv2d":
             in_dim = org_module.in_channels
             out_dim = org_module.out_channels
             self.lora_down = torch.nn.Conv2d(in_dim, lora_dim, (1, 1), bias=False)
@@ -37,7 +44,7 @@ class LoRAModule(torch.nn.Module):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
         self.scale = alpha / self.lora_dim
-        self.register_buffer('alpha', torch.tensor(alpha))  # 定数として扱える
+        self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         # same as microsoft's
         torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
@@ -52,36 +59,54 @@ class LoRAModule(torch.nn.Module):
         del self.org_module
 
     def forward(self, x):
-        return self.org_forward(x) + self.lora_up(self.lora_down(x)) * self.multiplier * self.scale
+        return (
+            self.org_forward(x)
+            + self.lora_up(self.lora_down(x)) * self.multiplier * self.scale
+        )
 
 
-def create_network(multiplier, network_dim, network_alpha, vae, text_encoder, unet, **kwargs):
+def create_network(
+    multiplier, network_dim, network_alpha, vae, text_encoder, unet, **kwargs
+):
     if network_dim is None:
         network_dim = 4  # default
-    network = LoRANetwork(text_encoder, unet, multiplier=multiplier, lora_dim=network_dim, alpha=network_alpha)
+    network = LoRANetwork(
+        text_encoder,
+        unet,
+        multiplier=multiplier,
+        lora_dim=network_dim,
+        alpha=network_alpha,
+    )
     return network
 
 
 def create_network_from_weights(multiplier, file, vae, text_encoder, unet, **kwargs):
-    if os.path.splitext(file)[1] == '.safetensors':
+    if os.path.splitext(file)[1] == ".safetensors":
         from safetensors.torch import load_file, safe_open
+
         weights_sd = load_file(file)
     else:
-        weights_sd = torch.load(file, map_location='cpu')
+        weights_sd = torch.load(file, map_location="cpu")
 
     # get dim (rank)
     network_alpha = None
     network_dim = None
     for key, value in weights_sd.items():
-        if network_alpha is None and 'alpha' in key:
+        if network_alpha is None and "alpha" in key:
             network_alpha = value
-        if network_dim is None and 'lora_down' in key and len(value.size()) == 2:
+        if network_dim is None and "lora_down" in key and len(value.size()) == 2:
             network_dim = value.size()[0]
 
     if network_alpha is None:
         network_alpha = network_dim
 
-    network = LoRANetwork(text_encoder, unet, multiplier=multiplier, lora_dim=network_dim, alpha=network_alpha)
+    network = LoRANetwork(
+        text_encoder,
+        unet,
+        multiplier=multiplier,
+        lora_dim=network_dim,
+        alpha=network_alpha,
+    )
     network.weights_sd = weights_sd
     return network
 
@@ -89,8 +114,8 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, **kwa
 class LoRANetwork(torch.nn.Module):
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel", "Attention"]
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
-    LORA_PREFIX_UNET = 'lora_unet'
-    LORA_PREFIX_TEXT_ENCODER = 'lora_te'
+    LORA_PREFIX_UNET = "lora_unet"
+    LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
     def __init__(self, text_encoder, unet, multiplier=1.0, lora_dim=4, alpha=1) -> None:
         super().__init__()
@@ -99,24 +124,39 @@ class LoRANetwork(torch.nn.Module):
         self.alpha = alpha
 
         # create module instances
-        def create_modules(prefix, root_module: torch.nn.Module, target_replace_modules) -> List[LoRAModule]:
+        def create_modules(
+            prefix, root_module: torch.nn.Module, target_replace_modules
+        ) -> List[LoRAModule]:
             loras = []
             for name, module in root_module.named_modules():
                 if module.__class__.__name__ in target_replace_modules:
                     for child_name, child_module in module.named_modules():
                         if child_module.__class__.__name__ == "Linear" or (
-                                child_module.__class__.__name__ == "Conv2d" and child_module.kernel_size == (1, 1)):
-                            lora_name = prefix + '.' + name + '.' + child_name
-                            lora_name = lora_name.replace('.', '_')
-                            lora = LoRAModule(lora_name, child_module, self.multiplier, self.lora_dim, self.alpha)
+                            child_module.__class__.__name__ == "Conv2d"
+                            and child_module.kernel_size == (1, 1)
+                        ):
+                            lora_name = prefix + "." + name + "." + child_name
+                            lora_name = lora_name.replace(".", "_")
+                            lora = LoRAModule(
+                                lora_name,
+                                child_module,
+                                self.multiplier,
+                                self.lora_dim,
+                                self.alpha,
+                            )
                             loras.append(lora)
             return loras
 
-        self.text_encoder_loras = create_modules(LoRANetwork.LORA_PREFIX_TEXT_ENCODER,
-                                                 text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+        self.text_encoder_loras = create_modules(
+            LoRANetwork.LORA_PREFIX_TEXT_ENCODER,
+            text_encoder,
+            LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE,
+        )
         print(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
 
-        self.unet_loras = create_modules(LoRANetwork.LORA_PREFIX_UNET, unet, LoRANetwork.UNET_TARGET_REPLACE_MODULE)
+        self.unet_loras = create_modules(
+            LoRANetwork.LORA_PREFIX_UNET, unet, LoRANetwork.UNET_TARGET_REPLACE_MODULE
+        )
         print(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
 
         self.weights_sd = None
@@ -124,7 +164,9 @@ class LoRANetwork(torch.nn.Module):
         # assertion
         names = set()
         for lora in self.text_encoder_loras + self.unet_loras:
-            assert lora.lora_name not in names, f"duplicated lora name: {lora.lora_name}"
+            assert (
+                lora.lora_name not in names
+            ), f"duplicated lora name: {lora.lora_name}"
             names.add(lora.lora_name)
 
     def set_multiplier(self, multiplier):
@@ -133,11 +175,12 @@ class LoRANetwork(torch.nn.Module):
             lora.multiplier = self.multiplier
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == '.safetensors':
+        if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file, safe_open
+
             self.weights_sd = load_file(file)
         else:
-            self.weights_sd = torch.load(file, map_location='cpu')
+            self.weights_sd = torch.load(file, map_location="cpu")
 
     def apply_to(self, text_encoder, unet, apply_text_encoder=None, apply_unet=None):
         if self.weights_sd:
@@ -151,14 +194,20 @@ class LoRANetwork(torch.nn.Module):
             if apply_text_encoder is None:
                 apply_text_encoder = weights_has_text_encoder
             else:
-                assert apply_text_encoder == weights_has_text_encoder, f"text encoder weights: {weights_has_text_encoder} but text encoder flag: {apply_text_encoder} / 重みとText Encoderのフラグが矛盾しています"
+                assert (
+                    apply_text_encoder == weights_has_text_encoder
+                ), f"text encoder weights: {weights_has_text_encoder} but text encoder flag: {apply_text_encoder} / 重みとText Encoderのフラグが矛盾しています"
 
             if apply_unet is None:
                 apply_unet = weights_has_unet
             else:
-                assert apply_unet == weights_has_unet, f"u-net weights: {weights_has_unet} but u-net flag: {apply_unet} / 重みとU-Netのフラグが矛盾しています"
+                assert (
+                    apply_unet == weights_has_unet
+                ), f"u-net weights: {weights_has_unet} but u-net flag: {apply_unet} / 重みとU-Netのフラグが矛盾しています"
         else:
-            assert apply_text_encoder is not None and apply_unet is not None, f"internal error: flag not set"
+            assert (
+                apply_text_encoder is not None and apply_unet is not None
+            ), f"internal error: flag not set"
 
         if apply_text_encoder:
             print("enable LoRA for text encoder")
@@ -194,15 +243,15 @@ class LoRANetwork(torch.nn.Module):
         all_params = []
 
         if self.text_encoder_loras:
-            param_data = {'params': enumerate_params(self.text_encoder_loras)}
+            param_data = {"params": enumerate_params(self.text_encoder_loras)}
             if text_encoder_lr is not None:
-                param_data['lr'] = text_encoder_lr
+                param_data["lr"] = text_encoder_lr
             all_params.append(param_data)
 
         if self.unet_loras:
-            param_data = {'params': enumerate_params(self.unet_loras)}
+            param_data = {"params": enumerate_params(self.unet_loras)}
             if unet_lr is not None:
-                param_data['lr'] = unet_lr
+                param_data["lr"] = unet_lr
             all_params.append(param_data)
 
         return all_params
@@ -228,13 +277,15 @@ class LoRANetwork(torch.nn.Module):
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == '.safetensors':
+        if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import save_file
 
             # Precalculate model hashes to save time on indexing
             if metadata is None:
                 metadata = {}
-            model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+            model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(
+                state_dict, metadata
+            )
             metadata["sshs_model_hash"] = model_hash
             metadata["sshs_legacy_hash"] = legacy_hash
 

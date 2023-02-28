@@ -9,6 +9,7 @@ try:
 except ImportError:
     import json
 
+
 class FineTuningDataset(BaseDataset):
     def __init__(
         self,
@@ -51,7 +52,9 @@ class FineTuningDataset(BaseDataset):
             print(f"loading existing metadata: {json_file_name}")
             metadata = json.loads(json_file.read_text())
         else:
-            raise KohyaDatasetException(f"Metadata missing / メタデータファイルがありません: {json_file}")
+            raise KohyaDatasetException(
+                f"Metadata missing / メタデータファイルがありません: {json_file}"
+            )
 
         self.metadata = metadata
         self.train_data_dir = pathlib.Path(train_data_dir)
@@ -67,7 +70,9 @@ class FineTuningDataset(BaseDataset):
                 # わりといい加減だがいい方法が思いつかん
                 abs_path = self.train_data_dir / image_key
                 if not abs_path.exists():
-                    raise KohyaDatasetException(f"Image file: {abs_path} does not exist.")
+                    raise KohyaDatasetException(
+                        f"Image file: {abs_path} does not exist."
+                    )
 
             caption = img_md.get("caption")
             tags = img_md.get("tags")
@@ -77,11 +82,12 @@ class FineTuningDataset(BaseDataset):
                 caption = caption + ", " + tags
                 tags_list.append(tags)
             if caption is None and not len(caption):
-                raise KohyaDatasetException(f"caption or tag is required\n"
-                                            f"キャプションまたはタグは必須です\n"
-                                            f"{abs_path}"
-                                            )
-            image_info = ImageInfo(str(image_key.name), dataset_repeats, caption, False, str(abs_path))
+                raise KohyaDatasetException(
+                    f"caption or tag is required\n" f"キャプションまたはタグは必須です\n" f"{abs_path}"
+                )
+            image_info = ImageInfo(
+                str(image_key.name), dataset_repeats, caption, False, str(abs_path)
+            )
             image_info.image_size = img_md.get("train_resolution")
 
             if not self.color_aug and not self.random_crop:
@@ -195,7 +201,9 @@ class FineTuningDataset(BaseDataset):
             return npz_file_norm, npz_file_flip
 
         # image_key is relative path
-        npz_file_norm = self.train_data_dir / pathlib.Path(image_key.with_suffix(".npz"))
+        npz_file_norm = self.train_data_dir / pathlib.Path(
+            image_key.with_suffix(".npz")
+        )
         npz_file_flip = npz_file_norm.with_stem(npz_file_norm.stem + "_npz")
 
         if npz_file_norm.exists():

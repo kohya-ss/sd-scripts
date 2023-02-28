@@ -20,17 +20,17 @@ import cv2
 
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
-            self,
-            tokenizer,
-            max_token_length,
-            shuffle_caption,
-            shuffle_keep_tokens,
-            resolution,
-            flip_aug: bool,
-            color_aug: bool,
-            face_crop_aug_range,
-            random_crop,
-            debug_dataset: bool,
+        self,
+        tokenizer,
+        max_token_length,
+        shuffle_caption,
+        shuffle_keep_tokens,
+        resolution,
+        flip_aug: bool,
+        color_aug: bool,
+        face_crop_aug_range,
+        random_crop,
+        debug_dataset: bool,
     ) -> None:
         super().__init__()
         self.buckets_indices = None
@@ -112,7 +112,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.current_epoch = epoch
 
     def set_caption_dropout(
-            self, dropout_rate, dropout_every_n_epochs, tag_dropout_rate
+        self, dropout_rate, dropout_every_n_epochs, tag_dropout_rate
     ):
         # コンストラクタで渡さないのはTextual Inversionで意識したくないから（ということにしておく）
         self.dropout_rate = dropout_rate
@@ -139,9 +139,9 @@ class BaseDataset(torch.utils.data.Dataset):
         # dropoutの決定：tag dropがこのメソッド内にあるのでここで行うのが良い
         is_drop_out = self.dropout_rate > 0 and random.random() < self.dropout_rate
         is_drop_out = (
-                is_drop_out
-                or self.dropout_every_n_epochs
-                and self.current_epoch % self.dropout_every_n_epochs == 0
+            is_drop_out
+            or self.dropout_every_n_epochs
+            and self.current_epoch % self.dropout_every_n_epochs == 0
         )
 
         if is_drop_out:
@@ -167,7 +167,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 else:
                     if len(tokens) > self.shuffle_keep_tokens:
                         keep_tokens = tokens[: self.shuffle_keep_tokens]
-                        tokens = tokens[self.shuffle_keep_tokens:]
+                        tokens = tokens[self.shuffle_keep_tokens :]
 
                         if self.shuffle_caption:
                             random.shuffle(tokens)
@@ -207,13 +207,13 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
                 # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
                 for i in range(
-                        1,
-                        self.tokenizer_max_length - self.tokenizer.model_max_length + 2,
-                        self.tokenizer.model_max_length - 2,
+                    1,
+                    self.tokenizer_max_length - self.tokenizer.model_max_length + 2,
+                    self.tokenizer.model_max_length - 2,
                 ):  # (1, 152, 75)
                     ids_chunk = (
                         input_ids[0].unsqueeze(0),
-                        input_ids[i: i + self.tokenizer.model_max_length - 2],
+                        input_ids[i : i + self.tokenizer.model_max_length - 2],
                         input_ids[-1].unsqueeze(0),
                     )
                     ids_chunk = torch.cat(ids_chunk)
@@ -222,13 +222,13 @@ class BaseDataset(torch.utils.data.Dataset):
                 # v2
                 # 77以上の時は "<BOS> .... <EOS> <PAD> <PAD>..." でトータル227とかになっているので、"<BOS>...<EOS> <PAD> <PAD> ..."の三連に変換する
                 for i in range(
-                        1,
-                        self.tokenizer_max_length - self.tokenizer.model_max_length + 2,
-                        self.tokenizer.model_max_length - 2,
+                    1,
+                    self.tokenizer_max_length - self.tokenizer.model_max_length + 2,
+                    self.tokenizer.model_max_length - 2,
                 ):
                     ids_chunk = (
                         input_ids[0].unsqueeze(0),  # BOS
-                        input_ids[i: i + self.tokenizer.model_max_length - 2],
+                        input_ids[i : i + self.tokenizer.model_max_length - 2],
                         input_ids[-1].unsqueeze(0),
                     )  # PAD or EOS
                     ids_chunk = torch.cat(ids_chunk)
@@ -236,8 +236,8 @@ class BaseDataset(torch.utils.data.Dataset):
                     # 末尾が <EOS> <PAD> または <PAD> <PAD> の場合は、何もしなくてよい
                     # 末尾が x <PAD/EOS> の場合は末尾を <EOS> に変える（x <EOS> なら結果的に変化なし）
                     if (
-                            ids_chunk[-2] != self.tokenizer.eos_token_id
-                            and ids_chunk[-2] != self.tokenizer.pad_token_id
+                        ids_chunk[-2] != self.tokenizer.eos_token_id
+                        and ids_chunk[-2] != self.tokenizer.pad_token_id
                     ):
                         ids_chunk[-1] = self.tokenizer.eos_token_id
                     # 先頭が <BOS> <PAD> ... の場合は <BOS> <EOS> <PAD> ... に変える
@@ -288,7 +288,8 @@ class BaseDataset(torch.utils.data.Dataset):
             for image_info in self.image_data.values():
                 if not image_info.image_size:
                     raise KohyaDatasetException(
-                        f"image_size missing for {image_info.absolute_path}. Is the file valid?")
+                        f"image_size missing for {image_info.absolute_path}. Is the file valid?"
+                    )
                 image_width, image_height = image_info.image_size
                 (
                     image_info.bucket_reso,
@@ -310,7 +311,8 @@ class BaseDataset(torch.utils.data.Dataset):
             for image_info in self.image_data.values():
                 if not image_info.image_size:
                     raise KohyaDatasetException(
-                        f"image_size missing for {image_info.absolute_path}. Is the file valid?")
+                        f"image_size missing for {image_info.absolute_path}. Is the file valid?"
+                    )
                 image_width, image_height = image_info.image_size
                 (
                     image_info.bucket_reso,
@@ -329,7 +331,7 @@ class BaseDataset(torch.utils.data.Dataset):
             self.bucket_info = {"buckets": {}}
             print("number of images (including repeats) / 各bucketの画像枚数（繰り返し回数を含む）")
             for i, (reso, bucket) in enumerate(
-                    zip(self.bucket_manager.resos, self.bucket_manager.buckets)
+                zip(self.bucket_manager.resos, self.bucket_manager.buckets)
             ):
                 count = len(bucket)
                 if count > 0:
@@ -398,15 +400,15 @@ class BaseDataset(torch.utils.data.Dataset):
             trim_size = image_width - reso[0]
             p = trim_size // 2 if not self.random_crop else random.randint(0, trim_size)
             # print("w", trim_size, p)
-            image = image[:, p: p + reso[0]]
+            image = image[:, p : p + reso[0]]
         if image_height > reso[1]:
             trim_size = image_height - reso[1]
             p = trim_size // 2 if not self.random_crop else random.randint(0, trim_size)
             # print("h", trim_size, p)
-            image = image[p: p + reso[1]]
+            image = image[p : p + reso[1]]
 
         assert (
-                image.shape[0] == reso[1] and image.shape[1] == reso[0]
+            image.shape[0] == reso[1] and image.shape[1] == reso[0]
         ), f"internal error, illegal trimmed size: {image.shape}, {reso}"
         return image
 
@@ -488,7 +490,9 @@ class BaseDataset(torch.utils.data.Dataset):
         nh = int(height * scale + 0.5)
         nw = int(width * scale + 0.5)
         if nh <= self.height or nw <= self.width:
-            raise KohyaDatasetException(f"internal error. small scale {scale}, {width}*{height}")
+            raise KohyaDatasetException(
+                f"internal error. small scale {scale}, {width}*{height}"
+            )
         image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
         face_cx = int(face_cx * scale + 0.5)
         face_cy = int(face_cy * scale + 0.5)
@@ -496,7 +500,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         # 顔を中心として448*640とかへ切り出す
         for axis, (target_size, length, face_p) in enumerate(
-                zip((self.height, self.width), (height, width), (face_cy, face_cx))
+            zip((self.height, self.width), (height, width), (face_cy, face_cx))
         ):
             p1 = face_p - target_size // 2  # 顔を中心に持ってくるための切り出し位置
 
@@ -504,7 +508,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 背景も含めるために顔を中心に置く確率を高めつつずらす
                 range = max(length - face_p, face_p)  # 画像の端から顔中心までの距離の長いほう
                 p1 = (
-                        p1 + (random.randint(0, range) + random.randint(0, range)) - range
+                    p1 + (random.randint(0, range) + random.randint(0, range)) - range
                 )  # -range ~ +range までのいい感じの乱数
             else:
                 # range指定があるときのみ、すこしだけランダムに（わりと適当）
@@ -515,9 +519,9 @@ class BaseDataset(torch.utils.data.Dataset):
             p1 = max(0, min(p1, length - target_size))
 
             if axis == 0:
-                image = image[p1: p1 + target_size, :]
+                image = image[p1 : p1 + target_size, :]
             else:
-                image = image[:, p1: p1 + target_size]
+                image = image[:, p1 : p1 + target_size]
 
         return image
 
@@ -544,7 +548,7 @@ class BaseDataset(torch.utils.data.Dataset):
         latents_list = []
         images = []
 
-        for image_key in bucket[image_index: image_index + bucket_batch_size]:
+        for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
 
@@ -582,14 +586,14 @@ class BaseDataset(torch.utils.data.Dataset):
                         ), f"image too large, but cropping and bucketing are disabled / 画像サイズが大きいのでface_crop_aug_rangeかrandom_crop、またはbucketを有効にしてください: {image_info.absolute_path}"
                         if im_h > self.height:
                             p = random.randint(0, im_h - self.height)
-                            img = img[p: p + self.height]
+                            img = img[p : p + self.height]
                         if im_w > self.width:
                             p = random.randint(0, im_w - self.width)
-                            img = img[:, p: p + self.width]
+                            img = img[:, p : p + self.width]
 
                     im_h, im_w = img.shape[0:2]
                     assert (
-                            im_h == self.height and im_w == self.width
+                        im_h == self.height and im_w == self.width
                     ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
 
                 # augmentation
@@ -605,7 +609,7 @@ class BaseDataset(torch.utils.data.Dataset):
             caption = self.process_caption(image_info.caption)
             captions.append(caption)
             if (
-                    not self.token_padding_disabled
+                not self.token_padding_disabled
             ):  # this option might be omitted in future
                 input_ids_list.append(self.get_input_ids(caption))
 
@@ -633,6 +637,6 @@ class BaseDataset(torch.utils.data.Dataset):
         )
 
         if self.debug_dataset:
-            example["image_keys"] = bucket[image_index: image_index + self.batch_size]
+            example["image_keys"] = bucket[image_index : image_index + self.batch_size]
             example["captions"] = captions
         return example

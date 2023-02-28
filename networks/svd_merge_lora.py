@@ -10,10 +10,10 @@ CLAMP_QUANTILE = 0.99
 
 
 def load_state_dict(file_name, dtype):
-    if os.path.splitext(file_name)[1] == '.safetensors':
+    if os.path.splitext(file_name)[1] == ".safetensors":
         sd = load_file(file_name)
     else:
-        sd = torch.load(file_name, map_location='cpu')
+        sd = torch.load(file_name, map_location="cpu")
     for key in list(sd.keys()):
         if type(sd[key]) == torch.Tensor:
             sd[key] = sd[key].to(dtype)
@@ -26,7 +26,7 @@ def save_to_file(file_name, model, state_dict, dtype):
             if type(state_dict[key]) == torch.Tensor:
                 state_dict[key] = state_dict[key].to(dtype)
 
-    if os.path.splitext(file_name)[1] == '.safetensors':
+    if os.path.splitext(file_name)[1] == ".safetensors":
         save_file(model, file_name)
     else:
         torch.save(model, file_name)
@@ -41,16 +41,16 @@ def merge_lora_models(models, ratios, new_rank, device, merge_dtype):
         # merge
         print(f"merging...")
         for key in tqdm(list(lora_sd.keys())):
-            if 'lora_down' not in key:
+            if "lora_down" not in key:
                 continue
 
-            lora_module_name = key[:key.rfind(".lora_down")]
+            lora_module_name = key[: key.rfind(".lora_down")]
 
             down_weight = lora_sd[key]
             network_dim = down_weight.size()[0]
 
-            up_weight = lora_sd[lora_module_name + '.lora_up.weight']
-            alpha = lora_sd.get(lora_module_name + '.alpha', network_dim)
+            up_weight = lora_sd[lora_module_name + ".lora_up.weight"]
+            alpha = lora_sd.get(lora_module_name + ".alpha", network_dim)
 
             in_dim = down_weight.size()[1]
             out_dim = up_weight.size()[0]
@@ -59,7 +59,10 @@ def merge_lora_models(models, ratios, new_rank, device, merge_dtype):
 
             # make original weight if not exist
             if lora_module_name not in merged_sd:
-                weight = torch.zeros((out_dim, in_dim, 1, 1) if conv2d else (out_dim, in_dim), dtype=merge_dtype)
+                weight = torch.zeros(
+                    (out_dim, in_dim, 1, 1) if conv2d else (out_dim, in_dim),
+                    dtype=merge_dtype,
+                )
                 if device:
                     weight = weight.to(device)
             else:
@@ -71,12 +74,21 @@ def merge_lora_models(models, ratios, new_rank, device, merge_dtype):
                 down_weight = down_weight.to(device)
 
             # W <- W + U * D
-            scale = (alpha / network_dim)
+            scale = alpha / network_dim
             if not conv2d:  # linear
                 weight = weight + ratio * (up_weight @ down_weight) * scale
             else:
-                weight = weight + ratio * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)
-                                           ).unsqueeze(2).unsqueeze(3) * scale
+                weight = (
+                    weight
+                    + ratio
+                    * (
+                        up_weight.squeeze(3).squeeze(2)
+                        @ down_weight.squeeze(3).squeeze(2)
+                    )
+                    .unsqueeze(2)
+                    .unsqueeze(3)
+                    * scale
+                )
 
             merged_sd[lora_module_name] = weight
 
@@ -85,7 +97,7 @@ def merge_lora_models(models, ratios, new_rank, device, merge_dtype):
     merged_lora_sd = {}
     with torch.no_grad():
         for lora_module_name, mat in tqdm(list(merged_sd.items())):
-            conv2d = (len(mat.size()) == 4)
+            conv2d = len(mat.size()) == 4
             if conv2d:
                 mat = mat.squeeze()
 
@@ -111,23 +123,28 @@ def merge_lora_models(models, ratios, new_rank, device, merge_dtype):
                 up_weight = up_weight.unsqueeze(2).unsqueeze(3)
                 down_weight = down_weight.unsqueeze(2).unsqueeze(3)
 
-            merged_lora_sd[lora_module_name + '.lora_up.weight'] = up_weight.to("cpu").contiguous()
-            merged_lora_sd[lora_module_name + '.lora_down.weight'] = down_weight.to("cpu").contiguous()
-            merged_lora_sd[lora_module_name + '.alpha'] = torch.tensor(new_rank)
+            merged_lora_sd[lora_module_name + ".lora_up.weight"] = up_weight.to(
+                "cpu"
+            ).contiguous()
+            merged_lora_sd[lora_module_name + ".lora_down.weight"] = down_weight.to(
+                "cpu"
+            ).contiguous()
+            merged_lora_sd[lora_module_name + ".alpha"] = torch.tensor(new_rank)
 
     return merged_lora_sd
 
 
 def merge(args):
     assert len(args.models) == len(
-        args.ratios), f"number of models must be equal to number of ratios / モデルの数と重みの数は合わせてください"
+        args.ratios
+    ), f"number of models must be equal to number of ratios / モデルの数と重みの数は合わせてください"
 
     def str_to_dtype(p):
-        if p == 'float':
+        if p == "float":
             return torch.float
-        if p == 'fp16':
+        if p == "fp16":
             return torch.float16
-        if p == 'bf16':
+        if p == "bf16":
             return torch.bfloat16
         return None
 
@@ -136,29 +153,60 @@ def merge(args):
     if save_dtype is None:
         save_dtype = merge_dtype
 
-    state_dict = merge_lora_models(args.models, args.ratios, args.new_rank, args.device, merge_dtype)
+    state_dict = merge_lora_models(
+        args.models, args.ratios, args.new_rank, args.device, merge_dtype
+    )
 
     print(f"saving model to: {args.save_to}")
     save_to_file(args.save_to, state_dict, state_dict, save_dtype)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--save_precision", type=str, default=None,
-                        choices=[None, "float", "fp16", "bf16"],
-                        help="precision in saving, same to merging if omitted / 保存時に精度を変更して保存する、省略時はマージ時の精度と同じ")
-    parser.add_argument("--precision", type=str, default="float",
-                        choices=["float", "fp16", "bf16"],
-                        help="precision in merging (float is recommended) / マージの計算時の精度（floatを推奨）")
-    parser.add_argument("--save_to", type=str, default=None,
-                        help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors")
-    parser.add_argument("--models", type=str, nargs='*',
-                        help="LoRA models to merge: ckpt or safetensors file / マージするLoRAモデル、ckptまたはsafetensors")
-    parser.add_argument("--ratios", type=float, nargs='*',
-                        help="ratios for each model / それぞれのLoRAモデルの比率")
-    parser.add_argument("--new_rank", type=int, default=4,
-                        help="Specify rank of output LoRA / 出力するLoRAのrank (dim)")
-    parser.add_argument("--device", type=str, default=None, help="device to use, cuda for GPU / 計算を行うデバイス、cuda でGPUを使う")
+    parser.add_argument(
+        "--save_precision",
+        type=str,
+        default=None,
+        choices=[None, "float", "fp16", "bf16"],
+        help="precision in saving, same to merging if omitted / 保存時に精度を変更して保存する、省略時はマージ時の精度と同じ",
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="float",
+        choices=["float", "fp16", "bf16"],
+        help="precision in merging (float is recommended) / マージの計算時の精度（floatを推奨）",
+    )
+    parser.add_argument(
+        "--save_to",
+        type=str,
+        default=None,
+        help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--models",
+        type=str,
+        nargs="*",
+        help="LoRA models to merge: ckpt or safetensors file / マージするLoRAモデル、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--ratios",
+        type=float,
+        nargs="*",
+        help="ratios for each model / それぞれのLoRAモデルの比率",
+    )
+    parser.add_argument(
+        "--new_rank",
+        type=int,
+        default=4,
+        help="Specify rank of output LoRA / 出力するLoRAのrank (dim)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="device to use, cuda for GPU / 計算を行うデバイス、cuda でGPUを使う",
+    )
 
     args = parser.parse_args()
     merge(args)

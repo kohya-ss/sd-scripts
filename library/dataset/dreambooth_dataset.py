@@ -5,16 +5,46 @@ from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS
 
 
 class DreamBoothDataset(BaseDataset):
-
-    def __init__(self, batch_size, root_train_data_dir, reg_data_dir, tokenizer, max_token_length, caption_extension,
-                 shuffle_caption, shuffle_keep_tokens, resolution, enable_bucket, min_bucket_reso, max_bucket_reso,
-                 bucket_reso_steps, bucket_no_upscale, prior_loss_weight, flip_aug, color_aug, face_crop_aug_range,
-                 random_crop, debug_dataset) -> None:
-        super().__init__(tokenizer, max_token_length, shuffle_caption, shuffle_keep_tokens,
-                         resolution, flip_aug, color_aug, face_crop_aug_range, random_crop, debug_dataset)
+    def __init__(
+        self,
+        batch_size,
+        root_train_data_dir,
+        reg_data_dir,
+        tokenizer,
+        max_token_length,
+        caption_extension,
+        shuffle_caption,
+        shuffle_keep_tokens,
+        resolution,
+        enable_bucket,
+        min_bucket_reso,
+        max_bucket_reso,
+        bucket_reso_steps,
+        bucket_no_upscale,
+        prior_loss_weight,
+        flip_aug,
+        color_aug,
+        face_crop_aug_range,
+        random_crop,
+        debug_dataset,
+    ) -> None:
+        super().__init__(
+            tokenizer,
+            max_token_length,
+            shuffle_caption,
+            shuffle_keep_tokens,
+            resolution,
+            flip_aug,
+            color_aug,
+            face_crop_aug_range,
+            random_crop,
+            debug_dataset,
+        )
 
         if resolution is None or resolution == 0:
-            raise KohyaDatasetException("Resolution parameter is missing / resolution（解像度）指定は必須です")
+            raise KohyaDatasetException(
+                "Resolution parameter is missing / resolution（解像度）指定は必須です"
+            )
 
         self.batch_size = batch_size
         self.size = min(self.width, self.height)  # 短いほう
@@ -63,9 +93,14 @@ class DreamBoothDataset(BaseDataset):
                 repeats, image_paths, captions = self.load_dreambooth_dir(concept_dir)
                 train_counts += repeats * len(image_paths)
                 for image_pth, caption in zip(image_paths, captions):
-                    image_info = ImageInfo(image_pth.name, repeats, caption, False, str(image_pth))
+                    image_info = ImageInfo(
+                        image_pth.name, repeats, caption, False, str(image_pth)
+                    )
                     self.register_image(image_info)
-                self.dataset_dirs_info[concept_dir.name] = {"n_repeats": repeats, "img_count": len(image_paths)}
+                self.dataset_dirs_info[concept_dir.name] = {
+                    "n_repeats": repeats,
+                    "img_count": len(image_paths),
+                }
 
         print(f"{train_counts} train images with repeats.")
         self.num_train_images = train_counts
@@ -88,9 +123,14 @@ class DreamBoothDataset(BaseDataset):
                     repeats, image_paths, captions = self.load_dreambooth_dir(reg_dir)
                     train_counts += repeats * len(image_paths)
                     for image_pth, caption in zip(image_paths, captions):
-                        image_info = ImageInfo(image_pth.name, repeats, caption, False, str(image_pth))
+                        image_info = ImageInfo(
+                            image_pth.name, repeats, caption, False, str(image_pth)
+                        )
                         reg_infos.append(image_info)
-                    self.reg_dataset_dirs_info[reg_dir.name] = {"n_repeats": repeats, "img_count": len(image_paths)}
+                    self.reg_dataset_dirs_info[reg_dir.name] = {
+                        "n_repeats": repeats,
+                        "img_count": len(image_paths),
+                    }
 
         print(f"{self.num_reg_images} reg images.")
         if self.num_train_images < self.num_reg_images:
@@ -138,20 +178,26 @@ class DreamBoothDataset(BaseDataset):
                 base_name_face_det = "_".join(tokens[:-4])
             cap_paths = [
                 img_path.with_suffix(self.caption_extension),
-                img_path.with_stem(base_name_face_det).with_suffix(self.caption_extension),
+                img_path.with_stem(base_name_face_det).with_suffix(
+                    self.caption_extension
+                ),
             ]
             for cap_path in cap_paths:
                 if cap_path.is_file():
-                    with open(cap_path, "rt", encoding='utf-8') as f:
+                    with open(cap_path, "rt", encoding="utf-8") as f:
                         try:
                             lines = f.readlines()
                         except UnicodeDecodeError as e:
-                            print(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
+                            print(
+                                f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}"
+                            )
                             raise e
                         if not lines:
-                            raise KohyaDatasetException(f"caption file is empty\n"
-                                                        f"キャプションファイルが空です\n"
-                                                        f"{cap_path}")
+                            raise KohyaDatasetException(
+                                f"caption file is empty\n"
+                                f"キャプションファイルが空です\n"
+                                f"{cap_path}"
+                            )
                         return lines[0].strip()
         else:
             caption_ext = self.caption_extension
@@ -162,7 +208,9 @@ class DreamBoothDataset(BaseDataset):
                     try:
                         captions = file.read_text(encoding="utf-8")
                     except UnicodeDecodeError as e:
-                        print(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {file}")
+                        print(
+                            f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {file}"
+                        )
                         raise e
                     return captions.split()[0].strip()
 
@@ -171,21 +219,25 @@ class DreamBoothDataset(BaseDataset):
             # print(f"ignore file: {dir}")
             return 0, [], []
 
-        tokens = booth_dir.name.split('_')
+        tokens = booth_dir.name.split("_")
         try:
             n_repeats = int(tokens[0])
         except ValueError as e:
-            print(f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {booth_dir}")
+            print(
+                f"ignore directory without repeats / 繰り返し回数のないディレクトリを無視します: {booth_dir}"
+            )
             return 0, [], []
 
-        folder_caption = '_'.join(tokens[1:])
+        folder_caption = "_".join(tokens[1:])
 
         img_paths: List[pathlib.Path] = []
         for file in booth_dir.iterdir():
             if file.suffix.lower() in IMAGE_EXTENSIONS:
                 img_paths.append(file)
 
-        print(f"found directory {n_repeats}_{folder_caption} contains {len(img_paths)} image files")
+        print(
+            f"found directory {n_repeats}_{folder_caption} contains {len(img_paths)} image files"
+        )
 
         # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
         captions = []

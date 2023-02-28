@@ -1,4 +1,3 @@
-
 NUM_TRAIN_TIMESTEPS = 1000
 BETA_START = 0.00085
 BETA_END = 0.0120
@@ -25,25 +24,36 @@ VAE_PARAMS_NUM_RES_BLOCKS = 2
 V2_UNET_PARAMS_ATTENTION_HEAD_DIM = [5, 10, 20, 20]
 V2_UNET_PARAMS_CONTEXT_DIM = 1024
 
+
 def create_unet_diffusers_config(v2):
     """
-  Creates a config for the diffusers based on the config of the LDM model.
-  """
+    Creates a config for the diffusers based on the config of the LDM model.
+    """
     # unet_params = original_config.model.params.unet_config.params
 
-    block_out_channels = [UNET_PARAMS_MODEL_CHANNELS * mult for mult in UNET_PARAMS_CHANNEL_MULT]
+    block_out_channels = [
+        UNET_PARAMS_MODEL_CHANNELS * mult for mult in UNET_PARAMS_CHANNEL_MULT
+    ]
 
     down_block_types = []
     resolution = 1
     for i in range(len(block_out_channels)):
-        block_type = "CrossAttnDownBlock2D" if resolution in UNET_PARAMS_ATTENTION_RESOLUTIONS else "DownBlock2D"
+        block_type = (
+            "CrossAttnDownBlock2D"
+            if resolution in UNET_PARAMS_ATTENTION_RESOLUTIONS
+            else "DownBlock2D"
+        )
         down_block_types.append(block_type)
         if i != len(block_out_channels) - 1:
             resolution *= 2
 
     up_block_types = []
     for i in range(len(block_out_channels)):
-        block_type = "CrossAttnUpBlock2D" if resolution in UNET_PARAMS_ATTENTION_RESOLUTIONS else "UpBlock2D"
+        block_type = (
+            "CrossAttnUpBlock2D"
+            if resolution in UNET_PARAMS_ATTENTION_RESOLUTIONS
+            else "UpBlock2D"
+        )
         up_block_types.append(block_type)
         resolution //= 2
 
@@ -55,8 +65,12 @@ def create_unet_diffusers_config(v2):
         up_block_types=tuple(up_block_types),
         block_out_channels=tuple(block_out_channels),
         layers_per_block=UNET_PARAMS_NUM_RES_BLOCKS,
-        cross_attention_dim=UNET_PARAMS_CONTEXT_DIM if not v2 else V2_UNET_PARAMS_CONTEXT_DIM,
-        attention_head_dim=UNET_PARAMS_NUM_HEADS if not v2 else V2_UNET_PARAMS_ATTENTION_HEAD_DIM,
+        cross_attention_dim=UNET_PARAMS_CONTEXT_DIM
+        if not v2
+        else V2_UNET_PARAMS_CONTEXT_DIM,
+        attention_head_dim=UNET_PARAMS_NUM_HEADS
+        if not v2
+        else V2_UNET_PARAMS_ATTENTION_HEAD_DIM,
     )
 
     return config
@@ -64,8 +78,8 @@ def create_unet_diffusers_config(v2):
 
 def create_vae_diffusers_config():
     """
-  Creates a config for the diffusers based on the config of the LDM model.
-  """
+    Creates a config for the diffusers based on the config of the LDM model.
+    """
     # vae_params = original_config.model.params.first_stage_config.params.ddconfig
     # _ = original_config.model.params.first_stage_config.params.embed_dim
     block_out_channels = [VAE_PARAMS_CH * mult for mult in VAE_PARAMS_CH_MULT]
