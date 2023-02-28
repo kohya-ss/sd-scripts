@@ -1,7 +1,11 @@
 def shave_segments(path, n_shave_prefix_segments=1):
     """
-  Removes segments. Positive values shave the first segments, negative shave the last segments.
-  """
+    Removes segments. Positive values shave the first segments, negative shave the last segments.
+
+    :param path:
+    :param n_shave_prefix_segments:
+    :return:
+    """
     if n_shave_prefix_segments >= 0:
         return ".".join(path.split(".")[n_shave_prefix_segments:])
     else:
@@ -10,8 +14,12 @@ def shave_segments(path, n_shave_prefix_segments=1):
 
 def renew_resnet_paths(old_list, n_shave_prefix_segments=0):
     """
-  Updates paths inside resnets to the new naming scheme (local renaming)
-  """
+    Updates paths inside resnets to the new naming scheme (local renaming)
+
+    :param old_list:
+    :param n_shave_prefix_segments:
+    :return:
+    """
     mapping = []
     for old_item in old_list:
         new_item = old_item.replace("in_layers.0", "norm1")
@@ -28,8 +36,6 @@ def renew_resnet_paths(old_list, n_shave_prefix_segments=0):
         mapping.append({"old": old_item, "new": new_item})
 
     return mapping
-
-
 
 
 def renew_vae_resnet_paths(old_list, n_shave_prefix_segments=0):

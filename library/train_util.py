@@ -564,7 +564,7 @@ def add_dataset_arguments(parser: argparse.ArgumentParser, support_dreambooth: b
                           support_caption_dropout: bool):
     # dataset common
     parser.add_argument("--train_data_dir", type=pathlib.Path, default=None, help="directory for train images / "
-                                                                         "学習画像データのディレクトリ")
+                                                                                  "学習画像データのディレクトリ")
     parser.add_argument("--shuffle_caption", action="store_true",
                         help="shuffle comma-separated caption / コンマで区切られたcaptionの各要素をshuffleする")
     parser.add_argument("--caption_extension", type=str, default=".caption",
@@ -1079,33 +1079,34 @@ def save_sd_model_on_epoch_end(args: argparse.Namespace, accelerator, src_path: 
 
     if save_stable_diffusion_format:
         def save_sd():
-            ckpt_file = os.path.join(args.output_dir, ckpt_name)
+            ckpt_file = args.output_dir.joinpath(ckpt_name)
             print(f"saving checkpoint: {ckpt_file}")
             save_stable_diffusion_checkpoint(args.v2, ckpt_file, text_encoder, unet,
                                              src_path, epoch_no, global_step, save_dtype, vae)
 
         def remove_sd(old_epoch_no):
             _, old_ckpt_name = get_epoch_ckpt_name(args, use_safetensors, old_epoch_no)
-            old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
-            if os.path.exists(old_ckpt_file):
+            old_ckpt_file = args.output_dir.joinpath(old_ckpt_name)
+            if old_ckpt_file.exists():
                 print(f"removing old checkpoint: {old_ckpt_file}")
-                os.remove(old_ckpt_file)
+                old_ckpt_file.unlink()
 
         save_func = save_sd
         remove_old_func = remove_sd
     else:
         def save_du():
-            out_dir = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, epoch_no))
+            out_dir: pathlib.Path = args.output_dir.joinpath(EPOCH_DIFFUSERS_DIR_NAME.format(model_name, epoch_no))
             print(f"saving model: {out_dir}")
-            os.makedirs(out_dir, exist_ok=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
             save_diffusers_checkpoint(args.v2, out_dir, text_encoder, unet,
                                       src_path, vae=vae, use_safetensors=use_safetensors)
 
         def remove_du(old_epoch_no):
-            out_dir_old = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, old_epoch_no))
-            if os.path.exists(out_dir_old):
+            out_dir_old: pathlib.Path = args.output_dir.joinpath(
+                EPOCH_DIFFUSERS_DIR_NAME.format(model_name, old_epoch_no))
+            if out_dir_old.exists() and out_dir_old.is_dir():
                 print(f"removing old model: {out_dir_old}")
-                shutil.rmtree(out_dir_old)
+                shutil.rmtree(str(out_dir_old))
 
         save_func = save_du
         remove_old_func = remove_du
@@ -1117,13 +1118,13 @@ def save_sd_model_on_epoch_end(args: argparse.Namespace, accelerator, src_path: 
 
 def save_state_on_epoch_end(args: argparse.Namespace, accelerator, model_name, epoch_no):
     print("saving state.")
-    accelerator.save_state(os.path.join(args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no)))
+    accelerator.save_state(args.output_dir / EPOCH_STATE_NAME.format(model_name, epoch_no))
 
     last_n_epochs = args.save_last_n_epochs_state if args.save_last_n_epochs_state else args.save_last_n_epochs
     if last_n_epochs is not None:
         remove_epoch_no = epoch_no - args.save_every_n_epochs * last_n_epochs
-        state_dir_old = os.path.join(args.output_dir, EPOCH_STATE_NAME.format(model_name, remove_epoch_no))
-        if os.path.exists(state_dir_old):
+        state_dir_old = args.output_dir / EPOCH_STATE_NAME.format(model_name, remove_epoch_no)
+        if state_dir_old.exists():
             print(f"removing old state: {state_dir_old}")
             shutil.rmtree(state_dir_old)
 
@@ -1132,19 +1133,18 @@ def save_sd_model_on_train_end(args: argparse.Namespace, src_path: str, save_sta
                                use_safetensors: bool, save_dtype: torch.dtype, epoch: int, global_step: int,
                                text_encoder, unet, vae):
     model_name = DEFAULT_LAST_OUTPUT_NAME if args.output_name is None else args.output_name
-
+    args.out_dir.mkdir(parents=True, exist_ok=True)
     if save_stable_diffusion_format:
-        os.makedirs(args.output_dir, exist_ok=True)
 
         ckpt_name = model_name + (".safetensors" if use_safetensors else ".ckpt")
-        ckpt_file = os.path.join(args.output_dir, ckpt_name)
+        ckpt_file = args.output_dir / ckpt_name
 
         print(f"save trained model as StableDiffusion checkpoint to {ckpt_file}")
         save_stable_diffusion_checkpoint(args.v2, ckpt_file, text_encoder, unet,
                                          src_path, epoch, global_step, save_dtype, vae)
     else:
-        out_dir = os.path.join(args.output_dir, model_name)
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = args.out_dir / model_name
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"save trained model as Diffusers to {out_dir}")
         save_diffusers_checkpoint(args.v2, out_dir, text_encoder, unet,
@@ -1153,9 +1153,9 @@ def save_sd_model_on_train_end(args: argparse.Namespace, src_path: str, save_sta
 
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
     print("saving last state.")
-    os.makedirs(args.output_dir, exist_ok=True)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
     model_name = DEFAULT_LAST_OUTPUT_NAME if args.output_name is None else args.output_name
-    accelerator.save_state(os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name)))
+    accelerator.save_state(args.out_dir / LAST_STATE_NAME.format(model_name))
 
 
 # endregion
