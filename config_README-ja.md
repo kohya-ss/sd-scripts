@@ -1,3 +1,5 @@
+For non-Japanese speakers: this README is provided only in Japanese in the current state. Sorry for inconvenience. We will provide English version in the near future.
+
 `--config_file` で渡すことができる設定ファイルに関する説明です。
 
 ## 概要
