@@ -217,10 +217,22 @@ class ConfigSanitizer:
       {"subsets": [self.ft_subset_schema]},
     )
 
-    # TODO: determine whether dataset is DB or FT deterministically
-    #   by checking whether "metadata_file" exists in subsets
     if support_dreambooth and support_finetuning:
-      self.dataset_schema = Any(self.db_dataset_schema, self.ft_dataset_schema)
+      def validate_flex_dataset(dataset_config: dict):
+        subsets_config = dataset_config.get("subsets", [])
+
+        # check dataset meets FT style
+        # NOTE: all FT subsets should have "metadata_file"
+        if all(["metadata_file" in subset for subset in subsets_config]):
+          return Schema(self.ft_dataset_schema)(dataset_config)
+        # check dataset meets DB style
+        # NOTE: all DB subsets should have no "metadata_file"
+        elif all(["metadata_file" not in subset for subset in subsets_config]):
+          return Schema(self.db_dataset_schema)(dataset_config)
+        else:
+          raise voluptuous.Invalid("DreamBooth subset and fine tuning subset cannot be mixed in the same dataset. Please split them into separate datasets. / DreamBoothのサブセットとfine tuninのサブセットを同一のデータセットに混在させることはできません。別々のデータセットに分割してください。")
+
+      self.dataset_schema = validate_flex_dataset
     elif support_dreambooth:
       self.dataset_schema = self.db_dataset_schema
     else:
