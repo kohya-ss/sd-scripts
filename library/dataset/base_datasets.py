@@ -57,7 +57,8 @@ class BaseDataset(torch.utils.data.Dataset):
         self.tag_frequency = {}
 
         self.enable_bucket = False
-        self.bucket_manager: BucketManager  # not initialized
+        # noinspection PyTypeChecker
+        self.bucket_manager: BucketManager = None  # not initialized
         self.min_bucket_reso = None
         self.max_bucket_reso = None
         self.bucket_reso_steps = None
