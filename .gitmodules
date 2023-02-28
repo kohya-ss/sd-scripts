@@ -1,0 +1,3 @@
+[submodule "LoCon"]
+	path = LoCon
+	url = https://github.com/KohakuBlueleaf/LoCon.git
