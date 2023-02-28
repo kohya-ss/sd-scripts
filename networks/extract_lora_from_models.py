@@ -7,9 +7,8 @@ import os
 import torch
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-import library.model_util as model_util
 import lora
-
+from library.loaders import load_models_from_stable_diffusion_checkpoint
 
 CLAMP_QUANTILE = 0.99
 MIN_DIFF = 1e-6
@@ -40,9 +39,9 @@ def svd(args):
   save_dtype = str_to_dtype(args.save_precision)
 
   print(f"loading SD model : {args.model_org}")
-  text_encoder_o, _, unet_o = model_util.load_models_from_stable_diffusion_checkpoint(args.v2, args.model_org)
+  text_encoder_o, _, unet_o = load_models_from_stable_diffusion_checkpoint(args.v2, args.model_org)
   print(f"loading SD model : {args.model_tuned}")
-  text_encoder_t, _, unet_t = model_util.load_models_from_stable_diffusion_checkpoint(args.v2, args.model_tuned)
+  text_encoder_t, _, unet_t = load_models_from_stable_diffusion_checkpoint(args.v2, args.model_tuned)
 
   # create LoRA network to extract weights: Use dim (rank) as alpha
   lora_network_o = lora.create_network(1.0, args.dim, args.dim, None, text_encoder_o, unet_o)

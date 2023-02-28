@@ -11,7 +11,7 @@ import diffusers
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
-from library.train_util import DreamBoothDataset, FineTuningDataset
+from library.dataset import DreamBoothDataset, FineTuningDataset
 
 imagenet_templates_small = [
     "a photo of a {}",

@@ -81,8 +81,6 @@ class FineTuningDataset(BaseDataset):
                                             f"キャプションまたはタグは必須です\n"
                                             f"{abs_path}"
                                             )
-
-
             image_info = ImageInfo(str(image_key.name), dataset_repeats, caption, False, str(abs_path))
             image_info.image_size = img_md.get("train_resolution")
 
