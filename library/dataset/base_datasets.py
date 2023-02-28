@@ -260,7 +260,7 @@ class BaseDataset(torch.utils.data.Dataset):
         """
         print("loading image sizes.")
         for info in tqdm(self.image_data.values()):
-            if info.image_size is None:
+            if info.image_size[0] == -1 or info.image_size[1] == -1:
                 info.image_size = self.get_image_size(info.absolute_path)
 
         if self.enable_bucket:
