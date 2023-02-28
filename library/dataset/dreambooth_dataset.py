@@ -1,7 +1,7 @@
 import pathlib
 from .base_datasets import BaseDataset
 from typing import Union, List
-from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS
+from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS, with_stem
 
 
 class DreamBoothDataset(BaseDataset):
@@ -161,7 +161,8 @@ class DreamBoothDataset(BaseDataset):
 
         Args:
             img_path (pathlib.Path): Image path.
-            new_method (bool, optional): Tries a new method which is the about the same as the old method. Defaults to False.
+            new_method (bool, optional): Tries a new method which is the about the same as the old method.
+            Defaults to False.
 
         Raises:
             UnicodeDecodeError: A file was invalid.
@@ -180,9 +181,8 @@ class DreamBoothDataset(BaseDataset):
                 base_name_face_det = "_".join(tokens[:-4])
             cap_paths = [
                 img_path.with_suffix(self.caption_extension),
-                img_path.with_stem(base_name_face_det).with_suffix(
-                    self.caption_extension
-                ),
+                with_stem(img_path, base_name_face_det).with_suffix(
+                    self.caption_extension),
             ]
             for cap_path in cap_paths:
                 if cap_path.is_file():

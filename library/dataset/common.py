@@ -1,6 +1,6 @@
 # Common Classes
 # Currently only ImageInfo class
-
+import pathlib
 from typing import Tuple, Optional
 import torch
 import dataclasses
@@ -32,3 +32,7 @@ class ImageInfo:
     latents_flipped: Optional[torch.Tensor] = None
     latents_npz: Optional[str] = ""
     latents_npz_flipped: Optional[str] = None
+
+
+def with_stem(path: pathlib.Path, stem: str):
+    return path.with_name(stem + path.suffix)

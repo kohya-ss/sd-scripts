@@ -2,7 +2,7 @@ import pathlib
 from .base_datasets import BaseDataset
 from .buckets import BucketManager
 from typing import Union, List
-from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS
+from .common import ImageInfo, KohyaDatasetException, IMAGE_EXTENSIONS, with_stem
 
 try:
     import orjson as json
@@ -207,7 +207,8 @@ class FineTuningDataset(BaseDataset):
 
         if npz_file_norm.exists():
             # image_key is full path
-            npz_file_flip = npz_file_norm.with_stem(npz_file_norm.stem + "_npz")
+
+            npz_file_flip = with_stem(npz_file_norm, npz_file_norm.stem + "_flip")
             if not npz_file_flip.exists():
                 npz_file_flip = None
             return npz_file_norm, npz_file_flip
@@ -216,11 +217,11 @@ class FineTuningDataset(BaseDataset):
         npz_file_norm = self.train_data_dir / pathlib.Path(
             image_key.with_suffix(".npz")
         )
-        npz_file_flip = npz_file_norm.with_stem(npz_file_norm.stem + "_npz")
+        npz_file_flip = with_stem(npz_file_norm, npz_file_norm.stem + "_flip")
 
         if npz_file_norm.exists():
             # image_key is full path
-            npz_file_flip = npz_file_norm.with_stem(npz_file_norm.stem + "_npz")
+            npz_file_flip = npz_file_norm.with_stem(npz_file_norm.stem + "_flip")
             if not npz_file_flip.exists():
                 npz_file_flip = None
             return npz_file_norm, npz_file_flip
