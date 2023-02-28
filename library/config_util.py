@@ -386,11 +386,11 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           keep_tokens: {subset.keep_tokens}
           caption_dropout_rate: {subset.caption_dropout_rate}
           caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
-          caption_tag_dropout_rate: {subset.caption_tag_dropout_rate})
+          caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
           color_aug: {subset.color_aug}
           flip_aug: {subset.flip_aug}
           face_crop_aug_range: {subset.face_crop_aug_range}
-          random_crop: {subset.random_crop})
+          random_crop: {subset.random_crop}
       """), "  ")
 
       if is_dreambooth:
