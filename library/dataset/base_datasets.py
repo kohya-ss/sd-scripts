@@ -1,21 +1,22 @@
 # Code for BaseDataset Class
 
-from typing import Dict, List, Optional
 import math
 import os
 import random
+from typing import Dict, List
 
-from tqdm import tqdm
+import albumentations as albu
+import cv2
+import numpy as np
 import torch
 import torch.utils.data
-from torchvision import transforms
-from transformers import CLIPTokenizer
-import albumentations as albu
-import numpy as np
 from PIL import Image
+from torchvision import transforms
+from tqdm import tqdm
+from transformers import CLIPTokenizer
+
 from .buckets import BucketManager, BucketBatchIndex
 from .common import ImageInfo, KohyaDatasetException
-import cv2
 
 
 class BaseDataset(torch.utils.data.Dataset):
