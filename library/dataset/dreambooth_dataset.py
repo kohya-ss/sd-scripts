@@ -56,15 +56,17 @@ class DreamBoothDataset(BaseDataset):
 
         self.enable_bucket = enable_bucket
         if self.enable_bucket:
-            if min(resolution) >= min_bucket_reso:
+            if min(resolution) < min_bucket_reso:
                 raise KohyaDatasetException(
-                    "min_bucket_reso must be either equal or lesser than defined resolution\n"
-                    "min_bucket_resoは最小解像度より大きくできません。解像度を大きくするかmin_bucket_resoを小さくしてください"
+                    f"min_bucket_reso must be either equal or lesser than defined resolution\n"
+                    f"min_bucket_resoは最小解像度より大きくできません。解像度を大きくするかmin_bucket_resoを小さくしてください\n"
+                    f"Min res: {min(resolution)} | bucket size: {min_bucket_reso}"
                 )
-            elif max(resolution) <= max_bucket_reso:
+            elif max(resolution) > max_bucket_reso:
                 raise KohyaDatasetException(
                     "max_bucket_reso must be either equal or greater than defined resolution\n"
                     "max_bucket_resoは最大解像度より小さくできません。解像度を小さくするかmin_bucket_resoを大きくしてください"
+                    f"Max res: {max(resolution)} | bucket size: {max_bucket_reso}"
                 )
             self.min_bucket_reso = min_bucket_reso
             self.max_bucket_reso = max_bucket_reso
