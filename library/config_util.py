@@ -471,9 +471,17 @@ def load_user_config(file: str) -> dict:
     raise ValueError(f"file not found / ファイルが見つかりません: {file}")
 
   if file.name.lower().endswith('.json'):
-    config = json.load(file)
+    try:
+      config = json.load(file)
+    except Exception:
+      print(f"Error on parsing JSON config file. Please check the format. / JSON 形式の設定ファイルの読み込みに失敗しました。文法が正しいか確認してください。: {file}")
+      raise
   elif file.name.lower().endswith('.toml'):
-    config = toml.load(file)
+    try:
+      config = toml.load(file)
+    except Exception:
+      print(f"Error on parsing TOML config file. Please check the format. / TOML 形式の設定ファイルの読み込みに失敗しました。文法が正しいか確認してください。: {file}")
+      raise
   else:
     raise ValueError(f"not supported config file format / 対応していない設定ファイルの形式です: {file}")
 
