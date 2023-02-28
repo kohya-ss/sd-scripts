@@ -1,6 +1,7 @@
 import pathlib
 
 from diffusers import UNet2DConditionModel, AutoencoderKL
+from safetensors.torch import load_file
 from transformers import CLIPTextConfig, CLIPTextModel
 
 from .bootstrap import create_unet_diffusers_config, create_vae_diffusers_config
