@@ -164,6 +164,18 @@ class FineTuningDataset(BaseDataset):
 
             self.enable_bucket = enable_bucket
             if self.enable_bucket:
+                if min(resolution) < min_bucket_reso:
+                    raise KohyaDatasetException(
+                        f"min_bucket_reso must be either equal or lesser than defined resolution\n"
+                        f"min_bucket_resoは最小解像度より大きくできません。解像度を大きくするかmin_bucket_resoを小さくしてください\n"
+                        f"Min res: {min(resolution)} | bucket size: {min_bucket_reso}"
+                    )
+                elif max(resolution) > max_bucket_reso:
+                    raise KohyaDatasetException(
+                        "max_bucket_reso must be either equal or greater than defined resolution\n"
+                        "max_bucket_resoは最大解像度より小さくできません。解像度を小さくするかmin_bucket_resoを大きくしてください"
+                        f"Max res: {max(resolution)} | bucket size: {max_bucket_reso}"
+                    )
                 self.min_bucket_reso = min_bucket_reso
                 self.max_bucket_reso = max_bucket_reso
                 self.bucket_reso_steps = bucket_reso_steps
@@ -175,10 +187,10 @@ class FineTuningDataset(BaseDataset):
                 )
             print("using bucket info in metadata / メタデータ内のbucket情報を使います")
             self.enable_bucket = True
-
-            assert (
-                not bucket_no_upscale
-            ), "if metadata has bucket info, bucket reso is precalculated, so bucket_no_upscale cannot be used / メタデータ内にbucket情報がある場合はbucketの解像度は計算済みのため、bucket_no_upscaleは使えません"
+            if bucket_no_upscale:
+                raise KohyaDatasetException(
+                    "metadata has bucket info, bucket reso is precalculated, so bucket_no_upscale cannot be used / "
+                    "メタデータ内にbucket情報がある場合はbucketの解像度は計算済みのため、bucket_no_upscaleは使えません")
 
             # bucket情報を初期化しておく、make_bucketsで再作成しない
             self.bucket_manager = BucketManager(False, None, None, None, None)
