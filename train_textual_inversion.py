@@ -181,9 +181,13 @@ def train(args):
     for tmpl in templates:
       captions.append(tmpl.format(replace_to))
     train_dataset_group.add_replacement("", captions)
-  elif args.num_vectors_per_token > 1:
-    replace_to = " ".join(token_strings)
-    train_dataset_group.add_replacement(args.token_string, replace_to)
+  else:
+    if args.num_vectors_per_token > 1:
+      replace_to = " ".join(token_strings)
+      train_dataset_group.add_replacement(args.token_string, replace_to)
+      prompt_replacement = (args.token_string, replace_to)
+    else:
+      prompt_replacement = None
 
   if args.debug_dataset:
     train_util.debug_dataset(train_dataset_group, show_input_ids=True)
@@ -306,7 +310,6 @@ def train(args):
     text_encoder.train()
 
     loss_total = 0
-    bef_epo_embs = unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
     for step, batch in enumerate(train_dataloader):
       with accelerator.accumulate(text_encoder):
         with torch.no_grad():
@@ -372,6 +375,9 @@ def train(args):
         progress_bar.update(1)
         global_step += 1
 
+        train_util.sample_images(accelerator, args, None, global_step, accelerator.device,
+                                 vae, tokenizer, text_encoder, unet, prompt_replacement)
+
       current_loss = loss.detach().item()
       if args.logging_dir is not None:
         logs = {"loss": current_loss, "lr": float(lr_scheduler.get_last_lr()[0])}
@@ -394,8 +400,6 @@ def train(args):
     accelerator.wait_for_everyone()
 
     updated_embs = unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
-    # d = updated_embs - bef_epo_embs
-    # print(bef_epo_embs.size(), updated_embs.size(), d.mean(), d.min())
 
     if args.save_every_n_epochs is not None:
       model_name = train_util.DEFAULT_EPOCH_NAME if args.output_name is None else args.output_name
@@ -416,6 +420,9 @@ def train(args):
       saving = train_util.save_on_epoch_end(args, save_func, remove_old_func, epoch + 1, num_train_epochs)
       if saving and args.save_state:
         train_util.save_state_on_epoch_end(args, accelerator, model_name, epoch + 1)
+
+    train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device,
+                             vae, tokenizer, text_encoder, unet, prompt_replacement)
 
     # end of epoch
 
