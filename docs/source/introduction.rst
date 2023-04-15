@@ -5,7 +5,7 @@ Introduction
 Getting Started
 ---------------
 
-To start using Kohya-SS, please follow the instuction of :doc:`install` and :doc:`usage`. For easier use (GUI and PowerShell scripts etc...), please visit the  `repository <https://github.com/bmaltais/kohya_ss/>`_  maintained by bmaltais.
+To start using Kohya-SS, please follow the instructions of :doc:`install` and :doc:`usage`. For easier use (GUI and PowerShell scripts etc...), please visit the  `repository <https://github.com/bmaltais/kohya_ss/>`_  maintained by bmaltais.
 
 Features
 --------
