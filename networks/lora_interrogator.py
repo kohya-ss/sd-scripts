@@ -21,11 +21,11 @@ def interrogate(args):
   text_encoder, vae, unet = model_util.load_models_from_stable_diffusion_checkpoint(args.v2, args.sd_model)
 
   print(f"loading LoRA: {args.model}")
-  network = lora.create_network_from_weights(1.0, args.model, vae, text_encoder, unet)
+  network, weights_sd = lora.create_network_from_weights(1.0, args.model, vae, text_encoder, unet)
 
   # text encoder向けの重みがあるかチェックする：本当はlora側でやるのがいい
   has_te_weight = False
-  for key in network.weights_sd.keys():
+  for key in weights_sd.keys():
     if 'lora_te' in key:
       has_te_weight = True
       break
