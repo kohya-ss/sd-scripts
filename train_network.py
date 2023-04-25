@@ -183,8 +183,6 @@ def train(args):
 
     if hasattr(network, "prepare_network"):
         network.prepare_network(args)
-    if type(network) == DDP:
-        network = network.module
 
     train_unet = not args.network_train_text_encoder_only
     train_text_encoder = not args.network_train_unet_only
@@ -278,6 +276,8 @@ def train(args):
         unet.eval()
         text_encoder.eval()
 
+    if type(network) == DDP:
+        network = network.module
     network.prepare_grad_etc(text_encoder, unet)
 
     if not cache_latents:
