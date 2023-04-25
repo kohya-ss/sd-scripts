@@ -145,7 +145,6 @@ def train(args):
 
     # モデルを読み込む
     for pi in range(accelerator.state.num_processes):
-        # TODO: modify other training scripts as well
         if pi == accelerator.state.local_process_index:
             print(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
 
