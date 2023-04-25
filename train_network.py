@@ -180,11 +180,11 @@ def train(args):
     network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
     if network is None:
         return
-    elif type(network) == DDP:
-        network = network.module
 
     if hasattr(network, "prepare_network"):
         network.prepare_network(args)
+    if type(network) == DDP:
+        network = network.module
 
     train_unet = not args.network_train_text_encoder_only
     train_text_encoder = not args.network_train_unet_only
@@ -273,10 +273,7 @@ def train(args):
         text_encoder.train()
 
         # set top parameter requires_grad = True for gradient checkpointing works
-        if type(text_encoder) == DDP:
-            text_encoder.module.text_model.embeddings.requires_grad_(True)
-        else:
-            text_encoder.text_model.embeddings.requires_grad_(True)
+        text_encoder.text_model.embeddings.requires_grad_(True)
     else:
         unet.eval()
         text_encoder.eval()
