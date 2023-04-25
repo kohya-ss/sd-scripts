@@ -2883,13 +2883,7 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu"):
 
 def transform_DDP(text_encoder, unet, network=None):
     # Transform text_encoder, unet and network from DistributedDataParallel
-    if type(text_encoder) == DDP:
-        text_encoder = text_encoder.module
-    if type(unet) == DDP:
-        unet = unet.module
-    if type(network) == DDP:
-        network = network.module
-    return text_encoder, unet, network
+    return (encoder.module if type(encoder) == DDP else encoder for encoder in [text_encoder, unet, network])
 
 
 def load_target_model(args, weight_dtype, accelerator):
