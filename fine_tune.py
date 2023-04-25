@@ -10,7 +10,6 @@ from multiprocessing import Value
 
 from tqdm import tqdm
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
 from accelerate.utils import set_seed
 import diffusers
 from diffusers import DDPMScheduler
