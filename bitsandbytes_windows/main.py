@@ -410,6 +410,7 @@ def evaluate_cuda_setup():
         print(('Welcome to bitsandbytes. For bug reports, please run\n\npython -m bitsandbytes\n\n'),
               ('and submit this information together with your error trace to: https://github.com/TimDettmers/bitsandbytes/issues'))
         print('='*80)
+        return 'libbitsandbytes_cuda118.dll', None, None, None, None
     if not torch.cuda.is_available(): return 'libbitsandbytes_cpu'+SHARED_LIB_EXTENSION, None, None, None, None
 
     cuda_setup = CUDASetup.get_instance()
