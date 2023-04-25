@@ -104,7 +104,7 @@ def train(args):
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
 
     # モデルを読み込む
-    text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype)
+    text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
     # Convert the init_word to token_id
     if args.init_word is not None:

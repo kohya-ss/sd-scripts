@@ -144,23 +144,7 @@ def train(args):
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
 
     # モデルを読み込む
-    for pi in range(accelerator.state.num_processes):
-        if pi == accelerator.state.local_process_index:
-            print(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
-
-            text_encoder, vae, unet, _ = train_util.load_target_model(
-                args, weight_dtype, accelerator.device if args.lowram else "cpu"
-            )
-
-            # work on low-ram device
-            if args.lowram:
-                text_encoder.to(accelerator.device)
-                unet.to(accelerator.device)
-                vae.to(accelerator.device)
-
-            gc.collect()
-            torch.cuda.empty_cache()
-        accelerator.wait_for_everyone()
+    text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
     # モデルに xformers とか memory efficient attention を組み込む
     train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
@@ -196,6 +180,8 @@ def train(args):
     network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
     if network is None:
         return
+    elif type(network) == DDP:
+        network = network.module
 
     if hasattr(network, "prepare_network"):
         network.prepare_network(args)
@@ -294,12 +280,6 @@ def train(args):
     else:
         unet.eval()
         text_encoder.eval()
-
-    # support DistributedDataParallel
-    if type(text_encoder) == DDP or type(unet) == DDP:
-        text_encoder = text_encoder.module
-        unet = unet.module
-        network = network.module
 
     network.prepare_grad_etc(text_encoder, unet)
 

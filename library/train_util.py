@@ -19,6 +19,7 @@ from typing import (
     Union,
 )
 from accelerate import Accelerator
+import gc
 import glob
 import math
 import os
@@ -30,6 +31,7 @@ import toml
 
 from tqdm import tqdm
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 from torchvision import transforms
 from transformers import CLIPTokenizer
@@ -2850,7 +2852,7 @@ def prepare_dtype(args: argparse.Namespace):
     return weight_dtype, save_dtype
 
 
-def load_target_model(args: argparse.Namespace, weight_dtype, device="cpu"):
+def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu"):
     name_or_path = args.pretrained_model_name_or_path
     name_or_path = os.readlink(name_or_path) if os.path.islink(name_or_path) else name_or_path
     load_stable_diffusion_format = os.path.isfile(name_or_path)  # determine SD or Diffusers
@@ -2875,6 +2877,34 @@ def load_target_model(args: argparse.Namespace, weight_dtype, device="cpu"):
     if args.vae is not None:
         vae = model_util.load_vae(args.vae, weight_dtype)
         print("additional VAE loaded")
+
+    return text_encoder, vae, unet, load_stable_diffusion_format
+
+
+def load_target_model(args, weight_dtype, accelerator):
+    # load models for each process
+    for pi in range(accelerator.state.num_processes):
+        if pi == accelerator.state.local_process_index:
+            print(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
+
+            text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
+                args, weight_dtype, accelerator.device if args.lowram else "cpu"
+            )
+
+            # work on low-ram device
+            if args.lowram:
+                text_encoder.to(accelerator.device)
+                unet.to(accelerator.device)
+                vae.to(accelerator.device)
+
+            gc.collect()
+            torch.cuda.empty_cache()
+        accelerator.wait_for_everyone()
+    
+    # Transform text_encoder and unet in DistributedDataParallel
+    if type(text_encoder) == DDP or type(unet) == DDP:
+        text_encoder = text_encoder.module
+        unet = unet.module
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
