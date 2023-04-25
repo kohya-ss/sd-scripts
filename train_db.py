@@ -188,6 +188,9 @@ def train(args):
         unet.to(weight_dtype)
         text_encoder.to(weight_dtype)
 
+    # transform DDP before prepare
+    text_encoder, unet, network = train_util.transform_DDP(text_encoder, unet, network)
+
     # acceleratorがなんかよろしくやってくれるらしい
     if train_text_encoder:
         unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
