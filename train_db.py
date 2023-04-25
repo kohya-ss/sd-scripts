@@ -12,6 +12,7 @@ from multiprocessing import Value
 
 from tqdm import tqdm
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 from accelerate.utils import set_seed
 import diffusers
 from diffusers import DDPMScheduler
@@ -136,6 +137,12 @@ def train(args):
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
         text_encoder.gradient_checkpointing_enable()
+    
+    # support DistributedDataParallel
+    if type(text_encoder) == DDP or type(unet) == DDP:
+        text_encoder = text_encoder.module
+        unet = unet.module
+        network = network.module
 
     if not cache_latents:
         vae.requires_grad_(False)

@@ -297,7 +297,7 @@ def train(args):
         text_encoder.eval()
 
     # support DistributedDataParallel
-    if type(text_encoder) == DDP:
+    if type(text_encoder) == DDP or type(unet) == DDP:
         text_encoder = text_encoder.module
         unet = unet.module
         network = network.module
