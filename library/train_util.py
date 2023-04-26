@@ -2535,7 +2535,7 @@ def get_optimizer(args, trainable_params):
         optimizer_class = torch.optim.SGD
         optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
 
-    elif optimizer_type == "DAdaptation".lower():
+    elif optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdam".lower():
         try:
             import dadaptation
         except ImportError:
