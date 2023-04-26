@@ -223,9 +223,6 @@ def train(args):
         unet.to(weight_dtype)
         text_encoder.to(weight_dtype)
 
-    # transform DDP before prepare
-    text_encoder, unet, network = train_util.transform_DDP(text_encoder, unet, network)
-
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
         unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -233,6 +230,9 @@ def train(args):
         )
     else:
         unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+
+    # transform DDP after prepare
+    text_encoder, unet, _ = train_util.transform_DDP(text_encoder, unet)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:

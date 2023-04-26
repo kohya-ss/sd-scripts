@@ -280,6 +280,9 @@ def train(args):
         text_encoder, optimizer, train_dataloader, lr_scheduler
     )
 
+    # transform DDP after prepare
+    text_encoder, unet, _ = train_util.transform_DDP(text_encoder, unet)
+
     index_no_updates = torch.arange(len(tokenizer)) < token_ids[0]
     # print(len(index_no_updates), torch.sum(index_no_updates))
     orig_embeds_params = unwrap_model(text_encoder).get_input_embeddings().weight.data.detach().clone()
