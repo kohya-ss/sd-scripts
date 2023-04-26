@@ -566,10 +566,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     - Lion8bit : 引数は同上
     - SGDNesterov : [torch.optim.SGD](https://pytorch.org/docs/stable/generated/torch.optim.SGD.html), nesterov=True
     - SGDNesterov8bit : 引数は同上
-    - DAdaptation(DAdaptAdam) : https://github.com/facebookresearch/dadaptation
-    - DAdaptAdaGrad : 引数は同上
-    - DAdaptAdan : 引数は同上
-    - DAdaptSGD : 引数は同上
+    - DAdaptation : https://github.com/facebookresearch/dadaptation
     - AdaFactor : [Transformers AdaFactor](https://huggingface.co/docs/transformers/main_classes/optimizer_schedules)
     - 任意のオプティマイザ
 
