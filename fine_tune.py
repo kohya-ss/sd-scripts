@@ -136,9 +136,6 @@ def train(args):
         set_diffusers_xformers_flag(unet, False)
         train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
 
-    # transform DDP
-    text_encoder, unet, _ = train_util.transform_DDP(text_encoder, unet)
-
     # 学習を準備する
     if cache_latents:
         vae.to(accelerator.device, dtype=weight_dtype)

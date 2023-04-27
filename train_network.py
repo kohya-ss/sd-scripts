@@ -1,4 +1,3 @@
-from torch.nn.parallel import DistributedDataParallel as DDP
 import importlib
 import argparse
 import gc
@@ -262,6 +261,9 @@ def train(args):
     else:
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
+    # transform DDP after prepare (train_network here only)
+    text_encoder, unet, network = train_util.transform_DDP(text_encoder, unet, network)
+
     unet.requires_grad_(False)
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.requires_grad_(False)
@@ -269,16 +271,12 @@ def train(args):
     if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
         unet.train()
         text_encoder.train()
-        if type(text_encoder) == DDP:
-            text_encoder.module.text_model.embeddings.requires_grad_(True)
+
         # set top parameter requires_grad = True for gradient checkpointing works
         text_encoder.text_model.embeddings.requires_grad_(True)
     else:
         unet.eval()
         text_encoder.eval()
-
-    # transform DDP (train_network here only)
-    text_encoder, unet, network = train_util.transform_DDP(text_encoder, unet, network)
         
     network.prepare_grad_etc(text_encoder, unet)
 
