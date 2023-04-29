@@ -37,6 +37,7 @@ Most of the documents are written in Japanese.
 * [training Textual Inversion](./train_ti_README-ja.md)
 * note.com [Image generation](https://note.com/kohya_ss/n/n2693183a798e)
 * note.com [Model conversion](https://note.com/kohya_ss/n/n374f316fe4ad)
+* YouTube tutorial for Gradio interface and Windows installation > [link](https://youtu.be/TpuDOsuKIBo)
 
 ## Windows Required Dependencies
 
