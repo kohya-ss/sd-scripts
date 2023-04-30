@@ -1849,7 +1849,6 @@ def replace_unet_cross_attn_to_xformers(unet):
         out = self.to_out[1](out)
         return out
 
-    print( hasattr(unet, "enable_xformers_memory_efficient_attention"))
     if hasattr(diffusers.models.attention, "CrossAttention") and \
         hasattr(diffusers.models.attention.CrossAttention, "forward"):
         diffusers.models.attention.CrossAttention.forward = forward_xformers
