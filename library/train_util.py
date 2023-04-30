@@ -1766,7 +1766,7 @@ def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditio
     if mem_eff_attn:
         replace_unet_cross_attn_to_memory_efficient()
     elif xformers:
-        replace_unet_cross_attn_to_xformers()
+        replace_unet_cross_attn_to_xformers(unet)
 
 
 def replace_unet_cross_attn_to_memory_efficient():
@@ -1809,7 +1809,7 @@ def replace_unet_cross_attn_to_memory_efficient():
     diffusers.models.attention.CrossAttention.forward = forward_flash_attn
 
 
-def replace_unet_cross_attn_to_xformers():
+def replace_unet_cross_attn_to_xformers(unet):
     print("Replace CrossAttention.forward to use xformers")
     try:
         import xformers.ops
@@ -1849,7 +1849,15 @@ def replace_unet_cross_attn_to_xformers():
         out = self.to_out[1](out)
         return out
 
-    diffusers.models.attention.CrossAttention.forward = forward_xformers
+    print( hasattr(unet, "enable_xformers_memory_efficient_attention"))
+    if hasattr(diffusers.models.attention, "CrossAttention") and \
+        hasattr(diffusers.models.attention.CrossAttention, "forward"):
+        diffusers.models.attention.CrossAttention.forward = forward_xformers
+    elif hasattr(unet, "enable_xformers_memory_efficient_attention"):
+        unet.enable_xformers_memory_efficient_attention(attention_op=xformers.ops.MemoryEfficientAttentionFlashAttentionOp)
+        print(unet.enable_xformers_memory_efficient_attention())
+    else:
+        print('Do nothing...')
 
 
 # endregion
