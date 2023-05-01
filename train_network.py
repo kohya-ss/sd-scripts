@@ -61,7 +61,6 @@ def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_sche
 
     return logs
 
-
 def train(args):
     session_id = random.randint(0, 2**32)
     training_started_at = time.time()
@@ -73,9 +72,15 @@ def train(args):
     use_user_config = args.dataset_config is not None
 
     if args.seed is None:
-        args.seed = random.randint(0, 2**32)
-    set_seed(args.seed)
+        import psutil
+        ppid = os.getppid()
+        parent_process = psutil.Process(ppid)
+        if len(parent_process.children()) > 1:
+            args.seed = ppid
+        else:
+            args.seed = random.randint(0, 2**32)
 
+    set_seed(args.seed)
     tokenizer = train_util.load_tokenizer(args)
 
     # データセットを準備する
@@ -138,8 +143,8 @@ def train(args):
     # acceleratorを準備する
     print("prepare accelerator")
     accelerator, unwrap_model = train_util.prepare_accelerator(args)
-    is_main_process = accelerator.is_main_process
 
+    is_main_process = accelerator.is_main_process
     # mixed precisionに対応した型を用意しておき適宜castする
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
 
@@ -733,7 +738,7 @@ def train(args):
     if is_main_process:
         ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
         save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
-        
+
         print("model saved.")
 
 
