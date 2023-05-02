@@ -270,19 +270,19 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     if train_unet and train_text_encoder:
-        unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, text_encoder, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler
         )
     elif train_unet:
-        unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             unet, network, optimizer, train_dataloader, lr_scheduler
         )
     elif train_text_encoder:
-        text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        text_encoder, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             text_encoder, network, optimizer, train_dataloader, lr_scheduler
         )
     else:
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+        network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
     unet.requires_grad_(False)
     unet.to(accelerator.device, dtype=weight_dtype)
@@ -646,7 +646,7 @@ def train(args):
                 loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
                 loss = loss.mean([1, 2, 3])
 
-                loss_weights = batch["loss_weights"]  # 各sampleごとのweight
+                loss_weights = batch["loss_weights"].to(accelerator.device)  # 各sampleごとのweight
                 loss = loss * loss_weights
 
                 if args.min_snr_gamma:
