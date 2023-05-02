@@ -574,6 +574,9 @@ def train(args):
             print(f"removing old checkpoint: {old_ckpt_file}")
             os.remove(old_ckpt_file)
 
+    mini_batch_size = int(args.train_batch_size) / accelerator.num_processes
+    mini_batch_offset = int(accelerator.process_index) * mini_batch_size
+
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
@@ -586,6 +589,11 @@ def train(args):
 
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
+            # cut mini batch
+            for k in batch.keys():
+                if batch[k] is None: continue
+                batch[k] = batch[k][int(mini_batch_offset):int(mini_batch_offset+mini_batch_size)]
+
             with accelerator.accumulate(network):
                 # on_step_start(text_encoder, unet)
 
