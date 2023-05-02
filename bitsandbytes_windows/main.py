@@ -7,6 +7,7 @@ extract factors the build is dependent on:
     - CPU-only: only CPU quantization functions (no optimizer, no matrix multiple)
     - CuBLAS-LT: full-build 8-bit optimizer
     - no CuBLAS-LT: no 8-bit matrix multiplication (`nomatmul`)
+
 evaluation:
     - if paths faulty, return meaningful error
     - else:
@@ -115,7 +116,7 @@ def evaluate_cuda_setup():
     print('For effortless bug reporting copy-paste your error into this form: https://docs.google.com/forms/d/e/1FAIpQLScPB8emS3Thkp66nvqwmjTEgxp8Y9ufuWTzFyr9kJ5AoI47dQ/viewform?usp=sf_link')
     print('='*80)
     return "libbitsandbytes_cuda116.dll"            # $$$
-
+    
     binary_name = "libbitsandbytes_cpu.so"
     #if not torch.cuda.is_available():
         #print('No GPU detected. Loading CPU library...')
