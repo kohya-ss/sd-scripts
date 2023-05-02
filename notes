@@ -1,0 +1,37 @@
+cd /proj/suchka/image-generation/sd-scripts
+accelerate launch --num_cpu_threads_per_process=2 "train_network.py" --enable_bucket --pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5" --train_data_dir="/proj/suchka/image-generation/lora/jixian/img" --resolution=512,512 --output_dir="/proj/suchka/image-generation/lora/jixian/model" --logging_dir="/proj/suchka/image-generation/lora/jixian/log" --network_alpha="128" --save_model_as=safetensors --network_module=networks.lora --text_encoder_lr=5e-7 --unet_lr=5e-6 --network_dim=128  --output_name="jixianwang_v3" --lr_scheduler_num_cycles="10" --learning_rate="5e-6" --lr_scheduler="constant" --train_batch_size="8" --max_train_steps="1000" --save_every_n_epochs="1" --mixed_precision="bf16" --save_precision="bf16" --caption_extension=".txt" --cache_latents --optimizer_type="AdamW8bit" --max_data_loader_n_workers="0" --bucket_reso_steps=64 --xformers --bucket_no_upscale --noise_offset=0.1 --max_grad_norm=2
+
+tensorboard --logdir /proj/suchka/image-generation/lora/jixian/log --bind_all
+
+
+
+================================================================================
+8 x 1
+running training / 学習開始
+  num train images * repeats / 学習画像の数×繰り返し回数: 3760
+  num reg images / 正則化画像の数: 0
+  num batches per epoch / 1epochのバッチ数: 470
+  num epochs / epoch数: 5
+  batch size per device / バッチサイズ: 4
+  gradient accumulation steps / 勾配を合計するステップ数 = 1
+  total optimization steps / 学習ステップ数: 2000
+steps:
+
+8 x 2
+running training / 学習開始
+  num train images * repeats / 学習画像の数×繰り返し回数: 3760
+  num reg images / 正則化画像の数: 0
+  num batches per epoch / 1epochのバッチ数: 235
+  num epochs / epoch数: 9
+  batch size per device / バッチサイズ: 8
+  gradient accumulation steps / 勾配を合計するステップ数 = 1
+  total optimization steps / 学習ステップ数: 2000
+
+
+accelerate launch --num_cpu_threads_per_process=2 "train_network.py" --enable_bucket --pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5" --train_data_dir="/proj/suchka/image-generation/lora/jixian/img" --resolution=512,512 --output_dir="/proj/suchka/image-generation/lora/jixian/model" --logging_dir="/proj/suchka/image-generation/lora/jixian/log" --network_alpha="128" --save_model_as=safetensors --network_module=networks.lora --text_encoder_lr=5e-7 --unet_lr=5e-6 --network_dim=128  --output_name="jixianwang_v3" --lr_scheduler_num_cycles="10" --learning_rate="5e-6" --lr_scheduler="constant" --train_batch_size="4" --max_train_steps="2000" --save_every_n_epochs="1" --mixed_precision="bf16" --save_precision="bf16" --caption_extension=".txt" --cache_latents --optimizer_type="AdamW8bit" --max_data_loader_n_workers="0" --bucket_reso_steps=64 --xformers --bucket_no_upscale --noise_offset=0.1 --seed=1234
+
+
+accelerate launch --num_cpu_threads_per_process=2 "train_network.py" --enable_bucket --pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5" --train_data_dir="/proj/suchka/image-generation/lora/jixian/img" --resolution=512,512 --output_dir="/proj/suchka/image-generation/lora/jixian/model" --logging_dir="/proj/suchka/image-generation/lora/jixian/log" --network_alpha="128" --save_model_as=safetensors --network_module=networks.lora --text_encoder_lr=5e-7 --unet_lr=5e-6 --network_dim=128  --output_name="jixianwang_v3" --lr_scheduler_num_cycles="10" --learning_rate="5e-6" --lr_scheduler="constant" --train_batch_size="8" --max_train_steps="2000" --save_every_n_epochs="1" --mixed_precision="bf16" --save_precision="bf16" --caption_extension=".txt" --cache_latents --optimizer_type="AdamW8bit" --max_data_loader_n_workers="0" --bucket_reso_steps=64 --xformers --bucket_no_upscale --noise_offset=0.1 --seed=1234
+
+accelerate launch --num_cpu_threads_per_process=2 "train_network.py" --enable_bucket --pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5" --train_data_dir="/proj/suchka/image-generation/lora/jixian/img" --resolution=512,512 --output_dir="/proj/suchka/image-generation/lora/jixian/model" --logging_dir="/proj/suchka/image-generation/lora/jixian/log" --network_alpha="128" --save_model_as=safetensors --network_module=networks.lora --text_encoder_lr=5e-7 --unet_lr=5e-6 --network_dim=128  --output_name="jixianwang_v3" --lr_scheduler_num_cycles="10" --learning_rate="5e-6" --lr_scheduler="constant" --train_batch_size="4" --max_train_steps="2000" --save_every_n_epochs="1" --mixed_precision="bf16" --save_precision="bf16" --caption_extension=".txt" --cache_latents --optimizer_type="AdamW8bit" --max_data_loader_n_workers="0" --bucket_reso_steps=64 --xformers --bucket_no_upscale --noise_offset=0.1 --seed=1234
+
