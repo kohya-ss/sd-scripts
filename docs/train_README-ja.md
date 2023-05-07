@@ -618,6 +618,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     - DAdaptation(DAdaptAdam) : https://github.com/facebookresearch/dadaptation
     - DAdaptAdaGrad : 引数は同上
     - DAdaptAdan : 引数は同上
+    - DAdaptLion : 引数は同上
     - DAdaptSGD : 引数は同上
     - AdaFactor : [Transformers AdaFactor](https://huggingface.co/docs/transformers/main_classes/optimizer_schedules)
     - 任意のオプティマイザ
