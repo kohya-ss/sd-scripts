@@ -1885,7 +1885,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "--optimizer_type",
         type=str,
         default="",
-        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptLion, DAdaptSGD, AdaFactor",
+        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, AdaFactor",
     )
 
     # backward compatibility
@@ -2478,7 +2478,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 
 def get_optimizer(args, trainable_params):
-    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptLion, DAdaptSGD, Adafactor"
+    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
 
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
@@ -2610,15 +2610,21 @@ def get_optimizer(args, trainable_params):
             )
 
         # set optimizer
-        if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdam".lower():
-            optimizer_class = dadaptation.DAdaptAdam
-            print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
+        if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdamPreprint".lower():
+            optimizer_class = dadaptation.DAdaptAdamPreprint
+            print(f"use D-Adaptation AdamPreprint optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdaGrad".lower():
             optimizer_class = dadaptation.DAdaptAdaGrad
             print(f"use D-Adaptation AdaGrad optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DAdaptAdam".lower():
+            optimizer_class = dadaptation.DAdaptAdam
+            print(f"use D-Adaptation DAdaptAdam optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdan".lower():
             optimizer_class = dadaptation.DAdaptAdan
             print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DAdaptAdanIP".lower():
+            optimizer_class = dadaptation.DAdaptAdanIP
+            print(f"use D-Adaptation DAdaptAdanIP optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptLion".lower():
             optimizer_class = dadaptation.DAdaptLion
         print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
