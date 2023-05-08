@@ -2586,6 +2586,7 @@ def get_optimizer(args, trainable_params):
         # check dadaptation is installed
         try:
             import dadaptation
+            import dadaptation.experimental as experimental
         except ImportError:
             raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
 
@@ -2611,7 +2612,7 @@ def get_optimizer(args, trainable_params):
 
         # set optimizer
         if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdamPreprint".lower():
-            optimizer_class = dadaptation.experimental.DAdaptAdamPreprint
+            optimizer_class = experimental.DAdaptAdamPreprint
             print(f"use D-Adaptation AdamPreprint optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdaGrad".lower():
             optimizer_class = dadaptation.DAdaptAdaGrad
@@ -2623,7 +2624,7 @@ def get_optimizer(args, trainable_params):
             optimizer_class = dadaptation.DAdaptAdan
             print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdanIP".lower():
-            optimizer_class = dadaptation.experimental.DAdaptAdanIP
+            optimizer_class = experimental.DAdaptAdanIP
             print(f"use D-Adaptation DAdaptAdanIP optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptLion".lower():
             optimizer_class = dadaptation.DAdaptLion
