@@ -332,7 +332,7 @@ def train(args):
     print(f"  gradient ccumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
     print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
-    progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
+    progress_bar = tqdm(range(args.max_train_steps), smoothing=0.8, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
     noise_scheduler = DDPMScheduler(
