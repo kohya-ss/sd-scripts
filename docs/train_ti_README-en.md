@@ -2,7 +2,7 @@
 
 This is an explanation about learning Textual Inversion (https://textual-inversion.github.io/).
 
-Please also refer to the [common documentation on learning](./train_README.md).
+Please also refer to the [common documentation on learning](./train_README-en.md).
 
 The implementation was greatly inspired by https://github.com/huggingface/diffusers/tree/main/examples/textual_inversion.
 
@@ -14,7 +14,7 @@ Please refer to this repository's README beforehand and set up the environment.
 
 ## Data preparation
 
-Refer to [Preparing Training Data](./train_README.md) for more information.
+Refer to [Preparing Training Data](./train_README-en.md) for more information.
 
 ## Executing the training
 
