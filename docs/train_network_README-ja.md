@@ -1,3 +1,5 @@
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([train_network_README-ja.md](https://github.com/kohya-ss/sd-scripts/blob/main/docs/train_network_README-ja.md))
+
 # Learning LoRA
 
 This is an implementation of [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) (arxiv) and [LoRA](https://github.com/microsoft/LoRA) (github) for Stable Diffusion.
