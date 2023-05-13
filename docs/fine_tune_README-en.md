@@ -2,7 +2,7 @@
 
 This is a fine-tuning method proposed by NovelAI, which is compatible with their learning approach, automatic captioning, tagging, and a Windows + VRAM 12GB (for SD v1.x) environment. Fine-tuning in this context refers to training the model using images and captions (LoRA, Textual Inversion, and Hypernetworks are not included).
 
-Please also refer to the [common document on training](./train_README.md).
+Please also refer to the [common document on training](./train_README-en.md).
 
 # Overview
 
@@ -46,7 +46,7 @@ Please refer to the README of this repository and set up your environment before
 
 ## Data Preparation
 
-Please refer to the [instructions for preparing training data](./train_README.md). Fine-tuning only supports the metadata-based fine-tuning method.
+Please refer to the [instructions for preparing training data](./train_README-en.md). Fine-tuning only supports the metadata-based fine-tuning method.
 
 ## Executing the Training
 
