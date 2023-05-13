@@ -1,4 +1,4 @@
-## This is a ChatGPT-4 English adaptation of the original document by kohya-ss (fine_tune_README_ja.md)
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([fine_tune_README_ja.md](https://github.com/kohya-ss/sd-scripts/blob/main/docs/fine_tune_README_ja.md))
 
 This is a fine-tuning method proposed by NovelAI, which is compatible with their learning approach, automatic captioning, tagging, and a Windows + VRAM 12GB (for SD v1.x) environment. Fine-tuning in this context refers to training the model using images and captions (LoRA, Textual Inversion, and Hypernetworks are not included).
 
