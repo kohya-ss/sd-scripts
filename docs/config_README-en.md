@@ -1,5 +1,4 @@
-This a ChatGPT-4 English Conversion of kohya-ss (config_README-ja.md)
-
+## This a ChatGPT-4 English Conversion of kohya-ss (config_README-ja.md)
 
 This documentation explains the configuration file that can be passed using the `--dataset_config` option.
 
