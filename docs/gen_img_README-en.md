@@ -1,4 +1,4 @@
-## This is a ChatGPT-4 English adaptation of the original document by kohya-ss (gen_img_README-ja.md)
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([gen_img_README-ja.md](https://github.com/kohya-ss/sd-scripts/blob/main/docs/gen_img_README-ja.md))
 
 This is a Diffusers-based inference (image generation) script compatible with SD 1.x and 2.x models, as well as LoRA and ControlNet (only confirmed to work with v1.0) trained in this repository. It is used from the command line.
 
