@@ -1,68 +1,63 @@
-# LoRAの学習について
+# Learning LoRA
 
-[LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)（arxiv）、[LoRA](https://github.com/microsoft/LoRA)（github）をStable Diffusionに適用したものです。
+This is an implementation of [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685) (arxiv) and [LoRA](https://github.com/microsoft/LoRA) (github) for Stable Diffusion.
 
-[cloneofsimo氏のリポジトリ](https://github.com/cloneofsimo/lora)を大いに参考にさせていただきました。ありがとうございます。
+We greatly appreciate the work of [cloneofsimo's repository](https://github.com/cloneofsimo/lora). Thank you.
 
-通常のLoRAは Linear およぴカーネルサイズ 1x1 の Conv2d にのみ適用されますが、カーネルサイズ 3x3 のConv2dに適用を拡大することもできます。
+While conventional LoRA is applied only to Linear and Conv2d with a kernel size of 1x1, it can also be extended to Conv2d with a kernel size of 3x3.
 
-Conv2d 3x3への拡大は [cloneofsimo氏](https://github.com/cloneofsimo/lora) が最初にリリースし、KohakuBlueleaf氏が [LoCon](https://github.com/KohakuBlueleaf/LoCon) でその有効性を明らかにしたものです。KohakuBlueleaf氏に深く感謝します。
+The expansion to Conv2d 3x3 was first released by [cloneofsimo](https://github.com/cloneofsimo/lora), and its effectiveness was demonstrated by KohakuBlueleaf in [LoCon](https://github.com/KohakuBlueleaf/LoCon). We deeply appreciate KohakuBlueleaf's work.
 
-8GB VRAMでもぎりぎり動作するようです。
+It seems to work just fine with 8GB VRAM.
 
-[学習についての共通ドキュメント](./train_README-ja.md) もあわせてご覧ください。
+Please also refer to the [common documentation on learning](./train_README-en.md).
 
-# 学習できるLoRAの種類
+# Types of LoRA that can be learned
 
-以下の二種類をサポートします。以下は当リポジトリ内の独自の名称です。
+We support the following two types, which have unique names within this repository:
 
-1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers、リエラと読みます)
+1. __LoRA-LierLa__: LoRA applied to Linear and Conv2d with a kernel size of 1x1.
 
-    Linear およびカーネルサイズ 1x1 の Conv2d に適用されるLoRA
+2. __LoRA-C3Lier__: LoRA applied to Linear, Conv2d with a kernel size of 1x1, and Conv2d with a kernel size of 3x3.
 
-2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers、セリアと読みます)
+Compared to LoRA-LierLa, LoRA-C3Liar may offer higher accuracy due to the increased number of layers it is applied to.
 
-    1.に加え、カーネルサイズ 3x3 の Conv2d に適用されるLoRA
+During training, you can also use __DyLoRA__ (described later).
 
-LoRA-LierLaに比べ、LoRA-C3Liarは適用される層が増える分、高い精度が期待できるかもしれません。
+## Notes on trained models
 
-また学習時は __DyLoRA__ を使用することもできます（後述します）。
+LoRA-LierLa can be used with AUTOMATIC1111's Web UI LoRA feature.
 
-## 学習したモデルに関する注意
+To generate with LoRA-C3Liar in Web UI, use this [WebUI extension for additional networks](https://github.com/kohya-ss/sd-webui-additional-networks).
 
-LoRA-LierLa は、AUTOMATIC1111氏のWeb UIのLoRA機能で使用することができます。
+Both LoRA models can also be merged with the Stable Diffusion model using a script within this repository.
 
-LoRA-C3Liarを使いWeb UIで生成するには、こちらの[WebUI用extension](https://github.com/kohya-ss/sd-webui-additional-networks)を使ってください。
+There is currently no compatibility with cloneofsimo's repository or d8ahazard's [Dreambooth Extension for Stable-Diffusion-WebUI](https://github.com/d8ahazard/sd_dreambooth_extension) due to some feature extensions (described later).
 
-いずれも学習したLoRAのモデルを、Stable Diffusionのモデルにこのリポジトリ内のスクリプトであらかじめマージすることもできます。
+# Learning Procedure
 
-cloneofsimo氏のリポジトリ、およびd8ahazard氏の[Dreambooth Extension for Stable-Diffusion-WebUI](https://github.com/d8ahazard/sd_dreambooth_extension)とは、現時点では互換性がありません。いくつかの機能拡張を行っているためです（後述）。
+Please refer to this repository's README and prepare the environment accordingly.
 
-# 学習の手順
+## Data Preparation
 
-あらかじめこのリポジトリのREADMEを参照し、環境整備を行ってください。
+Refer to [preparing learning data](./train_README-en.md).
 
-## データの準備
+## Execute Learning
 
-[学習データの準備について](./train_README-ja.md) を参照してください。
+Use `train_network.py`.
 
+Specify the target module name for the `--network_module` option in `train_network.py`. Since `network.lora` is compatible with LoRA, please specify that.
 
-## 学習の実行
+It seems that specifying a higher learning rate than the usual DreamBooth or fine-tuning, such as `1e-4` to `1e-3`, works well.
 
-`train_network.py`を用います。
-
-`train_network.py`では `--network_module` オプションに、学習対象のモジュール名を指定します。LoRAに対応するのは`network.lora`となりますので、それを指定してください。
-
-なお学習率は通常のDreamBoothやfine tuningよりも高めの、`1e-4`～`1e-3`程度を指定するとよいようです。
-
-以下はコマンドラインの例です。
+Here is an example command line:
 
 ```
 accelerate launch --num_cpu_threads_per_process 1 train_network.py 
-    --pretrained_model_name_or_path=<.ckptまたは.safetensordまたはDiffusers版モデルのディレクトリ> 
-    --dataset_config=<データ準備で作成した.tomlファイル> 
-    --output_dir=<学習したモデルの出力先フォルダ>  
-    --output_name=<学習したモデル出力時のファイル名> 
+    --pretrained_model_name_or_path=<.ckpt, .safetensors, or directory of Diffusers version model> 
+    --dataset_config=<.toml file created during data preparation> 
+    --output_dir=<output folder for trained model>  
+    --output_name=<filename for output of trained model> 
     --save_model_as=safetensors 
     --prior_loss_weight=1.0 
     --max_train_steps=400 
@@ -76,46 +71,36 @@ accelerate launch --num_cpu_threads_per_process 1 train_network.py
     --network_module=networks.lora
 ```
 
-このコマンドラインでは LoRA-LierLa が学習されます。
+This command line will train LoRA-LierLa.
 
-`--output_dir` オプションで指定したフォルダに、LoRAのモデルが保存されます。他のオプション、オプティマイザ等については [学習の共通ドキュメント](./train_README-ja.md) の「よく使われるオプション」も参照してください。
+The LoRA model will be saved in the folder specified by the `--output_dir` option. For other options, optimizers, etc., please refer to the "Commonly Used Options" section in the [common learning documentation](./train_README-en.md).
 
-その他、以下のオプションが指定できます。
+Other available options include:
 
-* `--network_dim`
-  * LoRAのRANKを指定します（``--networkdim=4``など）。省略時は4になります。数が多いほど表現力は増しますが、学習に必要なメモリ、時間は増えます。また闇雲に増やしても良くないようです。
-* `--network_alpha`
-  *  アンダーフローを防ぎ安定して学習するための ``alpha`` 値を指定します。デフォルトは1です。``network_dim``と同じ値を指定すると以前のバージョンと同じ動作になります。
-* `--persistent_data_loader_workers`
-  * Windows環境で指定するとエポック間の待ち時間が大幅に短縮されます。
-* `--max_data_loader_n_workers`
-  * データ読み込みのプロセス数を指定します。プロセス数が多いとデータ読み込みが速くなりGPUを効率的に利用できますが、メインメモリを消費します。デフォルトは「`8` または `CPU同時実行スレッド数-1` の小さいほう」なので、メインメモリに余裕がない場合や、GPU使用率が90%程度以上なら、それらの数値を見ながら `2` または `1` 程度まで下げてください。
-* `--network_weights`
-  * 学習前に学習済みのLoRAの重みを読み込み、そこから追加で学習します。
-* `--network_train_unet_only`
-  * U-Netに関連するLoRAモジュールのみ有効とします。fine tuning的な学習で指定するとよいかもしれません。
-* `--network_train_text_encoder_only`
-  * Text Encoderに関連するLoRAモジュールのみ有効とします。Textual Inversion的な効果が期待できるかもしれません。
-* `--unet_lr`
-  * U-Netに関連するLoRAモジュールに、通常の学習率（--learning_rateオプションで指定）とは異なる学習率を使う時に指定します。
-* `--text_encoder_lr`
-  * Text Encoderに関連するLoRAモジュールに、通常の学習率（--learning_rateオプションで指定）とは異なる学習率を使う時に指定します。Text Encoderのほうを若干低めの学習率（5e-5など）にしたほうが良い、という話もあるようです。
-* `--network_args`
-  * 複数の引数を指定できます。後述します。
+* `--network_dim`: Specifies the RANK of LoRA (`--networkdim=4`, etc.). The default is 4. A higher number increases expressiveness but requires more memory and time for learning. It is not always better to increase this number blindly.
+* `--network_alpha`: Specifies the `alpha` value for stable learning and preventing underflow. The default is 1. Specifying the same value as `network_dim` results in the same behavior as previous versions.
+* `--persistent_data_loader_workers`: Significantly reduces waiting time between epochs on Windows environments.
+* `--max_data_loader_n_workers`: Specifies the number of processes for data loading. More processes result in faster data loading and more efficient GPU usage but consume main memory. By default, it is set to the smaller of `8` or `number of concurrent CPU threads - 1`. If you have limited main memory or GPU usage is above 90%, consider reducing this value to `2` or `1`, based on your hardware.
+* `--network_weights`: Loads the weights of a pre-trained LoRA and trains from there.
+* `--network_train_unet_only`: Enables only LoRA modules related to U-Net. This may be useful for fine-tuning-type learning.
+* `--network_train_text_encoder_only`: Enables only LoRA modules related to Text Encoder. This may have a Textual Inversion-like effect.
+* `--unet_lr`: Specifies a different learning rate for U-Net-related LoRA modules than the standard learning rate specified by the `--learning_rate` option.
+* `--text_encoder_lr`: Specifies a different learning rate for Text Encoder-related LoRA modules than the standard learning rate specified by the `--learning_rate` option. There is some discussion that it may be better to use a slightly lower learning rate (e.g., 5e-5) for the Text Encoder.
+* `--network_args`: Allows specifying multiple arguments. Described later.
 
-`--network_train_unet_only` と `--network_train_text_encoder_only` の両方とも未指定時（デフォルト）はText EncoderとU-Netの両方のLoRAモジュールを有効にします。
+If both `--network_train_unet_only` and `--network_train_text_encoder_only` are unspecified (default), both Text Encoder and U-Net LoRA modules are enabled.
 
-# その他の学習方法
+# Other Learning Methods
 
-## LoRA-C3Lier を学習する
+## Learning LoRA-C3Lier
 
-`--network_args` に以下のように指定してください。`conv_dim` で Conv2d (3x3) の rank を、`conv_alpha` で alpha を指定してください。
+Specify `--network_args` like this: `conv_dim` for the rank of Conv2d (3x3) and `conv_alpha` for alpha.
 
 ```
 --network_args "conv_dim=4" "conv_alpha=1"
 ```
 
-以下のように alpha 省略時は1になります。
+If alpha is omitted, it defaults to 1.
 
 ```
 --network_args "conv_dim=4"
@@ -123,77 +108,61 @@ accelerate launch --num_cpu_threads_per_process 1 train_network.py
 
 ## DyLoRA
 
-DyLoRAはこちらの論文で提案されたものです。[DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](https://arxiv.org/abs/2210.07558)　公式実装は[こちら](https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA)です。
+DyLoRA is proposed in this paper: [DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](https://arxiv.org/abs/2210.07558). The official implementation is available [here](https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA).
 
-論文によると、LoRAのrankは必ずしも高いほうが良いわけではなく、対象のモデル、データセット、タスクなどにより適切なrankを探す必要があるようです。DyLoRAを使うと、指定したdim(rank)以下のさまざまなrankで同時にLoRAを学習します。これにより最適なrankをそれぞれ学習して探す手間を省くことができます。
+According to the paper, LoRA's rank is not always better when it is higher. Instead, it is necessary to find the appropriate rank depending on the target model, dataset, task, etc. Using DyLoRA, you can simultaneously train LoRA with various ranks up to the specified dim(rank). This eliminates the need to search for the optimal rank separately for each.
 
-当リポジトリの実装は公式実装をベースに独自の拡張を加えています（そのため不具合などあるかもしれません）。
+Our implementation is based on the official implementation with some custom extensions (which may have bugs).
 
-### 当リポジトリのDyLoRAの特徴
+### Features of DyLoRA in this repository
 
-学習後のDyLoRAのモデルファイルはLoRAと互換性があります。また、モデルファイルから指定したdim(rank)以下の複数のdimのLoRAを抽出できます。
+DyLoRA's model files are compatible with LoRA. Additionally, LoRA models with multiple dims(ranks) up to the specified dim can be extracted from DyLoRA's model files.
 
-DyLoRA-LierLa、DyLoRA-C3Lierのどちらも学習できます。
+Both DyLoRA-LierLa and DyLoRA-C3Lier can be learned.
 
-### DyLoRAで学習する
+### Learning with DyLoRA
 
-`--network_module=networks.dylora` のように、DyLoRAに対応する`network.dylora`を指定してください。
+Specify `network.dylora` for the `--network_module` option, which is compatible with DyLoRA.
 
-また `--network_args` に、たとえば`--network_args "unit=4"`のように`unit`を指定します。`unit`はrankを分割する単位です。たとえば`--network_dim=16 --network_args "unit=4"` のように指定します。`unit`は`network_dim`を割り切れる値（`network_dim`は`unit`の倍数）としてください。
+Also, specify `unit` in `--network_args`, such as `--network_args "unit=4"`. `unit` is the unit for dividing rank. For example, specify `--network_dim=16 --network_args "unit=4"`. Please make sure that `unit` is a divisor of `network_dim` (i.e., `network_dim` is a multiple of `unit`).
 
-`unit`を指定しない場合は、`unit=1`として扱われます。
+If `unit` is not specified, it is treated as `unit=1`.
 
-記述例は以下です。
+For example, when learning with dim=16 and unit=4 (described later), you can extract and learn four LoRA models with ranks 4, 8, 12, and 16. By generating images with each extracted model and comparing them, you can select the LoRA with the optimal rank.
 
-```
---network_module=networks.dylora --network_dim=16 --network_args "unit=4"
+Other options are the same as for regular LoRA.
 
---network_module=networks.dylora --network_dim=32 --network_alpha=16 --network_args "unit=4"
-```
+*Note: `unit` is a custom extension of this repository. In DyLoRA, the learning time is expected to be longer than that of regular LoRA with the same dim(rank), so the split unit has been increased.
 
-DyLoRA-C3Lierの場合は、`--network_args` に`"conv_dim=4"`のように`conv_dim`を指定します。通常のLoRAと異なり、`conv_dim`は`network_dim`と同じ値である必要があります。記述例は以下です。
+### Extracting LoRA models from DyLoRA models
 
-```
---network_module=networks.dylora --network_dim=16 --network_args "conv_dim=16" "unit=4"
+Use `extract_lora_from_dylora.py` in the `networks` folder. This script extracts LoRA models from DyLoRA models at the specified `unit` intervals.
 
---network_module=networks.dylora --network_dim=32 --network_alpha=16 --network_args "conv_dim=32" "conv_alpha=16" "unit=8"
-```
-
-たとえばdim=16、unit=4（後述）で学習すると、4、8、12、16の4つのrankのLoRAを学習、抽出できます。抽出した各モデルで画像を生成し、比較することで、最適なrankのLoRAを選択できます。
-
-その他のオプションは通常のLoRAと同じです。
-
-※ `unit`は当リポジトリの独自拡張で、DyLoRAでは同dim(rank)の通常LoRAに比べると学習時間が長くなることが予想されるため、分割単位を大きくしたものです。
-
-### DyLoRAのモデルからLoRAモデルを抽出する
-
-`networks`フォルダ内の `extract_lora_from_dylora.py`を使用します。指定した`unit`単位で、DyLoRAのモデルからLoRAのモデルを抽出します。
-
-コマンドラインはたとえば以下のようになります。
+The command line looks like this:
 
 ```powershell
 python networks\extract_lora_from_dylora.py --model "foldername/dylora-model.safetensors" --save_to "foldername/dylora-model-split.safetensors" --unit 4
 ```
 
-`--model` にはDyLoRAのモデルファイルを指定します。`--save_to` には抽出したモデルを保存するファイル名を指定します（rankの数値がファイル名に付加されます）。`--unit` にはDyLoRAの学習時の`unit`を指定します。
+Specify the DyLoRA model file in `--model`. Specify the file name to save the extracted model in `--save_to` (the rank value will be added to the file name). Specify the `unit` used during DyLoRA's learning in `--unit`.
 
-## 階層別学習率
+## Hierarchical Learning Rate
 
-詳細は[PR #355](https://github.com/kohya-ss/sd-scripts/pull/355) をご覧ください。
+For details, please refer to [PR #355](https://github.com/kohya-ss/sd-scripts/pull/355).
 
-フルモデルの25個のブロックの重みを指定できます。最初のブロックに該当するLoRAは存在しませんが、階層別LoRA適用等との互換性のために25個としています。またconv2d3x3に拡張しない場合も一部のブロックにはLoRAが存在しませんが、記述を統一するため常に25個の値を指定してください。
+You can specify the weights of the 25 blocks of the full model. There is no LoRA corresponding to the first block, but it is set to 25 for compatibility with hierarchical LoRA applications. Also, in some blocks, LoRA does not exist if not extended to conv2d3x3, but please always specify 25 values to unify the description.
 
-`--network_args` で以下の引数を指定してください。
+Specify the following arguments in `--network_args`.
 
-- `down_lr_weight` : U-Netのdown blocksの学習率の重みを指定します。以下が指定可能です。
-  - ブロックごとの重み : `"down_lr_weight=0,0,0,0,0,0,1,1,1,1,1,1"` のように12個の数値を指定します。
-  - プリセットからの指定 : `"down_lr_weight=sine"` のように指定します（サインカーブで重みを指定します）。sine, cosine, linear, reverse_linear, zeros が指定可能です。また `"down_lr_weight=cosine+.25"` のように `+数値` を追加すると、指定した数値を加算します（0.25~1.25になります）。
-- `mid_lr_weight` : U-Netのmid blockの学習率の重みを指定します。`"down_lr_weight=0.5"` のように数値を一つだけ指定します。
-- `up_lr_weight` : U-Netのup blocksの学習率の重みを指定します。down_lr_weightと同様です。
-- 指定を省略した部分は1.0として扱われます。また重みを0にするとそのブロックのLoRAモジュールは作成されません。
-- `block_lr_zero_threshold` : 重みがこの値以下の場合、LoRAモジュールを作成しません。デフォルトは0です。
+- `down_lr_weight`: Specify the learning rate weights of the down blocks of U-Net. You can specify the following:
+  - Weight for each block: Specify 12 values like `"down_lr_weight=0,0,0,0,0,0,1,1,1,1,1,1"`.
+  - Specification from preset: Specify like `"down_lr_weight=sine"` (weights are specified with a sine curve). You can specify sine, cosine, linear, reverse_linear, or zeros. Additionally, if you add `+number` like `"down_lr_weight=cosine+.25"`, the specified value will be added (it will become 0.25~1.25).
+- `mid_lr_weight`: Specify the learning rate weight of the mid block of U-Net. Specify only one number like `"down_lr_weight=0.5"`.
+- `up_lr_weight`: Specify the learning rate weights of the up blocks of U-Net. It is the same as down_lr_weight.
+- Any unspecified parts will be treated as 1.0. Also, if the weight is set to 0, the LoRA module for that block will not be created.
+- `block_lr_zero_threshold`: If the weight is less than or equal to this value, the LoRA module will not be created. The default is 0.
 
-### 階層別学習率コマンドライン指定例:
+### Example of hierarchical learning rate command-line specification:
 
 ```powershell
 --network_args "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5" "mid_lr_weight=2.0" "up_lr_weight=1.5,1.5,1.5,1.5,1.0,1.0,1.0,1.0,0.5,0.5,0.5,0.5"
@@ -201,7 +170,7 @@ python networks\extract_lora_from_dylora.py --model "foldername/dylora-model.saf
 --network_args "block_lr_zero_threshold=0.1" "down_lr_weight=sine+.5" "mid_lr_weight=1.5" "up_lr_weight=cosine+.5"
 ```
 
-###  階層別学習率tomlファイル指定例:
+### Example of hierarchical learning rate toml file specification:
 
 ```toml
 network_args = [ "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5", "mid_lr_weight=2.0", "up_lr_weight=1.5,1.5,1.5,1.5,1.0,1.0,1.0,1.0,0.5,0.5,0.5,0.5",]
@@ -209,18 +178,18 @@ network_args = [ "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5
 network_args = [ "block_lr_zero_threshold=0.1", "down_lr_weight=sine+.5", "mid_lr_weight=1.5", "up_lr_weight=cosine+.5", ]
 ```
 
-## 階層別dim (rank)
+## Hierarchical dim (rank)
 
-フルモデルの25個のブロックのdim (rank)を指定できます。階層別学習率と同様に一部のブロックにはLoRAが存在しない場合がありますが、常に25個の値を指定してください。
+You can specify the dim (rank) of the 25 blocks of the full model. Like the hierarchical learning rate, LoRA may not exist in some blocks, but always specify 25 values.
 
-`--network_args` で以下の引数を指定してください。
+Specify the following arguments in `--network_args`.
 
-- `block_dims` : 各ブロックのdim (rank)を指定します。`"block_dims=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"` のように25個の数値を指定します。
-- `block_alphas` : 各ブロックのalphaを指定します。block_dimsと同様に25個の数値を指定します。省略時はnetwork_alphaの値が使用されます。
-- `conv_block_dims` : LoRAをConv2d 3x3に拡張し、各ブロックのdim (rank)を指定します。
-- `conv_block_alphas` : LoRAをConv2d 3x3に拡張したときの各ブロックのalphaを指定します。省略時はconv_alphaの値が使用されます。
+- `block_dims`: Specify the dim (rank) of each block. Specify 25 values like `"block_dims=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"`.
+- `block_alphas`: Specify the alpha of each block. Specify 25 values like block_dims. If omitted, the value of network_alpha will be used.
+- `conv_block_dims`: Extend LoRA to Conv2d 3x3 and specify the dim (rank) of each block.
+- `conv_block_alphas`: Specify the alpha of each block when LoRA is extended to Conv2d 3x3. If omitted, the value of conv_alpha will be used.
 
-###  階層別dim (rank)コマンドライン指定例:
+### Example of hierarchical dim (rank) command-line specification:
 
 ```powershell
 --network_args "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2"
@@ -230,7 +199,7 @@ network_args = [ "block_lr_zero_threshold=0.1", "down_lr_weight=sine+.5", "mid_l
 --network_args "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2" "block_alphas=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"
 ```
 
-###  階層別dim (rank)tomlファイル指定例:
+### Example of hierarchical dim (rank) toml file specification:
 
 ```toml
 network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2",]
@@ -238,17 +207,17 @@ network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,
 network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2", "block_alphas=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2",]
 ```
 
-# その他のスクリプト
+# Other scripts
 
-マージ等LoRAに関連するスクリプト群です。
+These are a set of scripts related to merging and LoRA.
 
-## マージスクリプトについて
+## About the merge script
 
-merge_lora.pyでStable DiffusionのモデルにLoRAの学習結果をマージしたり、複数のLoRAモデルをマージしたりできます。
+With merge_lora.py, you can merge the learning results of LoRA into the Stable Diffusion model or merge multiple LoRA models.
 
-### Stable DiffusionのモデルにLoRAのモデルをマージする
+### Merging LoRA model into Stable Diffusion model
 
-マージ後のモデルは通常のStable Diffusionのckptと同様に扱えます。たとえば以下のようなコマンドラインになります。
+The merged model can be treated like a normal Stable Diffusion ckpt. For example, the command line will be as follows:
 
 ```
 python networks\merge_lora.py --sd_model ..\model\model.ckpt 
@@ -256,17 +225,17 @@ python networks\merge_lora.py --sd_model ..\model\model.ckpt
     --models ..\lora_train1\last.safetensors --ratios 0.8
 ```
 
-Stable Diffusion v2.xのモデルで学習し、それにマージする場合は、--v2オプションを指定してください。
+If you are training with a Stable Diffusion v2.x model and want to merge it, please specify the --v2 option.
 
---sd_modelオプションにマージの元となるStable Diffusionのモデルファイルを指定します（.ckptまたは.safetensorsのみ対応で、Diffusersは今のところ対応していません）。
+Specify the Stable Diffusion model file to be merged in the --sd_model option (.ckpt or .safetensors only, Diffusers are not currently supported).
 
---save_toオプションにマージ後のモデルの保存先を指定します（.ckptまたは.safetensors、拡張子で自動判定）。
+Specify the destination to save the merged model in the --save_to option (.ckpt or .safetensors, automatically determined by the extension).
 
---modelsに学習したLoRAのモデルファイルを指定します。複数指定も可能で、その時は順にマージします。
+Specify the learned LoRA model file in --models. Multiple specifications are also possible, in which case they will be merged in order.
 
---ratiosにそれぞれのモデルの適用率（どのくらい重みを元モデルに反映するか）を0~1.0の数値で指定します。例えば過学習に近いような場合は、適用率を下げるとマシになるかもしれません。モデルの数と同じだけ指定してください。
+Specify the application rate (how much weight to reflect in the original model) for each model in --ratios with a value between 0 and 1.0. For example, if it seems close to overlearning, reducing the application rate may make it better. Please specify the same number as the number of models.
 
-複数指定時は以下のようになります。
+When specifying multiple models, it will be as follows:
 
 ```
 python networks\merge_lora.py --sd_model ..\model\model.ckpt 
@@ -274,66 +243,64 @@ python networks\merge_lora.py --sd_model ..\model\model.ckpt
     --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors --ratios 0.8 0.5
 ```
 
-### 複数のLoRAのモデルをマージする
+### Merging Multiple LoRA Models
 
-複数のLoRAモデルをひとつずつSDモデルに適用する場合と、複数のLoRAモデルをマージしてからSDモデルにマージする場合とは、計算順序の関連で微妙に異なる結果になります。
+There will be subtle differences in the results due to the order of calculations when applying multiple LoRA models one by one to the SD model compared to merging multiple LoRA models and then applying them to the SD model.
 
-たとえば以下のようなコマンドラインになります。
+For example, the command line would look like this:
 
 ```
-python networks\merge_lora.py 
-    --save_to ..\lora_train1\model-char1-style1-merged.safetensors 
+python networks\merge_lora.py
+    --save_to ..\lora_train1\model-char1-style1-merged.safetensors
     --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors --ratios 0.6 0.4
 ```
 
---sd_modelオプションは指定不要です。
+The --sd_model option is not required.
 
---save_toオプションにマージ後のLoRAモデルの保存先を指定します（.ckptまたは.safetensors、拡張子で自動判定）。
+Specify the save destination for the merged LoRA model with the --save_to option (automatically determined by .ckpt or .safetensors extension).
 
---modelsに学習したLoRAのモデルファイルを指定します。三つ以上も指定可能です。
+Specify the trained LoRA model files with the --models option. You can specify three or more models.
 
---ratiosにそれぞれのモデルの比率（どのくらい重みを元モデルに反映するか）を0~1.0の数値で指定します。二つのモデルを一対一でマージす場合は、「0.5 0.5」になります。「1.0 1.0」では合計の重みが大きくなりすぎて、恐らく結果はあまり望ましくないものになると思われます。
+Specify the ratio of each model (how much weight to reflect in the original model) with the --ratios option as a numeric value between 0 and 1.0. If you want to merge two models one-to-one, use "0.5 0.5". With "1.0 1.0", the total weight will be too high, and the result will likely be undesirable.
 
-v1で学習したLoRAとv2で学習したLoRA、rank（次元数）や``alpha``の異なるLoRAはマージできません。U-NetだけのLoRAとU-Net+Text EncoderのLoRAはマージできるはずですが、結果は未知数です。
+LoRA models trained with v1 and v2, and those with different ranks (dimensions) or ``alpha`` values cannot be merged. LoRA models with only U-Net and those with U-Net + Text Encoder should be mergeable, but the results are unknown.
 
-
-### その他のオプション
+### Other Options
 
 * precision
-  * マージ計算時の精度をfloat、fp16、bf16から指定できます。省略時は精度を確保するためfloatになります。メモリ使用量を減らしたい場合はfp16/bf16を指定してください。
+  * Specify the precision during merge calculation from float, fp16, and bf16. If omitted, it defaults to float to ensure accuracy. If you want to reduce memory usage, please specify fp16/bf16.
 * save_precision
-  * モデル保存時の精度をfloat、fp16、bf16から指定できます。省略時はprecisionと同じ精度になります。
+  * Specify the precision when saving the model from float, fp16, and bf16. If omitted, the precision will be the same as the precision option.
 
+## Merging Multiple LoRA Models with Different Ranks
 
-## 複数のrankが異なるLoRAのモデルをマージする
-
-複数のLoRAをひとつのLoRAで近似します（完全な再現はできません）。`svd_merge_lora.py`を用います。たとえば以下のようなコマンドラインになります。
+Approximate multiple LoRA models with a single LoRA model (an exact reproduction is not possible). Use `svd_merge_lora.py`. For example, the command line would look like this:
 
 ```
-python networks\svd_merge_lora.py 
-    --save_to ..\lora_train1\model-char1-style1-merged.safetensors 
-    --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors 
+python networks\svd_merge_lora.py
+    --save_to ..\lora_train1\model-char1-style1-merged.safetensors
+    --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors
     --ratios 0.6 0.4 --new_rank 32 --device cuda
 ```
 
-`merge_lora.py` と主なオプションは同一です。以下のオプションが追加されています。
+The main options are the same as `merge_lora.py`. The following options have been added:
 
 - `--new_rank`
-  - 作成するLoRAのrankを指定します。
+  - Specify the rank of the created LoRA model.
 - `--new_conv_rank`
-  - 作成する Conv2d 3x3 LoRA の rank を指定します。省略時は `new_rank` と同じになります。
+  - Specify the rank of the created Conv2d 3x3 LoRA model. If omitted, it defaults to the same value as `new_rank`.
 - `--device`
-  - `--device cuda`としてcudaを指定すると計算をGPU上で行います。処理が速くなります。
+  - Specify cuda with `--device cuda` to perform calculations on the GPU. This will speed up the process.
 
-## 当リポジトリ内の画像生成スクリプトで生成する
+## Generate Images Using the Scripts in This Repository
 
-gen_img_diffusers.pyに、--network_module、--network_weightsの各オプションを追加してください。意味は学習時と同様です。
+Add the --network_module and --network_weights options to gen_img_diffusers.py. Their meanings are the same as during training.
 
---network_mulオプションで0~1.0の数値を指定すると、LoRAの適用率を変えられます。
+Specify a numerical value between 0 and 1.0 with the --network_mul option to change the application rate of LoRA.
 
-## Diffusersのpipelineで生成する
+## Generate Images Using the Diffusers Pipeline
 
-以下の例を参考にしてください。必要なファイルはnetworks/lora.pyのみです。Diffusersのバージョンは0.10.2以外では動作しない可能性があります。
+Refer to the example below. The only required file is networks/lora.py. The script may not work with Diffusers versions other than 0.10.2.
 
 ```python
 import torch
@@ -376,7 +343,7 @@ network2.to(device, dtype=torch.float16)
 
 lora_path3 = r"lora3.safetensors"
 sd = load_file(lora_path3)
-network3, sd = create_network_from_weights(0.5, None, vae, text_encoder,unet, sd)
+network3, sd = create_network_from_weights(0.5, None, vae, text_encoder, unet, sd)
 network3.apply_to(text_encoder, unet)
 network3.load_state_dict(sd)
 network3.to(device, dtype=torch.float16)
@@ -385,7 +352,7 @@ network3.to(device, dtype=torch.float16)
 prompt = "masterpiece, best quality, 1girl, in white shirt, looking at viewer"
 negative_prompt = "bad quality, worst quality, bad anatomy, bad hands"
 
-# exec pipe
+# execute pipeline
 print("generating image...")
 with torch.autocast("cuda"):
     image = pipe(prompt, guidance_scale=7.5, negative_prompt=negative_prompt).images[0]
@@ -398,82 +365,78 @@ with torch.autocast("cuda"):
 image.save(r"by_diffusers..png")
 ```
 
-## 二つのモデルの差分からLoRAモデルを作成する
+## Creating a LoRA Model from the Difference of Two Models
 
-[こちらのディスカッション](https://github.com/cloneofsimo/lora/discussions/56)を参考に実装したものです。数式はそのまま使わせていただきました（よく理解していませんが近似には特異値分解を用いるようです）。
+This implementation is based on [this discussion](https://github.com/cloneofsimo/lora/discussions/56). The equations are used as is (I don't fully understand them, but it seems that singular value decomposition is used for approximation).
 
-二つのモデル（たとえばfine tuningの元モデルとfine tuning後のモデル）の差分を、LoRAで近似します。
+The difference between two models (e.g., the base model and the fine-tuned model) is approximated using LoRA.
 
-### スクリプトの実行方法
+### How to Run the Script
 
-以下のように指定してください。
+Specify as follows:
 ```
 python networks\extract_lora_from_models.py --model_org base-model.ckpt
     --model_tuned fine-tuned-model.ckpt 
     --save_to lora-weights.safetensors --dim 4
 ```
 
---model_orgオプションに元のStable Diffusionモデルを指定します。作成したLoRAモデルを適用する場合は、このモデルを指定して適用することになります。.ckptまたは.safetensorsが指定できます。
+Specify the original Stable Diffusion model with the `--model_org` option. When applying the created LoRA model, specify this model. Both `.ckpt` and `.safetensors` formats are accepted.
 
---model_tunedオプションに差分を抽出する対象のStable Diffusionモデルを指定します。たとえばfine tuningやDreamBooth後のモデルを指定します。.ckptまたは.safetensorsが指定できます。
+Specify the Stable Diffusion model to extract the difference with the `--model_tuned` option. For example, specify a model after fine-tuning or DreamBooth. Both `.ckpt` and `.safetensors` formats are accepted.
 
---save_toにLoRAモデルの保存先を指定します。--dimにLoRAの次元数を指定します。
+Specify the destination for saving the LoRA model with `--save_to`, and specify the dimension of LoRA with `--dim`.
 
-生成されたLoRAモデルは、学習したLoRAモデルと同様に使用できます。
+The generated LoRA model can be used in the same way as a trained LoRA model.
 
-Text Encoderが二つのモデルで同じ場合にはLoRAはU-NetのみのLoRAとなります。
+If the Text Encoder is the same in both models, the resulting LoRA will be a LoRA for U-Net only.
 
-### その他のオプション
+### Other Options
 
 - `--v2`
-  - v2.xのStable Diffusionモデルを使う場合に指定してください。
+  - Specify if you want to use the v2.x Stable Diffusion model.
 - `--device`
-  - ``--device cuda``としてcudaを指定すると計算をGPU上で行います。処理が速くなります（CPUでもそこまで遅くないため、せいぜい倍～数倍程度のようです）。
+  - Specify `--device cuda` to perform calculations on the GPU. This speeds up processing (it's not too slow on the CPU, but it's only about twice to several times faster).
 - `--save_precision`
-  - LoRAの保存形式を"float", "fp16", "bf16"から指定します。省略時はfloatになります。
+  - Specify the LoRA save format from "float", "fp16", or "bf16". Default is "float".
 - `--conv_dim`
-  - 指定するとLoRAの適用範囲を Conv2d 3x3 へ拡大します。Conv2d 3x3 の rank を指定します。
+  - Specify to expand the range of LoRA application to Conv2d 3x3. Specify the rank of Conv2d 3x3.
 
-## 画像リサイズスクリプト
+## Image Resize Script
 
-（のちほどドキュメントを整理しますがとりあえずここに説明を書いておきます。）
+(Documentation will be organized later, but for now, here's an explanation.)
 
-Aspect Ratio Bucketingの機能拡張で、小さな画像については拡大しないでそのまま教師データとすることが可能になりました。元の教師画像を縮小した画像を、教師データに加えると精度が向上したという報告とともに前処理用のスクリプトをいただきましたので整備して追加しました。bmaltais氏に感謝します。
+With the extension of Aspect Ratio Bucketing, it is now possible to use small images as they are without enlarging them as training data. We received a preprocessing script along with a report that adding resized images of the original training images improved accuracy, so we've added and refined it. Thanks to bmaltais.
 
-### スクリプトの実行方法
+### How to Run the Script
 
-以下のように指定してください。元の画像そのまま、およびリサイズ後の画像が変換先フォルダに保存されます。リサイズ後の画像には、ファイル名に ``+512x512`` のようにリサイズ先の解像度が付け加えられます（画像サイズとは異なります）。リサイズ先の解像度より小さい画像は拡大されることはありません。
+Specify as follows. Both the original image and the resized image are saved in the destination folder. The resized image has the resolution, such as `+512x512`, added to the file name (which is different from the image size). Images smaller than the destination resolution will not be enlarged.
 
 ```
 python tools\resize_images_to_resolution.py --max_resolution 512x512,384x384,256x256 --save_as_png 
-    --copy_associated_files 元画像フォルダ 変換先フォルダ
+    --copy_associated_files source_image_folder destination_folder
 ```
 
-元画像フォルダ内の画像ファイルが、指定した解像度（複数指定可）と同じ面積になるようにリサイズされ、変換先フォルダに保存されます。画像以外のファイルはそのままコピーされます。
+Images in the source_image_folder are resized so that their area is the same as the specified resolution and saved in the destination_folder. Files other than images are copied as is.
 
-``--max_resolution`` オプションにリサイズ先のサイズを例のように指定してください。面積がそのサイズになるようにリサイズします。複数指定すると、それぞれの解像度でリサイズされます。``512x512,384x384,256x256``なら、変換先フォルダの画像は、元サイズとリサイズ後サイズ×3の計4枚になります。
+Specify the destination size in the `--max_resolution` option as shown in the example. The images will be resized so that their area is the same as the specified size. If you specify multiple resolutions, the images will be resized for each resolution. If you specify `512x512,384x384,256x256`, the destination folder will contain four images: the original size and three resized sizes.
 
-``--save_as_png`` オプションを指定するとpng形式で保存します。省略するとjpeg形式（quality=100）で保存されます。
+Specify the `--save_as_png` option to save the images in PNG format. If omitted, the images will be saved in JPEG format (quality=100).
 
-``--copy_associated_files`` オプションを指定すると、拡張子を除き画像と同じファイル名（たとえばキャプションなど）のファイルが、リサイズ後の画像のファイル名と同じ名前でコピーされます。
+When the `--copy_associated_files` option is specified, files with the same name as the image (excluding the extension, such as captions) are copied with the same name as the resized image file.
 
-
-### その他のオプション
+### Other Options
 
 - divisible_by
-  - リサイズ後の画像のサイズ（縦、横のそれぞれ）がこの値で割り切れるように、画像中心を切り出します。
+  - The image is cropped from the center so that the size (both height and width) of the resized image is divisible by this value.
 - interpolation
-  - 縮小時の補完方法を指定します。``area, cubic, lanczos4``から選択可能で、デフォルトは``area``です。
+  - Specify the interpolation method for downsampling. Choose from `area, cubic, lanczos4`. The default is `area`.
 
+## Differences from Cloneofsimo's Repository
 
-# 追加情報
+As of December 25, 2022, this repository has expanded the application of LoRA to Text Encoder's MLP, U-Net's FFN, and Transformer's in/out projection, increasing its expressiveness. However, this has increased memory usage, making it barely fit within 8GB.
 
-## cloneofsimo氏のリポジトリとの違い
+The module replacement mechanisms are also completely different.
 
-2022/12/25時点では、当リポジトリはLoRAの適用個所をText EncoderのMLP、U-NetのFFN、Transformerのin/out projectionに拡大し、表現力が増しています。ただその代わりメモリ使用量は増え、8GBぎりぎりになりました。
+## Future Extensions
 
-またモジュール入れ替え機構は全く異なります。
-
-## 将来拡張について
-
-LoRAだけでなく他の拡張にも対応可能ですので、それらも追加予定です。
+In addition to LoRA, other extensions can also be supported, and they will be added in the future.
