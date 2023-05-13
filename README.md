@@ -28,7 +28,7 @@ The scripts have been tested with PyTorch 1.12.1 and 1.13.0, as well as Diffuser
 Most of the documents are written in Japanese.
 
 * [Training guide - common](./docs/train_README-en.md): data preparation, options, etc.
-  * [Chinese version](https://github.com/kohya-ss/sd-scripts/blob/main/docs/train_README-ja.md)
+  * [Chinese version](https://github.com/kohya-ss/sd-scripts/blob/main/docs/train_README-zh.md)
 * [Dataset config](./docs/config_README-en.md)
 * [DreamBooth training guide](./docs/train_db_README-en.md)
 * [Step-by-step fine-tuning guide](./docs/fine_tune_README-en.md)
