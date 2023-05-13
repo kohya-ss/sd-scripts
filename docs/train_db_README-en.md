@@ -1,10 +1,4 @@
-## <p align="center">Developed as a Guide to Comprehend the Fine-Tuning of Stable Diffusion Models</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/darkstorm2150/OpenGen/main/OpenGen%20Logo-768.jpg" alt="ALT_TEXT" height="256">
-</p>
-
-<h3><p align="center">This is a ChatGPT-4 English adaptation of the original document by kohya-ss (train_db_README-ja.md).</p></h3>
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss (train_db_README-ja.md)
 
 Introducing the DreamBooth Guide.
 
