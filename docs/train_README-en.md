@@ -1,4 +1,4 @@
-## This is a ChatGPT-4 English adaptation of the original document by kohya-ss (train_README-ja.md)
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([train_README-ja.md](https://github.com/kohya-ss/sd-scripts/blob/main/docs/train_README-ja.md))
 
 There may be errors in the description due to document updates.
 
