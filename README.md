@@ -1,3 +1,8 @@
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([README.md](https://github.com/kohya-ss/sd-scripts/blob/main/README.md))
+
+I wanted to bring the japanese tutorial to the english speaking community, merging knowledge globally to pursue the development of stable diffusion models to another level. Happy Fine-Tuning!
+
+
 This repository contains training, generation, and utility scripts for Stable Diffusion.
 
 The [__Change History__](#change-history) has been moved to the bottom of the page.
