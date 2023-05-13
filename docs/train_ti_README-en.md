@@ -1,4 +1,4 @@
-## This is a ChatGPT-4 English adaptation of the original document by kohya-ss (train_ti_README-ja.md)
+## This is a ChatGPT-4 English adaptation of the original document by kohya-ss ([train_ti_README-ja.md](https://github.com/kohya-ss/sd-scripts/blob/main/docs/train_ti_README-ja.md))
 
 This is an explanation about learning Textual Inversion (https://textual-inversion.github.io/).
 
