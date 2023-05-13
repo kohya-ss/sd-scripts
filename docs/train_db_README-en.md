@@ -2,7 +2,7 @@
 
 Introducing the DreamBooth Guide.
 
-Please also see the [common document for learning](./train_README.md).
+Please also see the [common document for learning](./train_README-en.md).
 
 # Overview
 
@@ -29,7 +29,7 @@ Please refer to this repository's README for environment preparation.
 
 ## Data Preparation
 
-Please refer to [Preparing Learning Data](./train_README.md).
+Please refer to [Preparing Learning Data](./train_README-en.md).
 
 ## Running the Learning
 
@@ -76,7 +76,7 @@ If you have enough memory, edit the `.toml` file to increase the batch size to, 
 
 ### Commonly Used Options
 
-Please refer to the [common document for learning](./train_README.md) for the following cases:
+Please refer to the [common document for learning](./train_README-en.md) for the following cases:
 
 - Learning Stable Diffusion 2.x or derived models
 - Learning models that assume a clip skip of 2 or more
