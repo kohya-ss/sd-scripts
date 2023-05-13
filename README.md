@@ -2,7 +2,7 @@ This repository contains training, generation, and utility scripts for Stable Di
 
 The [__Change History__](#change-history) has been moved to the bottom of the page.
 
-For the Japanese version of the README, click [here](https://github.com/kohya-ss/sd-scripts/blob/main/README-ja.md).
+For the [Japanese version of the README](https://github.com/kohya-ss/sd-scripts/blob/main/README-ja.md).
 
 For easier usage, including GUI and PowerShell scripts, please visit [the repository maintained by bmaltais](https://github.com/bmaltais/kohya_ss). Special thanks to @bmaltais!
 
