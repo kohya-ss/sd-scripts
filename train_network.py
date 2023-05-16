@@ -60,7 +60,6 @@ def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_sche
 
     return logs
 
-
 def train(args):
     session_id = random.randint(0, 2**32)
     training_started_at = time.time()
@@ -72,9 +71,15 @@ def train(args):
     use_user_config = args.dataset_config is not None
 
     if args.seed is None:
-        args.seed = random.randint(0, 2**32)
-    set_seed(args.seed)
+        import psutil
+        ppid = os.getppid()
+        parent_process = psutil.Process(ppid)
+        if len(parent_process.children()) > 1:
+            args.seed = ppid
+        else:
+            args.seed = random.randint(0, 2**32)
 
+    set_seed(args.seed)
     tokenizer = train_util.load_tokenizer(args)
 
     # データセットを準備する
@@ -137,8 +142,8 @@ def train(args):
     # acceleratorを準備する
     print("prepare accelerator")
     accelerator, unwrap_model = train_util.prepare_accelerator(args)
-    is_main_process = accelerator.is_main_process
 
+    is_main_process = accelerator.is_main_process
     # mixed precisionに対応した型を用意しておき適宜castする
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
 
@@ -250,19 +255,19 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     if train_unet and train_text_encoder:
-        unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, text_encoder, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler
         )
     elif train_unet:
-        unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             unet, network, optimizer, train_dataloader, lr_scheduler
         )
     elif train_text_encoder:
-        text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        text_encoder, network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(
             text_encoder, network, optimizer, train_dataloader, lr_scheduler
         )
     else:
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+        network, optimizer, train_dataloader_, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
     # transform DDP after prepare (train_network here only)
     text_encoder, unet, network = train_util.transform_if_model_is_DDP(text_encoder, unet, network)
@@ -552,6 +557,9 @@ def train(args):
             print(f"removing old checkpoint: {old_ckpt_file}")
             os.remove(old_ckpt_file)
 
+    mini_batch_size = int(args.train_batch_size) / accelerator.num_processes
+    mini_batch_offset = int(accelerator.process_index) * mini_batch_size
+
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
@@ -564,6 +572,11 @@ def train(args):
 
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
+            # cut mini batch
+            for k in batch.keys():
+                if batch[k] is None: continue
+                batch[k] = batch[k][int(mini_batch_offset):int(mini_batch_offset+mini_batch_size)]
+
             with accelerator.accumulate(network):
                 on_step_start(text_encoder, unet)
 
@@ -618,7 +631,7 @@ def train(args):
                 loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
                 loss = loss.mean([1, 2, 3])
 
-                loss_weights = batch["loss_weights"]  # 各sampleごとのweight
+                loss_weights = batch["loss_weights"].to(accelerator.device)  # 各sampleごとのweight
                 loss = loss * loss_weights
 
                 if args.min_snr_gamma:
