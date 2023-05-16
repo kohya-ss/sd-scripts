@@ -25,7 +25,7 @@ from library.config_util import (
 )
 import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
-from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like
+from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset
 
 
 # TODO 他のスクリプトと共通化する
@@ -43,7 +43,7 @@ def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_sche
             logs["lr/textencoder"] = float(lrs[0])
             logs["lr/unet"] = float(lrs[-1])  # may be same to textencoder
 
-        if args.optimizer_type.lower() == "DAdaptation".lower():  # tracking d*lr value of unet.
+        if args.optimizer_type.lower().startswith("DAdapt".lower()):  # tracking d*lr value of unet.
             logs["lr/d*lr"] = lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
     else:
         idx = 0
@@ -53,7 +53,7 @@ def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_sche
 
         for i in range(idx, len(lrs)):
             logs[f"lr/group{i}"] = float(lrs[i])
-            if args.optimizer_type.lower() == "DAdaptation".lower():
+            if args.optimizer_type.lower().startswith("DAdapt".lower()):
                 logs[f"lr/d*lr/group{i}"] = (
                     lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                 )
@@ -176,7 +176,10 @@ def train(args):
             net_kwargs[key] = value
 
     # if a new network is added in future, add if ~ then blocks for each network (;'∀')
-    network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
+    if args.dim_from_weights:
+        network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
+    else:
+        network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
     if network is None:
         return
 
@@ -277,7 +280,7 @@ def train(args):
     else:
         unet.eval()
         text_encoder.eval()
-        
+
     network.prepare_grad_etc(text_encoder, unet)
 
     if not cache_latents:
@@ -344,6 +347,7 @@ def train(args):
         "ss_noise_offset": args.noise_offset,
         "ss_multires_noise_iterations": args.multires_noise_iterations,
         "ss_multires_noise_discount": args.multires_noise_discount,
+        "ss_adaptive_noise_scale": args.adaptive_noise_scale,
         "ss_training_comment": args.training_comment,  # will not be updated after training
         "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
         "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else ""),
@@ -522,17 +526,18 @@ def train(args):
     loss_total = 0.0
     del train_dataset_group
 
-    # if hasattr(network, "on_step_start"):
-    #     on_step_start = network.on_step_start
-    # else:
-    #     on_step_start = lambda *args, **kwargs: None
+    # callback for step start
+    if hasattr(network, "on_step_start"):
+        on_step_start = network.on_step_start
+    else:
+        on_step_start = lambda *args, **kwargs: None
 
     # function for saving/removing
     def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
-        print(f"saving checkpoint: {ckpt_file}")
+        print(f"\nsaving checkpoint: {ckpt_file}")
         metadata["ss_training_finished_at"] = str(time.time())
         metadata["ss_steps"] = str(steps)
         metadata["ss_epoch"] = str(epoch_no)
@@ -550,7 +555,7 @@ def train(args):
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
-            print(f"epoch {epoch+1}/{num_train_epochs}")
+            print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1
 
         metadata["ss_epoch"] = str(epoch + 1)
@@ -560,7 +565,7 @@ def train(args):
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
             with accelerator.accumulate(network):
-                # on_step_start(text_encoder, unet)
+                on_step_start(text_encoder, unet)
 
                 with torch.no_grad():
                     if "latents" in batch and batch["latents"] is not None:
@@ -585,11 +590,11 @@ def train(args):
                     else:
                         input_ids = batch["input_ids"].to(accelerator.device)
                         encoder_hidden_states = train_util.get_hidden_states(args, input_ids, tokenizer, text_encoder, weight_dtype)
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents, device=latents.device)
                 if args.noise_offset:
-                    # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                    noise += args.noise_offset * torch.randn((latents.shape[0], latents.shape[1], 1, 1), device=latents.device)
+                    noise = apply_noise_offset(latents, noise, args.noise_offset, args.adaptive_noise_scale)
                 elif args.multires_noise_iterations:
                     noise = pyramid_noise_like(noise, latents.device, args.multires_noise_iterations, args.multires_noise_discount)
 
@@ -713,7 +718,7 @@ def train(args):
     if is_main_process:
         ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
         save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
-        
+
         print("model saved.")
 
 
@@ -759,6 +764,11 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--training_comment", type=str, default=None, help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列"
+    )
+    parser.add_argument(
+        "--dim_from_weights",
+        action="store_true",
+        help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
 
     return parser

@@ -1424,7 +1424,7 @@ def debug_dataset(train_dataset, show_input_ids=False):
 
     epoch = 1
     while True:
-        print(f"epoch: {epoch}")
+        print(f"\nepoch: {epoch}")
 
         steps = (epoch - 1) * len(train_dataset) + 1
         indices = list(range(len(train_dataset)))
@@ -1885,7 +1885,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "--optimizer_type",
         type=str,
         default="",
-        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion, Lion8bit,SGDNesterov, SGDNesterov8bit, DAdaptation, AdaFactor",
+        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, AdaFactor",
     )
 
     # backward compatibility
@@ -2127,11 +2127,23 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="enable multires noise with this number of iterations (if enabled, around 6-10 is recommended) / Multires noiseを有効にしてこのイテレーション数を設定する（有効にする場合は6-10程度を推奨）",
     )
+    # parser.add_argument(
+    #     "--perlin_noise",
+    #     type=int,
+    #     default=None,
+    #     help="enable perlin noise and set the octaves / perlin noiseを有効にしてoctavesをこの値に設定する",
+    # )
     parser.add_argument(
         "--multires_noise_discount",
         type=float,
         default=0.3,
         help="set discount value for multires noise (has no effect without --multires_noise_iterations) / Multires noiseのdiscount値を設定する（--multires_noise_iterations指定時のみ有効）",
+    )
+    parser.add_argument(
+        "--adaptive_noise_scale",
+        type=float,
+        default=None,
+        help="add `latent mean absolute value * this value` to noise_offset (disabled if None, default) / latentの平均値の絶対値 * この値をnoise_offsetに加算する（Noneの場合は無効、デフォルト）",
     )
     parser.add_argument(
         "--lowram",
@@ -2205,10 +2217,21 @@ def verify_training_args(args: argparse.Namespace):
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
         )
 
+    # noise_offset, perlin_noise, multires_noise_iterations cannot be enabled at the same time
+    # Listを使って数えてもいいけど並べてしまえ
     if args.noise_offset is not None and args.multires_noise_iterations is not None:
         raise ValueError(
-            "noise_offset and multires_noise_iterations cannot be enabled at the same time / noise_offsetとmultires_noise_iterationsを同時に有効にすることはできません"
+            "noise_offset and multires_noise_iterations cannot be enabled at the same time / noise_offsetとmultires_noise_iterationsを同時に有効にできません"
         )
+    # if args.noise_offset is not None and args.perlin_noise is not None:
+    #     raise ValueError("noise_offset and perlin_noise cannot be enabled at the same time / noise_offsetとperlin_noiseは同時に有効にできません")
+    # if args.perlin_noise is not None and args.multires_noise_iterations is not None:
+    #     raise ValueError(
+    #         "perlin_noise and multires_noise_iterations cannot be enabled at the same time / perlin_noiseとmultires_noise_iterationsを同時に有効にできません"
+    #     )
+
+    if args.adaptive_noise_scale is not None and args.noise_offset is None:
+        raise ValueError("adaptive_noise_scale requires noise_offset / adaptive_noise_scaleを使用するにはnoise_offsetが必要です")
 
 
 def add_dataset_arguments(
@@ -2467,7 +2490,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 
 def get_optimizer(args, trainable_params):
-    # "Optimizer to use: AdamW, AdamW8bit, Lion, Lion8bit, SGDNesterov, SGDNesterov8bit, DAdaptation, Adafactor"
+    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, Adafactor"
 
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
@@ -2579,13 +2602,15 @@ def get_optimizer(args, trainable_params):
         optimizer_class = torch.optim.SGD
         optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
 
-    elif optimizer_type == "DAdaptation".lower():
+    elif optimizer_type.startswith("DAdapt".lower()):
+        # DAdaptation family
+        # check dadaptation is installed
         try:
             import dadaptation
         except ImportError:
             raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
-        print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
 
+        # check lr and lr_count, and print warning
         actual_lr = lr
         lr_count = 1
         if type(trainable_params) == list and type(trainable_params[0]) == dict:
@@ -2605,7 +2630,22 @@ def get_optimizer(args, trainable_params):
                 f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-Adaptationで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
             )
 
-        optimizer_class = dadaptation.DAdaptAdam
+        # set optimizer
+        if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdam".lower():
+            optimizer_class = dadaptation.DAdaptAdam
+            print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DAdaptAdaGrad".lower():
+            optimizer_class = dadaptation.DAdaptAdaGrad
+            print(f"use D-Adaptation AdaGrad optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DAdaptAdan".lower():
+            optimizer_class = dadaptation.DAdaptAdan
+            print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DAdaptSGD".lower():
+            optimizer_class = dadaptation.DAdaptSGD
+            print(f"use D-Adaptation SGD optimizer | {optimizer_kwargs}")
+        else:
+            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "Adafactor".lower():
@@ -2899,11 +2939,11 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu"):
     name_or_path = os.readlink(name_or_path) if os.path.islink(name_or_path) else name_or_path
     load_stable_diffusion_format = os.path.isfile(name_or_path)  # determine SD or Diffusers
     if load_stable_diffusion_format:
-        print("load StableDiffusion checkpoint")
+        print(f"load StableDiffusion checkpoint: {name_or_path}")
         text_encoder, vae, unet = model_util.load_models_from_stable_diffusion_checkpoint(args.v2, name_or_path, device)
     else:
         # Diffusers model is loaded to CPU
-        print("load Diffusers pretrained models")
+        print(f"load Diffusers pretrained models: {name_or_path}")
         try:
             pipe = StableDiffusionPipeline.from_pretrained(name_or_path, tokenizer=None, safety_checker=None)
         except EnvironmentError as ex:
@@ -3092,7 +3132,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
             ckpt_name = get_step_ckpt_name(args, ext, global_step)
 
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
-        print(f"saving checkpoint: {ckpt_file}")
+        print(f"\nsaving checkpoint: {ckpt_file}")
         model_util.save_stable_diffusion_checkpoint(
             args.v2, ckpt_file, text_encoder, unet, src_path, epoch_no, global_step, save_dtype, vae
         )
@@ -3118,7 +3158,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
         else:
             out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, global_step))
 
-        print(f"saving model: {out_dir}")
+        print(f"\nsaving model: {out_dir}")
         model_util.save_diffusers_checkpoint(
             args.v2, out_dir, text_encoder, unet, src_path, vae=vae, use_safetensors=use_safetensors
         )
@@ -3145,7 +3185,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
 def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
 
-    print(f"saving state at epoch {epoch_no}")
+    print(f"\nsaving state at epoch {epoch_no}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no))
@@ -3166,7 +3206,7 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
 def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
-    print(f"saving state at step {step_no}")
+    print(f"\nsaving state at step {step_no}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, STEP_STATE_NAME.format(model_name, step_no))
@@ -3191,7 +3231,7 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
 
-    print("saving last state.")
+    print("\nsaving last state.")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
@@ -3272,8 +3312,21 @@ def sample_images(
     vae.to(device)
 
     # read prompts
-    with open(args.sample_prompts, "rt", encoding="utf-8") as f:
-        prompts = f.readlines()
+
+    # with open(args.sample_prompts, "rt", encoding="utf-8") as f:
+    #     prompts = f.readlines()
+
+    if args.sample_prompts.endswith(".txt"):
+        with open(args.sample_prompts, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+    elif args.sample_prompts.endswith(".toml"):
+        with open(args.sample_prompts, "r", encoding="utf-8") as f:
+            data = toml.load(f)
+        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
+    elif args.sample_prompts.endswith(".json"):
+        with open(args.sample_prompts, "r", encoding="utf-8") as f:
+            prompts = json.load(f)
 
     # schedulerを用意する
     sched_init_args = {}
@@ -3336,60 +3389,70 @@ def sample_images(
     os.makedirs(save_dir, exist_ok=True)
 
     rng_state = torch.get_rng_state()
-    cuda_rng_state = torch.cuda.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
 
     with torch.no_grad():
         with accelerator.autocast():
             for i, prompt in enumerate(prompts):
                 if not accelerator.is_main_process:
                     continue
-                prompt = prompt.strip()
-                if len(prompt) == 0 or prompt[0] == "#":
-                    continue
 
-                # subset of gen_img_diffusers
-                prompt_args = prompt.split(" --")
-                prompt = prompt_args[0]
-                negative_prompt = None
-                sample_steps = 30
-                width = height = 512
-                scale = 7.5
-                seed = None
-                for parg in prompt_args:
-                    try:
-                        m = re.match(r"w (\d+)", parg, re.IGNORECASE)
-                        if m:
-                            width = int(m.group(1))
-                            continue
+                if isinstance(prompt, dict):
+                    negative_prompt = prompt.get("negative_prompt")
+                    sample_steps = prompt.get("sample_steps", 30)
+                    width = prompt.get("width", 512)
+                    height = prompt.get("height", 512)
+                    scale = prompt.get("scale", 7.5)
+                    seed = prompt.get("seed")
+                    prompt = prompt.get("prompt")
+                else:
+                    # prompt = prompt.strip()
+                    # if len(prompt) == 0 or prompt[0] == "#":
+                    #     continue
 
-                        m = re.match(r"h (\d+)", parg, re.IGNORECASE)
-                        if m:
-                            height = int(m.group(1))
-                            continue
+                    # subset of gen_img_diffusers
+                    prompt_args = prompt.split(" --")
+                    prompt = prompt_args[0]
+                    negative_prompt = None
+                    sample_steps = 30
+                    width = height = 512
+                    scale = 7.5
+                    seed = None
+                    for parg in prompt_args:
+                        try:
+                            m = re.match(r"w (\d+)", parg, re.IGNORECASE)
+                            if m:
+                                width = int(m.group(1))
+                                continue
 
-                        m = re.match(r"d (\d+)", parg, re.IGNORECASE)
-                        if m:
-                            seed = int(m.group(1))
-                            continue
+                            m = re.match(r"h (\d+)", parg, re.IGNORECASE)
+                            if m:
+                                height = int(m.group(1))
+                                continue
 
-                        m = re.match(r"s (\d+)", parg, re.IGNORECASE)
-                        if m:  # steps
-                            sample_steps = max(1, min(1000, int(m.group(1))))
-                            continue
+                            m = re.match(r"d (\d+)", parg, re.IGNORECASE)
+                            if m:
+                                seed = int(m.group(1))
+                                continue
 
-                        m = re.match(r"l ([\d\.]+)", parg, re.IGNORECASE)
-                        if m:  # scale
-                            scale = float(m.group(1))
-                            continue
+                            m = re.match(r"s (\d+)", parg, re.IGNORECASE)
+                            if m:  # steps
+                                sample_steps = max(1, min(1000, int(m.group(1))))
+                                continue
 
-                        m = re.match(r"n (.+)", parg, re.IGNORECASE)
-                        if m:  # negative prompt
-                            negative_prompt = m.group(1)
-                            continue
+                            m = re.match(r"l ([\d\.]+)", parg, re.IGNORECASE)
+                            if m:  # scale
+                                scale = float(m.group(1))
+                                continue
 
-                    except ValueError as ex:
-                        print(f"Exception in parsing / 解析エラー: {parg}")
-                        print(ex)
+                            m = re.match(r"n (.+)", parg, re.IGNORECASE)
+                            if m:  # negative prompt
+                                negative_prompt = m.group(1)
+                                continue
+
+                        except ValueError as ex:
+                            print(f"Exception in parsing / 解析エラー: {parg}")
+                            print(ex)
 
                 if seed is not None:
                     torch.manual_seed(seed)
@@ -3443,7 +3506,8 @@ def sample_images(
     torch.cuda.empty_cache()
 
     torch.set_rng_state(rng_state)
-    torch.cuda.set_rng_state(cuda_rng_state)
+    if cuda_rng_state is not None:
+        torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
 
 

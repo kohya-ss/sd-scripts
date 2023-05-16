@@ -16,7 +16,7 @@ This repository contains the scripts for:
 * Image generation
 * Model conversion (supports 1.x and 2.x, Stable Diffision ckpt/safetensors and Diffusers)
 
-__Stable Diffusion web UI now seems to support LoRA trained by ``sd-scripts``.__ (SD 1.x based only) Thank you for great work!!! 
+__Stable Diffusion web UI now seems to support LoRA trained by ``sd-scripts``.__ Thank you for great work!!! 
 
 ## About requirements.txt
 
@@ -28,14 +28,16 @@ The scripts are tested with PyTorch 1.12.1 and 1.13.0, Diffusers 0.10.2.
 
 Most of the documents are written in Japanese.
 
-* [Training guide - common](./train_README-ja.md) : data preparation, options etc... 
-  * [Chinese version](./train_README-zh.md)
-* [Dataset config](./config_README-ja.md) 
-* [DreamBooth training guide](./train_db_README-ja.md)
-* [Step by Step fine-tuning guide](./fine_tune_README_ja.md):
-* [training LoRA](./train_network_README-ja.md)
-* [training Textual Inversion](./train_ti_README-ja.md)
-* note.com [Image generation](https://note.com/kohya_ss/n/n2693183a798e)
+[English translation by darkstorm2150 is here](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation). Thanks to darkstorm2150!
+
+* [Training guide - common](./docs/train_README-ja.md) : data preparation, options etc... 
+  * [Chinese version](./docs/train_README-zh.md)
+* [Dataset config](./docs/config_README-ja.md) 
+* [DreamBooth training guide](./docs/train_db_README-ja.md)
+* [Step by Step fine-tuning guide](./docs/fine_tune_README_ja.md):
+* [training LoRA](./docs/train_network_README-ja.md)
+* [training Textual Inversion](./docs/train_ti_README-ja.md)
+* [Image generation](./docs/gen_img_README-ja.md)
 * note.com [Model conversion](https://note.com/kohya_ss/n/n374f316fe4ad)
 
 ## Windows Required Dependencies
@@ -138,29 +140,74 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
-### 3 May 2023, 2023/05/03
+### 16 May 2023, 2023/05/16
 
--  When saving v2 models in Diffusers format in training scripts and conversion scripts, it was found that the U-Net configuration is different from those of Hugging Face's stabilityai models (this repository is `"use_linear_projection": false`, stabilityai is `true`). Please note that the weight shapes are different, so please be careful when using the weight files directly. We apologize for the inconvenience.
-    - Since the U-Net model is created based on the configuration, it should not cause any problems in training or inference.
-    - Added `--unet_use_linear_projection` option to `convert_diffusers20_original_sd.py` script. If you specify this option, you can save a Diffusers format model with the same configuration as stabilityai's model from an SD format model (a single `*.safetensors` or `*.ckpt` file). Unfortunately, it is not possible to convert a Diffusers format model to the same format.
+- Fixed an issue where an error would occur if the encoding of the prompt file was different from the default. [PR #510](https://github.com/kohya-ss/sd-scripts/pull/510) Thanks to sdbds!
+  - Please save the prompt file in UTF-8.
+- プロンプトファイルのエンコーディングがデフォルトと異なる場合にエラーが発生する問題を修正しました。 [PR #510](https://github.com/kohya-ss/sd-scripts/pull/510) sdbds氏に感謝します。
+  - プロンプトファイルはUTF-8で保存してください。
 
-- Lion8bit optimizer is supported. [PR #447](https://github.com/kohya-ss/sd-scripts/pull/447) Thanks to sdbds!
-  - Currently it is optional because you need to update `bitsandbytes` version. See "Optional: Use Lion8bit" in installation instructions to use it.
-- Multi-GPU training with DDP is supported in each training script. [PR #448](https://github.com/kohya-ss/sd-scripts/pull/448) Thanks to Isotr0py!
-- Multi resolution noise (pyramid noise) is supported in each training script. [PR #471](https://github.com/kohya-ss/sd-scripts/pull/471) Thanks to pamparamm!
-  - See PR and this page [Multi-Resolution Noise for Diffusion Model Training](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2) for details.
+### 15 May 2023, 2023/05/15
 
-- 学習スクリプトや変換スクリプトでDiffusers形式でv2モデルを保存するとき、U-Netの設定がHugging Faceのstabilityaiのモデルと異なることがわかりました（当リポジトリでは `"use_linear_projection": false`、stabilityaiは`true`）。重みの形状が異なるため、直接重みファイルを利用する場合にはご注意ください。ご不便をお掛けし申し訳ありません。
-  - U-Netのモデルは設定に基づいて作成されるため、通常、学習や推論で問題になることはないと思われます。
-  - `convert_diffusers20_original_sd.py`スクリプトに`--unet_use_linear_projection`オプションを追加しました。これを指定するとSD形式のモデル（単一の`*.safetensors`または`*.ckpt`ファイル）から、stabilityaiのモデルと同じ形状の重みファイルを持つDiffusers形式モデルが保存できます。なお、Diffusers形式のモデルを同形式に変換することはできません。
+- Added [English translation of documents](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation) by darkstorm2150. Thank you very much!
+- The prompt for sample generation during training can now be specified in `.toml` or `.json`. [PR #504](https://github.com/kohya-ss/sd-scripts/pull/504) Thanks to Linaqruf!
+  - For details on prompt description, please see the PR.
 
-- Lion8bitオプティマイザがサポートされました。[PR #447](https://github.com/kohya-ss/sd-scripts/pull/447) sdbds氏に感謝します。
-  - `bitsandbytes`のバージョンを更新する必要があるため、現在はオプションです。使用するにはインストール手順の「[オプション：Lion8bitを使う](./README-ja.md#オプションlion8bitを使う)」を参照してください。
-- 各学習スクリプトでDDPによるマルチGPU学習がサポートされました。[PR #448](https://github.com/kohya-ss/sd-scripts/pull/448) Isotr0py氏に感謝します。
-- Multi resolution noise (pyramid noise) が各学習スクリプトでサポートされました。[PR #471](https://github.com/kohya-ss/sd-scripts/pull/471) pamparamm氏に感謝します。
-  - 詳細はPRおよびこちらのページ [Multi-Resolution Noise for Diffusion Model Training](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2) を参照してください。
-  - `--multires_noise_iterations` に数値を指定すると有効になります。`6`~`10`程度の値が良いようです。
-  - `--multires_noise_discount` に`0.1`~`0.3` 程度の値（LoRA学習等比較的データセットが小さい場合のPR作者の推奨）、ないしは`0.8`程度の値（元記事の推奨）を指定してください（デフォルトは `0.3`）。 
+- darkstorm2150氏に[ドキュメント類を英訳](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation)していただきました。ありがとうございます！
+- 学習中のサンプル生成のプロンプトを`.toml`または`.json`で指定可能になりました。 [PR #504](https://github.com/kohya-ss/sd-scripts/pull/504) Linaqruf氏に感謝します。
+  - プロンプト記述の詳細は当該PRをご覧ください。
+
+### 11 May 2023, 2023/05/11
+
+- Added an option `--dim_from_weights` to `train_network.py` to automatically determine the dim(rank) from the weight file. [PR #491](https://github.com/kohya-ss/sd-scripts/pull/491) Thanks to AI-Casanova!
+  - It is useful in combination with `resize_lora.py`. Please see the PR for details.
+- Fixed a bug where the noise resolution was incorrect with Multires noise. [PR #489](https://github.com/kohya-ss/sd-scripts/pull/489) Thanks to sdbds!
+  - Please see the PR for details.
+- The image generation scripts can now use img2img and highres fix at the same time.
+- Fixed a bug where the hint image of ControlNet was incorrectly BGR instead of RGB in the image generation scripts.
+- Added a feature to the image generation scripts to use the memory-efficient VAE.
+  - If you specify a number with the `--vae_slices` option, the memory-efficient VAE will be used. The maximum output size will be larger, but it will be slower. Please specify a value of about `16` or `32`.
+  - The implementation of the VAE is in `library/slicing_vae.py`.
+
+- `train_network.py`にdim(rank)を重みファイルから自動決定するオプション`--dim_from_weights`が追加されました。 [PR #491](https://github.com/kohya-ss/sd-scripts/pull/491) AI-Casanova氏に感謝します。
+  - `resize_lora.py`と組み合わせると有用です。詳細はPRもご参照ください。
+- Multires noiseでノイズ解像度が正しくない不具合が修正されました。 [PR #489](https://github.com/kohya-ss/sd-scripts/pull/489)  sdbds氏に感謝します。
+  - 詳細は当該PRをご参照ください。
+- 生成スクリプトでimg2imgとhighres fixを同時に使用できるようにしました。
+- 生成スクリプトでControlNetのhint画像が誤ってBGRだったのをRGBに修正しました。
+- 生成スクリプトで省メモリ化VAEを使えるよう機能追加しました。
+  - `--vae_slices`オプションに数値を指定すると、省メモリ化VAEを用います。出力可能な最大サイズが大きくなりますが、遅くなります。`16`または`32`程度の値を指定してください。
+  - VAEの実装は`library/slicing_vae.py`にあります。
+
+### 7 May 2023, 2023/05/07
+
+- The documentation has been moved to the `docs` folder. If you have links, please change them.
+- Removed `gradio` from `requirements.txt`.
+- DAdaptAdaGrad, DAdaptAdan, and DAdaptSGD are now supported by DAdaptation. [PR#455](https://github.com/kohya-ss/sd-scripts/pull/455) Thanks to sdbds!
+  - DAdaptation needs to be installed. Also, depending on the optimizer, DAdaptation may need to be updated. Please update with `pip install --upgrade dadaptation`.
+- Added support for pre-calculation of LoRA weights in image generation scripts. Specify `--network_pre_calc`.
+  - The prompt option `--am` is available. Also, it is disabled when Regional LoRA is used.
+- Added Adaptive noise scale to each training script. Specify a number with `--adaptive_noise_scale` to enable it.
+  - __Experimental option. It may be removed or changed in the future.__
+  - This is an original implementation that automatically adjusts the value of the noise offset according to the absolute value of the mean of each channel of the latents. It is expected that appropriate noise offsets will be set for bright and dark images, respectively.
+  - Specify it together with `--noise_offset`.
+  - The actual value of the noise offset is calculated as `noise_offset + abs(mean(latents, dim=(2,3))) * adaptive_noise_scale`. Since the latent is close to a normal distribution, it may be a good idea to specify a value of about 1/10 to the same as the noise offset.
+  - Negative values can also be specified, in which case the noise offset will be clipped to 0 or more.
+- Other minor fixes.
+
+- ドキュメントを`docs`フォルダに移動しました。リンク等を張られている場合は変更をお願いいたします。
+- `requirements.txt`から`gradio`を削除しました。
+- DAdaptationで新しくDAdaptAdaGrad、DAdaptAdan、DAdaptSGDがサポートされました。[PR#455](https://github.com/kohya-ss/sd-scripts/pull/455) sdbds氏に感謝します。
+  - dadaptationのインストールが必要です。またオプティマイザによってはdadaptationの更新が必要です。`pip install --upgrade dadaptation`で更新してください。
+- 画像生成スクリプトでLoRAの重みの事前計算をサポートしました。`--network_pre_calc`を指定してください。
+  - プロンプトオプションの`--am`が利用できます。またRegional LoRA使用時には無効になります。
+- 各学習スクリプトにAdaptive noise scaleを追加しました。`--adaptive_noise_scale`で数値を指定すると有効になります。
+  - __実験的オプションです。将来的に削除、仕様変更される可能性があります。__
+  - Noise offsetの値を、latentsの各チャネルの平均値の絶対値に応じて自動調整するオプションです。独自の実装で、明るい画像、暗い画像に対してそれぞれ適切なnoise offsetが設定されることが期待されます。
+  - `--noise_offset` と同時に指定してください。
+  - 実際のNoise offsetの値は `noise_offset + abs(mean(latents, dim=(2,3))) * adaptive_noise_scale` で計算されます。 latentは正規分布に近いためnoise_offsetの1/10～同程度の値を指定するとよいかもしれません。
+  - 負の値も指定でき、その場合はnoise offsetは0以上にclipされます。
+- その他の細かい修正を行いました。
 
 Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.
 最近の更新情報は [Release](https://github.com/kohya-ss/sd-scripts/releases) をご覧ください。
@@ -179,7 +226,7 @@ The LoRA supported by `train_network.py` has been named to avoid confusion. The 
     
 LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). LoRA-LierLa can be used with [our extension](https://github.com/kohya-ss/sd-webui-additional-networks) for AUTOMATIC1111's Web UI, or with the built-in LoRA feature of the Web UI.
 
-To use LoRA-C3Liar with Web UI, please use our extension.
+To use LoRA-C3Lier with Web UI, please use our extension.
 
 ### LoRAの名称について
 
@@ -195,7 +242,7 @@ To use LoRA-C3Liar with Web UI, please use our extension.
 
 LoRA-LierLa は[Web UI向け拡張](https://github.com/kohya-ss/sd-webui-additional-networks)、またはAUTOMATIC1111氏のWeb UIのLoRA機能で使用することができます。
 
-LoRA-C3Liarを使いWeb UIで生成するには拡張を使用してください。
+LoRA-C3Lierを使いWeb UIで生成するには拡張を使用してください。
 
 ## Sample image generation during training
   A prompt file might look like this, for example
