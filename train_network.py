@@ -565,7 +565,6 @@ def train(args):
 
         for step, batch in enumerate(train_dataloader):
             max_norm(network.state_dict(), 1)
-            max_norm(network.state_dict(), 1)
 
             current_step.value = global_step
             with accelerator.accumulate(network):

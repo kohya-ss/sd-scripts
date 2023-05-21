@@ -461,7 +461,7 @@ def max_norm(state_dict, max_norm_value):
       numberscaled +=1
     state_dict[upkeys[i]] *= (desired.cpu() / norm.cpu())
   print("")
-  print(f"Max norm before scaling: {max(norms)})
+  print(f"Max norm before scaling: {max(norms)}")
   if numberscaled > 0:
     print(f"Number of weights scaled: {numberscaled} out of {len(downkeys)} pairs")
   
