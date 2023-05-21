@@ -434,3 +434,36 @@ def perlin_noise(noise, device, octaves):
     noise += noise_perlin # broadcast for each batch
     return noise / noise.std()  # Scaled back to roughly unit variance
 """
+
+def max_norm(state_dict, max_norm_value):
+  downkeys = []
+  upkeys = []
+  norms = []
+  numberscaled = 0
+
+  for key in state_dict.keys():
+    if "lora_down" in key and "weight" in key:
+      downkeys.append(key)
+      upkeys.append(key.replace("lora_down","lora_up"))
+  for i in range(len(downkeys)):
+    down = state_dict[downkeys[i]].cuda()
+    up = state_dict[upkeys[i]].cuda()
+    if up.shape[2:] == (1, 1) and down.shape[2:] == (1, 1):
+        updown = (up.squeeze(2).squeeze(2) @ down.squeeze(2).squeeze(2)).unsqueeze(2).unsqueeze(3)
+    elif up.shape[2:] == (3, 3) or down.shape[2:] == (3, 3):
+        updown = torch.nn.functional.conv2d(down.permute(1, 0, 2, 3), up).permute(1, 0, 2, 3)
+    else:
+        updown = up @ down
+    norms.append(updown.norm().item())
+    norm = updown.norm().clamp(min=max_norm_value/2)
+    desired = torch.clamp(norm, max=max_norm_value)
+    if desired/norm < 1:
+      numberscaled +=1
+    state_dict[upkeys[i]] *= (desired.cpu() / norm.cpu())
+  print("")
+  print(f"Max norm before scaling: {max(norms)})
+  if numberscaled > 0:
+    print(f"Number of weights scaled: {numberscaled} out of {len(downkeys)} pairs")
+  
+  return
+

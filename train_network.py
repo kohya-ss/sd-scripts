@@ -25,7 +25,7 @@ from library.config_util import (
 )
 import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
-from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset
+from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset, max_norm
 
 
 # TODO 他のスクリプトと共通化する
@@ -185,6 +185,7 @@ def train(args):
 
     if hasattr(network, "prepare_network"):
         network.prepare_network(args)
+
 
     train_unet = not args.network_train_text_encoder_only
     train_text_encoder = not args.network_train_unet_only
@@ -563,6 +564,9 @@ def train(args):
         network.on_epoch_start(text_encoder, unet)
 
         for step, batch in enumerate(train_dataloader):
+            max_norm(network.state_dict(), 1)
+            max_norm(network.state_dict(), 1)
+
             current_step.value = global_step
             with accelerator.accumulate(network):
                 on_step_start(text_encoder, unet)
