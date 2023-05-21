@@ -2572,15 +2572,6 @@ def get_optimizer(args, trainable_params):
         try:
             import bitsandbytes as bnb
         except ImportError:
-            raise ImportError("No bitsand bytes / bitsandbytesがインストールされていないようです")
-        print(f"use 8-bit Lion optimizer | {optimizer_kwargs}")
-        optimizer_class = bnb.optim.Lion8bit
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-
-    elif optimizer_type == "Lion8bit".lower():
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
             raise ImportError("No bitsandbytes / bitsandbytesがインストールされていないようです")
 
         print(f"use 8-bit Lion optimizer | {optimizer_kwargs}")
