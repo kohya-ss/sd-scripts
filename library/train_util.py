@@ -2567,7 +2567,7 @@ def get_optimizer(args, trainable_params):
         print(f"use Lion optimizer | {optimizer_kwargs}")
         optimizer_class = lion_pytorch.Lion
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-
+        
     elif optimizer_type == "Lion8bit".lower():
         try:
             import bitsandbytes as bnb
