@@ -28,6 +28,8 @@ The scripts are tested with PyTorch 1.12.1 and 1.13.0, Diffusers 0.10.2.
 
 Most of the documents are written in Japanese.
 
+[English translation by darkstorm2150 is here](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation). Thanks to darkstorm2150!
+
 * [Training guide - common](./docs/train_README-ja.md) : data preparation, options etc... 
   * [Chinese version](./docs/train_README-zh.md)
 * [Dataset config](./docs/config_README-ja.md) 
@@ -137,6 +139,58 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 [BLIP](https://github.com/salesforce/BLIP): BSD-3-Clause
 
 ## Change History
+
+### 22 May 2023, 2023/05/22
+
+- Fixed several bugs.
+  - The state is saved even when the `--save_state` option is not specified in `fine_tune.py` and `train_db.py`. [PR #521](https://github.com/kohya-ss/sd-scripts/pull/521) Thanks to akshaal!
+  - Cannot load LoRA without `alpha`. [PR #527](https://github.com/kohya-ss/sd-scripts/pull/527) Thanks to Manjiz!
+  - Minor changes to console output during sample generation. [PR #515](https://github.com/kohya-ss/sd-scripts/pull/515) Thanks to yanhuifair!
+- The generation script now uses xformers for VAE as well.
+- いくつかのバグ修正を行いました。
+  -  `fine_tune.py`と`train_db.py`で`--save_state`オプション未指定時にもstateが保存される。 [PR #521](https://github.com/kohya-ss/sd-scripts/pull/521) akshaal氏に感謝します。
+  - `alpha`を持たないLoRAを読み込めない。[PR #527](https://github.com/kohya-ss/sd-scripts/pull/527) Manjiz氏に感謝します。
+  - サンプル生成時のコンソール出力の軽微な変更。[PR #515](https://github.com/kohya-ss/sd-scripts/pull/515) yanhuifair氏に感謝します。
+- 生成スクリプトでVAEについてもxformersを使うようにしました。
+
+### 16 May 2023, 2023/05/16
+
+- Fixed an issue where an error would occur if the encoding of the prompt file was different from the default. [PR #510](https://github.com/kohya-ss/sd-scripts/pull/510) Thanks to sdbds!
+  - Please save the prompt file in UTF-8.
+- プロンプトファイルのエンコーディングがデフォルトと異なる場合にエラーが発生する問題を修正しました。 [PR #510](https://github.com/kohya-ss/sd-scripts/pull/510) sdbds氏に感謝します。
+  - プロンプトファイルはUTF-8で保存してください。
+
+### 15 May 2023, 2023/05/15
+
+- Added [English translation of documents](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation) by darkstorm2150. Thank you very much!
+- The prompt for sample generation during training can now be specified in `.toml` or `.json`. [PR #504](https://github.com/kohya-ss/sd-scripts/pull/504) Thanks to Linaqruf!
+  - For details on prompt description, please see the PR.
+
+- darkstorm2150氏に[ドキュメント類を英訳](https://github.com/darkstorm2150/sd-scripts#links-to-usage-documentation)していただきました。ありがとうございます！
+- 学習中のサンプル生成のプロンプトを`.toml`または`.json`で指定可能になりました。 [PR #504](https://github.com/kohya-ss/sd-scripts/pull/504) Linaqruf氏に感謝します。
+  - プロンプト記述の詳細は当該PRをご覧ください。
+
+### 11 May 2023, 2023/05/11
+
+- Added an option `--dim_from_weights` to `train_network.py` to automatically determine the dim(rank) from the weight file. [PR #491](https://github.com/kohya-ss/sd-scripts/pull/491) Thanks to AI-Casanova!
+  - It is useful in combination with `resize_lora.py`. Please see the PR for details.
+- Fixed a bug where the noise resolution was incorrect with Multires noise. [PR #489](https://github.com/kohya-ss/sd-scripts/pull/489) Thanks to sdbds!
+  - Please see the PR for details.
+- The image generation scripts can now use img2img and highres fix at the same time.
+- Fixed a bug where the hint image of ControlNet was incorrectly BGR instead of RGB in the image generation scripts.
+- Added a feature to the image generation scripts to use the memory-efficient VAE.
+  - If you specify a number with the `--vae_slices` option, the memory-efficient VAE will be used. The maximum output size will be larger, but it will be slower. Please specify a value of about `16` or `32`.
+  - The implementation of the VAE is in `library/slicing_vae.py`.
+
+- `train_network.py`にdim(rank)を重みファイルから自動決定するオプション`--dim_from_weights`が追加されました。 [PR #491](https://github.com/kohya-ss/sd-scripts/pull/491) AI-Casanova氏に感謝します。
+  - `resize_lora.py`と組み合わせると有用です。詳細はPRもご参照ください。
+- Multires noiseでノイズ解像度が正しくない不具合が修正されました。 [PR #489](https://github.com/kohya-ss/sd-scripts/pull/489)  sdbds氏に感謝します。
+  - 詳細は当該PRをご参照ください。
+- 生成スクリプトでimg2imgとhighres fixを同時に使用できるようにしました。
+- 生成スクリプトでControlNetのhint画像が誤ってBGRだったのをRGBに修正しました。
+- 生成スクリプトで省メモリ化VAEを使えるよう機能追加しました。
+  - `--vae_slices`オプションに数値を指定すると、省メモリ化VAEを用います。出力可能な最大サイズが大きくなりますが、遅くなります。`16`または`32`程度の値を指定してください。
+  - VAEの実装は`library/slicing_vae.py`にあります。
 
 ### 7 May 2023, 2023/05/07
 
