@@ -551,9 +551,11 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     - 与过去版本中指定的 --use_lion_optimizer 相同
     - SGDNesterov : [torch.optim.SGD](https://pytorch.org/docs/stable/generated/torch.optim.SGD.html), nesterov=True
     - SGDNesterov8bit : 参数同上
-    - DAdaptation : https://github.com/facebookresearch/dadaptation
+    - DAdaptation(DAdaptAdamPreprint) : https://github.com/facebookresearch/dadaptation
+    - DAdaptAdam : 参数同上
     - DAdaptAdaGrad : 参数同上
     - DAdaptAdan : 参数同上
+    - DAdaptAdanIP : 引数は同上
     - DAdaptLion : 参数同上
     - DAdaptSGD : 参数同上
     - AdaFactor : [Transformers AdaFactor](https://huggingface.co/docs/transformers/main_classes/optimizer_schedules)
