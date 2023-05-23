@@ -2686,13 +2686,13 @@ def get_optimizer(args, trainable_params):
             print(f"use D-Adaptation AdaGrad optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdam".lower():
             optimizer_class = dadaptation.DAdaptAdam
-            print(f"use D-Adaptation DAdaptAdam optimizer | {optimizer_kwargs}")
+            print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdan".lower():
             optimizer_class = dadaptation.DAdaptAdan
             print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptAdanIP".lower():
             optimizer_class = experimental.DAdaptAdanIP
-            print(f"use D-Adaptation DAdaptAdanIP optimizer | {optimizer_kwargs}")
+            print(f"use D-Adaptation AdanIP optimizer | {optimizer_kwargs}")
         elif optimizer_type == "DAdaptLion".lower():
             optimizer_class = dadaptation.DAdaptLion
             print(f"use D-Adaptation Lion optimizer | {optimizer_kwargs}")
