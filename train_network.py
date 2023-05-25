@@ -29,12 +29,12 @@ from library.custom_train_functions import apply_snr_weight, get_weighted_text_e
 
 
 # TODO 他のスクリプトと共通化する
-def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None,maximum_norm=None):
+def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None):
     logs = {"loss/current": current_loss, "loss/average": avr_loss}
-    if keys_scaled and mean_norm and maximum_norm:
-      logs["# of keys scaled"] = keys_scaled
-      logs["Average of key norms"] = mean_norm
-      logs["Highest key norm"] = maximum_norm
+    if args.scale_weight_norms:
+      logs["keys_scaled"] = keys_scaled
+      logs["average_key_norm"] = mean_norm
+      logs["max_key_norm"] = maximum_norm
 
     lrs = lr_scheduler.get_last_lr()
 
