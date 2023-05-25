@@ -640,7 +640,7 @@ def train(args):
             
             if args.scale_weight_norms:
               keys_scaled, mean_norm = max_norm(network.state_dict(), args.scale_weight_norms)
-              max_mean_logs = {"Keys Scaled": keys_scaled, "Mean of key norms": mean_norm}  
+              max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}  
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
