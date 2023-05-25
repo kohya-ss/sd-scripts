@@ -359,6 +359,7 @@ def train(args):
         "ss_face_crop_aug_range": args.face_crop_aug_range,
         "ss_prior_loss_weight": args.prior_loss_weight,
         "ss_min_snr_gamma": args.min_snr_gamma,
+        "ss_scale_weight_norms": args.scale_weight_norms,
     }
 
     if use_user_config:
