@@ -564,7 +564,6 @@ def train(args):
         network.on_epoch_start(text_encoder, unet)
 
         for step, batch in enumerate(train_dataloader):
-            max_norm(network.state_dict(), 1)
 
             current_step.value = global_step
             with accelerator.accumulate(network):
@@ -637,6 +636,10 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+            
+            if True:    
+              keys_scaled, mean_norm = max_norm(network.state_dict(), 1)
+              max_mean_logs = {"Keys Scaled": keys_scaled, "Mean of key norms": mean_norm}  
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -672,6 +675,8 @@ def train(args):
             avr_loss = loss_total / len(loss_list)
             logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
+            progress_bar.set_postfix(**max_mean_logs)
+
 
             if args.logging_dir is not None:
                 logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)

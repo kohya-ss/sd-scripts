@@ -439,7 +439,7 @@ def max_norm(state_dict, max_norm_value):
   downkeys = []
   upkeys = []
   norms = []
-  numberscaled = 0
+  keys_scaled = 0
 
   for key in state_dict.keys():
     if "lora_down" in key and "weight" in key:
@@ -454,16 +454,14 @@ def max_norm(state_dict, max_norm_value):
         updown = torch.nn.functional.conv2d(down.permute(1, 0, 2, 3), up).permute(1, 0, 2, 3)
     else:
         updown = up @ down
-    norms.append(updown.norm().item())
     norm = updown.norm().clamp(min=max_norm_value/2)
     desired = torch.clamp(norm, max=max_norm_value)
-    if desired/norm < 1:
-      numberscaled +=1
-    state_dict[upkeys[i]] *= (desired.cpu() / norm.cpu())
-  print("")
-  print(f"Max norm before scaling: {max(norms)}")
-  if numberscaled > 0:
-    print(f"Number of weights scaled: {numberscaled} out of {len(downkeys)} pairs")
+    ratio = desired.cpu() / norm.cpu()
+    if ratio != 1:
+      keys_scaled +=1
+      state_dict[upkeys[i]] *= ratio
+    scalednorm = updown.norm()*ratio
+    norms.append(scalednorm.item())
   
-  return
+  return keys_scaled, sum(norms)/len(norms)
 
