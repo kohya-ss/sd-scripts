@@ -29,8 +29,12 @@ from library.custom_train_functions import apply_snr_weight, get_weighted_text_e
 
 
 # TODO 他のスクリプトと共通化する
-def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler):
+def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None,maximum_norm=None):
     logs = {"loss/current": current_loss, "loss/average": avr_loss}
+    if keys_scaled and mean_norm and maximum_norm:
+      logs["# of keys scaled"] = keys_scaled
+      logs["Average of key norms"] = mean_norm
+      logs["Highest key norm"] = maximum_norm
 
     lrs = lr_scheduler.get_last_lr()
 
@@ -639,7 +643,7 @@ def train(args):
                 optimizer.zero_grad(set_to_none=True)
             
             if args.scale_weight_norms:
-              keys_scaled, mean_norm = max_norm(network.state_dict(), args.scale_weight_norms)
+              keys_scaled, mean_norm, maximum_norm = max_norm(network.state_dict(), args.scale_weight_norms)
               max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}  
 
             # Checks if the accelerator has performed an optimization step behind the scenes
@@ -681,7 +685,7 @@ def train(args):
 
 
             if args.logging_dir is not None:
-                logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
+                logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:

@@ -457,11 +457,13 @@ def max_norm(state_dict, max_norm_value):
     norm = updown.norm().clamp(min=max_norm_value/2)
     desired = torch.clamp(norm, max=max_norm_value)
     ratio = desired.cpu() / norm.cpu()
+    sqrt_ratio = ratio **0.5
     if ratio != 1:
       keys_scaled +=1
-      state_dict[upkeys[i]] *= ratio
+      state_dict[upkeys[i]] *= sqrt_ratio
+      state_dict[downkeys[i]] *= sqrt_ratio
     scalednorm = updown.norm()*ratio
     norms.append(scalednorm.item())
   
-  return keys_scaled, sum(norms)/len(norms)
+  return keys_scaled, sum(norms)/len(norms), max(norms)
 
