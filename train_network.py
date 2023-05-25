@@ -637,8 +637,8 @@ def train(args):
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
             
-            if True:    
-              keys_scaled, mean_norm = max_norm(network.state_dict(), 1)
+            if args.scale_weight_norms:
+              keys_scaled, mean_norm = max_norm(network.state_dict(), args.scale_weight_norms)
               max_mean_logs = {"Keys Scaled": keys_scaled, "Mean of key norms": mean_norm}  
 
             # Checks if the accelerator has performed an optimization step behind the scenes
@@ -675,7 +675,8 @@ def train(args):
             avr_loss = loss_total / len(loss_list)
             logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
-            progress_bar.set_postfix(**max_mean_logs)
+            if args.scale_weight_norms:
+              progress_bar.set_postfix(**max_mean_logs)
 
 
             if args.logging_dir is not None:
@@ -778,7 +779,12 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
-
+    parser.add_argument(
+        "--scale_weight_norms",
+        type=float,
+        default=None,
+        help="Scale the weight of each key pair to help prevent overtraing via exploding gradients. (1 is a good starting point)",
+    )
     return parser
 
 
