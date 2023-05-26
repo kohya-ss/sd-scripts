@@ -1940,7 +1940,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "--optimizer_type",
         type=str,
         default="",
-        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, AdaFactor",
+        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, AdaFactor, Sophia",
     )
 
     # backward compatibility
@@ -2545,7 +2545,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 
 def get_optimizer(args, trainable_params):
-    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
+    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor, Sophia"
 
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
@@ -2753,6 +2753,32 @@ def get_optimizer(args, trainable_params):
     elif optimizer_type == "AdamW".lower():
         print(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type.startswith("Sophia".lower()) or optimizer_type == "DecoupledSophia".lower():
+        # Sophia family
+        # check Sophia is installed
+        try:
+            import Sophia
+        except ImportError:
+            raise ImportError("No Sophia / Sophia がインストールされていないようです")
+
+        # set optimizer
+        if optimizer_type == "Sophia".lower():
+            optimizer_class = Sophia.Sophia
+            print(f"use Sophia optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "SophiaG".lower():
+            optimizer_class = Sophia.SophiaG
+            print(f"use SophiaG optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "Sophia2".lower():
+            optimizer_class = Sophia.Sophia2
+            print(f"use Sophia2 optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "DecoupledSophia".lower():
+            optimizer_class = Sophia.DecoupledSophia
+            print(f"use DecoupledSophia optimizer | {optimizer_kwargs}")
+        else:
+            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     else:
