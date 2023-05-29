@@ -150,7 +150,7 @@ def train(args):
     text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.dropout)
+    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
 
     # 学習を準備する
     if cache_latents:
@@ -183,7 +183,7 @@ def train(args):
     if args.dim_from_weights:
         network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
     else:
-        network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
+        network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, args.dropout, **net_kwargs)
     if network is None:
         return
 
@@ -795,7 +795,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dropout",
         type=float,
         default=None,
-        help="Drops neurons out of training every step (0 is default behavior, 1 would drop all neurons; suggested max 0.3)",
+        help="Drops neurons out of training every step (0 is default behavior, 1 would drop all neurons)",
     )
     return parser
 
