@@ -1843,7 +1843,7 @@ def replace_unet_cross_attn_to_xformers():
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)  # 最適なのを選んでくれる
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, p=0.5, op=(xformers.ops.fmha.cutlass.FwOp,xformers.ops.fmha.cutlass.BwOp))  # 最適なのを選んでくれる
 
         out = rearrange(out, "b n h d -> b n (h d)", h=h)
 
