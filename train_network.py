@@ -150,7 +150,7 @@ def train(args):
     text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
+    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.dropout)
 
     # 学習を準備する
     if cache_latents:
@@ -364,6 +364,7 @@ def train(args):
         "ss_prior_loss_weight": args.prior_loss_weight,
         "ss_min_snr_gamma": args.min_snr_gamma,
         "ss_scale_weight_norms": args.scale_weight_norms,
+        "ss_dropout": args.dropout,
     }
 
     if use_user_config:
@@ -789,6 +790,12 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Scale the weight of each key pair to help prevent overtraing via exploding gradients. (1 is a good starting point)",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=None,
+        help="Drops neurons out of training every step (0 is default behavior, 1 would drop all neurons; suggested max 0.3)",
     )
     return parser
 

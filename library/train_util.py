@@ -1764,12 +1764,12 @@ class FlashAttentionFunction(torch.autograd.function.Function):
         return dq, dk, dv, None, None, None, None
 
 
-def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers):
+def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, dropout=None):
     # unet is not used currently, but it is here for future use
     if mem_eff_attn:
         replace_unet_cross_attn_to_memory_efficient()
     elif xformers:
-        replace_unet_cross_attn_to_xformers()
+        replace_unet_cross_attn_to_xformers(dropout)
 
 
 def replace_unet_cross_attn_to_memory_efficient():
@@ -1812,8 +1812,10 @@ def replace_unet_cross_attn_to_memory_efficient():
     diffusers.models.attention.CrossAttention.forward = forward_flash_attn
 
 
-def replace_unet_cross_attn_to_xformers():
+def replace_unet_cross_attn_to_xformers(dropout=None):
     print("CrossAttention.forward has been replaced to enable xformers.")
+    print(f"Neuron dropout: p={dropout}")
+
     try:
         import xformers.ops
     except ImportError:
@@ -1843,7 +1845,10 @@ def replace_unet_cross_attn_to_xformers():
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, p=0.5, op=(xformers.ops.fmha.cutlass.FwOp,xformers.ops.fmha.cutlass.BwOp))  # 最適なのを選んでくれる
+        if dropout:
+          out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, p=dropout, op=(xformers.ops.fmha.cutlass.FwOp, xformers.ops.fmha.cutlass.BwOp))  #cutlass is needed for GPU with capability < 8.0 this is tested on a T4
+        else:
+          out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)  # 最適なのを選んでくれる
 
         out = rearrange(out, "b n h d -> b n (h d)", h=h)
 
