@@ -147,7 +147,6 @@ def train(args):
 
     # モデルに xformers とか memory efficient attention を組み込む
     train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
-    
     # 差分追加学習のためにモデルを読み込む
     import sys
 
@@ -171,7 +170,6 @@ def train(args):
             module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
 
         print(f"all weights merged: {', '.join(args.base_weights)}")
-        
     # 学習を準備する
     if cache_latents:
         vae.to(accelerator.device, dtype=weight_dtype)
@@ -783,6 +781,11 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--training_comment", type=str, default=None, help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列"
+    )
+    parser.add_argument(
+    "--dim_from_weights",
+    action="store_true",
+    help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
     parser.add_argument(
         "--base_weights",
