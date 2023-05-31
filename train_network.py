@@ -185,7 +185,6 @@ def train(args):
         accelerator.wait_for_everyone()
 
     # prepare network
-
     net_kwargs = {}
     if args.network_args is not None:
         for net_arg in args.network_args:
@@ -783,9 +782,9 @@ def setup_parser() -> argparse.ArgumentParser:
         "--training_comment", type=str, default=None, help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列"
     )
     parser.add_argument(
-    "--dim_from_weights",
-    action="store_true",
-    help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
+        "--dim_from_weights",
+        action="store_true",
+        help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
     parser.add_argument(
         "--base_weights",
