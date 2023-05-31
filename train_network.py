@@ -148,7 +148,7 @@ def train(args):
     # モデルに xformers とか memory efficient attention を組み込む
     train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
     
-        # 差分追加学習のためにモデルを読み込む
+    # 差分追加学習のためにモデルを読み込む
     import sys
 
     sys.path.append(os.path.dirname(__file__))
@@ -187,11 +187,6 @@ def train(args):
         accelerator.wait_for_everyone()
 
     # prepare network
-    import sys
-
-    sys.path.append(os.path.dirname(__file__))
-    print("importing network module:", args.network_module)
-    network_module = importlib.import_module(args.network_module)
 
     net_kwargs = {}
     if args.network_args is not None:
@@ -802,11 +797,6 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         nargs="*",
         help="multiplier for network weights to merge into the model before training / 学習前にあらかじめモデルにマージするnetworkの重みの倍率",
-    )
-    parser.add_argument(
-        "--dim_from_weights",
-        action="store_true",
-        help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
 
     return parser
