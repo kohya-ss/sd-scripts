@@ -147,6 +147,7 @@ def train(args):
 
     # モデルに xformers とか memory efficient attention を組み込む
     train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
+    
     # 差分追加学習のためにモデルを読み込む
     import sys
 
