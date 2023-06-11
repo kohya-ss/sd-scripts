@@ -5,17 +5,34 @@ import re
 from typing import List, Optional, Union
 
 
-def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
+def prepare_scheduler_for_custom_training(noise_scheduler, device):
+    if hasattr(noise_scheduler, "all_snr"):
+        return
+
     alphas_cumprod = noise_scheduler.alphas_cumprod
     sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
     sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
     alpha = sqrt_alphas_cumprod
     sigma = sqrt_one_minus_alphas_cumprod
     all_snr = (alpha / sigma) ** 2
-    snr = torch.stack([all_snr[t] for t in timesteps])
+
+    noise_scheduler.all_snr = all_snr.to(device)
+
+
+def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
+    snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
     gamma_over_snr = torch.div(torch.ones_like(snr) * gamma, snr)
     snr_weight = torch.minimum(gamma_over_snr, torch.ones_like(gamma_over_snr)).float()  # from paper
     loss = loss * snr_weight
+    return loss
+
+
+def scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler):
+    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
+    snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
+    scale = snr_t / (snr_t + 1)
+
+    loss = loss * scale
     return loss
 
 
@@ -28,6 +45,11 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
         type=float,
         default=None,
         help="gamma for reducing the weight of high loss timesteps. Lower numbers have stronger effect. 5 is recommended by paper. / 低いタイムステップでの高いlossに対して重みを減らすためのgamma値、低いほど効果が強く、論文では5が推奨",
+    )
+    parser.add_argument(
+        "--scale_v_pred_loss_like_noise_pred",
+        action="store_true",
+        help="scale v-prediction loss like noise prediction loss / v-prediction lossをnoise prediction lossと同じようにスケーリングする",
     )
     if support_weighted_captions:
         parser.add_argument(
@@ -243,11 +265,6 @@ def get_unweighted_text_embeddings(
                 text_embedding = enc_out["hidden_states"][-clip_skip]
                 text_embedding = text_encoder.text_model.final_layer_norm(text_embedding)
 
-            # cover the head and the tail by the starting and the ending tokens
-            text_input_chunk[:, 0] = text_input[0, 0]
-            text_input_chunk[:, -1] = text_input[0, -1]
-            text_embedding = text_encoder(text_input_chunk, attention_mask=None)[0]
-
             if no_boseos_middle:
                 if i == 0:
                     # discard the ending token
@@ -262,7 +279,12 @@ def get_unweighted_text_embeddings(
             text_embeddings.append(text_embedding)
         text_embeddings = torch.concat(text_embeddings, axis=1)
     else:
-        text_embeddings = text_encoder(text_input)[0]
+        if clip_skip is None or clip_skip == 1:
+            text_embeddings = text_encoder(text_input)[0]
+        else:
+            enc_out = text_encoder(text_input, output_hidden_states=True, return_dict=True)
+            text_embeddings = enc_out["hidden_states"][-clip_skip]
+            text_embeddings = text_encoder.text_model.final_layer_norm(text_embeddings)
     return text_embeddings
 
 
