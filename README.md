@@ -140,6 +140,80 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
+### 8 Jun. 2023, 2023/06/08
+
+- Fixed a bug where clip skip did not work when training with weighted captions (`--weighted_captions` specified) and when generating sample images during training.
+- 重みづけキャプションでの学習時（`--weighted_captions`指定時）および学習中のサンプル画像生成時にclip skipが機能しない不具合を修正しました。
+
+### 6 Jun. 2023, 2023/06/06
+
+- Fix `train_network.py` to probably work with older versions of LyCORIS.
+- `gen_img_diffusers.py` now supports `BREAK` syntax.
+- `train_network.py`がLyCORISの以前のバージョンでも恐らく動作するよう修正しました。
+- `gen_img_diffusers.py` で `BREAK` 構文をサポートしました。
+
+### 3 Jun. 2023, 2023/06/03
+
+- Max Norm Regularization is now available in `train_network.py`. [PR #545](https://github.com/kohya-ss/sd-scripts/pull/545) Thanks to AI-Casanova!
+  - Max Norm Regularization is a technique to stabilize network training by limiting the norm of network weights. It may be effective in suppressing overfitting of LoRA and improving stability when used with other LoRAs. See PR for details.
+  - Specify as `--scale_weight_norms=1.0`. It seems good to try from `1.0`.
+  - The networks other than LoRA in this repository (such as LyCORIS) do not support this option.
+
+- Three types of dropout have been added to `train_network.py` and LoRA network.
+  - Dropout is a technique to suppress overfitting and improve network performance by randomly setting some of the network outputs to 0.
+  - `--network_dropout` is a normal dropout at the neuron level. In the case of LoRA, it is applied to the output of down. Proposed in [PR #545](https://github.com/kohya-ss/sd-scripts/pull/545) Thanks to AI-Casanova!
+    - `--network_dropout=0.1` specifies the dropout probability to `0.1`.
+    - Note that the specification method is different from LyCORIS.
+  - For LoRA network, `--network_args` can specify `rank_dropout` to dropout each rank with specified probability. Also `module_dropout` can be specified to dropout each module with specified probability.
+    - Specify as `--network_args "rank_dropout=0.2" "module_dropout=0.1"`.
+  - `--network_dropout`, `rank_dropout`, and `module_dropout` can be specified at the same time.
+  - Values of 0.1 to 0.3 may be good to try. Values greater than 0.5 should not be specified.
+  - `rank_dropout` and `module_dropout` are original techniques of this repository. Their effectiveness has not been verified yet.
+  - The networks other than LoRA in this repository (such as LyCORIS) do not support these options.
+
+- Added an option `--scale_v_pred_loss_like_noise_pred` to scale v-prediction loss like noise prediction in each training script.
+  - By scaling the loss according to the time step, the weights of global noise prediction and local noise prediction become the same, and the improvement of details may be expected.
+  - See [this article](https://xrg.hatenablog.com/entry/2023/06/02/202418) by xrg for details (written in Japanese). Thanks to xrg for the great suggestion!
+
+- Max Norm Regularizationが`train_network.py`で使えるようになりました。[PR #545](https://github.com/kohya-ss/sd-scripts/pull/545) AI-Casanova氏に感謝します。
+  - Max Norm Regularizationは、ネットワークの重みのノルムを制限することで、ネットワークの学習を安定させる手法です。LoRAの過学習の抑制、他のLoRAと併用した時の安定性の向上が期待できるかもしれません。詳細はPRを参照してください。
+  - `--scale_weight_norms=1.0`のように `--scale_weight_norms` で指定してください。`1.0`から試すと良いようです。
+  - LyCORIS等、当リポジトリ以外のネットワークは現時点では未対応です。
+
+- `train_network.py` およびLoRAに計三種類のdropoutを追加しました。
+  - dropoutはネットワークの一部の出力をランダムに0にすることで、過学習の抑制、ネットワークの性能向上等を図る手法です。
+  - `--network_dropout` はニューロン単位の通常のdropoutです。LoRAの場合、downの出力に対して適用されます。[PR #545](https://github.com/kohya-ss/sd-scripts/pull/545) で提案されました。AI-Casanova氏に感謝します。
+    - `--network_dropout=0.1` などとすることで、dropoutの確率を指定できます。
+    - LyCORISとは指定方法が異なりますのでご注意ください。
+  - LoRAの場合、`--network_args`に`rank_dropout`を指定することで各rankを指定確率でdropoutします。また同じくLoRAの場合、`--network_args`に`module_dropout`を指定することで各モジュールを指定確率でdropoutします。
+    - `--network_args "rank_dropout=0.2" "module_dropout=0.1"` のように指定します。
+  - `--network_dropout`、`rank_dropout` 、 `module_dropout` は同時に指定できます。
+  - それぞれの値は0.1~0.3程度から試してみると良いかもしれません。0.5を超える値は指定しない方が良いでしょう。
+  - `rank_dropout`および`module_dropout`は当リポジトリ独自の手法です。有効性の検証はまだ行っていません。
+  - これらのdropoutはLyCORIS等、当リポジトリ以外のネットワークは現時点では未対応です。
+
+- 各学習スクリプトにv-prediction lossをnoise predictionと同様の値にスケールするオプション`--scale_v_pred_loss_like_noise_pred`を追加しました。
+  - タイムステップに応じてlossをスケールすることで、 大域的なノイズの予測と局所的なノイズの予測の重みが同じになり、ディテールの改善が期待できるかもしれません。
+  - 詳細はxrg氏のこちらの記事をご参照ください：[noise_predictionモデルとv_predictionモデルの損失 - 勾配降下党青年局](https://xrg.hatenablog.com/entry/2023/06/02/202418) xrg氏の素晴らしい記事に感謝します。
+
+### 31 May 2023, 2023/05/31
+
+- Show warning when image caption file does not exist during training. [PR #533](https://github.com/kohya-ss/sd-scripts/pull/533) Thanks to TingTingin!
+  - Warning is also displayed when using class+identifier dataset. Please ignore if it is intended.
+- `train_network.py` now supports merging network weights before training. [PR #542](https://github.com/kohya-ss/sd-scripts/pull/542) Thanks to u-haru!
+  - `--base_weights` option specifies LoRA or other model files (multiple files are allowed) to merge.
+  - `--base_weights_multiplier` option specifies multiplier of the weights to merge (multiple values are allowed). If omitted or less than `base_weights`, 1.0 is used.
+  - This is useful for incremental learning. See PR for details.
+- Show warning and continue training when uploading to HuggingFace fails.
+
+- 学習時に画像のキャプションファイルが存在しない場合、警告が表示されるようになりました。 [PR #533](https://github.com/kohya-ss/sd-scripts/pull/533) TingTingin氏に感謝します。
+  - class+identifier方式のデータセットを利用している場合も警告が表示されます。意図している通りの場合は無視してください。
+- `train_network.py` に学習前にモデルにnetworkの重みをマージする機能が追加されました。 [PR #542](https://github.com/kohya-ss/sd-scripts/pull/542) u-haru氏に感謝します。
+  - `--base_weights` オプションでLoRA等のモデルファイル（複数可）を指定すると、それらの重みをマージします。
+  - `--base_weights_multiplier` オプションでマージする重みの倍率（複数可）を指定できます。省略時または`base_weights`よりも数が少ない場合は1.0になります。
+  - 差分追加学習などにご利用ください。詳細はPRをご覧ください。
+- HuggingFaceへのアップロードに失敗した場合、警告を表示しそのまま学習を続行するよう変更しました。
+
 ### 25 May 2023, 2023/05/25
 
 - [D-Adaptation v3.0](https://github.com/facebookresearch/dadaptation) is now supported. [PR #530](https://github.com/kohya-ss/sd-scripts/pull/530) Thanks to sdbds!

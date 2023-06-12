@@ -25,12 +25,26 @@ from library.config_util import (
 )
 import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
-from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset
+from library.custom_train_functions import (
+    apply_snr_weight,
+    get_weighted_text_embeddings,
+    prepare_scheduler_for_custom_training,
+    pyramid_noise_like,
+    apply_noise_offset,
+    scale_v_prediction_loss_like_noise_prediction,
+)
 
 
 # TODO 他のスクリプトと共通化する
-def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler):
+def generate_step_logs(
+    args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
+):
     logs = {"loss/current": current_loss, "loss/average": avr_loss}
+
+    if keys_scaled is not None:
+        logs["max_norm/keys_scaled"] = keys_scaled
+        logs["max_norm/average_key_norm"] = mean_norm
+        logs["max_norm/max_key_norm"] = maximum_norm
 
     lrs = lr_scheduler.get_last_lr()
 
@@ -80,25 +94,25 @@ def train(args):
     # データセットを準備する
     blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, True))
     if use_user_config:
-        print(f"Load dataset config from {args.dataset_config}")
+        print(f"Loading dataset config from {args.dataset_config}")
         user_config = config_util.load_user_config(args.dataset_config)
         ignored = ["train_data_dir", "reg_data_dir", "in_json"]
         if any(getattr(args, attr) is not None for attr in ignored):
             print(
-                "ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
+                "ignoring the following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
                     ", ".join(ignored)
                 )
             )
     else:
         if use_dreambooth_method:
-            print("Use DreamBooth method.")
+            print("Using DreamBooth method.")
             user_config = {
                 "datasets": [
                     {"subsets": config_util.generate_dreambooth_subsets_config_by_subdirs(args.train_data_dir, args.reg_data_dir)}
                 ]
             }
         else:
-            print("Train with captions.")
+            print("Training with captions.")
             user_config = {
                 "datasets": [
                     {
@@ -135,7 +149,7 @@ def train(args):
         ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
     # acceleratorを準備する
-    print("prepare accelerator")
+    print("preparing accelerator")
     accelerator, unwrap_model = train_util.prepare_accelerator(args)
     is_main_process = accelerator.is_main_process
 
@@ -148,6 +162,29 @@ def train(args):
     # モデルに xformers とか memory efficient attention を組み込む
     train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
 
+    # 差分追加学習のためにモデルを読み込む
+    import sys
+
+    sys.path.append(os.path.dirname(__file__))
+    print("import network module:", args.network_module)
+    network_module = importlib.import_module(args.network_module)
+
+    if args.base_weights is not None:
+        # base_weights が指定されている場合は、指定された重みを読み込みマージする
+        for i, weight_path in enumerate(args.base_weights):
+            if args.base_weights_multiplier is None or len(args.base_weights_multiplier) <= i:
+                multiplier = 1.0
+            else:
+                multiplier = args.base_weights_multiplier[i]
+
+            print(f"merging module: {weight_path} with multiplier {multiplier}")
+
+            module, weights_sd = network_module.create_network_from_weights(
+                multiplier, weight_path, vae, text_encoder, unet, for_inference=True
+            )
+            module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
+
+        print(f"all weights merged: {', '.join(args.base_weights)}")
     # 学習を準備する
     if cache_latents:
         vae.to(accelerator.device, dtype=weight_dtype)
@@ -163,12 +200,6 @@ def train(args):
         accelerator.wait_for_everyone()
 
     # prepare network
-    import sys
-
-    sys.path.append(os.path.dirname(__file__))
-    print("import network module:", args.network_module)
-    network_module = importlib.import_module(args.network_module)
-
     net_kwargs = {}
     if args.network_args is not None:
         for net_arg in args.network_args:
@@ -179,12 +210,20 @@ def train(args):
     if args.dim_from_weights:
         network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
     else:
-        network = network_module.create_network(1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, **net_kwargs)
+        # LyCORIS will work with this...
+        network = network_module.create_network(
+            1.0, args.network_dim, args.network_alpha, vae, text_encoder, unet, neuron_dropout=args.network_dropout, **net_kwargs
+        )
     if network is None:
         return
 
     if hasattr(network, "prepare_network"):
         network.prepare_network(args)
+    if args.scale_weight_norms and not hasattr(network, "apply_max_norm_regularization"):
+        print(
+            "warning: scale_weight_norms is specified but the network does not support it / scale_weight_normsが指定されていますが、ネットワークが対応していません"
+        )
+        args.scale_weight_norms = False
 
     train_unet = not args.network_train_text_encoder_only
     train_text_encoder = not args.network_train_unet_only
@@ -192,7 +231,7 @@ def train(args):
 
     if args.network_weights is not None:
         info = network.load_weights(args.network_weights)
-        print(f"load network weights from {args.network_weights}: {info}")
+        print(f"loaded network weights from {args.network_weights}: {info}")
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -200,7 +239,7 @@ def train(args):
         network.enable_gradient_checkpointing()  # may have no effect
 
     # 学習に必要なクラスを準備する
-    print("prepare optimizer, data loader etc.")
+    print("preparing optimizer, data loader etc.")
 
     # 後方互換性を確保するよ
     try:
@@ -245,7 +284,7 @@ def train(args):
         assert (
             args.mixed_precision == "fp16"
         ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
-        print("enable full fp16 training.")
+        print("enabling full fp16 training.")
         network.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
@@ -283,7 +322,7 @@ def train(args):
 
     network.prepare_grad_etc(text_encoder, unet)
 
-    if not cache_latents:
+    if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
         vae.requires_grad_(False)
         vae.eval()
         vae.to(accelerator.device, dtype=weight_dtype)
@@ -335,7 +374,8 @@ def train(args):
         "ss_lr_scheduler": args.lr_scheduler,
         "ss_network_module": args.network_module,
         "ss_network_dim": args.network_dim,  # None means default because another network than LoRA may have another default dim
-        "ss_network_alpha": args.network_alpha,  # some networks may not use this value
+        "ss_network_alpha": args.network_alpha,  # some networks may not have alpha
+        "ss_network_dropout": args.network_dropout,  # some networks may not have dropout
         "ss_mixed_precision": args.mixed_precision,
         "ss_full_fp16": bool(args.full_fp16),
         "ss_v2": bool(args.v2),
@@ -358,6 +398,7 @@ def train(args):
         "ss_face_crop_aug_range": args.face_crop_aug_range,
         "ss_prior_loss_weight": args.prior_loss_weight,
         "ss_min_snr_gamma": args.min_snr_gamma,
+        "ss_scale_weight_norms": args.scale_weight_norms,
     }
 
     if use_user_config:
@@ -519,6 +560,8 @@ def train(args):
     noise_scheduler = DDPMScheduler(
         beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
     )
+    prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
+
     if accelerator.is_main_process:
         accelerator.init_trackers("network_train" if args.log_tracker_name is None else args.log_tracker_name)
 
@@ -623,6 +666,8 @@ def train(args):
 
                 if args.min_snr_gamma:
                     loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                if args.scale_v_pred_loss_like_noise_pred:
+                    loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
 
                 loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
@@ -634,6 +679,14 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if args.scale_weight_norms:
+                keys_scaled, mean_norm, maximum_norm = network.apply_max_norm_regularization(
+                    args.scale_weight_norms, accelerator.device
+                )
+                max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
+            else:
+                keys_scaled, mean_norm, maximum_norm = None, None, None
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -670,8 +723,11 @@ def train(args):
             logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
+            if args.scale_weight_norms:
+                progress_bar.set_postfix(**{**max_mean_logs, **logs})
+
             if args.logging_dir is not None:
-                logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
+                logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
@@ -756,6 +812,12 @@ def setup_parser() -> argparse.ArgumentParser:
         help="alpha for LoRA weight scaling, default 1 (same as network_dim for same behavior as old version) / LoRaの重み調整のalpha値、デフォルト1（旧バージョンと同じ動作をするにはnetwork_dimと同じ値を指定）",
     )
     parser.add_argument(
+        "--network_dropout",
+        type=float,
+        default=None,
+        help="Drops neurons out of training every step (0 or None is default behavior (no dropout), 1 would drop all neurons) / 訓練時に毎ステップでニューロンをdropする（0またはNoneはdropoutなし、1は全ニューロンをdropout）",
+    )
+    parser.add_argument(
         "--network_args", type=str, default=None, nargs="*", help="additional argmuments for network (key=value) / ネットワークへの追加の引数"
     )
     parser.add_argument("--network_train_unet_only", action="store_true", help="only training U-Net part / U-Net関連部分のみ学習する")
@@ -770,7 +832,26 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="automatically determine dim (rank) from network_weights / dim (rank)をnetwork_weightsで指定した重みから自動で決定する",
     )
-
+    parser.add_argument(
+        "--scale_weight_norms",
+        type=float,
+        default=None,
+        help="Scale the weight of each key pair to help prevent overtraing via exploding gradients. (1 is a good starting point) / 重みの値をスケーリングして勾配爆発を防ぐ（1が初期値としては適当）",
+    )
+    parser.add_argument(
+        "--base_weights",
+        type=str,
+        default=None,
+        nargs="*",
+        help="network weights to merge into the model before training / 学習前にあらかじめモデルにマージするnetworkの重みファイル",
+    )
+    parser.add_argument(
+        "--base_weights_multiplier",
+        type=float,
+        default=None,
+        nargs="*",
+        help="multiplier for network weights to merge into the model before training / 学習前にあらかじめモデルにマージするnetworkの重みの倍率",
+    )
     return parser
 
 
