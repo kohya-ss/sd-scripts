@@ -348,6 +348,8 @@ class DreamBoothSubset(BaseSubset):
         self.is_reg = is_reg
         self.class_tokens = class_tokens
         self.caption_extension = caption_extension
+        if self.caption_extension and not self.caption_extension.startswith("."):
+            self.caption_extension = "." + self.caption_extension
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, DreamBoothSubset):
@@ -1081,16 +1083,37 @@ class DreamBoothDataset(BaseDataset):
 
             # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
             captions = []
+            missing_captions = []
             for img_path in img_paths:
                 cap_for_img = read_caption(img_path, subset.caption_extension)
                 if cap_for_img is None and subset.class_tokens is None:
-                    print(f"neither caption file nor class tokens are found. use empty caption for {img_path}")
+                    print(
+                        f"neither caption file nor class tokens are found. use empty caption for {img_path} / キャプションファイルもclass tokenも見つかりませんでした。空のキャプションを使用します: {img_path}"
+                    )
                     captions.append("")
+                    missing_captions.append(img_path)
                 else:
-                    captions.append(subset.class_tokens if cap_for_img is None else cap_for_img)
+                    if cap_for_img is None:
+                        captions.append(subset.class_tokens)
+                        missing_captions.append(img_path)
+                    else:
+                        captions.append(cap_for_img)
 
             self.set_tag_frequency(os.path.basename(subset.image_dir), captions)  # タグ頻度を記録
 
+            if missing_captions:
+                number_of_missing_captions = len(missing_captions)
+                number_of_missing_captions_to_show = 5
+                remaining_missing_captions = number_of_missing_captions - number_of_missing_captions_to_show
+
+                print(
+                    f"No caption file found for {number_of_missing_captions} images. Training will continue without captions for these images. If class token exists, it will be used. / {number_of_missing_captions}枚の画像にキャプションファイルが見つかりませんでした。これらの画像についてはキャプションなしで学習を続行します。class tokenが存在する場合はそれを使います。"
+                )
+                for i, missing_caption in enumerate(missing_captions):
+                    if i >= number_of_missing_captions_to_show:
+                        print(missing_caption + f"... and {remaining_missing_captions} more")
+                        break
+                    print(missing_caption)
             return img_paths, captions
 
         print("prepare images.")
@@ -1495,6 +1518,76 @@ def glob_images_pathlib(dir_path, recursive):
     return image_paths
 
 
+class MinimalDataset(BaseDataset):
+    def __init__(self, tokenizer, max_token_length, resolution, debug_dataset=False):
+        super().__init__(tokenizer, max_token_length, resolution, debug_dataset)
+
+        self.num_train_images = 0  # update in subclass
+        self.num_reg_images = 0  # update in subclass
+        self.datasets = [self]
+        self.batch_size = 1  # update in subclass
+
+        self.subsets = [self]
+        self.num_repeats = 1  # update in subclass if needed
+        self.img_count = 1  # update in subclass if needed
+        self.bucket_info = {}
+        self.is_reg = False
+        self.image_dir = "dummy"  # for metadata
+
+    def is_latent_cacheable(self) -> bool:
+        return False
+
+    def __len__(self):
+        raise NotImplementedError
+
+    # override to avoid shuffling buckets
+    def set_current_epoch(self, epoch):
+        self.current_epoch = epoch
+
+    def __getitem__(self, idx):
+        r"""
+        The subclass may have image_data for debug_dataset, which is a dict of ImageInfo objects.
+
+        Returns: example like this:
+
+            for i in range(batch_size):
+                image_key = ...  # whatever hashable
+                image_keys.append(image_key)
+
+                image = ...  # PIL Image
+                img_tensor = self.image_transforms(img)
+                images.append(img_tensor)
+
+                caption = ...  # str
+                input_ids = self.get_input_ids(caption)
+                input_ids_list.append(input_ids)
+
+                captions.append(caption)
+
+            images = torch.stack(images, dim=0)
+            input_ids_list = torch.stack(input_ids_list, dim=0)
+            example = {
+                "images": images,
+                "input_ids": input_ids_list,
+                "captions": captions,   # for debug_dataset
+                "latents": None,
+                "image_keys": image_keys,   # for debug_dataset
+                "loss_weights": torch.ones(batch_size, dtype=torch.float32),
+            }
+            return example
+        """
+        raise NotImplementedError
+
+
+def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
+    module = ".".join(args.dataset_class.split(".")[:-1])
+    dataset_class = args.dataset_class.split(".")[-1]
+    module = importlib.import_module(module)
+    dataset_class = getattr(module, dataset_class)
+    train_dataset_group: MinimalDataset = dataset_class(tokenizer, args.max_token_length, args.resolution, args.debug_dataset)
+    return train_dataset_group
+
+
 # endregion
 
 # region モジュール入れ替え部
@@ -1765,6 +1858,7 @@ class FlashAttentionFunction(torch.autograd.function.Function):
 
 
 def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers):
+    # unet is not used currently, but it is here for future use
     if mem_eff_attn:
         replace_unet_cross_attn_to_memory_efficient()
     elif xformers:
@@ -1772,7 +1866,7 @@ def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditio
 
 
 def replace_unet_cross_attn_to_memory_efficient():
-    print("Replace CrossAttention.forward to use FlashAttention (not xformers)")
+    print("CrossAttention.forward has been replaced to FlashAttention (not xformers)")
     flash_func = FlashAttentionFunction
 
     def forward_flash_attn(self, x, context=None, mask=None):
@@ -1812,7 +1906,7 @@ def replace_unet_cross_attn_to_memory_efficient():
 
 
 def replace_unet_cross_attn_to_xformers():
-    print("Replace CrossAttention.forward to use xformers")
+    print("CrossAttention.forward has been replaced to enable xformers.")
     try:
         import xformers.ops
     except ImportError:
@@ -1854,6 +1948,60 @@ def replace_unet_cross_attn_to_xformers():
     diffusers.models.attention.CrossAttention.forward = forward_xformers
 
 
+"""
+def replace_vae_modules(vae: diffusers.models.AutoencoderKL, mem_eff_attn, xformers):
+    # vae is not used currently, but it is here for future use
+    if mem_eff_attn:
+        replace_vae_attn_to_memory_efficient()
+    elif xformers:
+        # とりあえずDiffusersのxformersを使う。AttentionがあるのはMidBlockのみ
+        print("Use Diffusers xformers for VAE")
+        vae.encoder.mid_block.attentions[0].set_use_memory_efficient_attention_xformers(True)
+        vae.decoder.mid_block.attentions[0].set_use_memory_efficient_attention_xformers(True)
+
+
+def replace_vae_attn_to_memory_efficient():
+    print("AttentionBlock.forward has been replaced to FlashAttention (not xformers)")
+    flash_func = FlashAttentionFunction
+
+    def forward_flash_attn(self, hidden_states):
+        print("forward_flash_attn")
+        q_bucket_size = 512
+        k_bucket_size = 1024
+
+        residual = hidden_states
+        batch, channel, height, width = hidden_states.shape
+
+        # norm
+        hidden_states = self.group_norm(hidden_states)
+
+        hidden_states = hidden_states.view(batch, channel, height * width).transpose(1, 2)
+
+        # proj to q, k, v
+        query_proj = self.query(hidden_states)
+        key_proj = self.key(hidden_states)
+        value_proj = self.value(hidden_states)
+
+        query_proj, key_proj, value_proj = map(
+            lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.num_heads), (query_proj, key_proj, value_proj)
+        )
+
+        out = flash_func.apply(query_proj, key_proj, value_proj, None, False, q_bucket_size, k_bucket_size)
+
+        out = rearrange(out, "b h n d -> b n (h d)")
+
+        # compute next hidden_states
+        hidden_states = self.proj_attn(hidden_states)
+        hidden_states = hidden_states.transpose(-1, -2).reshape(batch, channel, height, width)
+
+        # res connect and rescale
+        hidden_states = (hidden_states + residual) / self.rescale_output_factor
+        return hidden_states
+
+    diffusers.models.attention.AttentionBlock.forward = forward_flash_attn
+"""
+
+
 # endregion
 
 
@@ -1885,7 +2033,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "--optimizer_type",
         type=str,
         default="",
-        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, AdaFactor",
+        help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, AdaFactor",
     )
 
     # backward compatibility
@@ -2233,6 +2381,11 @@ def verify_training_args(args: argparse.Namespace):
     if args.adaptive_noise_scale is not None and args.noise_offset is None:
         raise ValueError("adaptive_noise_scale requires noise_offset / adaptive_noise_scaleを使用するにはnoise_offsetが必要です")
 
+    if args.scale_v_pred_loss_like_noise_pred and not args.v_parameterization:
+        raise ValueError(
+            "scale_v_pred_loss_like_noise_pred can be enabled only with v_parameterization / scale_v_pred_loss_like_noise_predはv_parameterizationが有効なときのみ有効にできます"
+        )
+
 
 def add_dataset_arguments(
     parser: argparse.ArgumentParser, support_dreambooth: bool, support_caption: bool, support_caption_dropout: bool
@@ -2311,12 +2464,18 @@ def add_dataset_arguments(
         default=1,
         help="start learning at N tags (token means comma separated strinfloatgs) / タグ数をN個から増やしながら学習する",
     )
-
     parser.add_argument(
         "--token_warmup_step",
         type=float,
         default=0,
         help="tag length reaches maximum on N steps (or N*max_train_steps if N<1) / N（N<1ならN*max_train_steps）ステップでタグ長が最大になる。デフォルトは0（最初から最大）",
+    )
+
+    parser.add_argument(
+        "--dataset_class",
+        type=str,
+        default=None,
+        help="dataset class for arbitrary dataset (package.module.Class) / 任意のデータセットを用いるときのクラス名 (package.module.Class)",
     )
 
     if support_caption_dropout:
@@ -2490,7 +2649,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 
 def get_optimizer(args, trainable_params):
-    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, Adafactor"
+    # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, Lion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
 
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
@@ -2593,14 +2752,7 @@ def get_optimizer(args, trainable_params):
         optimizer_class = torch.optim.SGD
         optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
 
-    elif optimizer_type.startswith("DAdapt".lower()):
-        # DAdaptation family
-        # check dadaptation is installed
-        try:
-            import dadaptation
-        except ImportError:
-            raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
-
+    elif optimizer_type.startswith("DAdapt".lower()) or optimizer_type == "Prodigy".lower():
         # check lr and lr_count, and print warning
         actual_lr = lr
         lr_count = 1
@@ -2613,31 +2765,60 @@ def get_optimizer(args, trainable_params):
 
         if actual_lr <= 0.1:
             print(
-                f"learning rate is too low. If using dadaptation, set learning rate around 1.0 / 学習率が低すぎるようです。1.0前後の値を指定してください: lr={actual_lr}"
+                f"learning rate is too low. If using D-Adaptation or Prodigy, set learning rate around 1.0 / 学習率が低すぎるようです。D-AdaptationまたはProdigyの使用時は1.0前後の値を指定してください: lr={actual_lr}"
             )
             print("recommend option: lr=1.0 / 推奨は1.0です")
         if lr_count > 1:
             print(
-                f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-Adaptationで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
+                f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
             )
 
-        # set optimizer
-        if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdam".lower():
-            optimizer_class = dadaptation.DAdaptAdam
-            print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
-        elif optimizer_type == "DAdaptAdaGrad".lower():
-            optimizer_class = dadaptation.DAdaptAdaGrad
-            print(f"use D-Adaptation AdaGrad optimizer | {optimizer_kwargs}")
-        elif optimizer_type == "DAdaptAdan".lower():
-            optimizer_class = dadaptation.DAdaptAdan
-            print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
-        elif optimizer_type == "DAdaptSGD".lower():
-            optimizer_class = dadaptation.DAdaptSGD
-            print(f"use D-Adaptation SGD optimizer | {optimizer_kwargs}")
-        else:
-            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+        if optimizer_type.startswith("DAdapt".lower()):
+            # DAdaptation family
+            # check dadaptation is installed
+            try:
+                import dadaptation
+                import dadaptation.experimental as experimental
+            except ImportError:
+                raise ImportError("No dadaptation / dadaptation がインストールされていないようです")
 
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+            # set optimizer
+            if optimizer_type == "DAdaptation".lower() or optimizer_type == "DAdaptAdamPreprint".lower():
+                optimizer_class = experimental.DAdaptAdamPreprint
+                print(f"use D-Adaptation AdamPreprint optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptAdaGrad".lower():
+                optimizer_class = dadaptation.DAdaptAdaGrad
+                print(f"use D-Adaptation AdaGrad optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptAdam".lower():
+                optimizer_class = dadaptation.DAdaptAdam
+                print(f"use D-Adaptation Adam optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptAdan".lower():
+                optimizer_class = dadaptation.DAdaptAdan
+                print(f"use D-Adaptation Adan optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptAdanIP".lower():
+                optimizer_class = experimental.DAdaptAdanIP
+                print(f"use D-Adaptation AdanIP optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptLion".lower():
+                optimizer_class = dadaptation.DAdaptLion
+                print(f"use D-Adaptation Lion optimizer | {optimizer_kwargs}")
+            elif optimizer_type == "DAdaptSGD".lower():
+                optimizer_class = dadaptation.DAdaptSGD
+                print(f"use D-Adaptation SGD optimizer | {optimizer_kwargs}")
+            else:
+                raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+        else:
+            # Prodigy
+            # check Prodigy is installed
+            try:
+                import prodigyopt
+            except ImportError:
+                raise ImportError("No Prodigy / Prodigy がインストールされていないようです")
+
+            print(f"use Prodigy optimizer | {optimizer_kwargs}")
+            optimizer_class = prodigyopt.Prodigy
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "Adafactor".lower():
         # 引数を確認して適宜補正する
@@ -3167,10 +3348,11 @@ def save_sd_model_on_epoch_end_or_stepwise(
                 print(f"removing old model: {remove_out_dir}")
                 shutil.rmtree(remove_out_dir)
 
-    if on_epoch_end:
-        save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
-    else:
-        save_and_remove_state_stepwise(args, accelerator, global_step)
+    if args.save_state:
+        if on_epoch_end:
+            save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
+        else:
+            save_and_remove_state_stepwise(args, accelerator, global_step)
 
 
 def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
@@ -3294,7 +3476,7 @@ def sample_images(
         if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
             return
 
-    print(f"generating sample images at step / サンプル画像生成 ステップ: {steps}")
+    print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
     if not os.path.isfile(args.sample_prompts):
         print(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
         return
