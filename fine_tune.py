@@ -148,10 +148,10 @@ def train(args):
         train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers)
 
     # 学習を準備する
+    vae.to(accelerator.device, dtype=weight_dtype)
+    vae.requires_grad_(False)
+    vae.eval()
     if cache_latents:
-        vae.to(accelerator.device, dtype=weight_dtype)
-        vae.requires_grad_(False)
-        vae.eval()
         with torch.no_grad():
             train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
         vae.to("cpu")
@@ -175,16 +175,7 @@ def train(args):
     else:
         text_encoder.to(accelerator.device, dtype=weight_dtype)
         text_encoder.requires_grad_(False)  # text encoderは学習しない
-        if args.gradient_checkpointing:
-            text_encoder.gradient_checkpointing_enable()
-            text_encoder.train()  # required for gradient_checkpointing
-        else:
-            text_encoder.eval()
-
-    if not cache_latents:
-        vae.requires_grad_(False)
-        vae.eval()
-        vae.to(accelerator.device, dtype=weight_dtype)
+        text_encoder.eval()
 
     for m in training_models:
         m.requires_grad_(True)
@@ -239,8 +230,13 @@ def train(args):
     else:
         unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
-    # transform DDP after prepare
-    text_encoder, unet = train_util.transform_if_model_is_DDP(text_encoder, unet)
+    # save reference to wrapped self in the model, then work with unwrapped models by default
+    unet_accelerated = unet
+    unet = accelerator.unwrap_model(unet)
+    unet.accelerated = lambda: unet_accelerated
+    text_encoder_accelerated = text_encoder
+    text_encoder = accelerator.unwrap_model(text_encoder)
+    text_encoder.accelerated = lambda: text_encoder_accelerated
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:
@@ -276,6 +272,9 @@ def train(args):
 
     if accelerator.is_main_process:
         accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name)
+
+    if args.sample_before_training:
+        train_util.sample_images(accelerator, args, None, 0, accelerator.device, vae, tokenizer, text_encoder, unet)
 
     for epoch in range(num_train_epochs):
         print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -331,7 +330,7 @@ def train(args):
 
                 # Predict the noise residual
                 with accelerator.autocast():
-                    noise_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+                    noise_pred = unet.accelerated()(noisy_latents, timesteps, encoder_hidden_states).sample
 
                 if args.v_parameterization:
                     # v-parameterization training
@@ -389,10 +388,15 @@ def train(args):
                             epoch,
                             num_train_epochs,
                             global_step,
-                            unwrap_model(text_encoder),
-                            unwrap_model(unet),
+                            text_encoder,
+                            unet,
                             vae,
                         )
+
+                    # State must be saved from all processes b/c it may contain rank-specific data
+                    # (random_states in DDP, optimizer state in deepspeed, etc.)
+                    if args.save_state:
+                        train_util.save_and_remove_state_stepwise(args, accelerator, global_step)
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if args.logging_dir is not None:
@@ -432,21 +436,21 @@ def train(args):
                     epoch,
                     num_train_epochs,
                     global_step,
-                    unwrap_model(text_encoder),
-                    unwrap_model(unet),
+                    text_encoder,
+                    unet,
                     vae,
                 )
+
+            if args.save_state:
+                train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
         train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
     is_main_process = accelerator.is_main_process
-    if is_main_process:
-        unet = unwrap_model(unet)
-        text_encoder = unwrap_model(text_encoder)
 
     accelerator.end_training()
 
-    if args.save_state and is_main_process:
+    if args.save_state:
         train_util.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
