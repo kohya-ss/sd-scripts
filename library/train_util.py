@@ -3046,12 +3046,6 @@ def load_tokenizer(args: argparse.Namespace):
         else:
             tokenizer = CLIPTokenizer.from_pretrained(original_path)
 
-    if tokenizer is None:
-        if args.v2:
-            tokenizer = CLIPTokenizer.from_pretrained(original_path, subfolder="tokenizer")
-        else:
-            tokenizer = CLIPTokenizer.from_pretrained(original_path)
-
     if hasattr(args, "max_token_length") and args.max_token_length is not None:
         print(f"update token length: {args.max_token_length}")
 
