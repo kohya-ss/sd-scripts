@@ -9,13 +9,16 @@ import numpy as np
 import PIL.Image
 import torch
 from packaging import version
+from tqdm import tqdm
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
-import diffusers
 from diffusers import SchedulerMixin, StableDiffusionPipeline
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput, StableDiffusionSafetyChecker
 from diffusers.utils import logging
+from PIL import Image
+
+from library import sdxl_model_util, sdxl_train_util
 
 
 try:
@@ -207,6 +210,23 @@ def pad_tokens_and_weights(tokens, weights, max_length, bos, eos, no_boseos_midd
     return tokens, weights
 
 
+def get_hidden_states(text_encoder, input_ids, is_sdxl_text_encoder2: bool, device):
+    if not is_sdxl_text_encoder2:
+        # text_encoder1: same as SD1/2
+        enc_out = text_encoder(input_ids.to(text_encoder.device), output_hidden_states=True, return_dict=True)
+        hidden_states = enc_out["hidden_states"][11]
+        pool = None
+    else:
+        # text_encoder2
+        enc_out = text_encoder(input_ids.to(text_encoder.device), output_hidden_states=True, return_dict=True)
+        hidden_states = enc_out["hidden_states"][-2]  # penuultimate layer
+        pool = enc_out["text_embeds"]
+    hidden_states = hidden_states.to(device)
+    if pool is not None:
+        pool = pool.to(device)
+    return hidden_states, pool
+
+
 def get_unweighted_text_embeddings(
     pipe: StableDiffusionPipeline,
     text_input: torch.Tensor,
@@ -214,6 +234,7 @@ def get_unweighted_text_embeddings(
     clip_skip: int,
     eos: int,
     pad: int,
+    is_sdxl_text_encoder2: bool,
     no_boseos_middle: Optional[bool] = True,
 ):
     """
@@ -221,6 +242,7 @@ def get_unweighted_text_embeddings(
     it should be split into chunks and sent to the text encoder individually.
     """
     max_embeddings_multiples = (text_input.shape[1] - 2) // (chunk_length - 2)
+    text_pool = None
     if max_embeddings_multiples > 1:
         text_embeddings = []
         for i in range(max_embeddings_multiples):
@@ -238,12 +260,11 @@ def get_unweighted_text_embeddings(
                     if text_input_chunk[j, 1] == pad:  # BOSだけであとはPAD
                         text_input_chunk[j, 1] = eos
 
-            if clip_skip is None or clip_skip == 1:
-                text_embedding = pipe.text_encoder(text_input_chunk)[0]
-            else:
-                enc_out = pipe.text_encoder(text_input_chunk, output_hidden_states=True, return_dict=True)
-                text_embedding = enc_out["hidden_states"][-clip_skip]
-                text_embedding = pipe.text_encoder.text_model.final_layer_norm(text_embedding)
+            text_embedding, current_text_pool = get_hidden_states(
+                pipe.text_encoder, text_input_chunk, is_sdxl_text_encoder2, pipe.device
+            )
+            if text_pool is None:
+                text_pool = current_text_pool
 
             if no_boseos_middle:
                 if i == 0:
@@ -259,13 +280,8 @@ def get_unweighted_text_embeddings(
             text_embeddings.append(text_embedding)
         text_embeddings = torch.concat(text_embeddings, axis=1)
     else:
-        if clip_skip is None or clip_skip == 1:
-            text_embeddings = pipe.text_encoder(text_input)[0]
-        else:
-            enc_out = pipe.text_encoder(text_input, output_hidden_states=True, return_dict=True)
-            text_embeddings = enc_out["hidden_states"][-clip_skip]
-            text_embeddings = pipe.text_encoder.text_model.final_layer_norm(text_embeddings)
-    return text_embeddings
+        text_embeddings, text_pool = get_hidden_states(pipe.text_encoder, text_input, is_sdxl_text_encoder2, pipe.device)
+    return text_embeddings, text_pool
 
 
 def get_weighted_text_embeddings(
@@ -277,6 +293,7 @@ def get_weighted_text_embeddings(
     skip_parsing: Optional[bool] = False,
     skip_weighting: Optional[bool] = False,
     clip_skip=None,
+    is_sdxl_text_encoder2=False,
 ):
     r"""
     Prompts can be assigned with local weights using brackets. For example,
@@ -363,24 +380,27 @@ def get_weighted_text_embeddings(
         uncond_tokens = torch.tensor(uncond_tokens, dtype=torch.long, device=pipe.device)
 
     # get the embeddings
-    text_embeddings = get_unweighted_text_embeddings(
+    text_embeddings, text_pool = get_unweighted_text_embeddings(
         pipe,
         prompt_tokens,
         pipe.tokenizer.model_max_length,
         clip_skip,
         eos,
         pad,
+        is_sdxl_text_encoder2,
         no_boseos_middle=no_boseos_middle,
     )
     prompt_weights = torch.tensor(prompt_weights, dtype=text_embeddings.dtype, device=pipe.device)
+
     if uncond_prompt is not None:
-        uncond_embeddings = get_unweighted_text_embeddings(
+        uncond_embeddings, uncond_pool = get_unweighted_text_embeddings(
             pipe,
             uncond_tokens,
             pipe.tokenizer.model_max_length,
             clip_skip,
             eos,
             pad,
+            is_sdxl_text_encoder2,
             no_boseos_middle=no_boseos_middle,
         )
         uncond_weights = torch.tensor(uncond_weights, dtype=uncond_embeddings.dtype, device=pipe.device)
@@ -399,8 +419,8 @@ def get_weighted_text_embeddings(
             uncond_embeddings *= (previous_mean / current_mean).unsqueeze(-1).unsqueeze(-1)
 
     if uncond_prompt is not None:
-        return text_embeddings, uncond_embeddings
-    return text_embeddings, None
+        return text_embeddings, text_pool, uncond_embeddings, uncond_pool
+    return text_embeddings, text_pool, None, None
 
 
 def preprocess_image(image):
@@ -446,9 +466,7 @@ def prepare_controlnet_image(
 
             for image_ in image:
                 image_ = image_.convert("RGB")
-                image_ = image_.resize(
-                    (width, height), resample=PIL_INTERPOLATION["lanczos"]
-                )
+                image_ = image_.resize((width, height), resample=PIL_INTERPOLATION["lanczos"])
                 image_ = np.array(image_)
                 image_ = image_[None, :]
                 images.append(image_)
@@ -479,7 +497,8 @@ def prepare_controlnet_image(
 
     return image
 
-class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
+
+class SdxlStableDiffusionLongPromptWeightingPipeline:
     r"""
     Pipeline for text-to-image generation using Stable Diffusion without tokens length limit, and support parsing
     weighting in prompt.
@@ -513,8 +532,8 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
     def __init__(
         self,
         vae: AutoencoderKL,
-        text_encoder: CLIPTextModel,
-        tokenizer: CLIPTokenizer,
+        text_encoder: List[CLIPTextModel],
+        tokenizer: List[CLIPTokenizer],
         unet: UNet2DConditionModel,
         scheduler: SchedulerMixin,
         # clip_skip: int,
@@ -523,44 +542,36 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         requires_safety_checker: bool = True,
         clip_skip: int = 1,
     ):
-        super().__init__(
-            vae=vae,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            unet=unet,
-            scheduler=scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=feature_extractor,
-            requires_safety_checker=requires_safety_checker,
-        )
+        # clip skip is ignored currently
+        self.tokenizer = tokenizer[0]
+        self.text_encoder = text_encoder[0]
+        self.unet = unet
+        self.scheduler = scheduler
+        self.safety_checker = safety_checker
+        self.feature_extractor = feature_extractor
+        self.requires_safety_checker = requires_safety_checker
+        self.vae = vae
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.progress_bar = lambda x: tqdm(x, leave=False)
+
         self.clip_skip = clip_skip
-        self.__init__additional__()
+        self.tokenizers = tokenizer
+        self.text_encoders = text_encoder
 
-    # else:
-    #     def __init__(
-    #         self,
-    #         vae: AutoencoderKL,
-    #         text_encoder: CLIPTextModel,
-    #         tokenizer: CLIPTokenizer,
-    #         unet: UNet2DConditionModel,
-    #         scheduler: SchedulerMixin,
-    #         safety_checker: StableDiffusionSafetyChecker,
-    #         feature_extractor: CLIPFeatureExtractor,
-    #     ):
-    #         super().__init__(
-    #             vae=vae,
-    #             text_encoder=text_encoder,
-    #             tokenizer=tokenizer,
-    #             unet=unet,
-    #             scheduler=scheduler,
-    #             safety_checker=safety_checker,
-    #             feature_extractor=feature_extractor,
-    #         )
-    #         self.__init__additional__()
+    #     self.__init__additional__()
 
-    def __init__additional__(self):
-        if not hasattr(self, "vae_scale_factor"):
-            setattr(self, "vae_scale_factor", 2 ** (len(self.vae.config.block_out_channels) - 1))
+    # def __init__additional__(self):
+    #     if not hasattr(self, "vae_scale_factor"):
+    #         setattr(self, "vae_scale_factor", 2 ** (len(self.vae.config.block_out_channels) - 1))
+
+    def to(self, device=None, dtype=None):
+        if device is not None:
+            self.device = device
+            # self.vae.to(device=self.device)
+        if dtype is not None:
+            self.dtype = dtype
+
+        # do not move Text Encoders to device, because Text Encoder should be on CPU
 
     @property
     def _execution_device(self):
@@ -588,6 +599,7 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         do_classifier_free_guidance,
         negative_prompt,
         max_embeddings_multiples,
+        is_sdxl_text_encoder2,
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -620,24 +632,34 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
                 " the batch size of `prompt`."
             )
 
-        text_embeddings, uncond_embeddings = get_weighted_text_embeddings(
+        text_embeddings, text_pool, uncond_embeddings, uncond_pool = get_weighted_text_embeddings(
             pipe=self,
             prompt=prompt,
             uncond_prompt=negative_prompt if do_classifier_free_guidance else None,
             max_embeddings_multiples=max_embeddings_multiples,
             clip_skip=self.clip_skip,
+            is_sdxl_text_encoder2=is_sdxl_text_encoder2,
         )
         bs_embed, seq_len, _ = text_embeddings.shape
-        text_embeddings = text_embeddings.repeat(1, num_images_per_prompt, 1)
+        text_embeddings = text_embeddings.repeat(1, num_images_per_prompt, 1)  # ??
         text_embeddings = text_embeddings.view(bs_embed * num_images_per_prompt, seq_len, -1)
+        if text_pool is not None:
+            text_pool = text_pool.repeat(1, num_images_per_prompt)
+            text_pool = text_pool.view(bs_embed * num_images_per_prompt, -1)
 
         if do_classifier_free_guidance:
             bs_embed, seq_len, _ = uncond_embeddings.shape
             uncond_embeddings = uncond_embeddings.repeat(1, num_images_per_prompt, 1)
             uncond_embeddings = uncond_embeddings.view(bs_embed * num_images_per_prompt, seq_len, -1)
-            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+            if uncond_pool is not None:
+                uncond_pool = uncond_pool.repeat(1, num_images_per_prompt)
+                uncond_pool = uncond_pool.view(bs_embed * num_images_per_prompt, -1)
 
-        return text_embeddings
+            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+            if text_pool is not None:
+                text_pool = torch.cat([uncond_pool, text_pool])
+
+        return text_embeddings, text_pool
 
     def check_inputs(self, prompt, height, width, strength, callback_steps):
         if not isinstance(prompt, str) and not isinstance(prompt, list):
@@ -679,12 +701,21 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         return image, has_nsfw_concept
 
     def decode_latents(self, latents):
-        latents = 1 / 0.18215 * latents
-        image = self.vae.decode(latents).sample
-        image = (image / 2 + 0.5).clamp(0, 1)
-        # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-        return image
+        with torch.no_grad():
+            latents = 1 / sdxl_model_util.VAE_SCALE_FACTOR * latents
+
+            # print("post_quant_conv dtype:", self.vae.post_quant_conv.weight.dtype)  # torch.float32
+            # x = torch.nn.functional.conv2d(latents, self.vae.post_quant_conv.weight.detach(), stride=1, padding=0)
+            # print("latents dtype:", latents.dtype, "x dtype:", x.dtype)  # torch.float32, torch.float16
+            # self.vae.to("cpu")
+            # self.vae.set_use_memory_efficient_attention_xformers(False)
+            # image = self.vae.decode(latents.to("cpu")).sample
+
+            image = self.vae.decode(latents).sample
+            image = (image / 2 + 0.5).clamp(0, 1)
+            # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            return image
 
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
@@ -729,7 +760,7 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         else:
             init_latent_dist = self.vae.encode(image).latent_dist
             init_latents = init_latent_dist.sample(generator=generator)
-            init_latents = 0.18215 * init_latents
+            init_latents = sdxl_model_util.VAE_SCALE_FACTOR * init_latents
             init_latents = torch.cat([init_latents] * batch_size, dim=0)
             init_latents_orig = init_latents
             shape = init_latents.shape
@@ -865,15 +896,27 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        text_embeddings = self._encode_prompt(
-            prompt,
-            device,
-            num_images_per_prompt,
-            do_classifier_free_guidance,
-            negative_prompt,
-            max_embeddings_multiples,
-        )
-        dtype = text_embeddings.dtype
+        # 実装を簡単にするためにtokenzer/text encoderを切り替えて二回呼び出す
+        # To simplify the implementation, switch the tokenzer/text encoder and call it twice
+        text_embeddings_list = []
+        text_pools = []
+        for i in range(len(self.tokenizers)):
+            self.tokenizer = self.tokenizers[i]
+            self.text_encoder = self.text_encoders[i]
+
+            text_embeddings, text_pool = self._encode_prompt(
+                prompt,
+                device,
+                num_images_per_prompt,
+                do_classifier_free_guidance,
+                negative_prompt,
+                max_embeddings_multiples,
+                is_sdxl_text_encoder2=i == 1,
+            )
+            text_embeddings_list.append(text_embeddings)
+            text_pools.append(text_pool)
+
+        dtype = text_embeddings_list[0].dtype
 
         # 4. Preprocess image and mask
         if isinstance(image, PIL.Image.Image):
@@ -888,9 +931,11 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         else:
             mask = None
 
+        # ControlNet is not working yet in SDXL, but keep the code here for future use
         if controlnet_image is not None:
-            controlnet_image = prepare_controlnet_image(controlnet_image, width, height, batch_size, 1, self.device, controlnet.dtype, do_classifier_free_guidance, False)
-
+            controlnet_image = prepare_controlnet_image(
+                controlnet_image, width, height, batch_size, 1, self.device, controlnet.dtype, do_classifier_free_guidance, False
+            )
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -913,6 +958,17 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        # create size embs and concat embeddings for SDXL
+        orig_size = torch.tensor([height, width]).repeat(batch_size * num_images_per_prompt, 1).to(dtype)
+        crop_size = torch.zeros_like(orig_size)
+        target_size = orig_size
+        embs = sdxl_train_util.get_size_embeddings(orig_size, crop_size, target_size, device).to(dtype)
+        if do_classifier_free_guidance:
+            embs = torch.cat([embs] * 2)
+
+        vector_embedding = torch.cat([text_pools[1], embs], dim=1).to(dtype)
+        text_embedding = torch.cat(text_embeddings_list, dim=2).to(dtype)
+
         # 8. Denoising loop
         for i, t in enumerate(self.progress_bar(timesteps)):
             # expand the latents if we are doing classifier free guidance
@@ -930,11 +986,11 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
                     guess_mode=False,
                     return_dict=False,
                 )
-                unet_additional_args['down_block_additional_residuals'] = down_block_res_samples
-                unet_additional_args['mid_block_additional_residual'] = mid_block_res_sample
+                unet_additional_args["down_block_additional_residuals"] = down_block_res_samples
+                unet_additional_args["mid_block_additional_residual"] = mid_block_res_sample
 
             # predict the noise residual
-            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings, **unet_additional_args).sample
+            noise_pred = self.unet(latent_model_input, t, text_embedding, vector_embedding)
 
             # perform guidance
             if do_classifier_free_guidance:
@@ -957,10 +1013,10 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
                     return None
 
         # 9. Post-processing
-        image = self.decode_latents(latents)
+        image = self.decode_latents(latents.to(torch.float32))
 
         # 10. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, text_embeddings.dtype)
+        image, has_nsfw_concept = image, None  #  self.run_safety_checker(image, device, text_embeddings.dtype)
 
         # 11. Convert to PIL
         if output_type == "pil":
@@ -970,6 +1026,22 @@ class StableDiffusionLongPromptWeightingPipeline(StableDiffusionPipeline):
             return image, has_nsfw_concept
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
+    # copy from pil_utils.py
+    def numpy_to_pil(self, images: np.ndarray) -> Image.Image:
+        """
+        Convert a numpy image or a batch of images to a PIL image.
+        """
+        if images.ndim == 3:
+            images = images[None, ...]
+        images = (images * 255).round().astype("uint8")
+        if images.shape[-1] == 1:
+            # special case for grayscale (single channel) images
+            pil_images = [Image.fromarray(image.squeeze(), mode="L") for image in images]
+        else:
+            pil_images = [Image.fromarray(image) for image in images]
+
+        return pil_images
 
     def text2img(
         self,
