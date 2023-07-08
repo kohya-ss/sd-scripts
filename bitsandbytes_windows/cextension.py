@@ -1,54 +1,42 @@
 import ctypes as ct
+import os
+import torch
+
 from pathlib import Path
 from warnings import warn
 
-from .cuda_setup.main import evaluate_cuda_setup
+from bitsandbytes.cuda_setup.main import CUDASetup
 
 
-class CUDALibrary_Singleton(object):
-    _instance = None
+setup = CUDASetup.get_instance()
+if setup.initialized != True:
+    setup.run_cuda_setup()
 
-    def __init__(self):
-        raise RuntimeError("Call get_instance() instead")
-
-    def initialize(self):
-        binary_name = evaluate_cuda_setup()
-        package_dir = Path(__file__).parent
-        binary_path = package_dir / binary_name
-
-        if not binary_path.exists():
-            print(f"CUDA SETUP: TODO: compile library for specific version: {binary_name}")
-            legacy_binary_name = "libbitsandbytes.so"
-            print(f"CUDA SETUP: Defaulting to {legacy_binary_name}...")
-            binary_path = package_dir / legacy_binary_name
-            if not binary_path.exists():
-                print('CUDA SETUP: CUDA detection failed. Either CUDA driver not installed, CUDA not installed, or you have multiple conflicting CUDA libraries!')
-                print('CUDA SETUP: If you compiled from source, try again with `make CUDA_VERSION=DETECTED_CUDA_VERSION` for example, `make CUDA_VERSION=113`.')
-                raise Exception('CUDA SETUP: Setup Failed!')
-            # self.lib = ct.cdll.LoadLibrary(binary_path)
-            self.lib = ct.cdll.LoadLibrary(str(binary_path))            # $$$
-        else:
-            print(f"CUDA SETUP: Loading binary {binary_path}...")
-            # self.lib = ct.cdll.LoadLibrary(binary_path)
-            self.lib = ct.cdll.LoadLibrary(str(binary_path))            # $$$
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = cls.__new__(cls)
-            cls._instance.initialize()
-        return cls._instance
-
-
-lib = CUDALibrary_Singleton.get_instance().lib
+lib = setup.lib
 try:
-    lib.cadam32bit_g32
+    if lib is None and torch.cuda.is_available():
+        CUDASetup.get_instance().generate_instructions()
+        CUDASetup.get_instance().print_log_stack()
+        raise RuntimeError('''
+        CUDA Setup failed despite GPU being available. Please run the following command to get more information:
+
+        python -m bitsandbytes
+
+        Inspect the output of the command and see if you can locate CUDA libraries. You might need to add them
+        to your LD_LIBRARY_PATH. If you suspect a bug, please take the information from python -m bitsandbytes
+        and open an issue at: https://github.com/TimDettmers/bitsandbytes/issues''')
+    lib.cadam32bit_grad_fp32 # runs on an error if the library could not be found -> COMPILED_WITH_CUDA=False
     lib.get_context.restype = ct.c_void_p
     lib.get_cusparse.restype = ct.c_void_p
+    lib.cget_managed_ptr.restype = ct.c_void_p
     COMPILED_WITH_CUDA = True
-except AttributeError:
-    warn(
-        "The installed version of bitsandbytes was compiled without GPU support. "
-        "8-bit optimizers and GPU quantization are unavailable."
-    )
+except AttributeError as ex:
+    warn("The installed version of bitsandbytes was compiled without GPU support. "
+        "8-bit optimizers, 8-bit multiplication, and GPU quantization are unavailable.")
     COMPILED_WITH_CUDA = False
+    print(str(ex))
+
+
+# print the setup details after checking for errors so we do not print twice
+if 'BITSANDBYTES_NOWELCOME' not in os.environ or str(os.environ['BITSANDBYTES_NOWELCOME']) == '0':
+    setup.print_log_stack()
