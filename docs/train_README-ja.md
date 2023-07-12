@@ -562,7 +562,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
     保存時のデータ精度を指定します。save_precisionオプションにfloat、fp16、bf16のいずれかを指定すると、その形式でモデルを保存します（DreamBooth、fine tuningでDiffusers形式でモデルを保存する場合は無効です）。モデルのサイズを削減したい場合などにお使いください。
 
-- `--save_every_n_epochs` / `--save_state` / `--resume`
+- `--save_every_n_epochs` / `--save_state` / `--save_last_state` / `--resume`
 
     save_every_n_epochsオプションに数値を指定すると、そのエポックごとに学習途中のモデルを保存します。
 
@@ -573,6 +573,8 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     保存された学習状態から学習を再開するにはresumeオプションを使います。学習状態のフォルダ（`output_dir` ではなくその中のstateのフォルダ）を指定してください。
 
     なおAcceleratorの仕様により、エポック数、global stepは保存されておらず、resumeしたときにも1からになりますがご容赦ください。
+
+    save_stateオプションの代わりにsave_last_stateオプションを指定すると、学習終了時のみ状態を保存します。エポックごとにモデルは保存したいがディスクの空き容量に余裕がないため途中の学習状態は保存したくない、ただし学習を再開するために最後の状態だけは保存したい、という場合にお使いください。
 
 - `--save_every_n_steps`
 

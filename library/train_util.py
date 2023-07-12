@@ -2179,6 +2179,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         action="store_true",
         help="save training state additionally (including optimizer states etc.) / optimizerなど学習状態も含めたstateを追加で保存する",
     )
+    parser.add_argument(
+        "--save_last_state",
+        action="store_true",
+        help="save last training state additionally (including optimizer states etc.) / 学習終了時にoptimizerなど学習状態も含めたstateを保存する",
+    )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
 
     parser.add_argument("--train_batch_size", type=int, default=1, help="batch size for training / 学習時のバッチサイズ")
