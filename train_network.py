@@ -350,13 +350,24 @@ class NetworkTrainer:
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
-        # 実験的機能：勾配も含めたfp16学習を行う　モデル全体をfp16にする
+        # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.full_fp16:
             assert (
                 args.mixed_precision == "fp16"
             ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
             accelerator.print("enable full fp16 training.")
             network.to(weight_dtype)
+        elif args.full_bf16:
+            assert (
+                args.mixed_precision == "bf16"
+            ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            accelerator.print("enable full bf16 training.")
+            network.to(weight_dtype)
+
+        unet.requires_grad_(False)
+        unet.to(dtype=weight_dtype)
+        for t_enc in text_encoders:
+            t_enc.requires_grad_(False)
 
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
@@ -396,11 +407,6 @@ class NetworkTrainer:
         # transform DDP after prepare (train_network here only)
         text_encoders = train_util.transform_models_if_DDP(text_encoders)
         unet, network = train_util.transform_models_if_DDP([unet, network])
-
-        unet.requires_grad_(False)
-        unet.to(accelerator.device, dtype=weight_dtype)
-        for t_enc in text_encoders:
-            t_enc.requires_grad_(False)
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -487,6 +493,7 @@ class NetworkTrainer:
             "ss_multires_noise_iterations": args.multires_noise_iterations,
             "ss_multires_noise_discount": args.multires_noise_discount,
             "ss_adaptive_noise_scale": args.adaptive_noise_scale,
+            "ss_zero_terminal_snr": args.zero_terminal_snr,
             "ss_training_comment": args.training_comment,  # will not be updated after training
             "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
             "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else ""),
@@ -670,6 +677,8 @@ class NetworkTrainer:
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
         )
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
+        if args.zero_terminal_snr:
+            custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
         if accelerator.is_main_process:
             accelerator.init_trackers("network_train" if args.log_tracker_name is None else args.log_tracker_name)
