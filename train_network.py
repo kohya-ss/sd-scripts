@@ -11,6 +11,8 @@ from multiprocessing import Value
 
 from tqdm import tqdm
 import torch
+if torch.backends.mps.is_available():
+    import torch.mps
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 
@@ -204,6 +206,8 @@ def train(args):
         vae.to("cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
         gc.collect()
 
         accelerator.wait_for_everyone()
@@ -316,9 +320,9 @@ def train(args):
     text_encoder, unet, network = train_util.transform_if_model_is_DDP(text_encoder, unet, network)
 
     unet.requires_grad_(False)
-    unet.to(accelerator.device, dtype=weight_dtype)
+    unet = unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.requires_grad_(False)
-    text_encoder.to(accelerator.device)
+    text_encoder = text_encoder.to(accelerator.device)
     if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
         unet.train()
         text_encoder.train()
@@ -615,6 +619,10 @@ def train(args):
         network.on_epoch_start(text_encoder, unet)
 
         for step, batch in enumerate(train_dataloader):
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             current_step.value = global_step
             with accelerator.accumulate(network):
                 on_step_start(text_encoder, unet)
@@ -724,10 +732,13 @@ def train(args):
             current_loss = loss.detach().item()
             if epoch == 0:
                 loss_list.append(current_loss)
-            else:
+                loss_total += current_loss
+            elif not math.isnan(current_loss):
                 loss_total -= loss_list[step]
                 loss_list[step] = current_loss
-            loss_total += current_loss
+                loss_total += current_loss
+            else:
+                print("NaN loss found, continuing")
             avr_loss = loss_total / len(loss_list)
             logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
