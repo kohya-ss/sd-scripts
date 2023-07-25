@@ -65,8 +65,8 @@ import safetensors.torch
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
-from library.attention_processors import FlashAttnProcessor
-from library.hypernetwork import replace_attentions_for_hypernetwork
+# from library.attention_processors import FlashAttnProcessor
+# from library.hypernetwork import replace_attentions_for_hypernetwork
 from library.original_unet import UNet2DConditionModel
 
 # Tokenizer: checkpointから読み込むのではなくあらかじめ提供されているものを使う
@@ -1104,9 +1104,9 @@ class BaseDataset(torch.utils.data.Dataset):
                 # crop_ltrb[2] is right, so target_size[0] - crop_ltrb[2] is left in flipped image
                 crop_left_top = (target_size[0] - crop_ltrb[2], crop_ltrb[1])
 
-            original_sizes_hw.append((original_size[1], original_size[0]))
-            crop_top_lefts.append((crop_left_top[1], crop_left_top[0]))
-            target_sizes_hw.append((target_size[1], target_size[0]))
+            original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
+            crop_top_lefts.append((int(crop_left_top[1]), int(crop_left_top[0])))
+            target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
             flippeds.append(flipped)
 
             # captionとtext encoder outputを処理する
@@ -1884,8 +1884,7 @@ def load_latents_from_disk(
 ) -> Tuple[Optional[torch.Tensor], Optional[List[int]], Optional[List[int]], Optional[torch.Tensor]]:
     npz = np.load(npz_path)
     if "latents" not in npz:
-        print(f"error: npz is old format. please re-generate {npz_path}")
-        return None, None, None, None
+        raise ValueError(f"error: npz is old format. please re-generate {npz_path}")
 
     latents = npz["latents"]
     original_size = npz["original_size"].tolist()
@@ -2715,6 +2714,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=str,
         default=None,
         help="name of tracker to use for logging, default is script-specific default name / ログ出力に使用するtrackerの名前、省略時はスクリプトごとのデフォルト名",
+    )
+    parser.add_argument(
+        "--log_tracker_config",
+        type=str,
+        default=None,
+        help="path to tracker config file to use for logging / ログ出力に使用するtrackerの設定ファイルのパス",
     )
     parser.add_argument(
         "--wandb_api_key",

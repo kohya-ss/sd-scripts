@@ -5,6 +5,7 @@ import gc
 import math
 import os
 from multiprocessing import Value
+import toml
 
 from tqdm import tqdm
 import torch
@@ -174,7 +175,8 @@ def train(args):
         # Windows版のxformersはfloatで学習できなかったりするのでxformersを使わない設定も可能にしておく必要がある
         accelerator.print("Disable Diffusers' xformers")
         train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
-        vae.set_use_memory_efficient_attention_xformers(args.xformers)
+        if torch.__version__ >= "2.0.0": # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+            vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
     # 学習を準備する
     if cache_latents:
@@ -331,15 +333,17 @@ def train(args):
         args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
 
     # 学習する
-    total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    # total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     accelerator.print("running training / 学習開始")
     accelerator.print(f"  num examples / サンプル数: {train_dataset_group.num_train_images}")
     accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
     accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
-    accelerator.print(f"  batch size per device / バッチサイズ: {args.train_batch_size}")
     accelerator.print(
-        f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}"
+        f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}"
     )
+    # accelerator.print(
+    #     f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}"
+    # )
     accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
     accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
@@ -354,7 +358,10 @@ def train(args):
         custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
     if accelerator.is_main_process:
-        accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name)
+        init_kwargs = {}
+        if args.log_tracker_config is not None:
+            init_kwargs = toml.load(args.log_tracker_config)
+        accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
 
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
