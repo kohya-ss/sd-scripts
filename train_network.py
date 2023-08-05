@@ -320,9 +320,9 @@ def train(args):
     text_encoder, unet, network = train_util.transform_if_model_is_DDP(text_encoder, unet, network)
 
     unet.requires_grad_(False)
-    unet = unet.to(accelerator.device, dtype=weight_dtype)
+    unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.requires_grad_(False)
-    text_encoder = text_encoder.to(accelerator.device)
+    text_encoder.to(accelerator.device)
     if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
         unet.train()
         text_encoder.train()
