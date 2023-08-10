@@ -84,6 +84,8 @@ Summary of the feature:
 
 ### Tips for SDXL training
 
+- 85 Minutes 73 Chapters YouTube Tutorial: [Link](https://youtu.be/sBFGitIvD2A)
+
 - The default resolution of SDXL is 1024x1024.
 - The fine-tuning can be done with 24GB GPU memory with the batch size of 1. For 24GB GPU, the following options are recommended __for the fine-tuning with 24GB GPU memory__:
   - Train U-Net only.
