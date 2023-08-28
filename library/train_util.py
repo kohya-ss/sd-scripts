@@ -3081,7 +3081,7 @@ def prepare_accelerator(args: argparse.Namespace):
                 os.environ["WANDB_DIR"] = logging_dir
             if args.wandb_api_key is not None:
                 wandb.login(key=args.wandb_api_key)
-                wandb.init(project="Stable Diffision Training", name=args.output_name, config=args)
+                wandb.init(project="Stable Diffusion Training", name=args.output_name, config=args)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
