@@ -1521,6 +1521,10 @@ def main(args):
     text_encoder2.to(dtype).to(device)
     unet.to(dtype).to(device)
 
+    # freeU
+    # unet.set_free_u_enabled(False, 1.0, 1.0, 0)
+    unet.set_free_u_enabled(True, 1.4, 1.0, 10)
+
     # networkを組み込む
     if args.network_module:
         networks = []
