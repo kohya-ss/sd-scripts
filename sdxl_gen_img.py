@@ -1523,7 +1523,7 @@ def main(args):
 
     # freeU
     # unet.set_free_u_enabled(False, 1.0, 1.0, 0)
-    unet.set_free_u_enabled(True, 1.4, 1.0, 10)
+    unet.set_free_u_enabled(True, 1.1, 1.2, 0.9, 0.2)
 
     # networkを組み込む
     if args.network_module:
