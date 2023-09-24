@@ -17,6 +17,13 @@ import re
 import diffusers
 import numpy as np
 import torch
+try:
+    import intel_extension_for_pytorch as ipex
+    if torch.xpu.is_available():
+        from library.ipex import ipex_init
+        ipex_init()
+except Exception:
+    pass
 import torchvision
 from diffusers import (
     AutoencoderKL,
@@ -766,7 +773,7 @@ class PipelineLike:
                     return None
 
         if return_latents:
-            return (latents, False)
+            return latents
 
         latents = 1 / sdxl_model_util.VAE_SCALE_FACTOR * latents
         if vae_batch_size >= batch_size:
@@ -1814,7 +1821,7 @@ def main(args):
 
     # promptがないとき、画像のPngInfoから取得する
     if init_images is not None and len(prompt_list) == 0 and not args.interactive:
-        print("get prompts from images' meta data")
+        print("get prompts from images' metadata")
         for img in init_images:
             if "prompt" in img.text:
                 prompt = img.text["prompt"]
