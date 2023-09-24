@@ -2752,7 +2752,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--save_every_n_steps", type=int, default=None, help="save checkpoint every N steps / 学習中のモデルを指定ステップごとに保存する"
     )
     parser.add_argument(
-        "--save_every_n_steps_after_x", type=int, default=None, help="save checkpoint every N steps only after X steps / N ステップごとにチェックポイントを保存しますが、X ステップ後にのみ保存します"
+        "--save_every_n_steps_after_x", type=int, default=0, help="save checkpoint every N steps only after X steps / N ステップごとにチェックポイントを保存しますが、X ステップ後にのみ保存します"
     )
     parser.add_argument(
         "--save_n_epoch_ratio",
