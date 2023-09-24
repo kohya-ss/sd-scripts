@@ -482,9 +482,7 @@ def train(args):
                 )
 
                 # 指定ステップごとにモデルを保存
-                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0 and \
-                    args.save_every_n_steps_after_x is not None and global_step >= args.save_every_n_steps_after_x:
-                    
+                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0 and global_step >= args.save_every_n_steps_after_x:                    
                     accelerator.wait_for_everyone()
                     if accelerator.is_main_process:
                         ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
