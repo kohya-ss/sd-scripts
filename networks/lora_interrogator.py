@@ -13,7 +13,8 @@ import lora
 TOKENIZER_PATH = "openai/clip-vit-large-patch14"
 V2_STABLE_DIFFUSION_PATH = "stabilityai/stable-diffusion-2"     # ここからtokenizerだけ使う
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from accelerate import Accelerator
+DEVICE = Accelerator().device
 
 
 def interrogate(args):

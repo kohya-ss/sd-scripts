@@ -12,7 +12,8 @@ from transformers.generation.utils import GenerationMixin
 import library.train_util as train_util
 
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from accelerate import Accelerator
+DEVICE = Accelerator().device
 
 PATTERN_REPLACE = [
     re.compile(r'(has|with|and) the (words?|letters?|name) (" ?[^"]*"|\w+)( ?(is )?(on|in) (the |her |their |him )?\w+)?'),

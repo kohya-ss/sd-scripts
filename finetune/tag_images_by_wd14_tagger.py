@@ -7,9 +7,10 @@ from PIL import Image
 import cv2
 from tqdm import tqdm
 import numpy as np
+import torch
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 from huggingface_hub import hf_hub_download
-import torch
 from pathlib import Path
 
 import library.train_util as train_util
@@ -120,6 +121,7 @@ def main(args):
     tag_freq = {}
 
     undesired_tags = set(args.undesired_tags.split(","))
+    desired_tags = args.desired_tags.split(",") if args.desired_tags != "" else []
 
     def run_batch(path_imgs):
         imgs = np.array([im for _, im in path_imgs])
@@ -158,6 +160,12 @@ def main(args):
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
                         character_tag_text += ", " + tag_name
                         combined_tags.append(tag_name)
+            
+            for tag_name in desired_tags:
+                if tag_name not in combined_tags:
+                    combined_tags.append(tag_name)
+                    tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
+
 
             # 先頭のカンマを取る
             if len(general_tag_text) > 0:
@@ -278,6 +286,12 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true", help="debug mode")
     parser.add_argument(
         "--undesired_tags",
+        type=str,
+        default="",
+        help="comma-separated list of undesired tags to remove from the output / 出力から除外したいタグのカンマ区切りのリスト",
+    )
+    parser.add_argument(
+        "--desired_tags",
         type=str,
         default="",
         help="comma-separated list of undesired tags to remove from the output / 出力から除外したいタグのカンマ区切りのリスト",
