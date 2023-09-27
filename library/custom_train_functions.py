@@ -259,9 +259,9 @@ def get_unweighted_text_embeddings(
                         text_input_chunk[j, 1] = eos
 
             if clip_skip is None or clip_skip == 1:
-                text_embedding = text_encoder(text_input_chunk)[0]
+                text_embedding = text_encoder.accelerated()(text_input_chunk)[0]
             else:
-                enc_out = text_encoder(text_input_chunk, output_hidden_states=True, return_dict=True)
+                enc_out = text_encoder.accelerated()(text_input_chunk, output_hidden_states=True, return_dict=True)
                 text_embedding = enc_out["hidden_states"][-clip_skip]
                 text_embedding = text_encoder.text_model.final_layer_norm(text_embedding)
 
@@ -280,9 +280,9 @@ def get_unweighted_text_embeddings(
         text_embeddings = torch.concat(text_embeddings, axis=1)
     else:
         if clip_skip is None or clip_skip == 1:
-            text_embeddings = text_encoder(text_input)[0]
+            text_embeddings = text_encoder.accelerated()(text_input)[0]
         else:
-            enc_out = text_encoder(text_input, output_hidden_states=True, return_dict=True)
+            enc_out = text_encoder.accelerated()(text_input, output_hidden_states=True, return_dict=True)
             text_embeddings = enc_out["hidden_states"][-clip_skip]
             text_embeddings = text_encoder.text_model.final_layer_norm(text_embeddings)
     return text_embeddings
