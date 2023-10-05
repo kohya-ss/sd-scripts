@@ -291,7 +291,7 @@ class NetworkTrainer:
                 vae,
                 text_encoder,
                 unet,
-                neuron_dropout=args.network_dropout,
+                dropout=args.network_dropout,
                 **net_kwargs,
             )
         if network is None:
