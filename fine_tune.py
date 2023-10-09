@@ -32,6 +32,7 @@ from library.custom_train_functions import (
     get_weighted_text_embeddings,
     prepare_scheduler_for_custom_training,
     scale_v_prediction_loss_like_noise_prediction,
+    get_latent_masks
 )
 
 
@@ -338,6 +339,11 @@ def train(args):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     target = noise
+
+                if args.masked_loss and batch['masks'] is not None:
+                    mask = get_latent_masks(batch['masks'], noise_pred.shape, noise_pred.device)
+                    noise_pred = noise_pred * mask
+                    target = target * mask
 
                 if args.min_snr_gamma or args.scale_v_pred_loss_like_noise_pred:
                     # do not mean over batch dimension for snr weight or scale v-pred loss

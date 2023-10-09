@@ -135,6 +135,9 @@ class ImageInfo:
         self.text_encoder_outputs1: Optional[torch.Tensor] = None
         self.text_encoder_outputs2: Optional[torch.Tensor] = None
         self.text_encoder_pool2: Optional[torch.Tensor] = None
+        # Masked Loss
+        self.mask: np.ndarray = None
+        self.mask_flipped: np.ndarray = None
 
 
 class BucketManager:
@@ -1050,6 +1053,7 @@ class BaseDataset(torch.utils.data.Dataset):
         input_ids2_list = []
         latents_list = []
         images = []
+        masks = []
         original_sizes_hw = []
         crop_top_lefts = []
         target_sizes_hw = []
@@ -1071,8 +1075,10 @@ class BaseDataset(torch.utils.data.Dataset):
                 crop_ltrb = image_info.latents_crop_ltrb  # calc values later if flipped
                 if not flipped:
                     latents = image_info.latents
+                    mask = image_info.mask
                 else:
                     latents = image_info.latents_flipped
+                    mask = image_info.mask_flipped
 
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
@@ -1087,6 +1093,9 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 画像を読み込み、必要ならcropする
                 img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(subset, image_info.absolute_path)
                 im_h, im_w = img.shape[0:2]
+                # loss mask is alpha channel, separate it
+                mask = img[:, :, -1] / 255
+                img = img[:, :, :3]
 
                 if self.enable_bucket:
                     img, original_size, crop_ltrb = trim_and_resize_if_required(
@@ -1124,9 +1133,11 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
+                mask = torch.from_numpy(mask)
 
             images.append(image)
             latents_list.append(latents)
+            masks.append(torch.tensor(mask))
 
             target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
 
@@ -1218,7 +1229,7 @@ class BaseDataset(torch.utils.data.Dataset):
         else:
             images = None
         example["images"] = images
-
+        example["masks"] = torch.stack(masks) if masks[0] is not None else None
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
         example["captions"] = captions
 
@@ -2132,10 +2143,42 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 
 def load_image(image_path):
     image = Image.open(image_path)
-    if not image.mode == "RGB":
-        image = image.convert("RGB")
+    if not image.mode == "RGBA":
+        image = image.convert("RGBA")
     img = np.array(image, np.uint8)
+    img[..., -1] = load_mask(image_path, img.shape[:2])
     return img
+
+
+def load_mask(image_path, target_shape):
+    p = pathlib.Path(image_path)
+    mask_path = os.path.join(p.parent, 'mask', p.stem + '.png')
+    result = None
+
+    if os.path.exists(mask_path):
+        try:
+            mask = np.array(Image.open(mask_path))
+            if len(mask.shape) > 2 and mask.max() <= 255:
+                result = np.array(Image.open(mask_path).convert("L"))
+            elif len(mask.shape) == 2 and mask.max() > 255:
+                result = mask // (((2 ** 16) - 1) // 255)
+            elif len(mask.shape) == 2 and mask.max() <= 255:
+                result = mask
+            else:
+                print(f"{mask_path} has invalid mask format: using default mask")
+        except:
+            print(f"failed to load mask: {mask_path}")
+
+    # use default when mask file is unavailable
+    if result is None:
+        result = np.full(target_shape, 255, np.uint8)
+
+    # stretch mask to image shape
+    if result.shape != target_shape:
+        print(f"{mask_path} does not match image dimensions, resizing")
+        result = cv2.resize(result, dsize=target_shape, interpolation=cv2.INTER_NEAREST)
+
+    return result
 
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
@@ -2184,12 +2227,17 @@ def cache_batch_latents(
     latents_original_size and latents_crop_ltrb are also set
     """
     images = []
+    masks = []
     for info in image_infos:
         image = load_image(info.absolute_path) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
         image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
+        # alpha channel contains loss mask, separate it
+        mask = image[:, :, -1] / 255
+        image = image[:, :, :3]
         image = IMAGE_TRANSFORMS(image)
         images.append(image)
+        masks.append(mask)
 
         info.latents_original_size = original_size
         info.latents_crop_ltrb = crop_ltrb
@@ -2207,7 +2255,7 @@ def cache_batch_latents(
     else:
         flipped_latents = [None] * len(latents)
 
-    for info, latent, flipped_latent in zip(image_infos, latents, flipped_latents):
+    for info, latent, flipped_latent, mask in zip(image_infos, latents, flipped_latents, masks):
         # check NaN
         if torch.isnan(latents).any() or (flipped_latent is not None and torch.isnan(flipped_latent).any()):
             raise RuntimeError(f"NaN detected in latents: {info.absolute_path}")
@@ -2216,8 +2264,10 @@ def cache_batch_latents(
             save_latents_to_disk(info.latents_npz, latent, info.latents_original_size, info.latents_crop_ltrb, flipped_latent)
         else:
             info.latents = latent
+            info.mask = mask
             if flip_aug:
                 info.latents_flipped = flipped_latent
+                info.mask_flipped = mask.flip(mask, dims=[3])
 
     # FIXME this slows down caching a lot, specify this as an option
     if torch.cuda.is_available():
@@ -3157,6 +3207,10 @@ def add_dataset_arguments(
     )
     parser.add_argument(
         "--bucket_no_upscale", action="store_true", help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します"
+    )
+
+    parser.add_argument(
+        "--masked_loss", action="store_true", help="Enable masking of latent loss using grayscale mask images"
     )
 
     parser.add_argument(
