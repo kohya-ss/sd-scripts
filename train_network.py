@@ -315,6 +315,7 @@ class NetworkTrainer:
         if args.network_weights is not None:
             info = network.load_weights(args.network_weights)
             accelerator.print(f"load network weights from {args.network_weights}: {info}")
+            network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.gradient_checkpointing:
             unet.enable_gradient_checkpointing()
