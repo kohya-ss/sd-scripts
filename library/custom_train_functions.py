@@ -458,6 +458,12 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
 
 
 def get_latent_masks(image_masks, latent_shape, device):
+    # given that masks lower the average loss this will counteract the effect
+    factor = torch.sqrt(image_masks.mean([1, 2]))
+    factor = torch.where(factor != 0.0, factor, 1.0)
+    factor = factor.reshape(factor.shape + (1,) * 2)
+    image_masks = image_masks / factor
+
     masks = (
         image_masks
         .to(device)
