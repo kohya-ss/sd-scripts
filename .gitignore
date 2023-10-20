@@ -6,4 +6,3 @@ venv
 build
 .vscode
 wandb
-.vs
