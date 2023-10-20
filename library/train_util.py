@@ -2289,7 +2289,7 @@ def load_text_encoder_outputs_from_disk(npz_path):
 # based mostly on https://github.com/fadel/pytorch_ema/blob/master/torch_ema/ema.py
 class EMAModel:
     """
-    Exponential Moving Average of models weights
+    Maintains (exponential) moving average of a set of parameters.
     """
     def __init__(self, parameters: Iterable[torch.nn.Parameter], decay: float, beta: float, max_train_steps=10000):
         parameters = list(parameters)
@@ -2304,7 +2304,7 @@ class EMAModel:
 
     def get_decay(self, optimization_step) -> float:
         """
-        Compute the decay factor for the exponential moving average.
+        Compute current decay for the exponential moving average.
         """
         if self.beta <= 0:
             return min(self.decay, (1 + optimization_step) / (10 + optimization_step))
@@ -3055,16 +3055,17 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     #     help="enable perlin noise and set the octaves / perlin noiseを有効にしてoctavesをこの値に設定する",
     # )
     parser.add_argument(
-        "--enable_ema", action="store_true", help="Enable EMA / "
+        "--enable_ema", action="store_true", help="Enable EMA (Exponential Moving Average) of model parameters / モデルパラメータのEMA（指数移動平均）を有効にする "
     )
     parser.add_argument(
-        "--ema_decay", type=float, default=0.999, help="Max EMA decay. Typical values: 0.999 - 0.9999 / "
+        "--ema_decay", type=float, default=0.999, help="Max EMA decay. Typical values: 0.999 - 0.9999 / 最大EMA減衰。標準的な値： 0.999 - 0.9999 "
     )
     parser.add_argument(
-        "--ema_beta", type=float, default=0, help="sets decay schedule. If beta==0: use default (1+x)/(10+x). If beta>0: use exponential schedule. If using exponential, use values around 10-15 / "
+        "--ema_beta", type=float, default=0, help="Sets decay schedule. If beta==0: use default (1+x)/(10+x). If beta>0: use exponential schedule. If using exponential, recommended values are around 10-15 "
+        + "/ 減衰スケジュールを設定する。beta==0 の場合: デフォルトの (1+x)/(10+x) を使う。beta>0 の場合: 指数スケジュールを使用する。exponentialを使う場合、推奨値は10-15程度。"
     )
     parser.add_argument(
-        "--ema_save_only_ema_weights", action="store_true", help="By default both EMA and non-EMA weights are saved. If enabled, saves only EMA / "
+        "--ema_save_only_ema_weights", action="store_true", help="By default both EMA and non-EMA weights are saved. If enabled, saves only EMA / デフォルトでは、EMAウェイトと非EMAウェイトの両方が保存される。有効にすると、EMAのみが保存される "
     )
     parser.add_argument(
         "--multires_noise_discount",
