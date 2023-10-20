@@ -1083,8 +1083,10 @@ class BaseDataset(torch.utils.data.Dataset):
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
                 latents, original_size, crop_ltrb, flipped_latents = load_latents_from_disk(image_info.latents_npz)
+                mask = load_mask(image_info.absolute_path, image_info.resized_size) / 225
                 if flipped:
                     latents = flipped_latents
+                    mask = mask.flip(mask, dims=[3])
                     del flipped_latents
                 latents = torch.FloatTensor(latents)
 
@@ -1093,9 +1095,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 画像を読み込み、必要ならcropする
                 img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(subset, image_info.absolute_path)
                 im_h, im_w = img.shape[0:2]
-                # loss mask is alpha channel, separate it
-                mask = img[:, :, -1] / 255
-                img = img[:, :, :3]
 
                 if self.enable_bucket:
                     img, original_size, crop_ltrb = trim_and_resize_if_required(
@@ -1131,9 +1130,12 @@ class BaseDataset(torch.utils.data.Dataset):
                 if flipped:
                     img = img[:, ::-1, :].copy()  # copy to avoid negative stride problem
 
+                # loss mask is alpha channel, separate it
+                mask = img[:, :, -1] / 255
+                img = img[:, :, :3]
+
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
-                mask = torch.from_numpy(mask)
 
             images.append(image)
             latents_list.append(latents)
@@ -2157,9 +2159,10 @@ def load_mask(image_path, target_shape):
 
     if os.path.exists(mask_path):
         try:
-            mask = np.array(Image.open(mask_path))
+            mask_img = Image.open(mask_path)
+            mask = np.array(mask_img)
             if len(mask.shape) > 2 and mask.max() <= 255:
-                result = np.array(Image.open(mask_path).convert("L"))
+                result = np.array(mask_img.convert("L"))
             elif len(mask.shape) == 2 and mask.max() > 255:
                 result = mask // (((2 ** 16) - 1) // 255)
             elif len(mask.shape) == 2 and mask.max() <= 255:
@@ -2175,8 +2178,7 @@ def load_mask(image_path, target_shape):
 
     # stretch mask to image shape
     if result.shape != target_shape:
-        print(f"{mask_path} does not match image dimensions, resizing")
-        result = cv2.resize(result, dsize=target_shape, interpolation=cv2.INTER_NEAREST)
+        result = cv2.resize(result, dsize=target_shape, interpolation=cv2.INTER_LINEAR)
 
     return result
 
