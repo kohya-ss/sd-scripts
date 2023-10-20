@@ -3061,8 +3061,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_decay", type=float, default=0.999, help="Max EMA decay. Typical values: 0.999 - 0.9999 / 最大EMA減衰。標準的な値： 0.999 - 0.9999 "
     )
     parser.add_argument(
-        "--ema_beta", type=float, default=0, help="Sets decay schedule. If beta==0: use default (1+x)/(10+x). If beta>0: use exponential schedule. If using exponential, recommended values are around 10-15 "
-        + "/ 減衰スケジュールを設定する。beta==0 の場合: デフォルトの (1+x)/(10+x) を使う。beta>0 の場合: 指数スケジュールを使用する。exponentialを使う場合、推奨値は10-15程度。"
+        "--ema_beta", type=float, default=0, help="Sets EMA decay schedule. If beta==0: uses default (1+x)/(10+x). If beta>0: use exponential schedule scaled to max_train_steps. If beta>0, recommended values are around 10-15 "
+        + "/ EMAの減衰スケジュールを設定する。beta==0 の場合: デフォルトの (1+x)/(10+x) を使用。beta>0 の場合: max_train_steps にスケーリングされた指数スケジュールを使用。beta>0 の場合、推奨値は 10-15 程度。"
     )
     parser.add_argument(
         "--ema_save_only_ema_weights", action="store_true", help="By default both EMA and non-EMA weights are saved. If enabled, saves only EMA / デフォルトでは、EMAウェイトと非EMAウェイトの両方が保存される。有効にすると、EMAのみが保存される "
