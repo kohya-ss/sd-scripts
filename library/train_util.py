@@ -17,6 +17,7 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    Iterable,
 )
 from accelerate import Accelerator
 import gc
@@ -2284,6 +2285,141 @@ def load_text_encoder_outputs_from_disk(npz_path):
 
 # endregion
 
+
+# based mostly on https://github.com/fadel/pytorch_ema/blob/master/torch_ema/ema.py
+class EMAModel:
+    """
+    Exponential Moving Average of models weights
+    """
+    def __init__(self, parameters: Iterable[torch.nn.Parameter], decay: float, beta: float, max_train_steps=10000):
+        parameters = list(parameters)
+        self.shadow_params = [p.clone().detach() for p in parameters]
+        if decay < 0.0 or decay > 1.0:
+            raise ValueError('Decay must be between 0 and 1')
+        self.decay = decay
+        self.optimization_step = 0
+        self.collected_params = None
+        self.beta = beta
+        self.max_train_steps = max_train_steps
+
+    def get_decay(self, optimization_step) -> float:
+        """
+        Compute the decay factor for the exponential moving average.
+        """
+        if self.beta <= 0:
+            return min(self.decay, (1 + optimization_step) / (10 + optimization_step))
+        else:
+            # exponential schedule. scaling depends on max_train_steps
+            x = optimization_step / self.max_train_steps
+            return min(self.decay, self.decay * (1 - np.exp(-x * self.beta)))
+
+    def step(self, parameters: Iterable[torch.nn.Parameter]) -> None:
+        """
+        Update currently maintained parameters.
+
+        Call this every time the parameters are updated, such as the result of
+        the `optimizer.step()` call.
+        """
+        parameters = list(parameters)
+        self.optimization_step += 1
+        one_minus_decay = 1.0 - self.get_decay(self.optimization_step)
+        with torch.no_grad():
+            for s_param, param in zip(self.shadow_params, parameters):
+                tmp = (s_param - param)
+                # tmp will be a new tensor so we can do in-place
+                tmp.mul_(one_minus_decay)
+                s_param.sub_(tmp)
+
+    def copy_to(self, parameters: Iterable[torch.nn.Parameter]) -> None:
+        """
+        Copy current averaged parameters into given collection of parameters.
+        """
+        parameters = list(parameters)
+        for s_param, param in zip(self.shadow_params, parameters):
+            param.data.copy_(s_param.data)
+
+    def to(self, device=None, dtype=None) -> None:
+        r"""Move internal buffers of the ExponentialMovingAverage to `device`.
+        """
+        self.shadow_params = [
+            p.to(device=device, dtype=dtype) if p.is_floating_point() else p.to(device=device)
+            for p in self.shadow_params
+        ]
+
+    def store(
+            self,
+            parameters: Iterable[torch.nn.Parameter] = None
+        ) -> None:
+            """
+            Save the current parameters for restoring later.
+            """
+            parameters = self._get_parameters(parameters)
+            self.collected_params = [
+                param.clone()
+                for param in parameters
+            ]
+
+    def restore(
+        self,
+        parameters: Iterable[torch.nn.Parameter] = None
+    ) -> None:
+        """
+        Restore the parameters stored with the `store` method.
+        Useful to validate the model with EMA parameters without affecting the
+        original optimization process. Store the parameters before the
+        `copy_to` method. After validation (or model saving), use this to
+        restore the former parameters.
+        """
+        if self.collected_params is None:
+            raise RuntimeError(
+                "This ExponentialMovingAverage has no `store()`ed weights "
+                "to `restore()`"
+            )
+        parameters = self._get_parameters(parameters)
+        for c_param, param in zip(self.collected_params, parameters):
+            param.data.copy_(c_param.data)
+
+    @contextlib.contextmanager
+    def average_parameters(
+        self,
+        parameters: Iterable[torch.nn.Parameter] = None
+    ):
+        r"""
+        Context manager for validation/inference with averaged parameters.
+
+        Equivalent to:
+            ema.store()
+            ema.copy_to()
+            try:
+                ...
+            finally:
+                ema.restore()
+        """
+        parameters = self._get_parameters(parameters)
+        self.store(parameters)
+        self.copy_to(parameters)
+        try:
+            yield
+        finally:
+            self.restore(parameters)
+
+    def _get_parameters(
+        self,
+        parameters: Iterable[torch.nn.Parameter]
+    ) -> Iterable[torch.nn.Parameter]:
+        if parameters is None:
+            raise ValueError("No parameters passed to EMA")
+        else:
+            parameters = list(parameters)
+            #if len(parameters) != len(self.shadow_params):
+            #    raise ValueError(
+            #        "Number of parameters passed as argument is different "
+            #        "from number of shadow parameters maintained by this "
+            #        "ExponentialMovingAverage"
+            #    )
+        return parameters
+
+
 # region モジュール入れ替え部
 """
 高速化のためのモジュール入れ替え
@@ -2918,6 +3054,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     #     default=None,
     #     help="enable perlin noise and set the octaves / perlin noiseを有効にしてoctavesをこの値に設定する",
     # )
+    parser.add_argument(
+        "--enable_ema", action="store_true", help="Enable EMA / "
+    )
+    parser.add_argument(
+        "--ema_decay", type=float, default=0.999, help="Max EMA decay. Typical values: 0.999 - 0.9999 / "
+    )
+    parser.add_argument(
+        "--ema_beta", type=float, default=0, help="sets decay schedule. If beta==0: use default (1+x)/(10+x). If beta>0: use exponential schedule. If using exponential, use values around 10-15 / "
+    )
+    parser.add_argument(
+        "--ema_save_only_ema_weights", action="store_true", help="By default both EMA and non-EMA weights are saved. If enabled, saves only EMA / "
+    )
     parser.add_argument(
         "--multires_noise_discount",
         type=float,
