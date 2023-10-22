@@ -33,6 +33,7 @@ from library.custom_train_functions import (
     prepare_scheduler_for_custom_training,
     scale_v_prediction_loss_like_noise_prediction,
 )
+from library.train_util import EMAModel
 
 
 def train(args):
@@ -235,13 +236,25 @@ def train(args):
         unet.to(weight_dtype)
         text_encoder.to(weight_dtype)
 
+    if args.enable_ema:
+        ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
+        ema = EMAModel(params_to_optimize, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
+        ema.to(accelerator.device, dtype=ema_dtype)
+
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
-        unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder, optimizer, train_dataloader, lr_scheduler
-        )
+        if args.enable_ema:
+            unet, text_encoder, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            unet, text_encoder, ema, optimizer, train_dataloader, lr_scheduler)
+        else:
+            unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+            )
     else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+        if args.enable_ema:
+            unet, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, ema, optimizer, train_dataloader, lr_scheduler)
+        else:
+            unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
     # transform DDP after prepare
     text_encoder, unet = train_util.transform_if_model_is_DDP(text_encoder, unet)
@@ -363,6 +376,9 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+                if args.enable_ema:
+                    with torch.no_grad():
+                        ema.step(params_to_optimize)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -393,7 +409,7 @@ def train(args):
                             accelerator.unwrap_model(unet),
                             vae,
                         )
-
+            
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if args.logging_dir is not None:
                 logs = {"loss": current_loss, "lr": float(lr_scheduler.get_last_lr()[0])}
@@ -403,6 +419,9 @@ def train(args):
                     logs["lr/d*lr"] = (
                         lr_scheduler.optimizers[0].param_groups[0]["d"] * lr_scheduler.optimizers[0].param_groups[0]["lr"]
                     )
+                if args.enable_ema:
+                    logs["loss/ema_decay"] = ema.get_decay(global_step)
+                    # logs["lr/lr*(1-ema_decay)"] = float(lr_scheduler.get_last_lr()[0]) * (1.0 - ema.get_decay(global_step))
                 accelerator.log(logs, step=global_step)
 
             # TODO moving averageにする
@@ -423,6 +442,9 @@ def train(args):
         if args.save_every_n_epochs is not None:
             if accelerator.is_main_process:
                 src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
+                if args.enable_ema and not args.ema_save_only_ema_weights and ((epoch + 1) % args.save_every_n_epochs == 0):
+                    temp_name = args.output_name
+                    args.output_name = args.output_name + "-non-EMA"
                 train_util.save_sd_model_on_epoch_end_or_stepwise(
                     args,
                     True,
@@ -438,6 +460,25 @@ def train(args):
                     accelerator.unwrap_model(unet),
                     vae,
                 )
+                if args.enable_ema and ((epoch + 1) % args.save_every_n_epochs == 0):
+                    args.output_name = temp_name if temp_name else args.output_name
+                    with ema.ema_parameters(params_to_optimize):
+                        print("Saving EMA:")
+                        train_util.save_sd_model_on_epoch_end_or_stepwise(
+                            args,
+                            True,
+                            accelerator,
+                            src_path,
+                            save_stable_diffusion_format,
+                            use_safetensors,
+                            save_dtype,
+                            epoch,
+                            num_train_epochs,
+                            global_step,
+                            accelerator.unwrap_model(text_encoder),
+                            accelerator.unwrap_model(unet),
+                            vae,
+                        )
 
         train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
@@ -445,6 +486,8 @@ def train(args):
     if is_main_process:
         unet = accelerator.unwrap_model(unet)
         text_encoder = accelerator.unwrap_model(text_encoder)
+        if args.enable_ema:
+            ema = accelerator.unwrap_model(ema)
 
     accelerator.end_training()
 
@@ -455,6 +498,14 @@ def train(args):
 
     if is_main_process:
         src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
+        if args.enable_ema and not args.ema_save_only_ema_weights:
+            temp_name = args.output_name
+            args.output_name = args.output_name + "-non-EMA"
+            train_util.save_sd_model_on_train_end(args, src_path, save_stable_diffusion_format, use_safetensors, save_dtype, epoch, global_step, text_encoder, unet, vae)
+            args.output_name = temp_name
+        if args.enable_ema:
+            print("Saving EMA:")
+            ema.copy_to(params_to_optimize)
         train_util.save_sd_model_on_train_end(
             args, src_path, save_stable_diffusion_format, use_safetensors, save_dtype, epoch, global_step, text_encoder, unet, vae
         )

@@ -387,7 +387,7 @@ class NetworkTrainer:
 
         if args.enable_ema:
             ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
-            ema = EMAModel(network.parameters(), decay=args.ema_decay, beta=args.ema_beta, max_train_steps=args.max_train_steps)
+            ema = EMAModel(network.parameters(), decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
             ema.to(accelerator.device, dtype=ema_dtype)
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
@@ -550,7 +550,7 @@ class NetworkTrainer:
             "ss_ip_noise_gamma": args.ip_noise_gamma,
             "ss_enable_ema": bool(args.enable_ema),
             "ss_ema_decay": args.ema_decay,
-            "ss_ema_beta": args.ema_beta,
+            "ss_ema_exp_beta": args.ema_exp_beta,
         }
 
         if use_user_config:
@@ -872,8 +872,8 @@ class NetworkTrainer:
                                 if not args.ema_save_only_ema_weights:
                                     temp_name = train_util.get_step_ckpt_name(args, "", global_step) + "-non-EMA" + "." + args.save_model_as
                                     save_model(temp_name, accelerator.unwrap_model(network), global_step, epoch)
-                                with ema.average_parameters(accelerator.unwrap_model(network,True).parameters()):
-                                    print("Saving EMA")
+                                with ema.ema_parameters(accelerator.unwrap_model(network).parameters()):
+                                    print("Saving EMA:")
                                     save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
                             else:    
                                 save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
@@ -925,8 +925,8 @@ class NetworkTrainer:
                         if not args.ema_save_only_ema_weights:
                             temp_name = train_util.get_epoch_ckpt_name(args, "", epoch + 1) + "-non-EMA" + "." + args.save_model_as
                             save_model(temp_name, accelerator.unwrap_model(network), global_step, epoch + 1)
-                        with ema.average_parameters(accelerator.unwrap_model(network,True).parameters()):
-                            print("Saving EMA")
+                        with ema.ema_parameters(accelerator.unwrap_model(network).parameters()):
+                            print("Saving EMA:")
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
                     else:
                         save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
@@ -948,6 +948,8 @@ class NetworkTrainer:
 
         if is_main_process:
             network = accelerator.unwrap_model(network)
+            if args.enable_ema:
+                ema = accelerator.unwrap_model(ema)
 
         accelerator.end_training()
 
@@ -960,7 +962,7 @@ class NetworkTrainer:
                 temp_name = train_util.get_last_ckpt_name(args, "") + "-non-EMA" + "." + args.save_model_as
                 save_model(temp_name, network, global_step, num_train_epochs, force_sync_upload=True)
             if args.enable_ema:
-                print("Saving EMA")
+                print("Saving EMA:")
                 ema.copy_to(network.parameters())
             save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
 
