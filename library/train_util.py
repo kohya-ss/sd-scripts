@@ -1092,10 +1092,10 @@ class BaseDataset(torch.utils.data.Dataset):
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
                 latents, original_size, crop_ltrb, flipped_latents = load_latents_from_disk(image_info.latents_npz)
-                mask = load_mask(image_info.absolute_path, image_info.resized_size) / 225
+                mask = load_mask(image_info.absolute_path, image_info.resized_size) / 255
                 if flipped:
                     latents = flipped_latents
-                    mask = mask.flip(mask, dims=[3])
+                    mask = np.flip(mask, axis=1)
                     del flipped_latents
                 latents = torch.FloatTensor(latents)
 
