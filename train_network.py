@@ -395,10 +395,8 @@ class NetworkTrainer:
         unet.to(dtype=unet_weight_dtype)
         for t_enc in text_encoders:
             t_enc.requires_grad_(False)
-            emb_cache = t_enc.text_model.embeddings
-            t_enc.text_model.embeddings = None
             t_enc.to(dtype=te_weight_dtype)
-            t_enc.text_model.embeddings = emb_cache
+            t_enc.text_model.embeddings.to(dtype=weight_dtype)
 
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
@@ -419,7 +417,8 @@ class NetworkTrainer:
                 unet, network, optimizer, train_dataloader, lr_scheduler
             )
             for t_enc in text_encoders:
-                t_enc.to(accelerator.device, dtype=weight_dtype)
+                t_enc.to(accelerator.device, dtype=te_weight_dtype)
+                t_enc.text_model.embeddings.to(dtype=weight_dtype)
         elif train_text_encoder:
             if len(text_encoders) > 1:
                 t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
