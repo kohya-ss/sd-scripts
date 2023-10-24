@@ -109,6 +109,9 @@ class NetworkTrainer:
     def is_text_encoder_outputs_cached(self, args):
         return False
 
+    def is_train_text_encoder(self, args):
+        return not args.network_train_unet_only and not self.is_text_encoder_outputs_cached(args)
+
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator, unet, vae, tokenizers, text_encoders, data_loader, weight_dtype
     ):
@@ -310,7 +313,7 @@ class NetworkTrainer:
             args.scale_weight_norms = False
 
         train_unet = not args.network_train_text_encoder_only
-        train_text_encoder = not args.network_train_unet_only and not self.is_text_encoder_outputs_cached(args)
+        train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
