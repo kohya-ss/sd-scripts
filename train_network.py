@@ -770,7 +770,7 @@ class NetworkTrainer:
                         latents = latents * self.vae_scale_factor
                     b_size = latents.shape[0]
 
-                    with torch.set_grad_enabled(train_text_encoder):
+                    with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
                         # Get the text embedding for conditioning
                         if args.weighted_captions:
                             text_encoder_conds = get_weighted_text_embeddings(
