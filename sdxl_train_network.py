@@ -97,7 +97,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
             input_ids1 = batch["input_ids"]
             input_ids2 = batch["input_ids2"]
-            with torch.enable_grad(), accelerator.autocast():
+            # Should not always enable grad
+            with (torch.enable_grad() if self.is_train_text_encoder(args) else torch.no_grad()):
                 # Get the text embedding for conditioning
                 # TODO support weighted captions
                 # if args.weighted_captions:
@@ -112,16 +113,18 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 # else:
                 input_ids1 = input_ids1.to(accelerator.device)
                 input_ids2 = input_ids2.to(accelerator.device)
-                encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
-                    args.max_token_length,
-                    input_ids1,
-                    input_ids2,
-                    tokenizers[0],
-                    tokenizers[1],
-                    text_encoders[0],
-                    text_encoders[1],
-                    None if not args.full_fp16 else weight_dtype,
-                )
+                # when text encoder is not trained, we need to add autocast explicitly
+                with accelerator.autocast():
+                    encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
+                        args.max_token_length,
+                        input_ids1,
+                        input_ids2,
+                        tokenizers[0],
+                        tokenizers[1],
+                        text_encoders[0],
+                        text_encoders[1],
+                        None if not args.full_fp16 else weight_dtype,
+                    )
         else:
             encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
             encoder_hidden_states2 = batch["text_encoder_outputs2_list"].to(accelerator.device).to(weight_dtype)
