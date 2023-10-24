@@ -366,7 +366,15 @@ class NetworkTrainer:
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
+        unet_weight_dtype = weight_dtype
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
+        if args.unet_fp8:
+            assert (
+                torch.__version__ >= '2.1.0'
+            ), "fp8 dtype requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0を指定してください。"
+            accelerator.print("enable fp8 training.")
+            unet_weight_dtype = torch.float8_e4m3fn
+            te_weight_dtype = torch.float8_e4m3fn
         if args.full_fp16:
             assert (
                 args.mixed_precision == "fp16"
@@ -381,9 +389,13 @@ class NetworkTrainer:
             network.to(weight_dtype)
 
         unet.requires_grad_(False)
-        unet.to(dtype=weight_dtype)
+        unet.to(dtype=unet_weight_dtype)
         for t_enc in text_encoders:
             t_enc.requires_grad_(False)
+            emb_cache = t_enc.text_model.embeddings
+            t_enc.text_model.embeddings = None
+            t_enc.to(dtype=te_weight_dtype)
+            t_enc.text_model.embeddings = emb_cache
 
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
@@ -416,12 +428,19 @@ class NetworkTrainer:
                 )
                 text_encoders = [text_encoder]
 
-            unet.to(accelerator.device, dtype=weight_dtype)  # move to device because unet is not prepared by accelerator
+            unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
         else:
             network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 network, optimizer, train_dataloader, lr_scheduler
             )
 
+        dtype_dict = {}
+        for param in unet.parameters():
+            dtype_dict[param.dtype] = dtype_dict.get(param.dtype, 0) + 1
+        for t_enc in text_encoders:
+            for param in t_enc.parameters():
+                dtype_dict[param.dtype] = dtype_dict.get(param.dtype, 0) + 1
+        print(dtype_dict)
         # transform DDP after prepare (train_network here only)
         text_encoders = train_util.transform_models_if_DDP(text_encoders)
         unet, network = train_util.transform_models_if_DDP([unet, network])
@@ -436,9 +455,6 @@ class NetworkTrainer:
                 if train_text_encoder:
                     t_enc.text_model.embeddings.requires_grad_(True)
 
-            # set top parameter requires_grad = True for gradient checkpointing works
-            if not train_text_encoder:  # train U-Net only
-                unet.parameters().__next__().requires_grad_(True)
         else:
             unet.eval()
             for t_enc in text_encoders:
@@ -788,6 +804,13 @@ class NetworkTrainer:
                     noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
                         args, noise_scheduler, latents
                     )
+
+                    # ensure the hidden state will require grad
+                    if args.gradient_checkpointing:
+                        for x in noisy_latents:
+                            x.requires_grad_(True)
+                        for t in text_encoder_conds:
+                            t.requires_grad_(True)
 
                     # Predict the noise residual
                     with accelerator.autocast():

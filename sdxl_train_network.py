@@ -97,7 +97,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
             input_ids1 = batch["input_ids"]
             input_ids2 = batch["input_ids2"]
-            with torch.enable_grad():
+            with torch.enable_grad(), accelerator.autocast():
                 # Get the text embedding for conditioning
                 # TODO support weighted captions
                 # if args.weighted_captions:
