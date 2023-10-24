@@ -434,13 +434,6 @@ class NetworkTrainer:
                 network, optimizer, train_dataloader, lr_scheduler
             )
 
-        dtype_dict = {}
-        for param in unet.parameters():
-            dtype_dict[param.dtype] = dtype_dict.get(param.dtype, 0) + 1
-        for t_enc in text_encoders:
-            for param in t_enc.parameters():
-                dtype_dict[param.dtype] = dtype_dict.get(param.dtype, 0) + 1
-        print(dtype_dict)
         # transform DDP after prepare (train_network here only)
         text_encoders = train_util.transform_models_if_DDP(text_encoders)
         unet, network = train_util.transform_models_if_DDP([unet, network])
