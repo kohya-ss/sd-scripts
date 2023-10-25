@@ -371,7 +371,7 @@ class NetworkTrainer:
 
         unet_weight_dtype = weight_dtype
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
-        if args.unet_fp8:
+        if args.fp8_base:
             assert (
                 torch.__version__ >= '2.1.0'
             ), "fp8 dtype requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0を指定してください。"
