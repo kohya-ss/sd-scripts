@@ -2860,7 +2860,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--fp8-base", action="store_true", help="use fp8 for base model / base modelにfp8を使う"
     )
     parser.add_argument(
-        "--ddp-timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
+        "--fp8_base", action="store_true", help="use fp8 for base model / base modelにfp8を使う"
+    )
+    parser.add_argument(
+        "--ddp_timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
     )
     parser.add_argument(
         "--clip_skip",
