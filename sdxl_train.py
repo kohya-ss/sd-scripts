@@ -318,14 +318,14 @@ def train(args):
 
     if block_lrs is None:
         params_to_optimize = [
-            {"params": training_models[0].parameters(), "lr": args.learning_rate},
+            {"params": list(training_models[0].parameters()), "lr": args.learning_rate},
         ]
     else:
         params_to_optimize = get_block_params_to_optimize(training_models[0], block_lrs)  # U-Net
 
     for m in training_models[1:]:  # Text Encoders if exists
         params_to_optimize.append({
-            "params": m.parameters(), 
+            "params": list(m.parameters()), 
             "lr": args.learning_rate_te or args.learning_rate
         })
 
