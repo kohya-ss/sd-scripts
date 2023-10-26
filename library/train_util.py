@@ -3,6 +3,7 @@
 import argparse
 import ast
 import asyncio
+import datetime
 import importlib
 import json
 import pathlib
@@ -18,7 +19,7 @@ from typing import (
     Tuple,
     Union,
 )
-from accelerate import Accelerator
+from accelerate import Accelerator, InitProcessGroupKwargs
 import gc
 import glob
 import math
@@ -2859,6 +2860,9 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--fp8-base", action="store_true", help="use fp8 for base model / base modelにfp8を使う"
     )
     parser.add_argument(
+        "--ddp-timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
+    )
+    parser.add_argument(
         "--clip_skip",
         type=int,
         default=None,
@@ -3789,6 +3793,7 @@ def prepare_accelerator(args: argparse.Namespace):
         mixed_precision=args.mixed_precision,
         log_with=log_with,
         project_dir=logging_dir,
+        kwargs_handlers=[InitProcessGroupKwargs(timeout=datetime.timedelta(minutes=args.ddp_timeout))],
     )
     return accelerator
 
