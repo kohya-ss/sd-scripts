@@ -2857,7 +2857,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--full_bf16", action="store_true", help="bf16 training including gradients / 勾配も含めてbf16で学習する"
     )  # TODO move to SDXL training, because it is not supported by SD1/2
     parser.add_argument(
-        "--ddp-timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
+        "--ddp_timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
     )
     parser.add_argument(
         "--clip_skip",
