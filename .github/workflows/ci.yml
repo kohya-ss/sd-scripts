@@ -26,8 +26,10 @@ jobs:
           path: .venv
           key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements_dev.txt') }}
 
-      - run: .venv/bin/pip install -r ./requirements_dev.txt
+      - name: Install dependencies
+        run: .venv/bin/pip install -r ./requirements_dev.txt
 
-      - run: |
+      - name: Test
+        run: |
           . .venv/bin/activate
           make test
