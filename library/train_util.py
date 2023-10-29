@@ -1379,7 +1379,7 @@ class DreamBoothDataset(BaseDataset):
 
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):
-                logger.error(f"not directory: {subset.image_dir}")
+                logger.warning(f"not directory: {subset.image_dir}")
                 return [], []
 
             img_paths = glob_images(subset.image_dir, "*")
@@ -1462,10 +1462,10 @@ class DreamBoothDataset(BaseDataset):
 
         logger.info(f"{num_reg_images} reg images.")
         if num_train_images < num_reg_images:
-            logger.info("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
+            logger.warning("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
 
         if num_reg_images == 0:
-            logger.info("no regularization images / 正則化画像が見つかりませんでした")
+            logger.warning("no regularization images / 正則化画像が見つかりませんでした")
         else:
             # num_repeatsを計算する：どうせ大した数ではないのでループで処理する
             n = 0
@@ -1509,13 +1509,13 @@ class FineTuningDataset(BaseDataset):
 
         for subset in subsets:
             if subset.num_repeats < 1:
-                logger.info(
+                logger.warning(
                     f"ignore subset with metadata_file='{subset.metadata_file}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}"
                 )
                 continue
 
             if subset in self.subsets:
-                logger.info(
+                logger.warning(
                     f"ignore duplicated subset with metadata_file='{subset.metadata_file}': use the first one / 既にサブセットが登録されているため、重複した後発のサブセットを無視します"
                 )
                 continue
@@ -1529,7 +1529,7 @@ class FineTuningDataset(BaseDataset):
                 raise ValueError(f"no metadata / メタデータファイルがありません: {subset.metadata_file}")
 
             if len(metadata) < 1:
-                logger.info(f"ignore subset with '{subset.metadata_file}': no image entries found / 画像に関するデータが見つからないためサブセットを無視します")
+                logger.warning(f"ignore subset with '{subset.metadata_file}': no image entries found / 画像に関するデータが見つからないためサブセットを無視します")
                 continue
 
             tags_list = []
@@ -1607,12 +1607,12 @@ class FineTuningDataset(BaseDataset):
 
             if not npz_any:
                 use_npz_latents = False
-                logger.info(f"npz file does not exist. ignore npz files / npzファイルが見つからないためnpzファイルを無視します")
+                logger.warning(f"npz file does not exist. ignore npz files / npzファイルが見つからないためnpzファイルを無視します")
             elif not npz_all:
                 use_npz_latents = False
-                logger.info(f"some of npz file does not exist. ignore npz files / いくつかのnpzファイルが見つからないためnpzファイルを無視します")
+                logger.warning(f"some of npz file does not exist. ignore npz files / いくつかのnpzファイルが見つからないためnpzファイルを無視します")
                 if flip_aug_in_subset:
-                    logger.info("maybe no flipped files / 反転されたnpzファイルがないのかもしれません")
+                    logger.warning("maybe no flipped files / 反転されたnpzファイルがないのかもしれません")
         # else:
         #   logger.info("npz files are not used with color_aug and/or random_crop / color_augまたはrandom_cropが指定されているためnpzファイルは使用されません")
 
@@ -1630,7 +1630,7 @@ class FineTuningDataset(BaseDataset):
         if sizes is None:
             if use_npz_latents:
                 use_npz_latents = False
-                logger.info(f"npz files exist, but no bucket info in metadata. ignore npz files / メタデータにbucket情報がないためnpzファイルを無視します")
+                logger.warning(f"npz files exist, but no bucket info in metadata. ignore npz files / メタデータにbucket情報がないためnpzファイルを無視します")
 
             assert (
                 resolution is not None
@@ -1764,7 +1764,7 @@ class ControlNetDataset(BaseDataset):
             assert subset is not None, "internal error: subset not found"
 
             if not os.path.isdir(subset.conditioning_data_dir):
-                logger.info(f"not directory: {subset.conditioning_data_dir}")
+                logger.warning(f"not directory: {subset.conditioning_data_dir}")
                 continue
 
             img_basename = os.path.basename(info.absolute_path)
@@ -3054,13 +3054,13 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
 
 def verify_training_args(args: argparse.Namespace):
     if args.v_parameterization and not args.v2:
-        logger.info("v_parameterization should be with v2 not v1 or sdxl / v1やsdxlでv_parameterizationを使用することは想定されていません")
+        logger.warning("v_parameterization should be with v2 not v1 or sdxl / v1やsdxlでv_parameterizationを使用することは想定されていません")
     if args.v2 and args.clip_skip is not None:
-        logger.info("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
+        logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
     if args.cache_latents_to_disk and not args.cache_latents:
         args.cache_latents = True
-        logger.info(
+        logger.warning(
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
         )
 
@@ -3091,7 +3091,7 @@ def verify_training_args(args: argparse.Namespace):
         )
 
     if args.zero_terminal_snr and not args.v_parameterization:
-        logger.info(
+        logger.warning(
             f"zero_terminal_snr is enabled, but v_parameterization is not enabled. training will be unexpected"
             + " / zero_terminal_snrが有効ですが、v_parameterizationが有効ではありません。学習結果は想定外になる可能性があります"
         )
@@ -3255,7 +3255,7 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
     if args.output_config:
         # check if config file exists
         if os.path.exists(config_path):
-            logger.info(f"Config file already exists. Aborting... / 出力先の設定ファイルが既に存在します: {config_path}")
+            logger.error(f"Config file already exists. Aborting... / 出力先の設定ファイルが既に存在します: {config_path}")
             exit(1)
 
         # convert args to dictionary
@@ -3440,7 +3440,7 @@ def get_optimizer(args, trainable_params):
         elif optimizer_type == "SGDNesterov8bit".lower():
             logger.info(f"use 8-bit SGD with Nesterov optimizer | {optimizer_kwargs}")
             if "momentum" not in optimizer_kwargs:
-                logger.info(
+                logger.warning(
                     f"8-bit SGD with Nesterov must be with momentum, set momentum to 0.9 / 8-bit SGD with Nesterovはmomentum指定が必須のため0.9に設定します"
                 )
                 optimizer_kwargs["momentum"] = 0.9
@@ -3510,12 +3510,12 @@ def get_optimizer(args, trainable_params):
             lr_count = len(lrs)
 
         if actual_lr <= 0.1:
-            logger.info(
+            logger.warning(
                 f"learning rate is too low. If using D-Adaptation or Prodigy, set learning rate around 1.0 / 学習率が低すぎるようです。D-AdaptationまたはProdigyの使用時は1.0前後の値を指定してください: lr={actual_lr}"
             )
-            logger.info("recommend option: lr=1.0 / 推奨は1.0です")
+            logger.warning("recommend option: lr=1.0 / 推奨は1.0です")
         if lr_count > 1:
-            logger.info(
+            logger.warning(
                 f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
             )
 
@@ -3578,7 +3578,7 @@ def get_optimizer(args, trainable_params):
         if optimizer_kwargs["relative_step"]:
             logger.info(f"relative_step is true / relative_stepがtrueです")
             if lr != 0.0:
-                logger.info(f"learning rate is used as initial_lr / 指定したlearning rateはinitial_lrとして使用されます")
+                logger.warning(f"learning rate is used as initial_lr / 指定したlearning rateはinitial_lrとして使用されます")
             args.learning_rate = None
 
             # trainable_paramsがgroupだった時の処理：lrを削除する
@@ -3747,7 +3747,7 @@ def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
 
     if support_metadata:
         if args.in_json is not None and (args.color_aug or args.random_crop):
-            logger.info(
+            logger.warning(
                 f"latents in npz is ignored when color_aug or random_crop is True / color_augまたはrandom_cropを有効にした場合、npzファイルのlatentsは無視されます"
             )
 
@@ -4596,7 +4596,7 @@ def sample_images_common(
 
                     except ValueError as ex:
                         logger.error(f"Exception in parsing / 解析エラー: {parg}")
-                        logger.error(ex)
+                        logger.error(f"{ex}")
 
             if seed is not None:
                 torch.manual_seed(seed)

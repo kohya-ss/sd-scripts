@@ -123,7 +123,7 @@ def main(args):
 
         if args.batch_size != batch_size and type(batch_size) != str:
             # some rebatch model may use 'N' as dynamic axes
-            logger.info(
+            logger.warning(
                 f"Batch size {args.batch_size} doesn't match onnx model batch size {batch_size}, use model batch size {batch_size}"
             )
             args.batch_size = batch_size

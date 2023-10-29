@@ -204,7 +204,7 @@ def merge(args):
         )
         if v2:
             # TODO read sai modelspec
-            logger.info(
+            logger.warning(
                 "Cannot determine if LoRA is for v-prediction, so save metadata as v-prediction / LoRAがv-prediction用か否か不明なため、仮にv-prediction用としてmetadataを保存します"
             )
         metadata.update(sai_metadata)

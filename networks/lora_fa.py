@@ -920,7 +920,7 @@ class LoRANetwork(torch.nn.Module):
 
         skipped = skipped_te + skipped_un
         if varbose and len(skipped) > 0:
-            logger.info(
+            logger.warning(
                 f"because block_lr_weight is 0 or dim (rank) is 0, {len(skipped)} LoRA modules are skipped / block_lr_weightまたはdim (rank)が0の為、次の{len(skipped)}個のLoRAモジュールはスキップされます:"
             )
             for name in skipped:

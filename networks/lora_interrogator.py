@@ -37,7 +37,7 @@ def interrogate(args):
       has_te_weight = True
       break
   if not has_te_weight:
-    logger.info("This LoRA does not have modules for Text Encoder, cannot interrogate / このLoRAはText Encoder向けのモジュールがないため調査できません")
+    logger.error("This LoRA does not have modules for Text Encoder, cannot interrogate / このLoRAはText Encoder向けのモジュールがないため調査できません")
     return
   del vae
 

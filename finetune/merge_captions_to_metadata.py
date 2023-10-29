@@ -21,7 +21,7 @@ def main(args):
   if args.in_json is not None:
     logger.info(f"loading existing metadata: {args.in_json}")
     metadata = json.loads(Path(args.in_json).read_text(encoding='utf-8'))
-    logger.info("captions for existing images will be overwritten / 既存の画像のキャプションは上書きされます")
+    logger.warning("captions for existing images will be overwritten / 既存の画像のキャプションは上書きされます")
   else:
     logger.info("new metadata will be created / 新しいメタデータファイルが作成されます")
     metadata = {}
