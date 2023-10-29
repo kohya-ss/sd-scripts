@@ -237,7 +237,10 @@ def main(args):
             with open(caption_file, "wt", encoding="utf-8") as f:
                 f.write(tag_text + "\n")
                 if args.debug:
-                    logger.info(f"\n{image_path}:\n  Character tags: {character_tag_text}\n  General tags: {general_tag_text}")
+                    logger.info("")
+                    logger.info(f"{image_path}:")
+                    logger.info(f"\tCharacter tags: {character_tag_text}")
+                    logger.info(f"\tGeneral tags: {general_tag_text}")
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
     if args.max_data_loader_n_workers is not None:

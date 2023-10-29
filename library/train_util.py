@@ -1980,7 +1980,8 @@ def debug_dataset(train_dataset, show_input_ids=False):
 
     epoch = 1
     while True:
-        logger.info(f"\nepoch: {epoch}")
+        logger.info(f"")
+        logger.info(f"epoch: {epoch}")
 
         steps = (epoch - 1) * len(train_dataset) + 1
         indices = list(range(len(train_dataset)))
@@ -4205,7 +4206,8 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
             ckpt_name = get_step_ckpt_name(args, ext, global_step)
 
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
-        logger.info(f"\nsaving checkpoint: {ckpt_file}")
+        logger.info("")
+        logger.info(f"saving checkpoint: {ckpt_file}")
         sd_saver(ckpt_file, epoch_no, global_step)
 
         if args.huggingface_repo_id is not None:
@@ -4229,7 +4231,8 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
         else:
             out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, global_step))
 
-        logger.info(f"\nsaving model: {out_dir}")
+        logger.info("")
+        logger.info(f"saving model: {out_dir}")
         diffusers_saver(out_dir)
 
         if args.huggingface_repo_id is not None:
@@ -4256,7 +4259,8 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
 def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
 
-    logger.info(f"\nsaving state at epoch {epoch_no}")
+    logger.info("")
+    logger.info(f"saving state at epoch {epoch_no}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no))
@@ -4277,7 +4281,8 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
 def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
-    logger.info(f"\nsaving state at step {step_no}")
+    logger.info("")
+    logger.info(f"saving state at step {step_no}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, STEP_STATE_NAME.format(model_name, step_no))
@@ -4302,7 +4307,8 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
 
-    logger.info("\nsaving last state.")
+    logger.info("")
+    logger.info("saving last state.")
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
@@ -4440,7 +4446,8 @@ def sample_images_common(
         if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
             return
 
-    logger.info(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
+    logger.info("")
+    logger.info(f"generating sample images at step / サンプル画像生成 ステップ: {steps}")
     if not os.path.isfile(args.sample_prompts):
         logger.error(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
         return

@@ -3053,7 +3053,8 @@ def main(args):
                 # interactive
                 valid = False
                 while not valid:
-                    logger.info("\nType prompt:")
+                    logger.info("")
+                    logger.info("Type prompt:")
                     try:
                         raw_prompt = input()
                     except EOFError:

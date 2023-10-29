@@ -603,16 +603,19 @@ if __name__ == "__main__":
 
   user_config = load_user_config(config_args.dataset_config)
 
-  logger.info("\n[user_config]")
+  logger.info("")
+  logger.info("[user_config]")
   logger.info(f'{user_config}')
 
   sanitizer = ConfigSanitizer(config_args.support_dreambooth, config_args.support_finetuning, config_args.support_controlnet, config_args.support_dropout)
   sanitized_user_config = sanitizer.sanitize_user_config(user_config)
 
-  logger.info("\n[sanitized_user_config]")
+  logger.info("")
+  logger.info("[sanitized_user_config]")
   logger.info(f'{sanitized_user_config}')
 
   blueprint = BlueprintGenerator(sanitizer).generate(user_config, argparse_namespace)
 
-  logger.info("\n[blueprint]")
+  logger.info("")
+  logger.info("[blueprint]")
   logger.info(f'{blueprint}')
