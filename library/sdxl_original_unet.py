@@ -30,7 +30,8 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
-
+from .utils import get_my_logger
+logger = get_my_logger(__name__)
 
 IN_CHANNELS: int = 4
 OUT_CHANNELS: int = 4
@@ -315,7 +316,7 @@ class ResnetBlock2D(nn.Module):
 
     def forward(self, x, emb):
         if self.training and self.gradient_checkpointing:
-            # print("ResnetBlock2D: gradient_checkpointing")
+            # logger.info("ResnetBlock2D: gradient_checkpointing")
 
             def create_custom_forward(func):
                 def custom_forward(*inputs):
@@ -349,7 +350,7 @@ class Downsample2D(nn.Module):
 
     def forward(self, hidden_states):
         if self.training and self.gradient_checkpointing:
-            # print("Downsample2D: gradient_checkpointing")
+            # logger.info("Downsample2D: gradient_checkpointing")
 
             def create_custom_forward(func):
                 def custom_forward(*inputs):
@@ -636,7 +637,7 @@ class BasicTransformerBlock(nn.Module):
 
     def forward(self, hidden_states, context=None, timestep=None):
         if self.training and self.gradient_checkpointing:
-            # print("BasicTransformerBlock: checkpointing")
+            # logger.info("BasicTransformerBlock: checkpointing")
 
             def create_custom_forward(func):
                 def custom_forward(*inputs):
@@ -779,7 +780,7 @@ class Upsample2D(nn.Module):
 
     def forward(self, hidden_states, output_size=None):
         if self.training and self.gradient_checkpointing:
-            # print("Upsample2D: gradient_checkpointing")
+            # logger.info("Upsample2D: gradient_checkpointing")
 
             def create_custom_forward(func):
                 def custom_forward(*inputs):
@@ -1029,7 +1030,7 @@ class SdxlUNet2DConditionModel(nn.Module):
         for block in blocks:
             for module in block:
                 if hasattr(module, "set_use_memory_efficient_attention"):
-                    # print(module.__class__.__name__)
+                    # logger.info(module.__class__.__name__)
                     module.set_use_memory_efficient_attention(xformers, mem_eff)
 
     def set_use_sdpa(self, sdpa: bool) -> None:
@@ -1044,7 +1045,7 @@ class SdxlUNet2DConditionModel(nn.Module):
         for block in blocks:
             for module in block.modules():
                 if hasattr(module, "gradient_checkpointing"):
-                    # print(module.__class__.__name__, module.gradient_checkpointing, "->", value)
+                    # logger.info(f{module.__class__.__name__} {module.gradient_checkpointing} -> {value}")
                     module.gradient_checkpointing = value
 
     # endregion
@@ -1066,7 +1067,7 @@ class SdxlUNet2DConditionModel(nn.Module):
         def call_module(module, h, emb, context):
             x = h
             for layer in module:
-                # print(layer.__class__.__name__, x.dtype, emb.dtype, context.dtype if context is not None else None)
+                # logger.info(layer.__class__.__name__, x.dtype, emb.dtype, context.dtype if context is not None else None)
                 if isinstance(layer, ResnetBlock2D):
                     x = layer(x, emb)
                 elif isinstance(layer, Transformer2DModel):
@@ -1096,7 +1097,7 @@ class SdxlUNet2DConditionModel(nn.Module):
 if __name__ == "__main__":
     import time
 
-    print("create unet")
+    logger.info("create unet")
     unet = SdxlUNet2DConditionModel()
 
     unet.to("cuda")
@@ -1105,7 +1106,7 @@ if __name__ == "__main__":
     unet.train()
 
     # 使用メモリ量確認用の疑似学習ループ
-    print("preparing optimizer")
+    logger.info("preparing optimizer")
 
     # optimizer = torch.optim.SGD(unet.parameters(), lr=1e-3, nesterov=True, momentum=0.9) # not working
 
@@ -1120,12 +1121,12 @@ if __name__ == "__main__":
 
     scaler = torch.cuda.amp.GradScaler(enabled=True)
 
-    print("start training")
+    logger.info("start training")
     steps = 10
     batch_size = 1
 
     for step in range(steps):
-        print(f"step {step}")
+        logger.info(f"step {step}")
         if step == 1:
             time_start = time.perf_counter()
 
@@ -1145,4 +1146,4 @@ if __name__ == "__main__":
         optimizer.zero_grad(set_to_none=True)
 
     time_end = time.perf_counter()
-    print(f"elapsed time: {time_end - time_start} [sec] for last {steps - 1} steps")
+    logger.info(f"elapsed time: {time_end - time_start} [sec] for last {steps - 1} steps")

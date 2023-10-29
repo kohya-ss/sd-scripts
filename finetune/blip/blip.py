@@ -21,6 +21,8 @@ import torch.nn.functional as F
 import os
 from urllib.parse import urlparse
 from timm.models.hub import download_cached_file
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 class BLIP_Base(nn.Module):
     def __init__(self,                 
@@ -235,6 +237,6 @@ def load_checkpoint(model,url_or_filename):
                 del state_dict[key]
     
     msg = model.load_state_dict(state_dict,strict=False)
-    print('load checkpoint from %s'%url_or_filename)  
+    logger.info('load checkpoint from %s'%url_or_filename)  
     return model,msg
     

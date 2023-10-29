@@ -15,6 +15,8 @@ from torchvision.transforms.functional import InterpolationMode
 sys.path.append(os.path.dirname(__file__))
 from blip.blip import blip_decoder
 import library.train_util as train_util
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,7 +49,7 @@ class ImageLoadingTransformDataset(torch.utils.data.Dataset):
             # convert to tensor temporarily so dataloader will accept it
             tensor = IMAGE_TRANSFORM(image)
         except Exception as e:
-            print(f"Could not load image path / 画像を読み込めません: {img_path}, error: {e}")
+            logger.error(f"Could not load image path / 画像を読み込めません: {img_path}, error: {e}")
             return None
 
         return (tensor, img_path)
@@ -74,19 +76,19 @@ def main(args):
         args.train_data_dir = os.path.abspath(args.train_data_dir)  # convert to absolute path
 
         cwd = os.getcwd()
-        print("Current Working Directory is: ", cwd)
+        logger.info(f"Current Working Directory is: {cwd}")
         os.chdir("finetune")
 
-    print(f"load images from {args.train_data_dir}")
+    logger.info(f"load images from {args.train_data_dir}")
     train_data_dir_path = Path(args.train_data_dir)
     image_paths = train_util.glob_images_pathlib(train_data_dir_path, args.recursive)
-    print(f"found {len(image_paths)} images.")
+    logger.info(f"found {len(image_paths)} images.")
 
-    print(f"loading BLIP caption: {args.caption_weights}")
+    logger.info(f"loading BLIP caption: {args.caption_weights}")
     model = blip_decoder(pretrained=args.caption_weights, image_size=IMAGE_SIZE, vit="large", med_config="./blip/med_config.json")
     model.eval()
     model = model.to(DEVICE)
-    print("BLIP loaded")
+    logger.info("BLIP loaded")
 
     # captioningする
     def run_batch(path_imgs):
@@ -106,7 +108,7 @@ def main(args):
             with open(os.path.splitext(image_path)[0] + args.caption_extension, "wt", encoding="utf-8") as f:
                 f.write(caption + "\n")
                 if args.debug:
-                    print(image_path, caption)
+                    logger.info(f'{image_path} {caption}')
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
     if args.max_data_loader_n_workers is not None:
@@ -136,7 +138,7 @@ def main(args):
                         raw_image = raw_image.convert("RGB")
                     img_tensor = IMAGE_TRANSFORM(raw_image)
                 except Exception as e:
-                    print(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
+                    logger.error(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
                     continue
 
             b_imgs.append((image_path, img_tensor))
@@ -146,7 +148,7 @@ def main(args):
     if len(b_imgs) > 0:
         run_batch(b_imgs)
 
-    print("done!")
+    logger.info("done!")
 
 
 def setup_parser() -> argparse.ArgumentParser:

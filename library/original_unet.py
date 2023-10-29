@@ -113,6 +113,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 BLOCK_OUT_CHANNELS: Tuple[int] = (320, 640, 1280, 1280)
 TIMESTEP_INPUT_DIM = BLOCK_OUT_CHANNELS[0]
@@ -1322,7 +1324,7 @@ class UNet2DConditionModel(nn.Module):
     ):
         super().__init__()
         assert sample_size is not None, "sample_size must be specified"
-        print(
+        logger.info(
             f"UNet2DConditionModel: {sample_size}, {attention_head_dim}, {cross_attention_dim}, {use_linear_projection}, {upcast_attention}"
         )
 
@@ -1456,7 +1458,7 @@ class UNet2DConditionModel(nn.Module):
     def set_gradient_checkpointing(self, value=False):
         modules = self.down_blocks + [self.mid_block] + self.up_blocks
         for module in modules:
-            print(module.__class__.__name__, module.gradient_checkpointing, "->", value)
+            logger.info(f"{module.__class__.__name__} {module.gradient_checkpointing} -> {value}")
             module.gradient_checkpointing = value
 
     # endregion

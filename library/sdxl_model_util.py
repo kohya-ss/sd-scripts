@@ -7,7 +7,8 @@ from typing import List
 from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionModel
 from library import model_util
 from library import sdxl_original_unet
-
+from .utils import get_my_logger
+logger = get_my_logger(__name__)
 
 VAE_SCALE_FACTOR = 0.13025
 MODEL_VERSION_SDXL_BASE_V1_0 = "sdxl_base_v1-0"
@@ -184,20 +185,20 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
         checkpoint = None
 
     # U-Net
-    print("building U-Net")
+    logger.info("building U-Net")
     with init_empty_weights():
         unet = sdxl_original_unet.SdxlUNet2DConditionModel()
 
-    print("loading U-Net from checkpoint")
+    logger.info("loading U-Net from checkpoint")
     unet_sd = {}
     for k in list(state_dict.keys()):
         if k.startswith("model.diffusion_model."):
             unet_sd[k.replace("model.diffusion_model.", "")] = state_dict.pop(k)
     info = _load_state_dict_on_device(unet, unet_sd, device=map_location, dtype=dtype)
-    print("U-Net: ", info)
+    logger.info(f"U-Net: {info}")
 
     # Text Encoders
-    print("building text encoders")
+    logger.info("building text encoders")
 
     # Text Encoder 1 is same to Stability AI's SDXL
     text_model1_cfg = CLIPTextConfig(
@@ -250,7 +251,7 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
     with init_empty_weights():
         text_model2 = CLIPTextModelWithProjection(text_model2_cfg)
 
-    print("loading text encoders from checkpoint")
+    logger.info("loading text encoders from checkpoint")
     te1_sd = {}
     te2_sd = {}
     for k in list(state_dict.keys()):
@@ -264,22 +265,22 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
         te1_sd["text_model.embeddings.position_ids"] = torch.arange(77).unsqueeze(0)
 
     info1 = _load_state_dict_on_device(text_model1, te1_sd, device=map_location)  # remain fp32
-    print("text encoder 1:", info1)
+    logger.info(f"text encoder 1: {info1}")
 
     converted_sd, logit_scale = convert_sdxl_text_encoder_2_checkpoint(te2_sd, max_length=77)
     info2 = _load_state_dict_on_device(text_model2, converted_sd, device=map_location)  # remain fp32
-    print("text encoder 2:", info2)
+    logger.info(f"text encoder 2: {info2}")
 
     # prepare vae
-    print("building VAE")
+    logger.info("building VAE")
     vae_config = model_util.create_vae_diffusers_config()
     with init_empty_weights():
         vae = AutoencoderKL(**vae_config)
 
-    print("loading VAE from checkpoint")
+    logger.info("loading VAE from checkpoint")
     converted_vae_checkpoint = model_util.convert_ldm_vae_checkpoint(state_dict, vae_config)
     info = _load_state_dict_on_device(vae, converted_vae_checkpoint, device=map_location, dtype=dtype)
-    print("VAE:", info)
+    logger.info(f"VAE: {info}")
 
     ckpt_info = (epoch, global_step) if epoch is not None else None
     return text_model1, text_model2, vae, unet, logit_scale, ckpt_info

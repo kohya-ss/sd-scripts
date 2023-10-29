@@ -6,7 +6,8 @@ import torch
 from diffusers import StableDiffusionPipeline
 
 import library.model_util as model_util
-
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 def convert(args):
     # 引数を確認する
@@ -30,7 +31,7 @@ def convert(args):
 
     # モデルを読み込む
     msg = "checkpoint" if is_load_ckpt else ("Diffusers" + (" as fp16" if args.fp16 else ""))
-    print(f"loading {msg}: {args.model_to_load}")
+    logger.info(f"loading {msg}: {args.model_to_load}")
 
     if is_load_ckpt:
         v2_model = args.v2
@@ -46,26 +47,26 @@ def convert(args):
         if args.v1 == args.v2:
             # 自動判定する
             v2_model = unet.config.cross_attention_dim == 1024
-            print("checking model version: model is " + ("v2" if v2_model else "v1"))
+            logger.info("checking model version: model is " + ("v2" if v2_model else "v1"))
         else:
             v2_model = not args.v1
 
     # 変換して保存する
     msg = ("checkpoint" + ("" if save_dtype is None else f" in {save_dtype}")) if is_save_ckpt else "Diffusers"
-    print(f"converting and saving as {msg}: {args.model_to_save}")
+    logger.info(f"converting and saving as {msg}: {args.model_to_save}")
 
     if is_save_ckpt:
         original_model = args.model_to_load if is_load_ckpt else None
         key_count = model_util.save_stable_diffusion_checkpoint(
             v2_model, args.model_to_save, text_encoder, unet, original_model, args.epoch, args.global_step, save_dtype, vae
         )
-        print(f"model saved. total converted state_dict keys: {key_count}")
+        logger.info(f"model saved. total converted state_dict keys: {key_count}")
     else:
-        print(f"copy scheduler/tokenizer config from: {args.reference_model if args.reference_model is not None else 'default model'}")
+        logger.info(f"copy scheduler/tokenizer config from: {args.reference_model if args.reference_model is not None else 'default model'}")
         model_util.save_diffusers_checkpoint(
             v2_model, args.model_to_save, text_encoder, unet, args.reference_model, vae, args.use_safetensors
         )
-        print(f"model saved.")
+        logger.info(f"model saved.")
 
 
 def setup_parser() -> argparse.ArgumentParser:

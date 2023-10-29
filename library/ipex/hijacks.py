@@ -2,6 +2,8 @@ import contextlib
 import importlib
 import torch
 import intel_extension_for_pytorch as ipex # pylint: disable=import-error, unused-import
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 # pylint: disable=protected-access, missing-function-docstring, line-too-long, unnecessary-lambda, no-else-return
 
@@ -65,7 +67,7 @@ def _shutdown_workers(self):
 class DummyDataParallel(torch.nn.Module): # pylint: disable=missing-class-docstring, unused-argument, too-few-public-methods
     def __new__(cls, module, device_ids=None, output_device=None, dim=0): # pylint: disable=unused-argument
         if isinstance(device_ids, list) and len(device_ids) > 1:
-            print("IPEX backend doesn't support DataParallel on multiple XPU devices")
+            logger.error("IPEX backend doesn't support DataParallel on multiple XPU devices")
         return module.to("xpu")
 
 def return_null_context(*args, **kwargs): # pylint: disable=unused-argument

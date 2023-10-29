@@ -5,6 +5,8 @@ from io import BytesIO
 import os
 from typing import List, Optional, Tuple, Union
 import safetensors
+from library.utils import get_my_logger
+logger = get_my_logger(__name__)
 
 r"""
 # Metadata Example
@@ -231,7 +233,7 @@ def build_metadata(
     # # assert all values are filled
     # assert all([v is not None for v in metadata.values()]), metadata
     if not all([v is not None for v in metadata.values()]):
-        print(f"Internal error: some metadata values are None: {metadata}")
+        logger.error(f"Internal error: some metadata values are None: {metadata}")
     
     return metadata
 
