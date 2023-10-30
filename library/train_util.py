@@ -342,6 +342,7 @@ class BaseSubset:
         image_dir: Optional[str],
         num_repeats: int,
         shuffle_caption: bool,
+        caption_seperator: str,
         keep_tokens: int,
         color_aug: bool,
         flip_aug: bool,
@@ -358,6 +359,7 @@ class BaseSubset:
         self.image_dir = image_dir
         self.num_repeats = num_repeats
         self.shuffle_caption = shuffle_caption
+        self.caption_seperator = caption_seperator
         self.keep_tokens = keep_tokens
         self.color_aug = color_aug
         self.flip_aug = flip_aug
@@ -384,6 +386,7 @@ class DreamBoothSubset(BaseSubset):
         caption_extension: str,
         num_repeats,
         shuffle_caption,
+        caption_seperator: str,
         keep_tokens,
         color_aug,
         flip_aug,
@@ -403,6 +406,7 @@ class DreamBoothSubset(BaseSubset):
             image_dir,
             num_repeats,
             shuffle_caption,
+            caption_seperator,
             keep_tokens,
             color_aug,
             flip_aug,
@@ -436,6 +440,7 @@ class FineTuningSubset(BaseSubset):
         metadata_file: str,
         num_repeats,
         shuffle_caption,
+        caption_seperator,
         keep_tokens,
         color_aug,
         flip_aug,
@@ -455,6 +460,7 @@ class FineTuningSubset(BaseSubset):
             image_dir,
             num_repeats,
             shuffle_caption,
+            caption_seperator,
             keep_tokens,
             color_aug,
             flip_aug,
@@ -485,6 +491,7 @@ class ControlNetSubset(BaseSubset):
         caption_extension: str,
         num_repeats,
         shuffle_caption,
+        caption_seperator,
         keep_tokens,
         color_aug,
         flip_aug,
@@ -504,6 +511,7 @@ class ControlNetSubset(BaseSubset):
             image_dir,
             num_repeats,
             shuffle_caption,
+            caption_seperator,
             keep_tokens,
             color_aug,
             flip_aug,
@@ -639,7 +647,7 @@ class BaseDataset(torch.utils.data.Dataset):
             caption = ""
         else:
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
-                tokens = [t.strip() for t in caption.strip().split(",")]
+                tokens = [t.strip() for t in caption.strip().split(subset.caption_seperator)]
                 if subset.token_warmup_step < 1:  # 初回に上書きする
                     subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
                 if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
@@ -3101,7 +3109,10 @@ def add_dataset_arguments(
     # dataset common
     parser.add_argument("--train_data_dir", type=str, default=None, help="directory for train images / 学習画像データのディレクトリ")
     parser.add_argument(
-        "--shuffle_caption", action="store_true", help="shuffle comma-separated caption / コンマで区切られたcaptionの各要素をshuffleする"
+        "--shuffle_caption", action="store_true", help="shuffle separated caption / 区切られたcaptionの各要素をshuffleする"
+    )
+    parser.add_argument(
+        "--caption_seperator", type=str, default=",", help="seperator for caption / captionの区切り文字"
     )
     parser.add_argument(
         "--caption_extension", type=str, default=".caption", help="extension of caption files / 読み込むcaptionファイルの拡張子"
