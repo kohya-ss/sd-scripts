@@ -386,9 +386,9 @@ class NetworkTrainer:
             t_enc.requires_grad_(False)
 
         if args.enable_ema:
-            ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
+            #ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
             ema = EMAModel(network.parameters(), decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
-            ema.to(accelerator.device, dtype=ema_dtype)
+            ema.to(accelerator.device, dtype=weight_dtype)
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
         if train_unet and train_text_encoder:
@@ -846,7 +846,8 @@ class NetworkTrainer:
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
                     if args.enable_ema:
-                        ema.step(network.parameters())
+                        with torch.no_grad():
+                            ema.step(network.parameters())
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = network.apply_max_norm_regularization(
@@ -872,7 +873,7 @@ class NetworkTrainer:
                                 if not args.ema_save_only_ema_weights:
                                     temp_name = train_util.get_step_ckpt_name(args, "", global_step) + "-non-EMA" + "." + args.save_model_as
                                     save_model(temp_name, accelerator.unwrap_model(network), global_step, epoch)
-                                with ema.ema_parameters(accelerator.unwrap_model(network).parameters()):
+                                with ema.ema_parameters(network.parameters()):
                                     print("Saving EMA:")
                                     save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
                             else:    
@@ -925,7 +926,7 @@ class NetworkTrainer:
                         if not args.ema_save_only_ema_weights:
                             temp_name = train_util.get_epoch_ckpt_name(args, "", epoch + 1) + "-non-EMA" + "." + args.save_model_as
                             save_model(temp_name, accelerator.unwrap_model(network), global_step, epoch + 1)
-                        with ema.ema_parameters(accelerator.unwrap_model(network).parameters()):
+                        with ema.ema_parameters(network.parameters()):
                             print("Saving EMA:")
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
                     else:
