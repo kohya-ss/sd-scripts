@@ -110,6 +110,9 @@ class NetworkTrainer:
     def is_text_encoder_outputs_cached(self, args):
         return False
 
+    def is_train_text_encoder(self, args):
+        return not args.network_train_unet_only and not self.is_text_encoder_outputs_cached(args)
+
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator, unet, vae, tokenizers, text_encoders, data_loader, weight_dtype
     ):
@@ -311,7 +314,7 @@ class NetworkTrainer:
             args.scale_weight_norms = False
 
         train_unet = not args.network_train_text_encoder_only
-        train_text_encoder = not args.network_train_unet_only and not self.is_text_encoder_outputs_cached(args)
+        train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
@@ -404,6 +407,8 @@ class NetworkTrainer:
             unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 unet, network, optimizer, train_dataloader, lr_scheduler
             )
+            for t_enc in text_encoders:
+                t_enc.to(accelerator.device, dtype=weight_dtype)
         elif train_text_encoder:
             if len(text_encoders) > 1:
                 t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -706,8 +711,7 @@ class NetworkTrainer:
                 "network_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs
             )
 
-        loss_list = []
-        loss_total = 0.0
+        loss_recorder = train_util.LossRecorder()
         del train_dataset_group
 
         # callback for step start
@@ -768,7 +772,7 @@ class NetworkTrainer:
                         latents = latents * self.vae_scale_factor
                     b_size = latents.shape[0]
 
-                    with torch.set_grad_enabled(train_text_encoder):
+                    with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
                         # Get the text embedding for conditioning
                         if args.weighted_captions:
                             text_encoder_conds = get_weighted_text_embeddings(
@@ -864,14 +868,9 @@ class NetworkTrainer:
                                 remove_model(remove_ckpt_name)
 
                 current_loss = loss.detach().item()
-                if epoch == 0:
-                    loss_list.append(current_loss)
-                else:
-                    loss_total -= loss_list[step]
-                    loss_list[step] = current_loss
-                loss_total += current_loss
-                avr_loss = loss_total / len(loss_list)
-                logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+                avr_loss: float = loss_recorder.moving_average
+                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_bar.set_postfix(**logs)
 
                 if args.scale_weight_norms:
@@ -885,7 +884,7 @@ class NetworkTrainer:
                     break
 
             if args.logging_dir is not None:
-                logs = {"loss/epoch": loss_total / len(loss_list)}
+                logs = {"loss/epoch": loss_recorder.moving_average}
                 accelerator.log(logs, step=epoch + 1)
 
             accelerator.wait_for_everyone()

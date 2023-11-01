@@ -10,10 +10,13 @@ import toml
 
 from tqdm import tqdm
 import torch
+
 try:
     import intel_extension_for_pytorch as ipex
+
     if torch.xpu.is_available():
         from library.ipex import ipex_init
+
         ipex_init()
 except Exception:
     pass
@@ -194,14 +197,20 @@ def train(args):
 
     for m in training_models:
         m.requires_grad_(True)
-    params = []
-    for m in training_models:
-        params.extend(m.parameters())
-    params_to_optimize = params
+
+    trainable_params = []
+    if args.learning_rate_te is None or not args.train_text_encoder:
+        for m in training_models:
+            trainable_params.extend(m.parameters())
+    else:
+        trainable_params = [
+            {"params": list(unet.parameters()), "lr": args.learning_rate},
+            {"params": list(text_encoder.parameters()), "lr": args.learning_rate_te},
+        ]
 
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
-    _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+    _, _, optimizer = train_util.get_optimizer(args, trainable_params=trainable_params)
 
     # dataloaderを準備する
     # DataLoaderのプロセス数：0はメインプロセスになる
@@ -290,6 +299,7 @@ def train(args):
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
 
+    loss_recorder = train_util.LossRecorder()
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1
@@ -297,7 +307,6 @@ def train(args):
         for m in training_models:
             m.train()
 
-        loss_total = 0
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
             with accelerator.accumulate(training_models[0]):  # 複数モデルに対応していない模様だがとりあえずこうしておく
@@ -414,17 +423,16 @@ def train(args):
                     )
                 accelerator.log(logs, step=global_step)
 
-            # TODO moving averageにする
-            loss_total += current_loss
-            avr_loss = loss_total / (step + 1)
-            logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+            loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+            avr_loss: float = loss_recorder.moving_average
+            logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
                 break
 
         if args.logging_dir is not None:
-            logs = {"loss/epoch": loss_total / len(train_dataloader)}
+            logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
         accelerator.wait_for_everyone()
@@ -483,6 +491,12 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--diffusers_xformers", action="store_true", help="use xformers by diffusers / Diffusersでxformersを使用する")
     parser.add_argument("--train_text_encoder", action="store_true", help="train text encoder / text encoderも学習する")
+    parser.add_argument(
+        "--learning_rate_te",
+        type=float,
+        default=None,
+        help="learning rate for text encoder, default is same as unet / Text Encoderの学習率、デフォルトはunetと同じ",
+    )
 
     return parser
 
