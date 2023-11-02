@@ -33,7 +33,7 @@ imagesize==1.4.1
 # onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 
 # this is for onnx: 
-# protobuf==3.20.3
+protobuf==3.20.3
 # open clip for SDXL
 # open-clip-torch==2.20.0
 # For logging
