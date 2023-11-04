@@ -384,6 +384,10 @@ def train(args):
         text_encoder1.to(weight_dtype)
         text_encoder2.to(weight_dtype)
 
+
+    if args.enable_ema:
+        print("--enable_ema not supported in this script yet. Training without EMA. / --enable_ema このスクリプトではサポートされていません。トレーニングはEMAなしで行われる ")
+
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
         unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(

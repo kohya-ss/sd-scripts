@@ -409,6 +409,8 @@ class TextualInversionTrainer:
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
+        if args.enable_ema:
+            print("--enable_ema not supported in this script yet. Training without EMA. / --enable_ema このスクリプトではサポートされていません。トレーニングはEMAなしで行われる ")
         # acceleratorがなんかよろしくやってくれるらしい
         if len(text_encoders) == 1:
             text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(

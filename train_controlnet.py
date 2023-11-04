@@ -271,6 +271,8 @@ def train(args):
         accelerator.print("enable full fp16 training.")
         controlnet.to(weight_dtype)
 
+    if args.enable_ema:
+        print("--enable_ema not supported in this script yet. Training without EMA. / --enable_ema このスクリプトではサポートされていません。トレーニングはEMAなしで行われる ")
     # acceleratorがなんかよろしくやってくれるらしい
     controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         controlnet, optimizer, train_dataloader, lr_scheduler
