@@ -4762,10 +4762,6 @@ class collator_class:
         else:
             dataset = self.dataset
 
-        # If we split a dataset we will get a Subset
-        if type(dataset) is torch.utils.data.Subset:
-            dataset = dataset.dataset
-
         # set epoch and step
         dataset.set_current_epoch(self.current_epoch.value)
         dataset.set_current_step(self.current_step.value)
