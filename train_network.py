@@ -401,7 +401,7 @@ class NetworkTrainer:
         if train_unet and train_text_encoder:
             if len(text_encoders) > 1:
                 unet, t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                unet, text_encoders[0], text_encoders[1], network, optimizer, train_dataloader, lr_scheduler
+                    unet, text_encoders[0], text_encoders[1], network, optimizer, train_dataloader, lr_scheduler
                 )
                 text_encoder = text_encoders = [t_enc1, t_enc2]
                 del t_enc1, t_enc2
@@ -412,7 +412,7 @@ class NetworkTrainer:
                 text_encoders = [text_encoder]
         elif train_unet:
             unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, network, optimizer, train_dataloader, lr_scheduler
+                unet, network, optimizer, train_dataloader, lr_scheduler
             )
             for t_enc in text_encoders:
                 t_enc.to(accelerator.device, dtype=weight_dtype)
@@ -894,9 +894,9 @@ class NetworkTrainer:
 
                 if args.logging_dir is not None:
                     logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
-                    if args.enable_ema:
-                        logs["loss/ema_decay"] = ema.get_decay(global_step)
-                        # logs["lr/lr*(1-ema_decay)"] = float(lr_scheduler.get_last_lr()[0]) * (1.0 - ema.get_decay(global_step))
+                    #if args.enable_ema:
+                    #    logs["loss/ema_decay"] = ema.get_decay(global_step)
+                    #    # logs["lr/lr*(1-ema_decay)"] = float(lr_scheduler.get_last_lr()[0]) * (1.0 - ema.get_decay(global_step))
                     accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:

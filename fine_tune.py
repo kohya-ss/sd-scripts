@@ -248,21 +248,21 @@ def train(args):
 
     if args.enable_ema:
         #ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
+        params_to_optimize = []
+        for m in training_models:
+            params_to_optimize.extend(m.parameters())
         ema = EMAModel(params_to_optimize, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
         ema.to(accelerator.device, dtype=weight_dtype)
+        ema = accelerator.prepare(ema)
     else:
         ema = None
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
-
-        unet, text_encoder, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, text_encoder, ema, optimizer, train_dataloader, lr_scheduler)
-
+        unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, text_encoder, optimizer, train_dataloader, lr_scheduler)
     else:
-
-        unet, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, ema, optimizer, train_dataloader, lr_scheduler)
-
+        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
     # transform DDP after prepare
     text_encoder, unet = train_util.transform_if_model_is_DDP(text_encoder, unet)
@@ -419,7 +419,7 @@ def train(args):
                             accelerator.unwrap_model(unet),
                             vae,
                         )
-            
+
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if args.logging_dir is not None:
                 logs = {"loss": current_loss}
