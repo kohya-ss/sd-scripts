@@ -410,16 +410,8 @@ def train(args):
             
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if args.logging_dir is not None:
-                logs = {"loss": current_loss, "lr": float(lr_scheduler.get_last_lr()[0])}
-                if (
-                    args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower()
-                ):  # tracking d*lr value
-                    logs["lr/d*lr"] = (
-                        lr_scheduler.optimizers[0].param_groups[0]["d"] * lr_scheduler.optimizers[0].param_groups[0]["lr"]
-                    )
-                if args.enable_ema:
-                    logs["loss/ema_decay"] = ema.get_decay(global_step)
-                    # logs["lr/lr*(1-ema_decay)"] = float(lr_scheduler.get_last_lr()[0]) * (1.0 - ema.get_decay(global_step))
+                logs = {"loss": current_loss}
+                train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=True)
                 accelerator.log(logs, step=global_step)
 
             # TODO moving averageにする

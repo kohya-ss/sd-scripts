@@ -390,19 +390,13 @@ def train(args):
         #ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float
         ema = EMAModel(params_to_optimize, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
         ema.to(accelerator.device, dtype=weight_dtype)
+        ema = accelerator.prepare(ema)
     else: 
         ema = None
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.train_text_encoder:
-        unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler, ema = accelerator.prepare(
-            unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler, ema
-        )
-
-        # transform DDP after prepare
-        text_encoder1, text_encoder2, unet = train_util.transform_models_if_DDP([text_encoder1, text_encoder2, unet])
-    else:
-        unet, optimizer, train_dataloader, lr_scheduler, ema = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler, ema)
+    if train_unet:
+        unet = accelerator.prepare(unet)
         (unet,) = train_util.transform_models_if_DDP([unet])
         text_encoder1.to(weight_dtype)
         text_encoder2.to(weight_dtype)
