@@ -389,39 +389,32 @@ class NetworkTrainer:
             ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float
             ema = EMAModel(network.parameters(), decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
             ema.to(accelerator.device, dtype=ema_dtype)
+        else:
+            ema = None
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
         if train_unet and train_text_encoder:
             if len(text_encoders) > 1:
-                if args.enable_ema:
-                    unet, t_enc1, t_enc2, network, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    unet, text_encoders[0], text_encoders[1], network, ema, optimizer, train_dataloader, lr_scheduler
-                    )
-                else:
-                    unet, t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                        unet, text_encoders[0], text_encoders[1], network, optimizer, train_dataloader, lr_scheduler
-                    )
+
+                unet, t_enc1, t_enc2, network, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                unet, text_encoders[0], text_encoders[1], network, ema, optimizer, train_dataloader, lr_scheduler
+                )
+
                 text_encoder = text_encoders = [t_enc1, t_enc2]
                 del t_enc1, t_enc2
             else:
-                if args.enable_ema:
-                    unet, text_encoder, network, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                        unet, text_encoder, network, ema, optimizer, train_dataloader, lr_scheduler
-                    )
-                else:
-                    unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                        unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler
-                    )
+
+                unet, text_encoder, network, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                    unet, text_encoder, network, ema, optimizer, train_dataloader, lr_scheduler
+                )
+
                 text_encoders = [text_encoder]
         elif train_unet:
-            if args.enable_ema:
+
                 unet, network, ema, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                     unet, network, ema, optimizer, train_dataloader, lr_scheduler
                 )
-            else:
-                unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    unet, network, optimizer, train_dataloader, lr_scheduler
-                )
+
         elif train_text_encoder:
             if len(text_encoders) > 1:
                 t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(

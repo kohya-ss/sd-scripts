@@ -36,6 +36,7 @@ from library.custom_train_functions import (
     add_v_prediction_like_loss,
 )
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
+from library.train_util import EMAModel
 
 
 UNET_NUM_BLOCKS_FOR_BLOCK_LR = 23
@@ -386,18 +387,22 @@ def train(args):
 
 
     if args.enable_ema:
-        print("--enable_ema not supported in this script yet. Training without EMA. / --enable_ema このスクリプトではサポートされていません。トレーニングはEMAなしで行われる ")
+        #ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float
+        ema = EMAModel(params_to_optimize, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
+        ema.to(accelerator.device, dtype=weight_dtype)
+    else: 
+        ema = None
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
-        unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler
+        unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler, ema = accelerator.prepare(
+            unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler, ema
         )
 
         # transform DDP after prepare
         text_encoder1, text_encoder2, unet = train_util.transform_models_if_DDP([text_encoder1, text_encoder2, unet])
     else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+        unet, optimizer, train_dataloader, lr_scheduler, ema = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler, ema)
         (unet,) = train_util.transform_models_if_DDP([unet])
         text_encoder1.to(weight_dtype)
         text_encoder2.to(weight_dtype)
@@ -578,6 +583,9 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+                if args.enable_ema:
+                    with torch.no_grad(), accelerator.autocast():
+                        ema.step(params_to_optimize)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -618,6 +626,8 @@ def train(args):
                             vae,
                             logit_scale,
                             ckpt_info,
+                            ema=ema,
+                            params_to_replace=params_to_optimize,
                         )
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
@@ -633,7 +643,8 @@ def train(args):
                         )
                 else:
                     append_block_lr_to_logs(block_lrs, logs, lr_scheduler, args.optimizer_type)
-
+                if args.enable_ema:
+                    logs["loss/ema_decay"] = ema.get_decay(global_step)
                 accelerator.log(logs, step=global_step)
 
             # TODO moving averageにする
@@ -671,6 +682,8 @@ def train(args):
                     vae,
                     logit_scale,
                     ckpt_info,
+                    ema=ema,
+                    params_to_replace=params_to_optimize,
                 )
 
         sdxl_train_util.sample_images(
@@ -690,6 +703,8 @@ def train(args):
     unet = accelerator.unwrap_model(unet)
     text_encoder1 = accelerator.unwrap_model(text_encoder1)
     text_encoder2 = accelerator.unwrap_model(text_encoder2)
+    if args.enable_ema:
+        ema = accelerator.unwrap_model(ema)
 
     accelerator.end_training()
 
@@ -700,6 +715,29 @@ def train(args):
 
     if is_main_process:
         src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
+        if args.enable_ema and not args.ema_save_only_ema_weights:
+            temp_name = args.output_name
+            args.output_name = args.output_name + "-non-EMA"
+            sdxl_train_util.save_sd_model_on_train_end(
+                args,
+                src_path,
+                save_stable_diffusion_format,
+                use_safetensors,
+                save_dtype,
+                epoch,
+                global_step,
+                text_encoder1,
+                text_encoder2,
+                unet,
+                vae,
+                logit_scale,
+                ckpt_info,
+            )
+            args.output_name = temp_name
+        if args.enable_ema:
+            print("Saving EMA:")
+            ema.copy_to(params_to_optimize)
+
         sdxl_train_util.save_sd_model_on_train_end(
             args,
             src_path,
