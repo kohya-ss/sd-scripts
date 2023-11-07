@@ -260,7 +260,8 @@ def train(args):
     # acceleratorがなんかよろしくやってくれるらしい
     if args.train_text_encoder:
         unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, text_encoder, optimizer, train_dataloader, lr_scheduler)
+            unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+        )
     else:
         unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
