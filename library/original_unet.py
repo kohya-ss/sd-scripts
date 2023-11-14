@@ -572,6 +572,8 @@ class CrossAttention(nn.Module):
         self.to_out.append(nn.Linear(inner_dim, query_dim))
         self.to_out.append(nn.Dropout(dropout))
 
+        self.processor = AttnProcessor()
+
     def set_use_memory_efficient_attention(self, xformers, mem_eff):
         if xformers:
             self.set_processor(XFormersAttentionProcessor())
@@ -633,7 +635,7 @@ class CrossAttention(nn.Module):
     def set_processor(self, processor: "AttnProcessor") -> None:
         self.processor = processor
 
-    def get_processor(self) -> "AttentionProcessor":
+    def get_processor(self) -> "AttnProcessor":
         return self.processor
 
     def get_attention_scores(
