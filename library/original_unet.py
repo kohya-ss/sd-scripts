@@ -1610,7 +1610,7 @@ class UNet2DConditionModel(nn.Module):
         self.conv_out = nn.Conv2d(BLOCK_OUT_CHANNELS[0], OUT_CHANNELS, kernel_size=3, padding=1)
 
     # region diffusers compatibility
-    def prepare_config(self, kwargs):
+    def prepare_config(self, **kwargs):
         self.config = SimpleNamespace(**kwargs)
 
     @property
