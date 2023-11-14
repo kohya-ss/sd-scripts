@@ -607,14 +607,16 @@ class CrossAttention(nn.Module):
         if sdpa:
             self.set_processor(SDPAAttentionProcessor())
 
-    def reshape_heads_to_batch_dim(self, tensor):
+    def reshape_heads_to_batch_dim(self, tensor: torch.Tensor, out_dim: int = 3) -> torch.Tensor:
         batch_size, seq_len, dim = tensor.shape
         head_size = self.heads
         tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
-        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size * head_size, seq_len, dim // head_size)
+        tensor = tensor.permute(0, 2, 1, 3)
+        if out_dim == 3:
+            tensor = tensor.reshape(batch_size * head_size, seq_len, dim // head_size)
         return tensor
 
-    def reshape_batch_dim_to_heads(self, tensor):
+    def reshape_batch_dim_to_heads(self, tensor: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, dim = tensor.shape
         head_size = self.heads
         tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
@@ -624,8 +626,8 @@ class CrossAttention(nn.Module):
     def batch_to_head_dim(self, tensor: torch.Tensor) -> torch.Tensor:
         return self.reshape_batch_dim_to_heads(self, tensor)
 
-    def head_to_batch_dim(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reshape_heads_to_batch_dim(self, tensor)
+    def head_to_batch_dim(self, tensor: torch.Tensor, out_dim: int = 3) -> torch.Tensor:
+        return self.reshape_heads_to_batch_dim(self, tensor, out_dim)
 
     # TODO support Hypernetworks
     def forward(self, hidden_states, context=None, mask=None):
