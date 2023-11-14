@@ -606,7 +606,7 @@ class CrossAttention(nn.Module):
 
     # TODO support Hypernetworks
     def forward(self, hidden_states, context=None, mask=None):
-        return self.processor(attn=self, hidden_states=hidden_states, context=context, attention_mask=mask)
+        return self.processor(attn=self, hidden_states=hidden_states, encoder_hidden_states=context, attention_mask=mask)
 
     def _attention(self, query, key, value):
         if self.upcast_attention:
