@@ -790,7 +790,7 @@ class AttnProcessor:
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
+        # hidden_states = attn.to_out[1](hidden_states) # No dropout
         return hidden_states
 
 
@@ -849,6 +849,7 @@ class FlashAttentionProcessor:
         x = hidden_states
         h = attn.heads
         q = attn.to_q(x)
+        context = encoder_hidden_states if encoder_hidden_states is not None else context
         context = context if context is not None else x
         context = context.to(x.dtype)
         k = attn.to_k(context)
