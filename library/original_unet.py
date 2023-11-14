@@ -624,10 +624,10 @@ class CrossAttention(nn.Module):
         return tensor
 
     def batch_to_head_dim(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reshape_batch_dim_to_heads(self, tensor)
+        return self.reshape_batch_dim_to_heads(tensor)
 
     def head_to_batch_dim(self, tensor: torch.Tensor, out_dim: int = 3) -> torch.Tensor:
-        return self.reshape_heads_to_batch_dim(self, tensor, out_dim)
+        return self.reshape_heads_to_batch_dim(tensor, out_dim)
 
     # TODO support Hypernetworks
     def forward(self, hidden_states, context=None, mask=None):
