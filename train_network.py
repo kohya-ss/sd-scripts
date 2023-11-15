@@ -369,7 +369,7 @@ class NetworkTrainer:
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
-        unet_weight_dtype = weight_dtype
+        unet_weight_dtype = te_weight_dtype = weight_dtype
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.fp8_base:
             assert (
