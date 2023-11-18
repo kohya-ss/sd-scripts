@@ -335,7 +335,11 @@ def train(args):
         init_kwargs = {}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
-        accelerator.init_trackers("controlnet_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
+        accelerator.init_trackers(
+            "controlnet_train" if args.log_tracker_name is None else args.log_tracker_name, 
+            config=args, 
+            init_kwargs=init_kwargs
+        )
 
     loss_recorder = train_util.LossRecorder()
     del train_dataset_group
