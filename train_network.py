@@ -84,6 +84,11 @@ class NetworkTrainer:
             idx = 0
             if not args.network_train_unet_only:
                 logs["lr/textencoder"] = float(lrs[0])
+
+                if args.optimizer_type.lower() in ["AdamW".lower(), "AdamW8Bit".lower()]:
+                    logs['momentum/betas1-te'] = lr_scheduler.optimizers[-1].param_groups[0]['betas'][0]
+                    # logs['momentum/betas2-te'] =lr_scheduler.optimizers[-1].param_groups[0]['betas'][1]
+
                 idx = 1
 
             for i in range(idx, len(lrs)):
@@ -92,6 +97,11 @@ class NetworkTrainer:
                     logs[f"lr/d*lr/group{i}"] = (
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
+
+                if args.optimizer_type.lower() in ["AdamW".lower(), "AdamW8Bit".lower()]:
+                    logs[f'momentum/betas1-{i}'] = lr_scheduler.optimizers[-1].param_groups[i]['betas'][0]
+                    # logs[f'momentum/betas2-{i}'] =lr_scheduler.optimizers[-1].param_groups[i]['betas'][1]
+
 
         return logs
 
@@ -872,14 +882,16 @@ class NetworkTrainer:
 
                 if args.logging_dir is not None:
                     logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
-                    accelerator.log(logs, step=global_step)
+                    # accelerator.log(logs, step=global_step)
+                    accelerator.log(logs)
 
                 if global_step >= args.max_train_steps:
                     break
 
             if args.logging_dir is not None:
                 logs = {"loss/epoch": loss_recorder.moving_average}
-                accelerator.log(logs, step=epoch + 1)
+                # accelerator.log(logs, step=epoch + 1)
+                accelerator.log(logs)
 
             accelerator.wait_for_everyone()
 
