@@ -3819,12 +3819,6 @@ def prepare_accelerator(args: argparse.Namespace):
         project_dir=logging_dir,
         kwargs_handlers=kwargs_handlers,
     )
-
-    # print(args)
-    #
-    # tracker_name = args.log_tracker_name
-    # accelerator.init_trackers(tracker_name, args, args.tracker_init_args)
-
     return accelerator
 
 
