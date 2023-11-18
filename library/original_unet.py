@@ -547,19 +547,12 @@ class CrossAttention(nn.Module):
         cross_attention_dim: Optional[int] = None,
         heads: int = 8,
         dim_head: int = 64,
-        upcast_attention: bool = False,
-        upcast_softmax: bool = False,
-        cross_attention_norm: Optional[str] = None,
-        cross_attention_norm_num_groups: int = 32,
-        added_kv_proj_dim: Optional[int] = None,
-        dropout: float = 0.0,
+        upcast_attention: bool = False
     ):
         super().__init__()
         inner_dim = dim_head * heads
         cross_attention_dim = cross_attention_dim if cross_attention_dim is not None else query_dim
         self.upcast_attention = upcast_attention
-        self.upcast_softmax = upcast_softmax
-        self.dropout = dropout
 
         self.scale = dim_head**-0.5
         self.heads = heads
@@ -570,30 +563,6 @@ class CrossAttention(nn.Module):
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))
-        self.to_out.append(nn.Dropout(dropout))
-
-        if cross_attention_norm is None:
-            self.norm_cross = None
-        elif cross_attention_norm == "layer_norm":
-            self.norm_cross = nn.LayerNorm(self.cross_attention_dim)
-        elif cross_attention_norm == "group_norm":
-            if self.added_kv_proj_dim is not None:
-                # The given `encoder_hidden_states` are initially of shape
-                # (batch_size, seq_len, added_kv_proj_dim) before being projected
-                # to (batch_size, seq_len, cross_attention_dim). The norm is applied
-                # before the projection, so we need to use `added_kv_proj_dim` as
-                # the number of channels for the group norm.
-                norm_cross_num_channels = added_kv_proj_dim
-            else:
-                norm_cross_num_channels = self.cross_attention_dim
-
-            self.norm_cross = nn.GroupNorm(
-                num_channels=norm_cross_num_channels, num_groups=cross_attention_norm_num_groups, eps=1e-5, affine=True
-            )
-        else:
-            raise ValueError(
-                f"unknown cross_attention_norm: {cross_attention_norm}. Should be None, 'layer_norm' or 'group_norm'"
-            )
 
         self.processor = AttnProcessor()
 
@@ -622,12 +591,6 @@ class CrossAttention(nn.Module):
         tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
         tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
         return tensor
-
-    def batch_to_head_dim(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reshape_batch_dim_to_heads(tensor)
-
-    def head_to_batch_dim(self, tensor: torch.Tensor, out_dim: int = 3) -> torch.Tensor:
-        return self.reshape_heads_to_batch_dim(tensor, out_dim)
 
     # TODO support Hypernetworks
     def forward(self, hidden_states, context=None, mask=None):
@@ -663,128 +626,23 @@ class CrossAttention(nn.Module):
     def get_processor(self) -> "AttnProcessor":
         return self.processor
 
-    def get_attention_scores(
-        self, query: torch.Tensor, key: torch.Tensor, attention_mask: torch.Tensor = None
-    ) -> torch.Tensor:
-        r"""
-        Compute the attention scores.
 
-        Args:
-            query (`torch.Tensor`): The query tensor.
-            key (`torch.Tensor`): The key tensor.
-            attention_mask (`torch.Tensor`, *optional*): The attention mask to use. If `None`, no mask is applied.
+def translate_attention_names_from_diffusers(
+    hidden_states: torch.FloatTensor,
+    context: Optional[torch.FloatTensor] = None,
+    mask: Optional[torch.FloatTensor] = None,
+    # HF naming
+    encoder_hidden_states: Optional[torch.FloatTensor] = None,
+    attention_mask: Optional[torch.FloatTensor] = None
+):
+    # translate from hugging face diffusers
+    context = context if context is not None else encoder_hidden_states
 
-        Returns:
-            `torch.Tensor`: The attention probabilities/scores.
-        """
-        dtype = query.dtype
-        if self.upcast_attention:
-            query = query.float()
-            key = key.float()
+    # translate from hugging face diffusers
+    mask = mask if mask is not None else attention_mask
 
-        if attention_mask is None:
-            baddbmm_input = torch.empty(
-                query.shape[0], query.shape[1], key.shape[1], dtype=query.dtype, device=query.device
-            )
-            beta = 0
-        else:
-            baddbmm_input = attention_mask
-            beta = 1
+    return hidden_states, context, mask
 
-        attention_scores = torch.baddbmm(
-            baddbmm_input,
-            query,
-            key.transpose(-1, -2),
-            beta=beta,
-            alpha=self.scale,
-        )
-        del baddbmm_input
-
-        if self.upcast_softmax:
-            attention_scores = attention_scores.float()
-
-        attention_probs = attention_scores.softmax(dim=-1)
-        del attention_scores
-
-        attention_probs = attention_probs.to(dtype)
-
-        return attention_probs
-
-    def prepare_attention_mask(
-        self, attention_mask: torch.Tensor, target_length: int, batch_size: int, out_dim: int = 3
-    ) -> torch.Tensor:
-        r"""
-        Prepare the attention mask for the attention computation.
-
-        Args:
-            attention_mask (`torch.Tensor`):
-                The attention mask to prepare.
-            target_length (`int`):
-                The target length of the attention mask. This is the length of the attention mask after padding.
-            batch_size (`int`):
-                The batch size, which is used to repeat the attention mask.
-            out_dim (`int`, *optional*, defaults to `3`):
-                The output dimension of the attention mask. Can be either `3` or `4`.
-
-        Returns:
-            `torch.Tensor`: The prepared attention mask.
-        """
-        head_size = self.heads
-        if attention_mask is None:
-            return attention_mask
-
-        current_length: int = attention_mask.shape[-1]
-        if current_length != target_length:
-            if attention_mask.device.type == "mps":
-                # HACK: MPS: Does not support padding by greater than dimension of input tensor.
-                # Instead, we can manually construct the padding tensor.
-                padding_shape = (attention_mask.shape[0], attention_mask.shape[1], target_length)
-                padding = torch.zeros(padding_shape, dtype=attention_mask.dtype, device=attention_mask.device)
-                attention_mask = torch.cat([attention_mask, padding], dim=2)
-            else:
-                # TODO: for pipelines such as stable-diffusion, padding cross-attn mask:
-                #       we want to instead pad by (0, remaining_length), where remaining_length is:
-                #       remaining_length: int = target_length - current_length
-                # TODO: re-enable tests/models/test_models_unet_2d_condition.py#test_model_xattn_padding
-                attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
-
-        if out_dim == 3:
-            if attention_mask.shape[0] < batch_size * head_size:
-                attention_mask = attention_mask.repeat_interleave(head_size, dim=0)
-        elif out_dim == 4:
-            attention_mask = attention_mask.unsqueeze(1)
-            attention_mask = attention_mask.repeat_interleave(head_size, dim=1)
-
-        return attention_mask
-
-    def norm_encoder_hidden_states(self, encoder_hidden_states: torch.Tensor) -> torch.Tensor:
-        r"""
-        Normalize the encoder hidden states. Requires `self.norm_cross` to be specified when constructing the
-        `Attention` class.
-
-        Args:
-            encoder_hidden_states (`torch.Tensor`): Hidden states of the encoder.
-
-        Returns:
-            `torch.Tensor`: The normalized encoder hidden states.
-        """
-        assert self.norm_cross is not None, "self.norm_cross must be defined to call self.norm_encoder_hidden_states"
-
-        if isinstance(self.norm_cross, nn.LayerNorm):
-            encoder_hidden_states = self.norm_cross(encoder_hidden_states)
-        elif isinstance(self.norm_cross, nn.GroupNorm):
-            # Group norm norms along the channels dimension and expects
-            # input to be in the shape of (N, C, *). In this case, we want
-            # to norm along the hidden dimension, so we need to move
-            # (batch_size, sequence_length, hidden_size) ->
-            # (batch_size, hidden_size, sequence_length)
-            encoder_hidden_states = encoder_hidden_states.transpose(1, 2)
-            encoder_hidden_states = self.norm_cross(encoder_hidden_states)
-            encoder_hidden_states = encoder_hidden_states.transpose(1, 2)
-        else:
-            assert False
-
-        return encoder_hidden_states
 
 class AttnProcessor:
     r"""
@@ -795,14 +653,15 @@ class AttnProcessor:
         self,
         attn: CrossAttention,  # Attention
         hidden_states: torch.FloatTensor,
-        encoder_hidden_states: Optional[torch.FloatTensor] = None,
         context: Optional[torch.FloatTensor] = None,
+        mask: Optional[torch.FloatTensor] = None,
+        # HF naming
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
-        temb: Optional[torch.FloatTensor] = None,
-        scale: float = 1.0,
     ) -> torch.Tensor:
+        hidden_states, context, mask = translate_attention_names_from_diffusers(hidden_states, context, mask, encoder_hidden_states, attention_mask)
+
         query = attn.to_q(hidden_states)
-        context = encoder_hidden_states if encoder_hidden_states is not None else context
         context = context if context is not None else hidden_states
         key = attn.to_k(context)
         value = attn.to_v(context)
@@ -826,16 +685,16 @@ class XFormersAttentionProcessor:
         hidden_states: torch.FloatTensor,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         context: Optional[torch.FloatTensor] = None,
+        mask: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
     ) -> torch.Tensor:
         import xformers.ops
 
+        x, context, mask = translate_attention_names_from_diffusers(hidden_states, context, mask, encoder_hidden_states, attention_mask)
         h = attn.heads
-        x = hidden_states
         q_in = attn.to_q(x)
-        context = encoder_hidden_states if encoder_hidden_states is not None else context
         context = context if context is not None else x
         context = context.to(x.dtype)
         k_in = attn.to_k(context)
@@ -862,19 +721,19 @@ class FlashAttentionProcessor:
         hidden_states: torch.FloatTensor,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         context: Optional[torch.FloatTensor] = None,
+        mask: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
     ) -> torch.Tensor:
         flash_func = FlashAttentionFunction
+        x, context, mask = translate_attention_names_from_diffusers(hidden_states, context, mask, encoder_hidden_states, attention_mask)
 
         q_bucket_size = 512
         k_bucket_size = 1024
 
-        x = hidden_states
         h = attn.heads
         q = attn.to_q(x)
-        context = encoder_hidden_states if encoder_hidden_states is not None else context
         context = context if context is not None else x
         context = context.to(x.dtype)
         k = attn.to_k(context)
@@ -898,12 +757,13 @@ class SDPAAttentionProcessor:
         hidden_states: torch.FloatTensor,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         context: Optional[torch.FloatTensor] = None,
+        mask: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
     ) -> torch.Tensor:
+        x, context, mask = translate_attention_names_from_diffusers(hidden_states, context, mask, encoder_hidden_states, attention_mask)
         h = attn.heads
-        x = hidden_states
         q_in = attn.to_q(x)
         context = context if context is not None else x
         context = context.to(x.dtype)
