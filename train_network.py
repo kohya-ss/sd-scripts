@@ -52,59 +52,6 @@ class NetworkTrainer:
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
 
-    # TODO 他のスクリプトと共通化する
-    def generate_step_logs(
-        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
-    ):
-        logs = {"loss/current": current_loss, "loss/average": avr_loss}
-
-        if keys_scaled is not None:
-            logs["max_norm/keys_scaled"] = keys_scaled
-            logs["max_norm/average_key_norm"] = mean_norm
-            logs["max_norm/max_key_norm"] = maximum_norm
-
-        lrs = lr_scheduler.get_last_lr()
-
-        if args.network_train_text_encoder_only or len(lrs) <= 2:  # not block lr (or single block)
-            if args.network_train_unet_only:
-                logs["lr/unet"] = float(lrs[0])
-            elif args.network_train_text_encoder_only:
-                logs["lr/textencoder"] = float(lrs[0])
-            else:
-                logs["lr/textencoder"] = float(lrs[0])
-                logs["lr/unet"] = float(lrs[-1])  # may be same to textencoder
-
-            if (
-                args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower()
-            ):  # tracking d*lr value of unet.
-                logs["lr/d*lr"] = (
-                    lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
-                )
-        else:
-            idx = 0
-            if not args.network_train_unet_only:
-                logs["lr/textencoder"] = float(lrs[0])
-
-                if args.optimizer_type.lower() in ["AdamW".lower(), "AdamW8Bit".lower()]:
-                    logs['momentum/betas1-te'] = lr_scheduler.optimizers[-1].param_groups[0]['betas'][0]
-                    # logs['momentum/betas2-te'] =lr_scheduler.optimizers[-1].param_groups[0]['betas'][1]
-
-                idx = 1
-
-            for i in range(idx, len(lrs)):
-                logs[f"lr/group{i}"] = float(lrs[i])
-                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
-                    logs[f"lr/d*lr/group{i}"] = (
-                        lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
-                    )
-
-                if args.optimizer_type.lower() in ["AdamW".lower(), "AdamW8Bit".lower()]:
-                    logs[f'momentum/betas1-{i}'] = lr_scheduler.optimizers[-1].param_groups[i]['betas'][0]
-                    # logs[f'momentum/betas2-{i}'] =lr_scheduler.optimizers[-1].param_groups[i]['betas'][1]
-
-
-        return logs
-
     def assert_extra_args(self, args, train_dataset_group):
         pass
 
@@ -881,7 +828,7 @@ class NetworkTrainer:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
                 if args.logging_dir is not None:
-                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
+                    logs = train_util.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
                     # accelerator.log(logs, step=global_step)
                     accelerator.log(logs)
 
