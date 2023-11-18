@@ -3812,7 +3812,6 @@ def prepare_accelerator(args: argparse.Namespace):
     kwargs_handlers = (
         None if args.ddp_timeout is None else [InitProcessGroupKwargs(timeout=datetime.timedelta(minutes=args.ddp_timeout))]
     )
-    print(f"Logging with {log_with}")
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
