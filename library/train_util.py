@@ -60,11 +60,7 @@ import numpy as np
 from PIL import Image
 import cv2
 import safetensors.torch
-<<<<<<< HEAD
-=======
-from pathlib import Path
 
->>>>>>> a7e7033 (Add momentum optimizers to step logs)
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
