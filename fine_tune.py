@@ -248,10 +248,7 @@ def train(args):
 
     if args.enable_ema:
         #ema_dtype = weight_dtype if (args.full_bf16 or args.full_fp16) else torch.float32
-        params_to_optimize = []
-        for m in training_models:
-            params_to_optimize.extend(m.parameters())
-        ema = EMAModel(params_to_optimize, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
+        ema = EMAModel(trainable_params, decay=args.ema_decay, beta=args.ema_exp_beta, max_train_steps=args.max_train_steps)
         ema.to(accelerator.device, dtype=weight_dtype)
         ema = accelerator.prepare(ema)
     else:
@@ -389,7 +386,7 @@ def train(args):
                 optimizer.zero_grad(set_to_none=True)
                 if args.enable_ema:
                     with torch.no_grad(), accelerator.autocast():
-                        ema.step(params_to_optimize)
+                        ema.step(trainable_params)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -464,7 +461,7 @@ def train(args):
                 )
                 if args.enable_ema and ((epoch + 1) % args.save_every_n_epochs == 0):
                     args.output_name = temp_name if temp_name else args.output_name
-                    with ema.ema_parameters(params_to_optimize):
+                    with ema.ema_parameters(trainable_params):
                         print("Saving EMA:")
                         train_util.save_sd_model_on_epoch_end_or_stepwise(
                             args,
@@ -507,7 +504,7 @@ def train(args):
             args.output_name = temp_name
         if args.enable_ema:
             print("Saving EMA:")
-            ema.copy_to(params_to_optimize)
+            ema.copy_to(trainable_params)
         train_util.save_sd_model_on_train_end(
             args, src_path, save_stable_diffusion_format, use_safetensors, save_dtype, epoch, global_step, text_encoder, unet, vae
         )

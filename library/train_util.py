@@ -2301,7 +2301,7 @@ class EMAModel:
     Maintains (exponential) moving average of a set of parameters.
     """
     def __init__(self, parameters: Iterable[torch.nn.Parameter], decay: float, beta: float | None, max_train_steps=10000):
-        parameters = list(parameters)
+        parameters = self.get_params_list(parameters)
         self.shadow_params = [p.clone().detach() for p in parameters]
         if decay < 0.0 or decay > 1.0:
             raise ValueError('Decay must be between 0 and 1')
@@ -2312,7 +2312,17 @@ class EMAModel:
             raise ValueError('ema_exp_beta should be > 0')
         self.beta = beta
         self.max_train_steps = max_train_steps
-        # print(f"self.shadow_params len: {len(self.shadow_params)}")
+        print(f"len(self.shadow_params): {len(self.shadow_params)}")
+
+    def get_params_list(self, parameters: Iterable[torch.nn.Parameter]) -> Iterable[torch.nn.Parameter]:
+        parameters = list(parameters)
+        if isinstance(parameters[0], dict):
+            params_list = []
+            for m in parameters:
+                params_list.extend(list(m["params"]))
+            return params_list
+        else:
+            return parameters
 
     def get_decay(self, optimization_step: int) -> float:
         """
@@ -2332,21 +2342,23 @@ class EMAModel:
         Call this every time the parameters are updated, such as the result of
         the `optimizer.step()` call.
         """
-        parameters = list(parameters)
-        self.optimization_step += 1
+        parameters = self.get_params_list(parameters)
         one_minus_decay = 1.0 - self.get_decay(self.optimization_step)
-        with torch.no_grad():
-            for s_param, param in zip(self.shadow_params, parameters, strict=True):
-                tmp = (s_param - param)
-                # tmp will be a new tensor so we can do in-place
-                tmp.mul_(one_minus_decay)
-                s_param.sub_(tmp)
+        self.optimization_step += 1
+        #print(f" {one_minus_decay}")
+        #with torch.no_grad():
+        for s_param, param in zip(self.shadow_params, parameters, strict=True):
+            tmp = (s_param - param)
+            #print(torch.sum(tmp))
+            # tmp will be a new tensor so we can do in-place
+            tmp.mul_(one_minus_decay)
+            s_param.sub_(tmp)
 
     def copy_to(self, parameters: Iterable[torch.nn.Parameter] = None) -> None:
         """
         Copy current averaged parameters into given collection of parameters.
         """
-        parameters = list(parameters)
+        parameters = self.get_params_list(parameters)
         for s_param, param in zip(self.shadow_params, parameters, strict=True):
             # print(f"diff: {torch.sum(s_param) - torch.sum(param)}")
             param.data.copy_(s_param.data)
@@ -2366,7 +2378,7 @@ class EMAModel:
             """
             Save the current parameters for restoring later.
             """
-            parameters = list(parameters)
+            parameters = self.get_params_list(parameters)
             self.collected_params = [
                 param.clone()
                 for param in parameters
@@ -2385,7 +2397,7 @@ class EMAModel:
                 "This ExponentialMovingAverage has no `store()`ed weights "
                 "to `restore()`"
             )
-        parameters = list(parameters)
+        parameters = self.get_params_list(parameters)
         for c_param, param in zip(self.collected_params, parameters, strict=True):
             param.data.copy_(c_param.data)
 
@@ -2402,7 +2414,7 @@ class EMAModel:
             finally:
                 ema.restore()
         """
-        parameters = list(parameters)
+        parameters = self.get_params_list(parameters)
         self.store(parameters)
         self.copy_to(parameters)
         try:
