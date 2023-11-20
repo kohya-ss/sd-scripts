@@ -2300,7 +2300,7 @@ class EMAModel:
     """
     Maintains (exponential) moving average of a set of parameters.
     """
-    def __init__(self, parameters: Iterable[torch.nn.Parameter], decay: float, beta: float | None, max_train_steps=10000):
+    def __init__(self, parameters: Iterable[torch.nn.Parameter], decay: float, beta=0, max_train_steps=10000):
         parameters = self.get_params_list(parameters)
         self.shadow_params = [p.clone().detach() for p in parameters]
         if decay < 0.0 or decay > 1.0:
@@ -2308,13 +2308,13 @@ class EMAModel:
         self.decay = decay
         self.optimization_step = 0
         self.collected_params = None
-        if beta is not None and beta <= 0:
+        if beta < 0:
             raise ValueError('ema_exp_beta should be > 0')
         self.beta = beta
         self.max_train_steps = max_train_steps
         print(f"len(self.shadow_params): {len(self.shadow_params)}")
 
-    def get_params_list(self, parameters: Iterable[torch.nn.Parameter]) -> Iterable[torch.nn.Parameter]:
+    def get_params_list(self, parameters: Iterable[torch.nn.Parameter]):
         parameters = list(parameters)
         if isinstance(parameters[0], dict):
             params_list = []
@@ -2328,7 +2328,7 @@ class EMAModel:
         """
         Get current decay for the exponential moving average.
         """
-        if self.beta is None:
+        if self.beta == 0:
             return min(self.decay, (1 + optimization_step) / (10 + optimization_step))
         else:
             # exponential schedule. scales to max_train_steps
@@ -3070,7 +3070,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_decay", type=float, default=0.999, help="Max EMA decay. Typical values: 0.999 - 0.9999 / 最大EMA減衰。標準的な値： 0.999 - 0.9999 "
     )
     parser.add_argument(
-        "--ema_exp_beta", type=float, default=None, help="Choose EMA decay schedule. By default: (1+x)/(10+x). If beta is set: use exponential schedule scaled to max_train_steps. If beta>0, recommended values are around 10-15 "
+        "--ema_exp_beta", type=float, default=15, help="Choose EMA decay schedule. By default: (1+x)/(10+x). If beta is set: use exponential schedule scaled to max_train_steps. If beta>0, recommended values are around 10-15 "
         + "/ EMAの減衰スケジュールを設定する。デフォルト：(1+x)/(10+x)。beta が設定されている場合: max_train_steps にスケーリングされた指数スケジュールを使用する。beta>0 の場合、推奨値は 10-15 程度。 "
     )
     parser.add_argument(
