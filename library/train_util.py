@@ -60,6 +60,11 @@ import numpy as np
 from PIL import Image
 import cv2
 import safetensors.torch
+<<<<<<< HEAD
+=======
+from pathlib import Path
+
+>>>>>>> a7e7033 (Add momentum optimizers to step logs)
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
@@ -4810,40 +4815,55 @@ def generate_step_logs(
 def generate_momentum_logs(lr_scheduler, logs, args):
     # Momentum in Adam-like optimizers uses uses betas
     def is_beta_optimizer():
-        return args.optimizer_type.lower() in ["AdamW".lower(), "AdamW8Bit".lower()]
+        return args.optimizer_type.lower() in [
+            "AdamW".lower(),
+            "AdamW8Bit".lower(),
+            "Prodigy".lower(),
+            "DAdaptAdam".lower(),
+        ]
+
+    def is_momentum_optimizer():
+        return args.optimizer_type.lower() in [
+            "DAdaptSGD".lower(),
+            "SGD".lower(),
+        ]
 
     def is_cyclic():
-        return args.lr_scheduler_type.lower() in ["CyclicLR".lower(), "OneCycleLR".lower()]
+        return args.lr_scheduler_type.lower() in [
+            "CyclicLR".lower(),
+            "OneCycleLR".lower(),
+        ]
 
-    # Momentum only supported by beta optimizers
-    if is_beta_optimizer() is False:
+    # Momentum only supported by optimizers 
+    if is_beta_optimizer() is False and is_momentum_optimizer() is False:
         return logs
 
-    # Only CyclicLR, OneCycle is modifying the momentum
+    # Only CyclicLR, OneCycleLR are modifying the momentum
     if is_cyclic() is False:
         return logs
 
     lrs = lr_scheduler.get_last_lr()
     optimizer = lr_scheduler.optimizers[-1]
+    m_key = "betas1" if is_beta_optimizer() else "momentum"
 
     if (
         args.network_train_text_encoder_only or len(lrs) <= 2
     ):  # not block lr (or single block)
         if args.network_train_unet_only:
-            logs["momentum/betas1-unet"] = optimizer.param_groups[0]["betas"][0]
+            logs[f"momentum/{m_key}-unet"] = optimizer.param_groups[0]["betas"][0]
         elif args.network_train_text_encoder_only:
-            logs["momentum/betas1-textencoder"] = optimizer.param_groups[0]["betas"][0]
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
         else:
-            logs["momentum/betas1-textencoder"] = optimizer.param_groups[0]["betas"][0]
-            logs["momentum/betas1-unet"] = optimizer.param_groups[-1]["betas"][0]
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
+            logs[f"momentum/{m_key}-unet"] = optimizer.param_groups[-1]["betas"][0]
     else:
         idx = 0
         if not args.network_train_unet_only:
-            logs["momentum/betas1-textencoder"] = optimizer.param_groups[0]["betas"][0]
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
 
             idx = 1
 
         for i in range(idx, len(lrs)):
-            logs[f"momentum/betas1-group{i}"] = optimizer.param_groups[i]["betas"][0]
+            logs[f"momentum/{m_key}-group{i:02d}"] = optimizer.param_groups[i]["betas"][0]
 
     return logs
