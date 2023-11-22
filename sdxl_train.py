@@ -455,15 +455,7 @@ def train(args):
     if args.zero_terminal_snr:
         custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
-    if accelerator.is_main_process:
-        init_kwargs = {}
-        if args.log_tracker_config is not None:
-            init_kwargs = toml.load(args.log_tracker_config)
-        accelerator.init_trackers(
-            "finetuning" if args.log_tracker_name is None else args.log_tracker_name,
-            config=args,
-            init_kwargs=init_kwargs
-        )
+    train_util.init_trackers(accelerator, "finetuning", args)
 
     loss_recorder = train_util.LossRecorder()
     for epoch in range(num_train_epochs):
