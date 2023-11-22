@@ -4721,7 +4721,7 @@ class ImageLoadingDataset(torch.utils.data.Dataset):
 # endregion
 
 
-def init_trackers(accelerator, project_name, config, args):
+def init_trackers(accelerator, project_name, args):
     if accelerator.is_main_process:
         init_kwargs = {}
         if args.log_tracker_config is not None:
