@@ -4720,6 +4720,7 @@ class ImageLoadingDataset(torch.utils.data.Dataset):
 
 # endregion
 
+
 def init_trackers(accelerator, project_name, config, args):
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -4727,17 +4728,9 @@ def init_trackers(accelerator, project_name, config, args):
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(
             project_name=project_name if args.log_tracker_name is None else args.log_tracker_name,
-            config=clean_config_args(args), 
+            config=clean_config_args(args),
             init_kwargs=init_kwargs
         )
-
-        if args.log_with in ["wandb", "all"]:
-            wandb_tracker = accelerator.get_tracker('wandb', unwrap=True)
-            wandb_tracker.define_metric("epoch_step", hidden=True)
-            wandb_tracker.define_metric("validation_step", hidden=True)
-            wandb_tracker.define_metric("loss/validation_current", step_metric="validation_step")
-            wandb_tracker.define_metric("loss/validation_average", step_metric="epoch_step")
-            wandb_tracker.define_metric("loss/epoch_average", step_metric="epoch_step")
 
 
 def clean_config_args(args):
@@ -4754,7 +4747,8 @@ def clean_config_args(args):
         else:
             result[k] = v
 
-    return result  
+    return result
+
 
 # collate_fn用 epoch,stepはmultiprocessing.Value
 class collator_class:

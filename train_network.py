@@ -872,8 +872,8 @@ class NetworkTrainer:
                     break
 
             if args.logging_dir is not None:
-                logs = {"epoch_step": epoch + 1, "loss/epoch": loss_recorder.moving_average}
-                accelerator.log(logs)
+                logs = {"loss/epoch": loss_recorder.moving_average}
+                accelerator.log(logs, step=epoch + 1)
 
             accelerator.wait_for_everyone()
 
