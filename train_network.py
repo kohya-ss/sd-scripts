@@ -504,7 +504,10 @@ class NetworkTrainer:
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
             "ss_lr_scheduler": (args.lr_scheduler_type or args.lr_scheduler)
-                + (f"({args.lr_scheduler_args})" if len(args.lr_scheduler_args) > 0 else ""),
+                + (f"({args.lr_scheduler_args})"
+                    if args.lr_scheduler_args is not None
+                    and len(args.lr_scheduler_args) > 0
+                    else ""),
             "ss_network_module": args.network_module,
             "ss_network_dim": args.network_dim,  # None means default because another network than LoRA may have another default dim
             "ss_network_alpha": args.network_alpha,  # some networks may not have alpha
