@@ -810,7 +810,7 @@ class NetworkTrainer:
                     # Predict the noise residual
                     with accelerator.autocast():
                         noise_pred = self.call_unet(
-                            args, accelerator, unet, noisy_latents.requires_grad_(train_unet), timesteps, text_encoder_conds.requires_grad_(train_text_encoder), batch, weight_dtype
+                            args, accelerator, unet, noisy_latents.requires_grad_(train_unet), timesteps, text_encoder_conds, batch, weight_dtype
                         )
 
                     if args.v_parameterization:
