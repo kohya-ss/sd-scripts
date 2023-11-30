@@ -350,7 +350,6 @@ class BaseSubset:
         num_repeats: int,
         shuffle_caption: bool,
         caption_separator: str,
-        caption_separator: str,
         keep_tokens: int,
         color_aug: bool,
         flip_aug: bool,
