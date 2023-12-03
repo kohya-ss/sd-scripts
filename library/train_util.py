@@ -4766,6 +4766,35 @@ class ImageLoadingDataset(torch.utils.data.Dataset):
 # endregion
 
 
+def init_trackers(accelerator, project_name, args):
+    if accelerator.is_main_process:
+        init_kwargs = {}
+        if args.log_tracker_config is not None:
+            init_kwargs = toml.load(args.log_tracker_config)
+        accelerator.init_trackers(
+            project_name=project_name if args.log_tracker_name is None else args.log_tracker_name,
+            config=clean_config_args(args),
+            init_kwargs=init_kwargs
+        )
+
+
+def clean_config_args(args):
+    result = {}
+    for k, v in vars(args).items():
+        if v is None:
+            result[k] = v
+        # tensorboard does not support lists
+        elif isinstance(v, list):
+            result[k] = f"{v}"
+        # tensorboard does not support objects
+        elif isinstance(v, object):
+            result[k] = f"{v}"
+        else:
+            result[k] = v
+
+    return result
+
+
 # collate_fn用 epoch,stepはmultiprocessing.Value
 class collator_class:
     def __init__(self, epoch, step, dataset):
