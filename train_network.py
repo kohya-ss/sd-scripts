@@ -12,6 +12,7 @@ import toml
 
 from tqdm import tqdm
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 try:
     import intel_extension_for_pytorch as ipex
@@ -426,7 +427,10 @@ class NetworkTrainer:
 
         del t_enc
 
-        network.prepare_grad_etc(text_encoder, unet)
+        if isinstance(network, DDP):
+            network.module.prepare_grad_etc(text_encoder, unet)
+        else:
+            network.prepare_grad_etc(text_encoder, unet)
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
