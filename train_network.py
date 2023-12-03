@@ -427,10 +427,7 @@ class NetworkTrainer:
 
         del t_enc
 
-        if isinstance(network, DDP):
-            network.module.prepare_grad_etc(text_encoder, unet)
-        else:
-            network.prepare_grad_etc(text_encoder, unet)
+        accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
@@ -693,8 +690,8 @@ class NetworkTrainer:
         del train_dataset_group
 
         # callback for step start
-        if hasattr(network, "on_step_start"):
-            on_step_start = network.on_step_start
+        if hasattr(accelerator.unwrap_model(network), "on_step_start"):
+            on_step_start = accelerator.unwrap_model(network).on_step_start
         else:
             on_step_start = lambda *args, **kwargs: None
 
@@ -729,7 +726,7 @@ class NetworkTrainer:
 
             metadata["ss_epoch"] = str(epoch + 1)
 
-            network.on_epoch_start(text_encoder, unet)
+            accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
@@ -803,7 +800,7 @@ class NetworkTrainer:
 
                     accelerator.backward(loss)
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                        params_to_clip = network.get_trainable_params()
+                        params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
@@ -811,7 +808,7 @@ class NetworkTrainer:
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
-                    keys_scaled, mean_norm, maximum_norm = network.apply_max_norm_regularization(
+                    keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
                         args.scale_weight_norms, accelerator.device
                     )
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
