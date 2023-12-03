@@ -390,46 +390,21 @@ class NetworkTrainer:
 
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
-        if train_unet and train_text_encoder:
+        if train_unet:
+            unet = accelerator.prepare(unet)
+        else:
+            unet.to(accelerator.device, dtype=weight_dtype)  # move to device because unet is not prepared by accelerator
+        if train_text_encoder:
             if len(text_encoders) > 1:
-                unet, t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    unet, text_encoders[0], text_encoders[1], network, optimizer, train_dataloader, lr_scheduler
-                )
-                text_encoder = text_encoders = [t_enc1, t_enc2]
-                del t_enc1, t_enc2
+                text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
             else:
-                unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    unet, text_encoder, network, optimizer, train_dataloader, lr_scheduler
-                )
-                text_encoders = [text_encoder]
-        elif train_unet:
-            unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                unet, network, optimizer, train_dataloader, lr_scheduler
-            )
+                text_encoder = text_encoders = [accelerator.prepare(text_encoder)]
+        else:
             for t_enc in text_encoders:
                 t_enc.to(accelerator.device, dtype=weight_dtype)
-        elif train_text_encoder:
-            if len(text_encoders) > 1:
-                t_enc1, t_enc2, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    text_encoders[0], text_encoders[1], network, optimizer, train_dataloader, lr_scheduler
-                )
-                text_encoder = text_encoders = [t_enc1, t_enc2]
-                del t_enc1, t_enc2
-            else:
-                text_encoder, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    text_encoder, network, optimizer, train_dataloader, lr_scheduler
-                )
-                text_encoders = [text_encoder]
-
-            unet.to(accelerator.device, dtype=weight_dtype)  # move to device because unet is not prepared by accelerator
-        else:
-            network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 network, optimizer, train_dataloader, lr_scheduler
             )
-
-        # transform DDP after prepare (train_network here only)
-        text_encoders = train_util.transform_models_if_DDP(text_encoders)
-        unet, network = train_util.transform_models_if_DDP([unet, network])
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
