@@ -3419,7 +3419,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
     accelerator.load_state(dirname)
 
 
-def get_optimizer(args, trainable_params):
+def get_optimizer(args, trainable_params, pivotal_tuning = False):
     # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit, Lion8bit, PagedLion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
 
     optimizer_type = args.optimizer_type
@@ -3464,6 +3464,9 @@ def get_optimizer(args, trainable_params):
     # print("optkwargs:", optimizer_kwargs)
 
     lr = args.learning_rate
+    if pivotal_tuning:
+        lr = args.embeddings_lr
+
     optimizer = None
 
     if optimizer_type == "Lion".lower():
@@ -3704,13 +3707,13 @@ def get_optimizer(args, trainable_params):
 # Add some checking and features to the original function.
 
 
-def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
+def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int, max_train_steps = None):
     """
     Unified API to get any scheduler from its name.
     """
     name = args.lr_scheduler
     num_warmup_steps: Optional[int] = args.lr_warmup_steps
-    num_training_steps = args.max_train_steps * num_processes  # * args.gradient_accumulation_steps
+    num_training_steps = args.max_train_steps * num_processes if max_train_steps is None else max_train_steps  # * args.gradient_accumulation_steps
     num_cycles = args.lr_scheduler_num_cycles
     power = args.lr_scheduler_power
 
@@ -4147,18 +4150,18 @@ def default_if_none(value, default):
     return default if value is None else value
 
 
-def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int):
-    model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
+def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME) if custom_name is None else custom_name
     return EPOCH_FILE_NAME.format(model_name, epoch_no) + ext
 
 
-def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int):
-    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
+def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME) if custom_name is None else custom_name
     return STEP_FILE_NAME.format(model_name, step_no) + ext
 
 
-def get_last_ckpt_name(args: argparse.Namespace, ext: str):
-    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+def get_last_ckpt_name(args: argparse.Namespace, ext: str, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME) if custom_name is None else custom_name
     return model_name + ext
 
 
@@ -4612,7 +4615,7 @@ def sample_images_common(
     tokenizer,
     text_encoder,
     unet,
-    prompt_replacement=None,
+    prompt_replacements=[],
     controlnet=None,
 ):
     """
@@ -4723,10 +4726,11 @@ def sample_images_common(
                 schedulers[sampler_name] = scheduler
             pipeline.scheduler = scheduler
 
-            if prompt_replacement is not None:
-                prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
-                if negative_prompt is not None:
-                    negative_prompt = negative_prompt.replace(prompt_replacement[0], prompt_replacement[1])
+            if len(prompt_replacements) > 0:
+                for to_replace, replaced_by  in prompt_replacements:
+                    prompt = prompt.replace(to_replace, replaced_by)
+                    if negative_prompt is not None:
+                        negative_prompt = negative_prompt.replace(to_replace, replaced_by)
 
             if controlnet_image is not None:
                 controlnet_image = Image.open(controlnet_image).convert("RGB")
