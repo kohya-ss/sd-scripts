@@ -133,8 +133,41 @@ class NetworkTrainer:
             if param.grad is not None:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
-        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacements):
+        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacements)
+
+    def create_embedding_from_data(self, data, name='unknown'):
+        if 'string_to_param' in data:  # textual inversion embeddings
+            param_dict = data['string_to_param']
+            param_dict = getattr(param_dict, '_parameters', param_dict)  # fix for torch 1.12.1 loading saved file from torch 1.11
+
+            assert (
+                len(param_dict) == 1
+            ), f"embedding file has multiple terms in it: {name}"
+
+            emb = next(iter(param_dict.items()))[1]
+            vec = emb.detach()
+            shape = vec.shape[-1]
+            vectors = vec.shape[0]
+        elif type(data) == dict and 'clip_g' in data and 'clip_l' in data:  # SDXL embedding
+            vec = {k: v.detach() for k, v in data.items()}
+            shape = data['clip_g'].shape[-1] + data['clip_l'].shape[-1]
+            vectors = data['clip_g'].shape[0]
+        elif type(data) == dict and type(next(iter(data.values()))) == torch.Tensor:  # diffuser concepts
+            assert (
+                len(data.keys()) == 1
+            ), f"embedding file has multiple terms in it: {name}"
+
+            emb = next(iter(data.values()))
+            if len(emb.shape) == 1:
+                emb = emb.unsqueeze(0)
+            vec = emb.detach()
+            shape = vec.shape[-1]
+            vectors = vec.shape[0]
+        else:
+            raise Exception(f"Couldn't identify {name} as neither textual inversion embedding nor diffuser concept.")
+
+        return vec, shape, vectors
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -153,6 +186,69 @@ class NetworkTrainer:
         # tokenizerは単体またはリスト、tokenizersは必ずリスト：既存のコードとの互換性のため
         tokenizer = self.load_tokenizer(args)
         tokenizers = tokenizer if isinstance(tokenizer, list) else [tokenizer]
+        
+        # acceleratorを準備する
+        print("preparing accelerator")
+        accelerator = train_util.prepare_accelerator(args)
+        is_main_process = accelerator.is_main_process
+
+        # mixed precisionに対応した型を用意しておき適宜castする
+        weight_dtype, save_dtype = train_util.prepare_dtype(args)
+        vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
+
+        # モデルを読み込む
+        model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
+
+        # text_encoder is List[CLIPTextModel] or CLIPTextModel
+        text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
+
+        # モデルに xformers とか memory efficient attention を組み込む
+        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+            vae.set_use_memory_efficient_attention_xformers(args.xformers)
+
+
+        # prepare embeddings (for pivotal tuning)
+        # load from existing files
+        embeddings_map = {}
+        embedding_to_token_ids = {}
+        if len(args.embeddings) > 0:
+            for embeds_file in args.embeddings:
+                if model_util.is_safetensors(embeds_file):
+                    from safetensors.torch import load_file
+
+                    data = load_file(embeds_file)
+                else:
+                    data = torch.load(embeds_file, map_location="cpu")
+
+                token_string = os.path.splitext(os.path.basename(embeds_file))[0]
+                embeds, _shape, num_vectors_per_token = self.create_embedding_from_data(data, token_string)
+
+                token_strings = [token_string] + [f"{token_string}{i+1}" for i in range(num_vectors_per_token - 1)]
+                accelerator.print("Loaded token strings", token_strings)
+                for i, (tokenizer, text_encoder) in enumerate(zip(tokenizers, text_encoders)):
+                    num_added_tokens = tokenizer.add_tokens(token_strings)
+
+                    assert (
+                        num_added_tokens == num_vectors_per_token
+                    ), f"The tokenizer already contains {token_string}. Please pass a different word that is not already in the tokenizer. / 指定した名前（ファイル名）のトークンが既に存在します。ファイルをリネームしてください: {embeds_file}"
+
+                    token_ids = tokenizer.convert_tokens_to_ids(token_strings)
+                    accelerator.print(f"Textual Inversion embeddings `{token_string}` loaded. Tokens are added: {token_ids}")
+                    assert (
+                        min(token_ids) == token_ids[0] and token_ids[-1] == token_ids[0] + len(token_ids) - 1
+                    ), f"token ids is not ordered : tokenizer {i+1}, {token_ids}"
+                    assert (
+                        len(tokenizer) - 1 == token_ids[-1]
+                    ), f"token ids is not end of tokenize: tokenizer {i+1}, {token_ids}, {len(tokenizer)}"
+
+                    # Resize the token embeddings as we are adding new special tokens to the tokenizer
+                    text_encoder.resize_token_embeddings(len(tokenizer))
+
+                    for token_id, embed in zip(token_ids, embeds):
+                        text_encoder.get_input_embeddings().weight.data[token_id] = embed
+                    embeddings_map[token_string] = embeds
+                    embedding_to_token_ids[token_string] = token_ids
 
         # データセットを準備する
         if args.dataset_class is None:
@@ -204,6 +300,16 @@ class NetworkTrainer:
         current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+        
+        prompt_replacements = []
+        for emb_name in embeddings_map.keys():
+            emb_token_ids = embedding_to_token_ids[emb_name]
+            if len(emb_token_ids) > 1:
+                token_strings = [emb_name] + [f"{emb_name}{i+1}" for i in range(len(emb_token_ids) - 1)]
+                replace_to = " ".join(token_strings)
+                train_dataset_group.add_replacement(emb_name, replace_to)
+                prompt_replacement = (emb_name, replace_to)
+                prompt_replacements.append(prompt_replacement)
 
         if args.debug_dataset:
             train_util.debug_dataset(train_dataset_group)
@@ -220,26 +326,6 @@ class NetworkTrainer:
             ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
         self.assert_extra_args(args, train_dataset_group)
-
-        # acceleratorを準備する
-        print("preparing accelerator")
-        accelerator = train_util.prepare_accelerator(args)
-        is_main_process = accelerator.is_main_process
-
-        # mixed precisionに対応した型を用意しておき適宜castする
-        weight_dtype, save_dtype = train_util.prepare_dtype(args)
-        vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
-
-        # モデルを読み込む
-        model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
-
-        # text_encoder is List[CLIPTextModel] or CLIPTextModel
-        text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
-
-        # モデルに xformers とか memory efficient attention を組み込む
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
-        if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
-            vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
         # 差分追加学習のためにモデルを読み込む
         sys.path.append(os.path.dirname(__file__))
@@ -430,8 +516,6 @@ class NetworkTrainer:
                 t_enc.eval()
 
         del t_enc
-
-        accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
@@ -693,14 +777,8 @@ class NetworkTrainer:
         loss_recorder = train_util.LossRecorder()
         del train_dataset_group
 
-        # callback for step start
-        if hasattr(accelerator.unwrap_model(network), "on_step_start"):
-            on_step_start = accelerator.unwrap_model(network).on_step_start
-        else:
-            on_step_start = lambda *args, **kwargs: None
-
         # function for saving/removing
-        def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
+        def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, embeddings_map, force_sync_upload=False):
             os.makedirs(args.output_dir, exist_ok=True)
             ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
@@ -713,7 +791,40 @@ class NetworkTrainer:
             sai_metadata = train_util.get_sai_model_spec(None, args, self.is_sdxl, True, False)
             metadata_to_save.update(sai_metadata)
 
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            if len(embeddings_map.keys()) > 0: 
+                # Bundle embeddings in LoRA state dict
+                state_dict = unwrapped_nw.state_dict()
+                for emb_name in embeddings_map.keys():
+                    accelerator.print(f"Bundling embedding: {emb_name}")
+                    key = f"bundle_emb.{emb_name}.string_to_param.*"
+                    state_dict[key] = embeddings_map[emb_name]
+                    
+                if metadata_to_save is not None and len(metadata_to_save) == 0:
+                    metadata_to_save = None
+
+                # Save LoRA
+                if save_dtype is not None:
+                    for key in list(state_dict.keys()):
+                        v = state_dict[key]
+                        v = v.detach().clone().to("cpu").to(save_dtype)
+                        state_dict[key] = v
+
+                if os.path.splitext(ckpt_file)[1] == ".safetensors":
+                    from safetensors.torch import save_file
+
+                    # Precalculate model hashes to save time on indexing
+                    if metadata_to_save is None:
+                        metadata_to_save = {}
+                    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata_to_save)
+                    metadata_to_save["sshs_model_hash"] = model_hash
+                    metadata_to_save["sshs_legacy_hash"] = legacy_hash
+
+                    save_file(state_dict, ckpt_file, metadata_to_save)
+                else:
+                    torch.save(state_dict, ckpt_file)
+            else:
+                unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+
             if args.huggingface_repo_id is not None:
                 huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 
@@ -725,6 +836,27 @@ class NetworkTrainer:
 
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+
+        # TODO: might be good to add the embedding to the LoRA module to continue training ("bundle_emb.{emb_name}.string_to_param.*")
+        # pivotal_tuning = len(args.embeddings) > 0 or train_embeddings
+        # if pivotal_tuning:
+        #     if args.continue_inversion:
+        #         raise AssertionError("Continue inversion does not work yet")
+
+        #         # TODO: Freeze all parameters except for the token embeddings in text encoder
+        #     else:
+        #         # TODO: Do not train t_enc
+        #         # for t_enc in text_encoders:
+        #         #     t_enc.requires_grad_(False)
+
+
+        # callback for step start
+        if hasattr(accelerator.unwrap_model(network), "on_step_start"):
+            on_step_start = accelerator.unwrap_model(network).on_step_start
+        else:
+            on_step_start = lambda *args, **kwargs: None
+
+        accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
         # training loop
         for epoch in range(num_train_epochs):
@@ -828,14 +960,14 @@ class NetworkTrainer:
                     progress_bar.update(1)
                     global_step += 1
 
-                    self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+                    self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, prompt_replacements)
 
                     # 指定ステップごとにモデルを保存
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
-                            save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
+                            save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch, embeddings_map)
 
                             if args.save_state:
                                 train_util.save_and_remove_state_stepwise(args, accelerator, global_step)
@@ -872,7 +1004,7 @@ class NetworkTrainer:
                 saving = (epoch + 1) % args.save_every_n_epochs == 0 and (epoch + 1) < num_train_epochs
                 if is_main_process and saving:
                     ckpt_name = train_util.get_epoch_ckpt_name(args, "." + args.save_model_as, epoch + 1)
-                    save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
+                    save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1, embeddings_map)
 
                     remove_epoch_no = train_util.get_remove_epoch_no(args, epoch + 1)
                     if remove_epoch_no is not None:
@@ -882,7 +1014,18 @@ class NetworkTrainer:
                     if args.save_state:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
-            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+            self.sample_images(
+                accelerator,
+                args,
+                epoch + 1,
+                global_step,
+                accelerator.device,
+                vae,
+                tokenizer,
+                text_encoder,
+                unet,
+                prompt_replacements
+            )
 
             # end of epoch
 
@@ -899,7 +1042,7 @@ class NetworkTrainer:
 
         if is_main_process:
             ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
-            save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
+            save_model(ckpt_name, network, global_step, num_train_epochs, embeddings_map, force_sync_upload=True)
 
             print("model saved.")
 
@@ -983,6 +1126,16 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
     )
+
+    # Pivotal tuning
+    parser.add_argument(
+        "--embeddings",
+        type=str,
+        default=[],
+        nargs="*",
+        help="Embeddings files of Textual Inversion / Textual Inversionのembeddings", # TODO: use existing embeddings instead of training new ones
+    )
+
     return parser
 
 
