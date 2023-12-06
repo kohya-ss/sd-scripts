@@ -128,6 +128,11 @@ class NetworkTrainer:
         noise_pred = unet(noisy_latents, timesteps, text_conds).sample
         return noise_pred
 
+    def all_reduce_network(self, accelerator, network):
+        for param in network.parameters():
+            if param.grad is not None:
+                param.grad = accelerator.reduce(param.grad, reduction="mean")
+
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
         train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
 
@@ -399,7 +404,8 @@ class NetworkTrainer:
             if len(text_encoders) > 1:
                 text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
             else:
-                text_encoder = text_encoders = [accelerator.prepare(text_encoder)]
+                text_encoder = accelerator.prepare(text_encoder)
+                text_encoders = [text_encoder]
         else:
             for t_enc in text_encoders:
                 t_enc.to(accelerator.device, dtype=weight_dtype)
@@ -799,6 +805,7 @@ class NetworkTrainer:
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
                     accelerator.backward(loss)
+                    self.all_reduce_network(accelerator, network)   # sync DDP grad manually
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                         params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
