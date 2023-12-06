@@ -732,6 +732,8 @@ class NetworkTrainer:
 
             metadata["ss_epoch"] = str(epoch + 1)
 
+            # For --sample_at_first
+            self.sample_images(accelerator, args, epoch, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
