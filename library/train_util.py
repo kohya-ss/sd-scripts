@@ -3419,7 +3419,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
     accelerator.load_state(dirname)
 
 
-def get_optimizer(args, trainable_params, pivotal_tuning = False):
+def get_optimizer(args, trainable_params):
     # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit, Lion8bit, PagedLion8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
 
     optimizer_type = args.optimizer_type
@@ -3464,8 +3464,6 @@ def get_optimizer(args, trainable_params, pivotal_tuning = False):
     # print("optkwargs:", optimizer_kwargs)
 
     lr = args.learning_rate
-    if pivotal_tuning:
-        lr = args.embeddings_lr
 
     optimizer = None
 
