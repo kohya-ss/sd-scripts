@@ -981,6 +981,13 @@ class NetworkTrainer:
                                     index_no_updates
                                 ] = orig_embeds_params[index_no_updates]
 
+                            # Update embeddings map (for saving)
+                            # TODO: this is not optimal, might need to be refactored
+                            for emb_name in embeddings_map.keys():
+                                emb_token_ids = embedding_to_token_ids[emb_name]
+                                updated_embs = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
+                                embeddings_map[emb_name] = updated_embs
+
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
                         args.scale_weight_norms, accelerator.device
