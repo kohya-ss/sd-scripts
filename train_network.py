@@ -985,7 +985,7 @@ class NetworkTrainer:
                             # TODO: this is not optimal, might need to be refactored
                             for emb_name in embeddings_map.keys():
                                 emb_token_ids = embedding_to_token_ids[emb_name]
-                                updated_embs = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
+                                updated_embs = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
                                 embeddings_map[emb_name] = updated_embs
 
                 if args.scale_weight_norms:
