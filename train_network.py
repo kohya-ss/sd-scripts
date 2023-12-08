@@ -223,6 +223,7 @@ class NetworkTrainer:
 
                 token_string = os.path.splitext(os.path.basename(embeds_file))[0]
                 embeds, _shape, num_vectors_per_token = self.create_embedding_from_data(data, token_string)
+                embedding_to_token_ids[token_string] = []
 
                 token_strings = [token_string] + [f"{token_string}{i+1}" for i in range(num_vectors_per_token - 1)]
                 accelerator.print("Loaded token strings", token_strings)
@@ -248,7 +249,7 @@ class NetworkTrainer:
                     for token_id, embed in zip(token_ids, embeds):
                         text_encoder.get_input_embeddings().weight.data[token_id] = embed
                     embeddings_map[token_string] = embeds
-                    embedding_to_token_ids[token_string] = token_ids
+                    embedding_to_token_ids[token_string].append(token_ids)
 
         # データセットを準備する
         if args.dataset_class is None:
@@ -304,8 +305,8 @@ class NetworkTrainer:
         prompt_replacements = []
         for emb_name in embeddings_map.keys():
             emb_token_ids = embedding_to_token_ids[emb_name]
-            if len(emb_token_ids) > 1:
-                token_strings = [emb_name] + [f"{emb_name}{i+1}" for i in range(len(emb_token_ids) - 1)]
+            if len(emb_token_ids[0]) > 1:
+                token_strings = [emb_name] + [f"{emb_name}{i+1}" for i in range(len(emb_token_ids[0]) - 1)]
                 replace_to = " ".join(token_strings)
                 train_dataset_group.add_replacement(emb_name, replace_to)
                 prompt_replacement = (emb_name, replace_to)
@@ -425,6 +426,15 @@ class NetworkTrainer:
         # 後方互換性を確保するよ
         try:
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr, args.learning_rate)
+            
+            # Add embeddings params when continuing the inversion
+            if args.continue_inversion:
+                # TODO: might be good to add the embedding to the LoRA module directly to continue training ("bundle_emb.{emb_name}.string_to_param.*")
+                for text_encoder in text_encoders:
+                    trainable_params.append({
+                        "params": text_encoder.get_input_embeddings().parameters(),
+                        "lr": args.embedding_lr or args.text_encoder_lr or args.learning_rate
+                    })
         except TypeError:
             accelerator.print(
                 "Deprecated: use prepare_optimizer_params(text_encoder_lr, unet_lr, learning_rate) instead of prepare_optimizer_params(text_encoder_lr, unet_lr)"
@@ -496,6 +506,32 @@ class NetworkTrainer:
             for t_enc in text_encoders:
                 t_enc.to(accelerator.device, dtype=weight_dtype)
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+
+        # Build list of original embeddings to freeze all but the modified embeddings
+        if args.continue_inversion:
+            token_ids_list = []
+            for emb_name in embeddings_map.keys():
+                for i, sublist in enumerate(embedding_to_token_ids[emb_name]):
+                    if i >= len(token_ids_list):
+                        token_ids_list.append(sublist)
+                    else:
+                        token_ids_list[i].extend(sublist)
+
+            index_no_updates_list = []
+            orig_embeds_params_list = []
+            for tokenizer, token_ids, t_enc in zip(tokenizers, token_ids_list, text_encoders):
+                index_no_updates = torch.arange(len(tokenizer)) < token_ids[0]
+                index_no_updates_list.append(index_no_updates)
+                orig_embeds_params = accelerator.unwrap_model(t_enc).get_input_embeddings().weight.data.detach().clone()
+                orig_embeds_params_list.append(orig_embeds_params)
+
+                # Freeze all parameters except for the token embeddings in text encoder
+                t_enc.requires_grad_(True)
+                t_enc.text_model.encoder.requires_grad_(False)
+                t_enc.text_model.final_layer_norm.requires_grad_(False)
+                t_enc.text_model.embeddings.position_embedding.requires_grad_(False)
+                # t_enc.text_model.embeddings.requires_grad_(True)
+                # t_enc.text_model.embeddings.token_embedding.requires_grad_(True)
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -835,20 +871,7 @@ class NetworkTrainer:
                 os.remove(old_ckpt_file)
 
         # For --sample_at_first
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
-
-        # TODO: might be good to add the embedding to the LoRA module to continue training ("bundle_emb.{emb_name}.string_to_param.*")
-        # pivotal_tuning = len(args.embeddings) > 0 or train_embeddings
-        # if pivotal_tuning:
-        #     if args.continue_inversion:
-        #         raise AssertionError("Continue inversion does not work yet")
-
-        #         # TODO: Freeze all parameters except for the token embeddings in text encoder
-        #     else:
-        #         # TODO: Do not train t_enc
-        #         # for t_enc in text_encoders:
-        #         #     t_enc.requires_grad_(False)
-
+        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, prompt_replacements)
 
         # callback for step start
         if hasattr(accelerator.unwrap_model(network), "on_step_start"):
@@ -886,7 +909,7 @@ class NetworkTrainer:
                         latents = latents * self.vae_scale_factor
                     b_size = latents.shape[0]
 
-                    with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
+                    with torch.set_grad_enabled(train_text_encoder or args.continue_inversion), accelerator.autocast():
                         # Get the text embedding for conditioning
                         if args.weighted_captions:
                             text_encoder_conds = get_weighted_text_embeddings(
@@ -946,6 +969,17 @@ class NetworkTrainer:
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
+
+                    
+                    # Let's make sure we don't update any embedding weights besides the added pivots
+                    if args.continue_inversion:
+                        with torch.no_grad():
+                            for text_encoder, orig_embeds_params, index_no_updates in zip(
+                                text_encoders, orig_embeds_params_list, index_no_updates_list
+                            ):
+                                accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                                    index_no_updates
+                                ] = orig_embeds_params[index_no_updates]
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -1133,8 +1167,10 @@ def setup_parser() -> argparse.ArgumentParser:
         type=str,
         default=[],
         nargs="*",
-        help="Embeddings files of Textual Inversion / Textual Inversionのembeddings", # TODO: use existing embeddings instead of training new ones
+        help="Embeddings files of Textual Inversion / Textual Inversionのembeddings",
     )
+    parser.add_argument("--continue_inversion", action="store_true", help="Continue the textual inversion when training the LoRA")
+    parser.add_argument("--embedding_lr", type=float, default=None, help="Learning rate used when continuing the textual inversion")
 
     return parser
 
