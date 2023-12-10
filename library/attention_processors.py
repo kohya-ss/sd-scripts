@@ -37,7 +37,7 @@ class FlashAttentionFunction(torch.autograd.function.Function):
 
         o = torch.zeros_like(q)
         all_row_sums = torch.zeros((*q.shape[:-1], 1), dtype=dtype, device=device)
-        all_row_maxes = torch.full((*q.shape[:-1], 1), max_neg_value, device=device)
+        all_row_maxes = torch.full((*q.shape[:-1], 1), max_neg_value, dtype=dtype, device=device)
 
         scale = q.shape[-1] ** -0.5
 
