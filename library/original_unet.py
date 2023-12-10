@@ -290,7 +290,7 @@ class FlashAttentionFunction(torch.autograd.Function):
                     causal_mask = torch.ones((qc.shape[-2], kc.shape[-2]), dtype=torch.bool, device=device).triu(q_start_index - k_start_index + 1)
                     attn_weights.masked_fill_(causal_mask, max_neg_value)
 
-                p = torch.exp(attn_weights - lsec)
+                p = torch.exp(attn_weights - lsec).half()
 
                 if exists(col_mask):
                     p.masked_fill_(~col_mask, 0.)
