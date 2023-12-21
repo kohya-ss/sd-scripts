@@ -733,11 +733,8 @@ class NetworkTrainer:
 
             metadata["ss_epoch"] = str(epoch + 1)
                    
-            if args.gradient_checkpointing or global_step < args.stop_text_encoder_training:
-                accelerator.unwrap_model(network).on_epoch_start(unet, text_encoder)    
-            else:        
-                accelerator.unwrap_model(network).on_epoch_start(unet)
-                
+            accelerator.unwrap_model(network).on_epoch_start(unet, text_encoder)    
+                            
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
                 with accelerator.accumulate(network):
