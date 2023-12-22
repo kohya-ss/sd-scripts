@@ -1013,6 +1013,10 @@ class BaseDataset(torch.utils.data.Dataset):
             )
 
     def get_image_size(self, image_path):
+        npz_path = os.path.splitext(image_path)[0] + ".npz"
+        if self.is_latent_cacheable and os.path.exists(npz_path):
+            _, size, _, _ = load_latents_from_disk(npz_path)
+            return size
         image = Image.open(image_path)
         return image.size
 
@@ -1409,15 +1413,23 @@ class DreamBoothDataset(BaseDataset):
                 print(f"not directory: {subset.image_dir}")
                 return [], []
 
-            img_paths = glob_images(subset.image_dir, "*")
+            img_paths = glob_images(subset.image_dir, "*", self.is_latent_cacheable)
             print(f"found directory {subset.image_dir} contains {len(img_paths)} image files")
 
             # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
             captions = []
             missing_captions = []
+            cached_captions = []
             for img_path in img_paths:
                 cap_for_img = read_caption(img_path, subset.caption_extension)
                 if cap_for_img is None and subset.class_tokens is None:
+                    if self.is_text_encoder_output_cacheable:
+                        cache_file = os.path.splitext(img_path)[0] + TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX
+                        if os.path.exists(cache_file):
+                            captions.append("")
+                            cached_captions.append(cache_file)
+                        continue
+
                     print(
                         f"neither caption file nor class tokens are found. use empty caption for {img_path} / キャプションファイルもclass tokenも見つかりませんでした。空のキャプションを使用します: {img_path}"
                     )
@@ -1432,19 +1444,26 @@ class DreamBoothDataset(BaseDataset):
 
             self.set_tag_frequency(os.path.basename(subset.image_dir), captions)  # タグ頻度を記録
 
-            if missing_captions:
-                number_of_missing_captions = len(missing_captions)
-                number_of_missing_captions_to_show = 5
-                remaining_missing_captions = number_of_missing_captions - number_of_missing_captions_to_show
+            def show_caption_warning(captions_with_warnings, warning_message):
+                if not captions_with_warnings:
+                    return
+                
+                number_of_warning_captions = len(captions_with_warnings)
+                number_of_warning_captions_to_show = 5
+                remaining_warning_captions = number_of_warning_captions - number_of_warning_captions_to_show
 
-                print(
-                    f"No caption file found for {number_of_missing_captions} images. Training will continue without captions for these images. If class token exists, it will be used. / {number_of_missing_captions}枚の画像にキャプションファイルが見つかりませんでした。これらの画像についてはキャプションなしで学習を続行します。class tokenが存在する場合はそれを使います。"
-                )
-                for i, missing_caption in enumerate(missing_captions):
-                    if i >= number_of_missing_captions_to_show:
-                        print(missing_caption + f"... and {remaining_missing_captions} more")
+                print(warning_message.format(number_of_warning_captions=number_of_warning_captions))
+                for i, warning_caption in enumerate(captions_with_warnings):
+                    if i >= number_of_warning_captions_to_show:
+                        print(warning_caption + f"... and {remaining_warning_captions} more")
                         break
-                    print(missing_caption)
+                    print(warning_caption)
+
+            show_caption_warning(missing_captions, 
+                                 "No caption file found for {number_of_warning_captions} images. Training will continue without captions for these images. If class token exists, it will be used. / {number_of_warning_captions}枚の画像にキャプションファイルが見つかりませんでした。これらの画像についてはキャプションなしで学習を続行します。class tokenが存在する場合はそれを使います。")
+            
+            show_caption_warning(cached_captions,
+                                 "No caption file found for {number_of_warning_captions} images. Cached TE embeddings are available for this caption, which will be used instead.")
             return img_paths, captions
 
         print("prepare images.")
@@ -1806,7 +1825,7 @@ class ControlNetDataset(BaseDataset):
 
         extra_imgs = []
         for subset in subsets:
-            conditioning_img_paths = glob_images(subset.conditioning_data_dir, "*")
+            conditioning_img_paths = glob_images(subset.conditioning_data_dir, "*", self.is_latent_cacheable)
             extra_imgs.extend(
                 [cond_img_path for cond_img_path in conditioning_img_paths if cond_img_path not in cond_imgs_with_img]
             )
@@ -2078,8 +2097,7 @@ def debug_dataset(train_dataset, show_input_ids=False):
 
         epoch += 1
 
-
-def glob_images(directory, base="*"):
+def glob_images(directory, base="*", fallback_to_cache=False):
     img_paths = []
     for ext in IMAGE_EXTENSIONS:
         if base == "*":
@@ -2087,6 +2105,15 @@ def glob_images(directory, base="*"):
         else:
             img_paths.extend(glob.glob(glob.escape(os.path.join(directory, base + ext))))
     img_paths = list(set(img_paths))  # 重複を排除
+
+    if fallback_to_cache and len(img_paths) == 0:
+        print(f"No images found in {directory}. Will look for cached latents instead.")
+        if base == "*":
+            img_paths.extend(glob.glob(os.path.join(glob.escape(directory), base + ".npz")))
+        else:
+            img_paths.extend(glob.glob(glob.escape(os.path.join(directory, base + ".npz"))))
+        
+        img_paths = [img_path for img_path in set(img_paths) if not img_path.endswith(TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX)]
     img_paths.sort()
     return img_paths
 
@@ -3464,6 +3491,7 @@ def get_optimizer(args, trainable_params):
     # print("optkwargs:", optimizer_kwargs)
 
     lr = args.learning_rate
+
     optimizer = None
 
     if optimizer_type == "Lion".lower():
@@ -3704,13 +3732,13 @@ def get_optimizer(args, trainable_params):
 # Add some checking and features to the original function.
 
 
-def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
+def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int, max_train_steps = None):
     """
     Unified API to get any scheduler from its name.
     """
     name = args.lr_scheduler
     num_warmup_steps: Optional[int] = args.lr_warmup_steps
-    num_training_steps = args.max_train_steps * num_processes  # * args.gradient_accumulation_steps
+    num_training_steps = args.max_train_steps * num_processes if max_train_steps is None else max_train_steps  # * args.gradient_accumulation_steps
     num_cycles = args.lr_scheduler_num_cycles
     power = args.lr_scheduler_power
 
@@ -4147,18 +4175,18 @@ def default_if_none(value, default):
     return default if value is None else value
 
 
-def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int):
-    model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
+def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME) if custom_name is None else custom_name
     return EPOCH_FILE_NAME.format(model_name, epoch_no) + ext
 
 
-def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int):
-    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
+def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME) if custom_name is None else custom_name
     return STEP_FILE_NAME.format(model_name, step_no) + ext
 
 
-def get_last_ckpt_name(args: argparse.Namespace, ext: str):
-    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+def get_last_ckpt_name(args: argparse.Namespace, ext: str, custom_name = None):
+    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME) if custom_name is None else custom_name
     return model_name + ext
 
 
@@ -4612,7 +4640,7 @@ def sample_images_common(
     tokenizer,
     text_encoder,
     unet,
-    prompt_replacement=None,
+    prompt_replacements=[],
     controlnet=None,
 ):
     """
@@ -4723,10 +4751,11 @@ def sample_images_common(
                 schedulers[sampler_name] = scheduler
             pipeline.scheduler = scheduler
 
-            if prompt_replacement is not None:
-                prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
-                if negative_prompt is not None:
-                    negative_prompt = negative_prompt.replace(prompt_replacement[0], prompt_replacement[1])
+            if len(prompt_replacements) > 0:
+                for to_replace, replaced_by  in prompt_replacements:
+                    prompt = prompt.replace(to_replace, replaced_by)
+                    if negative_prompt is not None:
+                        negative_prompt = negative_prompt.replace(to_replace, replaced_by)
 
             if controlnet_image is not None:
                 controlnet_image = Image.open(controlnet_image).convert("RGB")
