@@ -888,8 +888,10 @@ class NetworkTrainer:
 
             metadata["ss_epoch"] = str(epoch + 1)
 
+                   
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
+                            
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
                 with accelerator.accumulate(network):
