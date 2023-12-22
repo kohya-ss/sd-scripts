@@ -254,9 +254,6 @@ def train(args):
     )
     network: control_net_lllite.ControlNetLLLite
 
-    # transform DDP after prepare (train_network here only)
-    unet, network = train_util.transform_models_if_DDP([unet, network])
-
     if args.gradient_checkpointing:
         unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
     else:
@@ -430,7 +427,7 @@ def train(args):
                 loss = loss * loss_weights
 
                 if args.min_snr_gamma:
-                    loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                    loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
                 if args.scale_v_pred_loss_like_noise_pred:
                     loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                 if args.v_pred_like_loss:

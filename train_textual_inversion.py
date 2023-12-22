@@ -7,10 +7,13 @@ import toml
 
 from tqdm import tqdm
 import torch
+
 try:
     import intel_extension_for_pytorch as ipex
+
     if torch.xpu.is_available():
         from library.ipex import ipex_init
+
         ipex_init()
 except Exception:
     pass
@@ -117,9 +120,9 @@ class TextualInversionTrainer:
         noise_pred = unet(noisy_latents, timesteps, text_conds).sample
         return noise_pred
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacement):
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacements):
         train_util.sample_images(
-            accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacement
+            accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacements
         )
 
     def save_weights(self, file, updated_embs, save_dtype, metadata):
@@ -317,6 +320,7 @@ class TextualInversionTrainer:
         collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
         # make captions: tokenstring tokenstring1 tokenstring2 ...tokenstringn という文字列に書き換える超乱暴な実装
+        prompt_replacements = []
         if use_template:
             accelerator.print(f"use template for training captions. is object: {args.use_object_template}")
             templates = imagenet_templates_small if args.use_object_template else imagenet_style_templates_small
@@ -329,16 +333,14 @@ class TextualInversionTrainer:
             # サンプル生成用
             if args.num_vectors_per_token > 1:
                 prompt_replacement = (args.token_string, replace_to)
-            else:
-                prompt_replacement = None
+                prompt_replacements.append(prompt_replacement)
         else:
             # サンプル生成用
             if args.num_vectors_per_token > 1:
                 replace_to = " ".join(token_strings)
                 train_dataset_group.add_replacement(args.token_string, replace_to)
                 prompt_replacement = (args.token_string, replace_to)
-            else:
-                prompt_replacement = None
+                prompt_replacements.append(prompt_replacement)
 
         if args.debug_dataset:
             train_util.debug_dataset(train_dataset_group, show_input_ids=True)
@@ -415,15 +417,11 @@ class TextualInversionTrainer:
             text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 text_encoder_or_list, optimizer, train_dataloader, lr_scheduler
             )
-            # transform DDP after prepare
-            text_encoder_or_list, unet = train_util.transform_if_model_is_DDP(text_encoder_or_list, unet)
 
         elif len(text_encoders) == 2:
             text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 text_encoders[0], text_encoders[1], optimizer, train_dataloader, lr_scheduler
             )
-            # transform DDP after prepare
-            text_encoder1, text_encoder2, unet = train_util.transform_if_model_is_DDP(text_encoder1, text_encoder2, unet)
 
             text_encoder_or_list = text_encoders = [text_encoder1, text_encoder2]
 
@@ -529,6 +527,20 @@ class TextualInversionTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
+        # For --sample_at_first
+        self.sample_images(
+            accelerator,
+            args,
+            0,
+            global_step,
+            accelerator.device,
+            vae,
+            tokenizer_or_list,
+            text_encoder_or_list,
+            unet,
+            prompt_replacement,
+        )
+
         # training loop
         for epoch in range(num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -578,7 +590,7 @@ class TextualInversionTrainer:
                     loss = loss * loss_weights
 
                     if args.min_snr_gamma:
-                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
                     if args.scale_v_pred_loss_like_noise_pred:
                         loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                     if args.v_pred_like_loss:
@@ -621,7 +633,7 @@ class TextualInversionTrainer:
                         tokenizer_or_list,
                         text_encoder_or_list,
                         unet,
-                        prompt_replacement,
+                        prompt_replacements,
                     )
 
                     # 指定ステップごとにモデルを保存
@@ -704,7 +716,7 @@ class TextualInversionTrainer:
                 tokenizer_or_list,
                 text_encoder_or_list,
                 unet,
-                prompt_replacement,
+                prompt_replacements,
             )
 
             # end of epoch
