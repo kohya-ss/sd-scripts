@@ -893,6 +893,11 @@ class NetworkTrainer:
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
                 with accelerator.accumulate(network):
+                    if global_step == args.stop_text_encoder_training:
+                        print(f"stop text encoder training at step {global_step}")
+                        if not args.gradient_checkpointing:
+                            text_encoder.train(False)
+                        text_encoder.requires_grad_(False)
                     on_step_start(text_encoder, unet)
 
                     with torch.no_grad():
@@ -909,7 +914,11 @@ class NetworkTrainer:
                         latents = latents * self.vae_scale_factor
                     b_size = latents.shape[0]
 
+<<<<<<< HEAD
                     with torch.set_grad_enabled(train_text_encoder or args.continue_inversion), accelerator.autocast():
+=======
+                    with torch.set_grad_enabled(train_text_encoder and global_step < args.stop_text_encoder_training), accelerator.autocast():
+>>>>>>> pr/1011
                         # Get the text embedding for conditioning
                         if args.weighted_captions:
                             text_encoder_conds = get_weighted_text_embeddings(
@@ -1167,6 +1176,7 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
     )
+<<<<<<< HEAD
 
     # Pivotal tuning
     parser.add_argument(
@@ -1179,6 +1189,14 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--continue_inversion", action="store_true", help="Continue the textual inversion when training the LoRA")
     parser.add_argument("--embedding_lr", type=float, default=None, help="Learning rate used when continuing the textual inversion")
 
+=======
+    parser.add_argument(
+        "--stop_text_encoder_training",
+        type=int,
+        default=None,
+        help="steps to stop text encoder training, -1 for no training / Text Encoderの学習を止めるステップ数、-1で最初から学習しない",
+    )
+>>>>>>> pr/1011
     return parser
 
 
