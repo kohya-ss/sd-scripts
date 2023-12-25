@@ -1,3 +1,14 @@
+# Dual Resolution U-Net Hires fix
+
+- 複数解像度でU-Netを呼び出し、結果を mix する hires fix です。プロンプトオプションでのみ指定できます。
+- `--drr` : 初期サイズの解像度の比率。0.5 なら 1/2 になります。
+- `--drst` : 複数解像度を開始する timestep。800なら最初から20%経過した時点から開始。
+- `--dret` : 終了する timestep。600なら最初から40%経過した時点で終了。
+- `--drstr` : 適用する小解像度の重み。1.0 なら大解像度と同じ重みになります。
+
+---
+
+
 __SDXL is now supported. The sdxl branch has been merged into the main branch. If you update the repository, please follow the upgrade instructions. Also, the version of accelerate has been updated, so please run accelerate config again.__ The documentation for SDXL training is [here](./README.md#sdxl-training).
 
 This repository contains training, generation and utility scripts for Stable Diffusion.
