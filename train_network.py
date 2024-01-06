@@ -375,15 +375,7 @@ class NetworkTrainer:
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
-        unet_weight_dtype = te_weight_dtype = weight_dtype
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
-        if args.fp8_base:
-            assert (
-                torch.__version__ >= '2.1.0'
-            ), "fp8 dtype requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0を指定してください。"
-            accelerator.print("enable fp8 training.")
-            unet_weight_dtype = torch.float8_e4m3fn
-            te_weight_dtype = torch.float8_e4m3fn
         if args.full_fp16:
             assert (
                 args.mixed_precision == "fp16"
@@ -397,12 +389,27 @@ class NetworkTrainer:
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
 
+        unet_weight_dtype = te_weight_dtype = weight_dtype
+        # Experimental Feature: Put base model into fp8 to save vram
+        if args.fp8_base:
+            assert (
+                torch.__version__ >= '2.1.0'
+            ), "fp8_base requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0が必要です。"
+            accelerator.print("enable fp8 training.")
+            unet_weight_dtype = torch.float8_e4m3fn
+            te_weight_dtype = torch.float8_e4m3fn
+
         unet.requires_grad_(False)
         unet.to(dtype=unet_weight_dtype)
         for t_enc in text_encoders:
             t_enc.requires_grad_(False)
             t_enc.to(dtype=te_weight_dtype)
-            t_enc.text_model.embeddings.to(dtype=weight_dtype)
+            # nn.Embedding not support FP8
+            t_enc.text_model.embeddings.to(dtype=(
+                weight_dtype 
+                if te_weight_dtype == torch.float8_e4m3fn 
+                else te_weight_dtype
+            ))
 
         # acceleratorがなんかよろしくやってくれるらしい
         # TODO めちゃくちゃ冗長なのでコードを整理する
