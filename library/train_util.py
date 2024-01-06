@@ -2909,7 +2909,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--fp8_base", action="store_true", help="use fp8 for base model / base modelにfp8を使う"
     )
     parser.add_argument(
-        "--ddp_timeout", type=int, default=30, help="DDP timeout (min) / DDPのタイムアウト(min)",
+        "--ddp_timeout",
+        type=int,
+        default=None,
+        help="DDP timeout (min, None for default of accelerate) / DDPのタイムアウト（分、Noneでaccelerateのデフォルト）",
     )
     parser.add_argument(
         "--ddp_gradient_as_bucket_view",
