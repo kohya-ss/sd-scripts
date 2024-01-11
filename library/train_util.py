@@ -4713,8 +4713,9 @@ def sample_images_common(
     with torch.no_grad():
         # with accelerator.autocast():
         with distributed_state.split_between_processes(prompts) as prompt_dict:
-            if not accelerator.is_main_process:
-                continue
+            
+#            if not accelerator.is_main_process:
+#                continue
 
             if isinstance(prompt_dict, str):
                 prompt_dict = line_to_prompt_dict(prompt_dict)
