@@ -456,6 +456,7 @@ class NetworkTrainer:
         total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
         accelerator.print("running training / 学習開始")
+        accelerator.print(train_util.check_vram_usage("At start of training"))
         accelerator.print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
         accelerator.print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
         accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
@@ -724,13 +725,14 @@ class NetworkTrainer:
             if os.path.exists(old_ckpt_file):
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
-
+        accelerator.print(train_util.check_vram_usage("Before sample at first"))
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         # training loop
         for epoch in range(num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
+            accelerator.print(train_util.check_vram_usage(f"at start of epoch {epoch+1}/{num_train_epochs}"))
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
