@@ -3380,7 +3380,9 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
     if not args.resume_from_huggingface:
         print(f"resume training from local state: {args.resume}")
+        print(check_vram_usage(f"Before loading state from {args.resume}")
         accelerator.load_state(args.resume)
+        print(check_vram_usage(f"After loading state from {args.resume}")
         return
 
     print(f"resume training from huggingface state: {args.resume}")
@@ -3422,7 +3424,9 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
     if len(results) == 0:
         raise ValueError("No files found in the specified repo id/path/revision / 指定されたリポジトリID/パス/リビジョンにファイルが見つかりませんでした")
     dirname = os.path.dirname(results[0])
+    print(check_vram_usage(f"Before loading huggingface state from {args.resume}")
     accelerator.load_state(dirname)
+    print(check_vram_usage(f"After loading huggingface state from {args.resume}")
 
 
 def get_optimizer(args, trainable_params):
