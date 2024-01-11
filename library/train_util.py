@@ -4607,10 +4607,7 @@ def line_to_prompt_dict(line: str) -> dict:
     return prompt_dict
 
 def check_vram_usage(at_called_point):
-    print(f"Checking VRAM usage at: {at_called_point}")
-    print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
-    print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
-    print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
+    return f"Checking VRAM usage at: {at_called_point} on CUDA Device {torch.cuda.current_device()}\ntorch.cuda.memory_allocated: {(torch.cuda.memory_allocated(0)/1024/1024/1024)}\ntorch.cuda.memory_reserved: {(torch.cuda.memory_reserved(0)/1024/1024/1024)}\ntorch.cuda.max_memory_reserved: {(torch.cuda.max_memory_reserved(0)/1024/1024/1024)}\n"
 
 def sample_images_common(
     pipe_class,
@@ -4629,7 +4626,7 @@ def sample_images_common(
     """
     StableDiffusionLongPromptWeightingPipelineの改造版を使うようにしたので、clip skipおよびプロンプトの重みづけに対応した
     """
-    check_vram_usage("Start of Image Sample Generation")
+    print(check_vram_usage("Start of Image Sample Generation"))
     distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     if steps == 0:
         if not args.sample_at_first:
@@ -4652,7 +4649,7 @@ def sample_images_common(
 
     org_vae_device = vae.device  # CPUにいるはず
     vae.to(distributed_state.device)
-    check_vram_usage("after load VAE")
+    print(check_vram_usage("after load VAE"))
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
@@ -4660,7 +4657,7 @@ def sample_images_common(
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
         text_encoder = accelerator.unwrap_model(text_encoder)
-    check_vram_usage("after load UNET")
+    print(check_vram_usage("after load UNET"))
 
     # read prompts
 
@@ -4685,7 +4682,7 @@ def sample_images_common(
         v_parameterization=args.v_parameterization,
     )
     schedulers[args.sample_sampler] = default_scheduler
-    check_vram_usage("Before create pipeline")
+    print(check_vram_usage("Before create pipeline"))
     pipeline = pipe_class(
         text_encoder=text_encoder,
         vae=vae,
@@ -4698,7 +4695,7 @@ def sample_images_common(
         clip_skip=args.clip_skip,
     )
     pipeline.to(distributed_state.device)
-    check_vram_usage("After create pipeline")
+    print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
     for i, prompt_dict in enumerate(prompts):
@@ -4779,6 +4776,7 @@ def sample_images_common(
                 )
 
             image = pipeline.latents_to_image(latents)[0]
+            print(check_vram_usage("After generate Latents"))
 
             ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
             num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
@@ -4788,6 +4786,7 @@ def sample_images_common(
             )
 
             image.save(os.path.join(save_dir, img_filename))
+            print(check_vram_usage(f"After save {img_filename}"))
 
             # wandb有効時のみログを送信
             try:
@@ -4802,13 +4801,19 @@ def sample_images_common(
                 pass
 
     # clear pipeline and cache to reduce vram usage
+    print(check_vram_usage("Before clear cache"))
     del pipeline
-    torch.cuda.empty_cache()
-
+    print(check_vram_usage("After Del pipeline"))
+    for i in range(torch.cuda.device_count()):
+        with torch.cuda.device(f'cuda:{i}'):
+            torch.cuda.empty_cache()
+            print(check_vram_usage("After empty cache on cuda:{i}")
+    
     torch.set_rng_state(rng_state)
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
+    print(check_vram_usage(f"After load VAE on {org_vae_device}"))
 
 
 # endregion
