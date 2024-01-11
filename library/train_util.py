@@ -4626,8 +4626,7 @@ def sample_images_common(
     """
     StableDiffusionLongPromptWeightingPipelineの改造版を使うようにしたので、clip skipおよびプロンプトの重みづけに対応した
     """
-    print(check_vram_usage("Start of Image Sample Generation"))
-    distributed_state = PartialState() #testing implementation of multi gpu distributed inference
+
     if steps == 0:
         if not args.sample_at_first:
             return
@@ -4641,7 +4640,8 @@ def sample_images_common(
         else:
             if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
                 return
-
+    print(check_vram_usage("Start of Image Sample Generation"))
+    distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
     if not os.path.isfile(args.sample_prompts):
         print(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
