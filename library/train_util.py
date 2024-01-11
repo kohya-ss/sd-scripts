@@ -4698,11 +4698,26 @@ def sample_images_common(
     print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
+    print(prompts)
+    temp_prompts = []
     for i, prompt_dict in enumerate(prompts):
         if isinstance(prompt_dict, str):
             prompt_dict = line_to_prompt_dict(prompt_dict)
         assert isinstance(prompt_dict, dict)
-        prompt_dict["enum"] = i
+        temp_dict["negative_prompt"] = prompt_dict.get("negative_prompt")
+        temp_dict["sample_steps"] = prompt_dict.get("sample_steps", 30)
+        temp_dict["width"] = prompt_dict.get("width", 512)
+        temp_dict["height"] = prompt_dict.get("height", 512)
+        temp_dict["scale"] = prompt_dict.get("scale", 7.5)
+        temp_dict["seed"] = prompt_dict.get("seed")
+        temp_dict["controlnet_image"] = prompt_dict.get("controlnet_image")
+        temp_dict["prompt"]: str = prompt_dict.get("prompt", "")
+        temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+        temp_dict["enum"] = i
+        temp_prompts.append(temp_dict)
+
+    prompts = temp_prompts
+    del temp_prompts
 
     print("Debug output of prompts value:")
     print(prompts)
