@@ -4736,7 +4736,8 @@ def sample_images_common(
             if isinstance(prompt_dict, str):
                 prompt_dict = line_to_prompt_dict(prompt_dict)
 
-            assert isinstance(prompt_dict, dict)
+#            assert isinstance(prompt_dict, dict)
+            print(prompt_dict)
             negative_prompt = prompt_dict.get("negative_prompt")
             sample_steps = prompt_dict.get("sample_steps", 30)
             width = prompt_dict.get("width", 512)
