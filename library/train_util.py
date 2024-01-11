@@ -4808,7 +4808,7 @@ def sample_images_common(
     for i in range(torch.cuda.device_count()):
         with torch.cuda.device(f'cuda:{i}'):
             torch.cuda.empty_cache()
-            print(check_vram_usage("After empty cache on cuda:{i}")
+            print(check_vram_usage("After empty cache on cuda:{i}"))
     
     torch.set_rng_state(rng_state)
     if cuda_rng_state is not None:
