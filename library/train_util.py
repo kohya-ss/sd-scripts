@@ -4606,6 +4606,11 @@ def line_to_prompt_dict(line: str) -> dict:
 
     return prompt_dict
 
+def check_vram_usage(at_called_point):
+    print(f"Checking VRAM usage at: {at_called_point}")
+    print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
+    print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
+    print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
 
 def sample_images_common(
     pipe_class,
@@ -4624,6 +4629,8 @@ def sample_images_common(
     """
     StableDiffusionLongPromptWeightingPipelineの改造版を使うようにしたので、clip skipおよびプロンプトの重みづけに対応した
     """
+    check_vram_usage("Start of Image Sample Generation")
+    distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     if steps == 0:
         if not args.sample_at_first:
             return
@@ -4644,7 +4651,8 @@ def sample_images_common(
         return
 
     org_vae_device = vae.device  # CPUにいるはず
-    vae.to(device)
+    vae.to(distributed_state.device)
+    check_vram_usage("after load VAE")
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
@@ -4652,6 +4660,7 @@ def sample_images_common(
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
         text_encoder = accelerator.unwrap_model(text_encoder)
+    check_vram_usage("after load UNET")
 
     # read prompts
 
@@ -4676,7 +4685,7 @@ def sample_images_common(
         v_parameterization=args.v_parameterization,
     )
     schedulers[args.sample_sampler] = default_scheduler
-
+    check_vram_usage("Before create pipeline")
     pipeline = pipe_class(
         text_encoder=text_encoder,
         vae=vae,
@@ -4688,17 +4697,25 @@ def sample_images_common(
         requires_safety_checker=False,
         clip_skip=args.clip_skip,
     )
-    pipeline.to(device)
-
+    pipeline.to(distributed_state.device)
+    check_vram_usage("After create pipeline")
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
+    for i, prompt_dict in enumerate(prompts):
+        if isinstance(prompt_dict, str):
+            prompt_dict = line_to_prompt_dict(prompt_dict)
+        assert isinstance(prompt_dict, dict)
+        prompt_dict["enum"] = i
 
+    print("Debug output of prompts value:")
+    print(prompts)
+    
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
 
     with torch.no_grad():
         # with accelerator.autocast():
-        for i, prompt_dict in enumerate(prompts):
+        with distributed_state.split_between_processes(prompts) as prompt_dict:
             if not accelerator.is_main_process:
                 continue
 
@@ -4767,7 +4784,7 @@ def sample_images_common(
             num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
             seed_suffix = "" if seed is None else f"_{seed}"
             img_filename = (
-                f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
+                f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{prompt_dict["enum"]:02d}{seed_suffix}.png"
             )
 
             image.save(os.path.join(save_dir, img_filename))
