@@ -19,7 +19,7 @@ from typing import (
     Tuple,
     Union,
 )
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs
+from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
 import gc
 import glob
 import math
