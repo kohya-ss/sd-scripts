@@ -4607,7 +4607,7 @@ def line_to_prompt_dict(line: str) -> dict:
     return prompt_dict
 
 def check_vram_usage(at_called_point):
-    return f"Checking VRAM usage at: {at_called_point} on CUDA Device {torch.cuda.current_device()}\ntorch.cuda.memory_allocated: {(torch.cuda.memory_allocated()/1024/1024/1024)}\ntorch.cuda.memory_reserved: {(torch.cuda.memory_reserved()/1024/1024/1024)}\ntorch.cuda.max_memory_reserved: {(torch.cuda.max_memory_reserved()/1024/1024/1024)}\n{torch.cuda.memory_summary()}\n"
+    return f"Checking VRAM usage at: {at_called_point} on CUDA Device {torch.cuda.current_device()}\ntorch.cuda.memory_allocated: {(torch.cuda.memory_allocated()/1024/1024/1024)}\ntorch.cuda.memory_reserved: {(torch.cuda.memory_reserved()/1024/1024/1024)}\ntorch.cuda.max_memory_reserved: {(torch.cuda.max_memory_reserved()/1024/1024/1024)}\n{torch.cuda.memory_summary(None, True)}\n"
 
 def sample_images_common(
     pipe_class,
