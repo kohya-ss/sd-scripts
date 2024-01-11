@@ -4781,8 +4781,9 @@ def sample_images_common(
             ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
             num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
             seed_suffix = "" if seed is None else f"_{seed}"
+            i: int = prompt_dict["enum"]
             img_filename = (
-                f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{prompt_dict["enum"]:02d}{seed_suffix}.png"
+                f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
             )
 
             image.save(os.path.join(save_dir, img_filename))
