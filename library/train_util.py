@@ -4702,7 +4702,6 @@ def sample_images_common(
     print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
-    print(prompts)
     temp_prompts = []
     for i, prompt_dict in enumerate(prompts):
         if isinstance(prompt_dict, str):
@@ -4723,9 +4722,6 @@ def sample_images_common(
 
     prompts = temp_prompts
     del temp_prompts
-
-    print("Debug output of prompts value:")
-    print(prompts)
     
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
@@ -4741,7 +4737,6 @@ def sample_images_common(
                     prompt_dict = line_to_prompt_dict(prompt_dict)
 
                 assert isinstance(prompt_dict, dict)
-                print(prompt_dict)
                 negative_prompt = prompt_dict.get("negative_prompt")
                 sample_steps = prompt_dict.get("sample_steps", 30)
                 width = prompt_dict.get("width", 512)
