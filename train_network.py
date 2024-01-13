@@ -225,13 +225,19 @@ class NetworkTrainer:
         print("preparing accelerator")
         accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
+        if accelerator.is_main_process:
+            accelerator.print(f"Running on main Accelerator on {torch.cuda.current_device()}")
+        else:
+           accelerator. print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
 
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # モデルを読み込む
+        accelerator.print(train_util.check_vram_usage(f"Before load model on {torch.cuda.current_device()}"))
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
+        accelerator.print(train_util.check_vram_usage(f"After load model on {torch.cuda.current_device()}"))
 
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -335,6 +341,7 @@ class NetworkTrainer:
 
         # 学習に必要なクラスを準備する
         accelerator.print("prepare optimizer, data loader etc.")
+        accelerator.print(train_util.check_vram_usage(f"At start of preparations on {torch.cuda.current_device()}"))
 
         # 後方互換性を確保するよ
         try:
