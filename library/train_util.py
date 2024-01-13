@@ -4644,8 +4644,14 @@ def sample_images_common(
         else:
             if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
                 return
+    if accelerator.is_main_process:
+        print(f"Running on main Accelerator on {torch.cuda.current_device()}")
+
+    else:
+        print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
     print(check_vram_usage("Start of Image Sample Generation"))
     distributed_state = PartialState() #testing implementation of multi gpu distributed inference
+    
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
     if not os.path.isfile(args.sample_prompts):
         print(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
@@ -4729,6 +4735,14 @@ def sample_images_common(
     with torch.no_grad():
         # with accelerator.autocast():
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
+            if accelerator.is_main_process:
+                print(f"Running on main Accelerator on {torch.cuda.current_device()}")
+                for prompt_dict in prompt_dict_lists:
+                    print(prompt_dict)
+            else:
+                print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
+                for prompt_dict in prompt_dict_lists:
+                    print(prompt_dict)
             for prompt_dict in prompt_dict_lists:
                 if not accelerator.is_main_process:
                     continue
@@ -4822,10 +4836,9 @@ def sample_images_common(
     print(check_vram_usage("Before clear cache"))
     del pipeline
     print(check_vram_usage("After Del pipeline"))
-    for i in range(torch.cuda.device_count()):
-        with torch.cuda.device(f'cuda:{i}'):
-            torch.cuda.empty_cache()
-            print(check_vram_usage(f"After empty cache on cuda:{i}"))
+    with torch.cuda.device(torch.cuda.current_device()):
+        torch.cuda.empty_cache()
+        print(check_vram_usage(f"After empty cache on cuda:{torch.cuda.current_device()} at end of sample image"))
     
     torch.set_rng_state(rng_state)
     if cuda_rng_state is not None:
