@@ -4744,8 +4744,8 @@ def sample_images_common(
                 for prompt_dict in prompt_dict_lists:
                     print(prompt_dict)
             for prompt_dict in prompt_dict_lists:
-                if not accelerator.is_main_process:
-                    continue
+#                if not accelerator.is_main_process:
+#                    continue
 
                 if isinstance(prompt_dict, str):
                     prompt_dict = line_to_prompt_dict(prompt_dict)
