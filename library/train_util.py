@@ -4732,7 +4732,7 @@ def sample_images_common(
         for i in range(num_of_processes):
             temp_prompts.append([])
         for i in range(len(prompts)):
-            temp_prompts.[i%num_of_processes] = prompts[i]
+            temp_prompts[i%num_of_processes].append(prompts[i])
         prompts=temp_prompts
         del temp_prompts
     print(prompts)
