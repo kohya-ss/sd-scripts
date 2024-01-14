@@ -4708,26 +4708,32 @@ def sample_images_common(
     print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
-    temp_prompts = []
-    for i, prompt_dict in enumerate(prompts):
-        if isinstance(prompt_dict, str):
-            prompt_dict = line_to_prompt_dict(prompt_dict)
-        assert isinstance(prompt_dict, dict)
-        temp_dict: dict = {}
-        temp_dict["negative_prompt"] = prompt_dict.get("negative_prompt")
-        temp_dict["sample_steps"] = prompt_dict.get("sample_steps", 30)
-        temp_dict["width"] = prompt_dict.get("width", 512)
-        temp_dict["height"] = prompt_dict.get("height", 512)
-        temp_dict["scale"] = prompt_dict.get("scale", 7.5)
-        temp_dict["seed"] = prompt_dict.get("seed")
-        temp_dict["controlnet_image"] = prompt_dict.get("controlnet_image")
-        temp_dict["prompt"]: str = prompt_dict.get("prompt", "")
-        temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", args.sample_sampler)
-        temp_dict["enum"] = i
-        temp_prompts.append(temp_dict)
-
-    prompts = temp_prompts
-    del temp_prompts
+    if accelerator.is_main_process:
+        temp_prompts = []
+        for i, prompt_dict in enumerate(prompts):
+            if isinstance(prompt_dict, str):
+                prompt_dict = line_to_prompt_dict(prompt_dict)
+            assert isinstance(prompt_dict, dict)
+            temp_dict: dict = {}
+            temp_dict["negative_prompt"] = prompt_dict.get("negative_prompt")
+            temp_dict["sample_steps"] = prompt_dict.get("sample_steps", 30)
+            temp_dict["width"] = prompt_dict.get("width", 512)
+            temp_dict["height"] = prompt_dict.get("height", 512)
+            temp_dict["scale"] = prompt_dict.get("scale", 7.5)
+            temp_dict["seed"] = prompt_dict.get("seed")
+            temp_dict["controlnet_image"] = prompt_dict.get("controlnet_image")
+            temp_dict["prompt"]: str = prompt_dict.get("prompt", "")
+            temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+            temp_dict["enum"] = i
+            temp_prompts.append(temp_dict)
+        prompts = temp_prompts
+        temp_prompts = []
+        num_of_processes = distributed_state.num_processes
+        for i in range(num_of_processes) temp_prompts.append([])
+        for i in range(len(prompts)) temp_prompts.[i%num_of_processes] = prompts[i]
+        prompts=temp_prompts
+        del temp_prompts
+    print(prompts)
     
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
@@ -4737,13 +4743,13 @@ def sample_images_common(
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
             if accelerator.is_main_process:
                 print(f"Running on main Accelerator on {torch.cuda.current_device()}")
-                for prompt_dict in prompt_dict_lists:
+                for prompt_dict in prompt_dict_lists[0]:
                     print(prompt_dict)
             else:
                 print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
-                for prompt_dict in prompt_dict_lists:
+                for prompt_dict in prompt_dict_lists[0]:
                     print(prompt_dict)
-            for prompt_dict in prompt_dict_lists:
+            for prompt_dict in prompt_dict_lists[0]:
 #                if not accelerator.is_main_process:
 #                    continue
 
