@@ -4729,7 +4729,8 @@ def sample_images_common(
         prompts = temp_prompts
         temp_prompts = []
         num_of_processes = distributed_state.num_processes
-        for i in range(num_of_processes) temp_prompts.append([])
+        for i in range(num_of_processes):
+            temp_prompts.append([])
         for i in range(len(prompts)) temp_prompts.[i%num_of_processes] = prompts[i]
         prompts=temp_prompts
         del temp_prompts
