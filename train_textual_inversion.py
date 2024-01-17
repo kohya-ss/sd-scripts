@@ -7,10 +7,13 @@ import toml
 
 from tqdm import tqdm
 import torch
+
 try:
     import intel_extension_for_pytorch as ipex
+
     if torch.xpu.is_available():
         from library.ipex import ipex_init
+
         ipex_init()
 except Exception:
     pass
@@ -417,15 +420,11 @@ class TextualInversionTrainer:
             text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 text_encoder_or_list, optimizer, train_dataloader, lr_scheduler
             )
-            # transform DDP after prepare
-            text_encoder_or_list, unet = train_util.transform_if_model_is_DDP(text_encoder_or_list, unet)
 
         elif len(text_encoders) == 2:
             text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 text_encoders[0], text_encoders[1], optimizer, train_dataloader, lr_scheduler
             )
-            # transform DDP after prepare
-            text_encoder1, text_encoder2, unet = train_util.transform_if_model_is_DDP(text_encoder1, text_encoder2, unet)
 
             text_encoder_or_list = text_encoders = [text_encoder1, text_encoder2]
 
@@ -444,9 +443,10 @@ class TextualInversionTrainer:
 
             # Freeze all parameters except for the token embeddings in text encoder
             text_encoder.requires_grad_(True)
-            text_encoder.text_model.encoder.requires_grad_(False)
-            text_encoder.text_model.final_layer_norm.requires_grad_(False)
-            text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+            unwrapped_text_encoder = accelerator.unwrap_model(text_encoder)
+            unwrapped_text_encoder.text_model.encoder.requires_grad_(False)
+            unwrapped_text_encoder.text_model.final_layer_norm.requires_grad_(False)
+            unwrapped_text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
             # text_encoder.text_model.embeddings.token_embedding.requires_grad_(True)
 
         unet.requires_grad_(False)
@@ -506,6 +506,8 @@ class TextualInversionTrainer:
 
         if accelerator.is_main_process:
             init_kwargs = {}
+            if args.wandb_run_name:
+                init_kwargs['wandb'] = {'name': args.wandb_run_name}
             if args.log_tracker_config is not None:
                 init_kwargs = toml.load(args.log_tracker_config)
             accelerator.init_trackers(
@@ -530,6 +532,20 @@ class TextualInversionTrainer:
             if os.path.exists(old_ckpt_file):
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
+
+        # For --sample_at_first
+        self.sample_images(
+            accelerator,
+            args,
+            0,
+            global_step,
+            accelerator.device,
+            vae,
+            tokenizer_or_list,
+            text_encoder_or_list,
+            unet,
+            prompt_replacement,
+        )
 
         # training loop
         for epoch in range(num_train_epochs):
@@ -580,7 +596,7 @@ class TextualInversionTrainer:
                     loss = loss * loss_weights
 
                     if args.min_snr_gamma:
-                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
                     if args.scale_v_pred_loss_like_noise_pred:
                         loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                     if args.v_pred_like_loss:
@@ -592,7 +608,7 @@ class TextualInversionTrainer:
 
                     accelerator.backward(loss)
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                        params_to_clip = text_encoder.get_input_embeddings().parameters()
+                        params_to_clip = accelerator.unwrap_model(text_encoder).get_input_embeddings().parameters()
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
@@ -604,9 +620,11 @@ class TextualInversionTrainer:
                         for text_encoder, orig_embeds_params, index_no_updates in zip(
                             text_encoders, orig_embeds_params_list, index_no_updates_list
                         ):
-                            accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                            # if full_fp16/bf16, input_embeddings_weight is fp16/bf16, orig_embeds_params is fp32
+                            input_embeddings_weight = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight
+                            input_embeddings_weight[index_no_updates] = orig_embeds_params.to(input_embeddings_weight.dtype)[
                                 index_no_updates
-                            ] = orig_embeds_params[index_no_updates]
+                            ]
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:

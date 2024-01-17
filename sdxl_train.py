@@ -10,10 +10,13 @@ import toml
 
 from tqdm import tqdm
 import torch
+
 try:
     import intel_extension_for_pytorch as ipex
+
     if torch.xpu.is_available():
         from library.ipex import ipex_init
+
         ipex_init()
 except Exception:
     pass
@@ -73,33 +76,22 @@ def get_block_params_to_optimize(unet: SdxlUNet2DConditionModel, block_lrs: List
 
 
 def append_block_lr_to_logs(block_lrs, logs, lr_scheduler, optimizer_type):
-    lrs = lr_scheduler.get_last_lr()
-
-    lr_index = 0
+    names = []
     block_index = 0
-    while lr_index < len(lrs):
+    while block_index < UNET_NUM_BLOCKS_FOR_BLOCK_LR + 2:
         if block_index < UNET_NUM_BLOCKS_FOR_BLOCK_LR:
-            name = f"block{block_index}"
             if block_lrs[block_index] == 0:
                 block_index += 1
                 continue
+            names.append(f"block{block_index}")
         elif block_index == UNET_NUM_BLOCKS_FOR_BLOCK_LR:
-            name = "text_encoder1"
+            names.append("text_encoder1")
         elif block_index == UNET_NUM_BLOCKS_FOR_BLOCK_LR + 1:
-            name = "text_encoder2"
-        else:
-            raise ValueError(f"unexpected block_index: {block_index}")
+            names.append("text_encoder2")
 
         block_index += 1
 
-        logs["lr/" + name] = float(lrs[lr_index])
-
-        if optimizer_type.lower().startswith("DAdapt".lower()) or optimizer_type.lower() == "Prodigy".lower():
-            logs["lr/d*lr/" + name] = (
-                lr_scheduler.optimizers[-1].param_groups[lr_index]["d"] * lr_scheduler.optimizers[-1].param_groups[lr_index]["lr"]
-            )
-
-        lr_index += 1
+    train_util.append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names)
 
 
 def train(args):
@@ -274,10 +266,11 @@ def train(args):
         accelerator.wait_for_everyone()
 
     # 学習を準備する：モデルを適切な状態にする
-    training_models = []
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
-    training_models.append(unet)
+    train_unet = args.learning_rate > 0
+    train_text_encoder1 = False
+    train_text_encoder2 = False
 
     if args.train_text_encoder:
         # TODO each option for two text encoders?
@@ -285,9 +278,20 @@ def train(args):
         if args.gradient_checkpointing:
             text_encoder1.gradient_checkpointing_enable()
             text_encoder2.gradient_checkpointing_enable()
-        training_models.append(text_encoder1)
-        training_models.append(text_encoder2)
-        # set require_grad=True later
+        lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
+        lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
+        train_text_encoder1 = lr_te1 > 0
+        train_text_encoder2 = lr_te2 > 0
+
+        # caching one text encoder output is not supported
+        if not train_text_encoder1:
+            text_encoder1.to(weight_dtype)
+        if not train_text_encoder2:
+            text_encoder2.to(weight_dtype)
+        text_encoder1.requires_grad_(train_text_encoder1)
+        text_encoder2.requires_grad_(train_text_encoder2)
+        text_encoder1.train(train_text_encoder1)
+        text_encoder2.train(train_text_encoder2)
     else:
         text_encoder1.to(weight_dtype)
         text_encoder2.to(weight_dtype)
@@ -315,21 +319,25 @@ def train(args):
         vae.eval()
         vae.to(accelerator.device, dtype=vae_dtype)
 
-    for m in training_models:
-        m.requires_grad_(True)
+    unet.requires_grad_(train_unet)
+    if not train_unet:
+        unet.to(accelerator.device, dtype=weight_dtype)  # because of unet is not prepared
 
-    if block_lrs is None:
-        params_to_optimize = [
-            {"params": list(training_models[0].parameters()), "lr": args.learning_rate},
-        ]
-    else:
-        params_to_optimize = get_block_params_to_optimize(training_models[0], block_lrs)  # U-Net
+    training_models = []
+    params_to_optimize = []
+    if train_unet:
+        training_models.append(unet)
+        if block_lrs is None:
+            params_to_optimize.append({"params": list(unet.parameters()), "lr": args.learning_rate})
+        else:
+            params_to_optimize.extend(get_block_params_to_optimize(unet, block_lrs))
 
-    for m in training_models[1:]:  # Text Encoders if exists
-        params_to_optimize.append({
-            "params": list(m.parameters()), 
-            "lr": args.learning_rate_te or args.learning_rate
-        })
+    if train_text_encoder1:
+        training_models.append(text_encoder1)
+        params_to_optimize.append({"params": list(text_encoder1.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
+    if train_text_encoder2:
+        training_models.append(text_encoder2)
+        params_to_optimize.append({"params": list(text_encoder2.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
 
     # calculate number of trainable parameters
     n_params = 0
@@ -337,6 +345,7 @@ def train(args):
         for p in params["params"]:
             n_params += p.numel()
 
+    accelerator.print(f"train unet: {train_unet}, text_encoder1: {train_text_encoder1}, text_encoder2: {train_text_encoder2}")
     accelerator.print(f"number of models: {len(training_models)}")
     accelerator.print(f"number of trainable parameters: {n_params}")
 
@@ -388,16 +397,17 @@ def train(args):
         text_encoder2.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.train_text_encoder:
-        unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler
-        )
+    if train_unet:
+        unet = accelerator.prepare(unet)
+    if train_text_encoder1:
+        # freeze last layer and final_layer_norm in te1 since we use the output of the penultimate layer
+        text_encoder1.text_model.encoder.layers[-1].requires_grad_(False)
+        text_encoder1.text_model.final_layer_norm.requires_grad_(False)
+        text_encoder1 = accelerator.prepare(text_encoder1)
+    if train_text_encoder2:
+        text_encoder2 = accelerator.prepare(text_encoder2)
 
-        # transform DDP after prepare
-        text_encoder1, text_encoder2, unet = train_util.transform_models_if_DDP([text_encoder1, text_encoder2, unet])
-    else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
-        (unet,) = train_util.transform_models_if_DDP([unet])
+    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     # TextEncoderの出力をキャッシュするときにはCPUへ移動する
     if args.cache_text_encoder_outputs:
@@ -449,9 +459,16 @@ def train(args):
 
     if accelerator.is_main_process:
         init_kwargs = {}
+        if args.wandb_run_name:
+            init_kwargs['wandb'] = {'name': args.wandb_run_name}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
+
+    # For --sample_at_first
+    sdxl_train_util.sample_images(
+        accelerator, args, 0, global_step, accelerator.device, vae, [tokenizer1, tokenizer2], [text_encoder1, text_encoder2], unet
+    )
 
     loss_recorder = train_util.LossRecorder()
     for epoch in range(num_train_epochs):
@@ -463,7 +480,7 @@ def train(args):
 
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
-            with accelerator.accumulate(training_models[0]):  # 複数モデルに対応していない模様だがとりあえずこうしておく
+            with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
                     latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                 else:
@@ -474,7 +491,7 @@ def train(args):
                         # NaNが含まれていれば警告を表示し0に置き換える
                         if torch.any(torch.isnan(latents)):
                             accelerator.print("NaN found in latents, replacing with zeros")
-                            latents = torch.where(torch.isnan(latents), torch.zeros_like(latents), latents)
+                            latents = torch.nan_to_num(latents, 0, out=latents)
                 latents = latents * sdxl_model_util.VAE_SCALE_FACTOR
 
                 if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
@@ -495,6 +512,7 @@ def train(args):
                         # else:
                         input_ids1 = input_ids1.to(accelerator.device)
                         input_ids2 = input_ids2.to(accelerator.device)
+                        # unwrap_model is fine for models not wrapped by accelerator
                         encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
                             args.max_token_length,
                             input_ids1,
@@ -504,6 +522,7 @@ def train(args):
                             text_encoder1,
                             text_encoder2,
                             None if not args.full_fp16 else weight_dtype,
+                            accelerator=accelerator,
                         )
                 else:
                     encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
@@ -549,7 +568,12 @@ def train(args):
 
                 target = noise
 
-                if args.min_snr_gamma or args.scale_v_pred_loss_like_noise_pred or args.v_pred_like_loss or args.debiased_estimation_loss:
+                if (
+                    args.min_snr_gamma
+                    or args.scale_v_pred_loss_like_noise_pred
+                    or args.v_pred_like_loss
+                    or args.debiased_estimation_loss
+                ):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
                     loss = loss.mean([1, 2, 3])
@@ -623,15 +647,9 @@ def train(args):
             if args.logging_dir is not None:
                 logs = {"loss": current_loss}
                 if block_lrs is None:
-                    logs["lr"] = float(lr_scheduler.get_last_lr()[0])
-                    if (
-                        args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower()
-                    ):  # tracking d*lr value
-                        logs["lr/d*lr"] = (
-                            lr_scheduler.optimizers[0].param_groups[0]["d"] * lr_scheduler.optimizers[0].param_groups[0]["lr"]
-                        )
+                    train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=train_unet)
                 else:
-                    append_block_lr_to_logs(block_lrs, logs, lr_scheduler, args.optimizer_type)
+                    append_block_lr_to_logs(block_lrs, logs, lr_scheduler, args.optimizer_type)  # U-Net is included in block_lrs
 
                 accelerator.log(logs, step=global_step)
 
@@ -727,7 +745,19 @@ def setup_parser() -> argparse.ArgumentParser:
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
     sdxl_train_util.add_sdxl_training_arguments(parser)
-    parser.add_argument("--learning_rate_te", type=float, default=0.0, help="learning rate for text encoder")
+
+    parser.add_argument(
+        "--learning_rate_te1",
+        type=float,
+        default=None,
+        help="learning rate for text encoder 1 (ViT-L) / text encoder 1 (ViT-L)の学習率",
+    )
+    parser.add_argument(
+        "--learning_rate_te2",
+        type=float,
+        default=None,
+        help="learning rate for text encoder 2 (BiG-G) / text encoder 2 (BiG-G)の学習率",
+    )
 
     parser.add_argument("--diffusers_xformers", action="store_true", help="use xformers by diffusers / Diffusersでxformersを使用する")
     parser.add_argument("--train_text_encoder", action="store_true", help="train text encoder / text encoderも学習する")

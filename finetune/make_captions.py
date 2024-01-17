@@ -13,7 +13,7 @@ import torch
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 sys.path.append(os.path.dirname(__file__))
-from blip.blip import blip_decoder
+from blip.blip import blip_decoder, is_url
 import library.train_util as train_util
 from library.utils import get_my_logger
 logger = get_my_logger(__name__)
@@ -78,6 +78,8 @@ def main(args):
         cwd = os.getcwd()
         logger.info(f"Current Working Directory is: {cwd}")
         os.chdir("finetune")
+        if not is_url(args.caption_weights) and not os.path.isfile(args.caption_weights):
+            args.caption_weights = os.path.join("..", args.caption_weights)
 
     logger.info(f"load images from {args.train_data_dir}")
     train_data_dir_path = Path(args.train_data_dir)
