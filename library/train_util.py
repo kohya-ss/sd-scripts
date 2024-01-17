@@ -368,7 +368,6 @@ class BaseSubset:
         self.num_repeats = num_repeats
         self.shuffle_caption = shuffle_caption
         self.caption_separator = caption_separator
-        self.caption_separator = caption_separator
         self.keep_tokens = keep_tokens
         self.keep_tokens_separator = keep_tokens_separator
         self.color_aug = color_aug
