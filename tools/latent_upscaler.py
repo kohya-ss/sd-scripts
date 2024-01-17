@@ -14,8 +14,10 @@ import torch
 from torch import nn
 from tqdm import tqdm
 from PIL import Image
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels=None, kernel_size=3, stride=1, padding=1):

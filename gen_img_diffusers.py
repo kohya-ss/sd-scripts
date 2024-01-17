@@ -109,8 +109,10 @@ from library.original_unet import UNet2DConditionModel, InferUNet2DConditionMode
 from library.original_unet import FlashAttentionFunction
 
 from XTI_hijack import unet_forward_XTI, downblock_forward_XTI, upblock_forward_XTI
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # scheduler:
 SCHEDULER_LINEAR_START = 0.00085

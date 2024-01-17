@@ -4,8 +4,10 @@ from pathlib import Path
 import argparse
 import os
 from library.utils import fire_in_thread
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def exists_repo(repo_id: str, repo_type: str, revision: str = "main", token: str = None):
     api = HfApi(

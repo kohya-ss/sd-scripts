@@ -6,8 +6,10 @@ import shutil
 import math
 from PIL import Image
 import numpy as np
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divisible_by=2, interpolation=None, save_as_png=False, copy_associated_files=False):
   # Split the max_resolution string by "," and strip any whitespaces

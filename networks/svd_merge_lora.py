@@ -8,8 +8,10 @@ from tqdm import tqdm
 from library import sai_model_spec, train_util
 import library.model_util as model_util
 import lora
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 CLAMP_QUANTILE = 0.99
 

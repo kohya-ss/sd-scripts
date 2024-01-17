@@ -10,8 +10,10 @@ import numpy as np
 from tqdm import tqdm
 from transformers import CLIPTextModel
 import torch
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def make_unet_conversion_map() -> Dict[str, str]:
     unet_conversion_map_layer = []

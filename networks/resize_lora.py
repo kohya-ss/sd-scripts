@@ -8,8 +8,10 @@ from safetensors.torch import load_file, save_file, safe_open
 from tqdm import tqdm
 from library import train_util, model_util
 import numpy as np
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 MIN_SV = 1e-6
 

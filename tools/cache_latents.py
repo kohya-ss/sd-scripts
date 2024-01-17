@@ -16,8 +16,10 @@ from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
 )
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def cache_to_disk(args: argparse.Namespace) -> None:
     train_util.prepare_dataset_args(args, True)

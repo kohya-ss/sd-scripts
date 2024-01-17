@@ -5,8 +5,10 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def is_unet_key(key):
     # VAE or TextEncoder, the last one is for SDXL

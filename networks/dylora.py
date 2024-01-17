@@ -15,8 +15,10 @@ import random
 from typing import List, Tuple, Union
 import torch
 from torch import nn
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 class DyLoRAModule(torch.nn.Module):
     """

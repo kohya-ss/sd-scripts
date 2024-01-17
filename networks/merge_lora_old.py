@@ -6,8 +6,10 @@ import torch
 from safetensors.torch import load_file, save_file
 import library.model_util as model_util
 import lora
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def load_state_dict(file_name, dtype):
   if os.path.splitext(file_name)[1] == '.safetensors':

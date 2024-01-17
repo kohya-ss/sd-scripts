@@ -25,8 +25,10 @@ from safetensors.torch import load_file
 
 from library import model_util, sdxl_model_util
 import networks.lora as lora
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # scheduler: このあたりの設定はSD1/2と同じでいいらしい
 # scheduler: The settings around here seem to be the same as SD1/2

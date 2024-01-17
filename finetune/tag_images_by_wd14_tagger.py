@@ -11,8 +11,10 @@ from PIL import Image
 from tqdm import tqdm
 
 import library.train_util as train_util
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # from wd14 tagger
 IMAGE_SIZE = 448

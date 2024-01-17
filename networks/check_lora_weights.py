@@ -2,8 +2,10 @@ import argparse
 import os
 import torch
 from safetensors.torch import load_file
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def main(file):
     logger.info(f"loading: {file}")

@@ -39,8 +39,10 @@ from .train_util import (
   ControlNetDataset,
   DatasetGroup,
 )
-from .utils import get_my_logger
-logger = get_my_logger(__name__)
+from .utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def add_config_arguments(parser: argparse.ArgumentParser):
   parser.add_argument("--dataset_config", type=Path, default=None, help="config file for detail settings / 詳細な設定用の設定ファイル")

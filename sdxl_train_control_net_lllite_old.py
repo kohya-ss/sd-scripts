@@ -43,8 +43,10 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
 )
 import networks.control_net_lllite as control_net_lllite
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # TODO 他のスクリプトと共通化する
 def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler):

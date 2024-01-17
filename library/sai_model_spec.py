@@ -5,8 +5,10 @@ from io import BytesIO
 import os
 from typing import List, Optional, Tuple, Union
 import safetensors
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 r"""
 # Metadata Example

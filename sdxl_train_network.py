@@ -12,8 +12,10 @@ except Exception:
     pass
 from library import sdxl_model_util, sdxl_train_util, train_util
 import train_network
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 class SdxlNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):

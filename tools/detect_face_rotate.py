@@ -15,8 +15,10 @@ import os
 from anime_face_detector import create_detector
 from tqdm import tqdm
 import numpy as np
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 KP_REYE = 11
 KP_LEYE = 19

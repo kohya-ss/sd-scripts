@@ -6,8 +6,10 @@ import re
 from typing import Optional, List, Type
 import torch
 from library import sdxl_original_unet
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # input_blocksに適用するかどうか / if True, input_blocks are not applied
 SKIP_INPUT_BLOCKS = False

@@ -3,8 +3,10 @@ import argparse
 import random
 import re
 from typing import List, Optional, Union
-from .utils import get_my_logger
-logger = get_my_logger(__name__)
+from .utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def prepare_scheduler_for_custom_training(noise_scheduler, device):
     if hasattr(noise_scheduler, "all_snr"):

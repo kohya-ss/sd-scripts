@@ -6,8 +6,10 @@ import torch
 from diffusers import StableDiffusionPipeline
 
 import library.model_util as model_util
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def convert(args):
     # 引数を確認する

@@ -1,8 +1,10 @@
 import contextlib
 import torch
 import intel_extension_for_pytorch as ipex # pylint: disable=import-error, unused-import
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # pylint: disable=protected-access, missing-function-docstring, line-too-long, unnecessary-lambda, no-else-return
 

@@ -25,8 +25,10 @@ from diffusers import DDPMScheduler
 from library import sdxl_model_util
 
 import library.train_util as train_util
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 import library.config_util as config_util
 import library.sdxl_train_util as sdxl_train_util
 from library.config_util import (

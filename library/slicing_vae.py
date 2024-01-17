@@ -26,8 +26,10 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.unet_2d_blocks import UNetMidBlock2D, get_down_block, get_up_block
 from diffusers.models.vae import DecoderOutput, DiagonalGaussianDistribution
 from diffusers.models.autoencoder_kl import AutoencoderKLOutput
-from .utils import get_my_logger
-logger = get_my_logger(__name__)
+from .utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 def slice_h(x, num_slices):
     # slice with pad 1 both sides: to eliminate side effect of padding of conv2d

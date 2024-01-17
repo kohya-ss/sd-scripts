@@ -8,8 +8,10 @@ import json
 import re
 
 from tqdm import tqdm
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 PATTERN_HAIR_LENGTH = re.compile(r', (long|short|medium) hair, ')
 PATTERN_HAIR_CUT = re.compile(r', (bob|hime) cut, ')

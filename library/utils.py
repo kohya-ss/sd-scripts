@@ -5,17 +5,20 @@ import logging
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
 
-def get_my_logger(name: str):
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+def setup_logging(log_level=logging.INFO):
+    if logging.root.handlers:  # Already configured
+        return
+    try:
+        from rich.logging import RichHandler
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
+        handler = RichHandler()
+    except ImportError:
+        handler = logging.StreamHandler()
 
-    myformat = '%(asctime)s\t[%(levelname)s]\t%(filename)s:%(lineno)d\t%(message)s'
-    date_format = '%Y-%m-%d %H:%M:%S'
-    formatter = logging.Formatter(myformat, date_format)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-
-    return logger
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    logging.root.setLevel(log_level)
+    logging.root.addHandler(handler)

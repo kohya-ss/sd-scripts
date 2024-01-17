@@ -30,8 +30,10 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
-from .utils import get_my_logger
-logger = get_my_logger(__name__)
+from .utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 IN_CHANNELS: int = 4
 OUT_CHANNELS: int = 4

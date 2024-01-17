@@ -23,8 +23,10 @@ except Exception:
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 
-from library.utils import get_my_logger
-logger = get_my_logger(__name__)
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 import library.train_util as train_util
 import library.config_util as config_util
 from library.config_util import (
