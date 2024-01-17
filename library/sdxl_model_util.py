@@ -134,7 +134,7 @@ def convert_sdxl_text_encoder_2_checkpoint(checkpoint, max_length):
 
     # temporary workaround for text_projection.weight.weight for Playground-v2
     if "text_projection.weight.weight" in new_sd:
-        print(f"convert_sdxl_text_encoder_2_checkpoint: convert text_projection.weight.weight to text_projection.weight")
+        logger.info("convert_sdxl_text_encoder_2_checkpoint: convert text_projection.weight.weight to text_projection.weight")
         new_sd["text_projection.weight"] = new_sd["text_projection.weight.weight"]
         del new_sd["text_projection.weight.weight"]
 

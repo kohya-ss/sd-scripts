@@ -3184,35 +3184,35 @@ def main(args):
                             m = re.match(r"dsd1 ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # deep shrink depth 1
                                 ds_depth_1 = int(m.group(1))
-                                print(f"deep shrink depth 1: {ds_depth_1}")
+                                logger.info(f"deep shrink depth 1: {ds_depth_1}")
                                 continue
 
                             m = re.match(r"dst1 ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # deep shrink timesteps 1
                                 ds_timesteps_1 = int(m.group(1))
                                 ds_depth_1 = ds_depth_1 if ds_depth_1 is not None else -1  # -1 means override
-                                print(f"deep shrink timesteps 1: {ds_timesteps_1}")
+                                logger.info(f"deep shrink timesteps 1: {ds_timesteps_1}")
                                 continue
 
                             m = re.match(r"dsd2 ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # deep shrink depth 2
                                 ds_depth_2 = int(m.group(1))
                                 ds_depth_1 = ds_depth_1 if ds_depth_1 is not None else -1  # -1 means override
-                                print(f"deep shrink depth 2: {ds_depth_2}")
+                                logger.info(f"deep shrink depth 2: {ds_depth_2}")
                                 continue
 
                             m = re.match(r"dst2 ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # deep shrink timesteps 2
                                 ds_timesteps_2 = int(m.group(1))
                                 ds_depth_1 = ds_depth_1 if ds_depth_1 is not None else -1  # -1 means override
-                                print(f"deep shrink timesteps 2: {ds_timesteps_2}")
+                                logger.info(f"deep shrink timesteps 2: {ds_timesteps_2}")
                                 continue
 
                             m = re.match(r"dsr ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # deep shrink ratio
                                 ds_ratio = float(m.group(1))
-                                ds_depth_1 = ds_depth_1 if ds_depth_1 is not None else -1  # -1 means override
-                                print(f"deep shrink ratio: {ds_ratio}")
+                                 ds_depth_1 = ds_depth_1 if ds_depth_1 is not None else -1  # -1 means override
+                                logger.info(f"deep shrink ratio: {ds_ratio}")
                                 continue
 
                         except ValueError as ex:
