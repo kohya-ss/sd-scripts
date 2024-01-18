@@ -3380,9 +3380,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
     if not args.resume_from_huggingface:
         print(f"resume training from local state: {args.resume}")
-        print(check_vram_usage(f"Before loading state from {args.resume}"))
         accelerator.load_state(args.resume)
-        print(check_vram_usage(f"After loading state from {args.resume}"))
         return
 
     print(f"resume training from huggingface state: {args.resume}")
@@ -3424,9 +3422,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
     if len(results) == 0:
         raise ValueError("No files found in the specified repo id/path/revision / 指定されたリポジトリID/パス/リビジョンにファイルが見つかりませんでした")
     dirname = os.path.dirname(results[0])
-    print(check_vram_usage(f"Before loading huggingface state from {args.resume}"))
     accelerator.load_state(dirname)
-    print(check_vram_usage(f"After loading huggingface state from {args.resume}"))
 
 
 def get_optimizer(args, trainable_params):
@@ -4610,9 +4606,6 @@ def line_to_prompt_dict(line: str) -> dict:
 
     return prompt_dict
 
-def check_vram_usage(at_called_point):
-    return f"\nChecking VRAM usage at: {at_called_point} on CUDA Device {torch.cuda.current_device()}\ntorch.cuda.memory_allocated: {(torch.cuda.memory_allocated()/1024/1024/1024)}\ntorch.cuda.memory_reserved: {(torch.cuda.memory_reserved()/1024/1024/1024)}\ntorch.cuda.max_memory_reserved: {(torch.cuda.max_memory_reserved()/1024/1024/1024)}\n{torch.cuda.memory_summary(None, True)}\n"
-
 def sample_images_common(
     pipe_class,
     accelerator: Accelerator,
@@ -4649,7 +4642,6 @@ def sample_images_common(
 
     else:
         print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
-    print(check_vram_usage("Start of Image Sample Generation"))
     distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
@@ -4659,7 +4651,6 @@ def sample_images_common(
 
     org_vae_device = vae.device  # CPUにいるはず
     vae.to(distributed_state.device)
-    print(check_vram_usage("after load VAE"))
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
@@ -4667,7 +4658,6 @@ def sample_images_common(
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
         text_encoder = accelerator.unwrap_model(text_encoder)
-    print(check_vram_usage("after load UNET"))
 
     # read prompts
 
@@ -4692,7 +4682,6 @@ def sample_images_common(
         v_parameterization=args.v_parameterization,
     )
     schedulers[args.sample_sampler] = default_scheduler
-    print(check_vram_usage("Before create pipeline"))
     pipeline = pipe_class(
         text_encoder=text_encoder,
         vae=vae,
@@ -4705,7 +4694,6 @@ def sample_images_common(
         clip_skip=args.clip_skip,
     )
     pipeline.to(distributed_state.device)
-    print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
     temp_prompts = []
@@ -4713,6 +4701,7 @@ def sample_images_common(
         if isinstance(prompt_dict, str):
             prompt_dict = line_to_prompt_dict(prompt_dict)
         assert isinstance(prompt_dict, dict)
+        # Adds an enumerator to the dict based on prompt position. Used later to name image files.
         temp_dict: dict = {}
         temp_dict["negative_prompt"] = prompt_dict.get("negative_prompt")
         temp_dict["sample_steps"] = prompt_dict.get("sample_steps", 30)
@@ -4728,6 +4717,8 @@ def sample_images_common(
     prompts = temp_prompts
     temp_prompts = []
     num_of_processes = distributed_state.num_processes
+    # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
+    # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
     for i in range(num_of_processes):
         temp_prompts.append([])
     for i in range(len(prompts)):
@@ -4751,11 +4742,9 @@ def sample_images_common(
                 for prompt_dict in prompt_dict_lists[0]:
                     print(prompt_dict)
             for prompt_dict in prompt_dict_lists[0]:
+# Allow run on main and sub processes
 #                if not accelerator.is_main_process:
 #                    continue
-
-                if isinstance(prompt_dict, str):
-                    prompt_dict = line_to_prompt_dict(prompt_dict)
 
                 assert isinstance(prompt_dict, dict)
                 negative_prompt = prompt_dict.get("negative_prompt")
@@ -4814,7 +4803,6 @@ def sample_images_common(
                     )
 
                 image = pipeline.latents_to_image(latents)[0]
-                print(check_vram_usage("After generate Latents"))
 
                 ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
                 num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
@@ -4825,7 +4813,6 @@ def sample_images_common(
                 )
 
                 image.save(os.path.join(save_dir, img_filename))
-                print(check_vram_usage(f"After save {img_filename}"))
 
             # wandb有効時のみログを送信
                 try:
@@ -4840,19 +4827,14 @@ def sample_images_common(
                     pass
 
     # clear pipeline and cache to reduce vram usage
-    print(check_vram_usage("Before clear cache"))
     del pipeline
-    print(check_vram_usage("After Del pipeline"))
     with torch.cuda.device(torch.cuda.current_device()):
         torch.cuda.empty_cache()
-        print(check_vram_usage(f"After empty cache on cuda:{torch.cuda.current_device()} at end of sample image"))
     
     torch.set_rng_state(rng_state)
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
-    print(check_vram_usage(f"After load VAE on {org_vae_device}"))
-
 
 # endregion
 
