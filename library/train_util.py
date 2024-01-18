@@ -4809,7 +4809,7 @@ def sample_images_common(
                 seed_suffix = "" if seed is None else f"_{seed}"
                 i: int = prompt_dict["enum"]
                 img_filename = (
-                    f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{'' if seed is None else '_' + seed_suffix}.png"
+                    f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
                 )
 
                 image.save(os.path.join(save_dir, img_filename))
