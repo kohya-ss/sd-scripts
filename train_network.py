@@ -396,6 +396,9 @@ class NetworkTrainer:
             assert (
                 torch.__version__ >= '2.1.0'
             ), "fp8_base requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0が必要です。"
+            assert (
+                args.mixed_precision != 'no'
+            ), "fp8_base requires mixed precision='fp16' or 'bf16' / fp8を使う場合はmixed_precision='fp16'または'bf16'が必要です。"
             accelerator.print("enable fp8 training.")
             unet_weight_dtype = torch.float8_e4m3fn
             te_weight_dtype = torch.float8_e4m3fn
