@@ -4701,7 +4701,7 @@ def sample_images_common(
         if isinstance(prompt_dict, str):
             prompt_dict = line_to_prompt_dict(prompt_dict)
         assert isinstance(prompt_dict, dict)
-        # Adds an enumerator to the dict based on prompt position. Used later to name image files.
+        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
         temp_dict: dict = {}
         temp_dict["negative_prompt"] = prompt_dict.get("negative_prompt")
         temp_dict["sample_steps"] = prompt_dict.get("sample_steps", 30)
@@ -4725,7 +4725,6 @@ def sample_images_common(
         temp_prompts[i%num_of_processes].append(prompts[i])
     prompts=temp_prompts
     del temp_prompts
-    print(prompts)
     
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
@@ -4734,13 +4733,6 @@ def sample_images_common(
         # with accelerator.autocast():
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
             if accelerator.is_main_process:
-                print(f"Running on main Accelerator on {torch.cuda.current_device()}")
-                for prompt_dict in prompt_dict_lists[0]:
-                    print(prompt_dict)
-            else:
-                print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
-                for prompt_dict in prompt_dict_lists[0]:
-                    print(prompt_dict)
             for prompt_dict in prompt_dict_lists[0]:
 # Allow run on main and sub processes
 #                if not accelerator.is_main_process:
@@ -4803,7 +4795,7 @@ def sample_images_common(
                     )
 
                 image = pipeline.latents_to_image(latents)[0]
-
+                # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
                 ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
                 num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
                 seed_suffix = "" if seed is None else f"_{seed}"
