@@ -4720,7 +4720,7 @@ def sample_images_common(
     with torch.no_grad():
         with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
              for prompt_dict in prompt_dict_lists[0]:
-                 sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict, controlnet=controlnet)
+                 sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, controlnet=controlnet)
 
 
     # clear pipeline and cache to reduce vram usage
@@ -4766,7 +4766,7 @@ def generate_per_device_prompt_list(prompts, num_of_processes, default_sampler, 
         per_process_prompts[i % num_of_processes].append(prompt)
     return per_process_prompts
 
-def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, pipeline, save_dir, prompt_dict, controlnet=None):
+def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, pipeline, save_dir, prompt_dict, epoch, steps, controlnet=None):
     assert isinstance(prompt_dict, dict)
     negative_prompt = prompt_dict.get("negative_prompt")
     sample_steps = prompt_dict.get("sample_steps", 30)
