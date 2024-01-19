@@ -4654,11 +4654,7 @@ def sample_images_common(
         else:
             if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
                 return
-    if accelerator.is_main_process:
-        print(f"Running on main Accelerator on {torch.cuda.current_device()}")
 
-    else:
-        print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
     distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
@@ -4693,12 +4689,12 @@ def sample_images_common(
         with open(args.sample_prompts, "r", encoding="utf-8") as f:
             prompts = json.load(f)
 
-    schedulers: dict = {}
+    # schedulers: dict = {}  cannot find where this is used
     default_scheduler = get_my_scheduler(
         sample_sampler=args.sample_sampler,
         v_parameterization=args.v_parameterization,
     )
-    schedulers[args.sample_sampler] = default_scheduler
+    # schedulers[args.sample_sampler] = default_scheduler
     pipeline = pipe_class(
         text_encoder=text_encoder,
         vae=vae,
@@ -4716,7 +4712,7 @@ def sample_images_common(
     
     # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
     # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
-    per_process_prompts = generate_per_device_prompt_list(prompts, num_of_processes = distributed_state.num_processes, prompt_replacement)
+    per_process_prompts = generate_per_device_prompt_list(prompts, num_of_processes = distributed_state.num_processes, default_sampler = args.sample_sampler, prompt_replacement)
 
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
@@ -4737,7 +4733,7 @@ def sample_images_common(
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
 
-def generate_per_device_prompt_list(prompts, num_of_processes, prompt_replacement=None):
+def generate_per_device_prompt_list(prompts, num_of_processes, default_sampler, prompt_replacement=None):
     temp_prompts = []
     for i, prompt_dict in enumerate(prompts):
         if isinstance(prompt_dict, str):
@@ -4753,7 +4749,7 @@ def generate_per_device_prompt_list(prompts, num_of_processes, prompt_replacemen
         temp_dict["seed"] = prompt_dict.get("seed")
         temp_dict["controlnet_image"] = prompt_dict.get("controlnet_image")
         temp_dict["prompt"]: str = prompt_dict.get("prompt", "")
-        temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+        temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", default_sampler)
         temp_dict["enum"] = i
         # Refactor prompt replacement to here in order to simplify sample_image_inference function.
         if prompt_replacement is not None:
@@ -4780,19 +4776,16 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
     seed = prompt_dict.get("seed")
     controlnet_image = prompt_dict.get("controlnet_image")
     prompt: str = prompt_dict.get("prompt", "")
-    sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+    sampler_name: str = prompt_dict.get("sample_sampler")
 
     if seed is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
 
-    scheduler = schedulers.get(sampler_name)
-    if scheduler is None:
-        scheduler = get_my_scheduler(
-            sample_sampler=sampler_name,
-            v_parameterization=args.v_parameterization,
-        )
-        schedulers[sampler_name] = scheduler
+    scheduler = get_my_scheduler(
+        sample_sampler=sampler_name,
+        v_parameterization=args.v_parameterization,
+    )
     pipeline.scheduler = scheduler
 
     if controlnet_image is not None:
