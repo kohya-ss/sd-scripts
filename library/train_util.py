@@ -4719,10 +4719,8 @@ def sample_images_common(
 
     with torch.no_grad():
         with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
-            print(prompt_dict_lists)
-            for prompt_dict in prompt_dict_lists[0]:
-                print(prompt_dict)
-                sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
+             for prompt_dict in prompt_dict_lists[0]:
+                 sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
 
 
     # clear pipeline and cache to reduce vram usage
@@ -4803,43 +4801,43 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
         print(f"sample_steps: {sample_steps}")
         print(f"scale: {scale}")
         print(f"sample_sampler: {sampler_name}")
-        if seed is not None:
-            print(f"seed: {seed}")
-        with accelerator.autocast():
-            latents = pipeline(
-                prompt=prompt,
-                height=height,
-                width=width,
-                num_inference_steps=sample_steps,
-                guidance_scale=scale,
-                negative_prompt=negative_prompt,
-                controlnet=controlnet,
-                controlnet_image=controlnet_image,
-            )
-
-        image = pipeline.latents_to_image(latents)[0]
-        # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
-        ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-        num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
-        seed_suffix = "" if seed is None else f"_{seed}"
-        i: int = prompt_dict["enum"]
-        img_filename = (
-            f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
+    if seed is not None:
+        print(f"seed: {seed}")
+    with accelerator.autocast():
+        latents = pipeline(
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_inference_steps=sample_steps,
+            guidance_scale=scale,
+            negative_prompt=negative_prompt,
+            controlnet=controlnet,
+            controlnet_image=controlnet_image,
         )
 
-        image.save(os.path.join(save_dir, img_filename))
+    image = pipeline.latents_to_image(latents)[0]
+    # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
+    ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
+    num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
+    seed_suffix = "" if seed is None else f"_{seed}"
+    i: int = prompt_dict["enum"]
+    img_filename = (
+        f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
+    )
+
+    image.save(os.path.join(save_dir, img_filename))
 
     # wandb有効時のみログを送信
+    try:
+        wandb_tracker = accelerator.get_tracker("wandb")
         try:
-            wandb_tracker = accelerator.get_tracker("wandb")
-            try:
-                import wandb
-            except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-                raise ImportError("No wandb / wandb がインストールされていないようです")
+            import wandb
+        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
+            raise ImportError("No wandb / wandb がインストールされていないようです")
 
-            wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-        except:  # wandb 無効時
-            pass
+        wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
+    except:  # wandb 無効時
+        pass
 # endregion
 
 
