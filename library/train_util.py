@@ -4826,7 +4826,9 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
     )
 
     image.save(os.path.join(save_dir, img_filename))
-
+    if seed is not None:
+        torch.seed()
+        torch.cuda.seed()
     # wandb有効時のみログを送信
     try:
         wandb_tracker = accelerator.get_tracker("wandb")
