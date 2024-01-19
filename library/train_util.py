@@ -4792,15 +4792,15 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
         controlnet_image = Image.open(controlnet_image).convert("RGB")
         controlnet_image = controlnet_image.resize((width, height), Image.LANCZOS)
 
-        height = max(64, height - height % 8)  # round to divisible by 8
-        width = max(64, width - width % 8)  # round to divisible by 8
-        print(f"prompt: {prompt}")
-        print(f"negative_prompt: {negative_prompt}")
-        print(f"height: {height}")
-        print(f"width: {width}")
-        print(f"sample_steps: {sample_steps}")
-        print(f"scale: {scale}")
-        print(f"sample_sampler: {sampler_name}")
+    height = max(64, height - height % 8)  # round to divisible by 8
+    width = max(64, width - width % 8)  # round to divisible by 8
+    print(f"prompt: {prompt}")
+    print(f"negative_prompt: {negative_prompt}")
+    print(f"height: {height}")
+    print(f"width: {width}")
+    print(f"sample_steps: {sample_steps}")
+    print(f"scale: {scale}")
+    print(f"sample_sampler: {sampler_name}")
     if seed is not None:
         print(f"seed: {seed}")
     with accelerator.autocast():
