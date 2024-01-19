@@ -4794,7 +4794,7 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
 
     height = max(64, height - height % 8)  # round to divisible by 8
     width = max(64, width - width % 8)  # round to divisible by 8
-    print(f"prompt: {prompt}")
+    print(f"\nprompt: {prompt}")
     print(f"negative_prompt: {negative_prompt}")
     print(f"height: {height}")
     print(f"width: {width}")
