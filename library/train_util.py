@@ -4713,6 +4713,31 @@ def sample_images_common(
     pipeline.to(distributed_state.device)
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
+    # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
+    per_process_prompts = generate_per_device_prompt_list(prompts, num_of_processes = distributed_state.num_processes, prompt_replacement)
+
+    rng_state = torch.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+
+    with torch.no_grad():
+        with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
+            for prompt_dict in prompt_dict_lists[0]:
+                sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
+
+
+    # clear pipeline and cache to reduce vram usage
+    del pipeline
+    with torch.cuda.device(torch.cuda.current_device()):
+        torch.cuda.empty_cache()
+    
+    torch.set_rng_state(rng_state)
+    if cuda_rng_state is not None:
+        torch.cuda.set_rng_state(cuda_rng_state)
+    vae.to(org_vae_device)
+
+def generate_per_device_prompt_list(prompts, num_of_processes, prompt_replacement=None):
     temp_prompts = []
     for i, prompt_dict in enumerate(prompts):
         if isinstance(prompt_dict, str):
@@ -4732,40 +4757,18 @@ def sample_images_common(
         temp_dict["enum"] = i
         # Refactor prompt replacement to here in order to simplify sample_image_inference function.
         if prompt_replacement is not None:
-            prompt = temp_dict["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
-            temp_dict["prompt"] = prompt
+            temp_dict["prompt"] = temp_dict["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
             if temp_dict["negative_prompt"] is not None:
-                neg_prompt = temp_dict["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
-                temp_dict["negative_prompt"] = neg_prompt
+                temp_dict["negative_prompt"] = temp_dict["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
         temp_prompts.append(temp_dict)
     prompts = temp_prompts
-    del temp_prompts
-    
-    num_of_processes = distributed_state.num_processes
+   
     # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
     # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
-    per_process_prompts = [[] for for i in range(num_of_processes)]
+    per_process_prompts = [[] for i in range(num_of_processes)]
     for i, prompt in enumerate(prompts):
         per_process_prompts[i % num_of_processes].append(prompt)
-    
-    rng_state = torch.get_rng_state()
-    cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
-
-    with torch.no_grad():
-        with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
-            for prompt_dict in prompt_dict_lists[0]:
-                sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
-
-
-    # clear pipeline and cache to reduce vram usage
-    del pipeline
-    with torch.cuda.device(torch.cuda.current_device()):
-        torch.cuda.empty_cache()
-    
-    torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state)
-    vae.to(org_vae_device)
+    return per_process_prompts
 
 def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, pipeline, save_dir, prompt_dict):
     assert isinstance(prompt_dict, dict)
