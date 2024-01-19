@@ -4716,6 +4716,9 @@ def sample_images_common(
 
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    # True random sample image generation
+    torch.seed()
+    torch.cuda.seed()
 
     with torch.no_grad():
         with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
