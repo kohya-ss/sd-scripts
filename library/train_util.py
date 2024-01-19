@@ -4730,8 +4730,17 @@ def sample_images_common(
         temp_dict["prompt"]: str = prompt_dict.get("prompt", "")
         temp_dict["sample_sampler"]: str = prompt_dict.get("sample_sampler", args.sample_sampler)
         temp_dict["enum"] = i
+        # Refactor prompt replacement to here in order to simplify sample_image_inference function.
+        if prompt_replacement is not None:
+            prompt = temp_dict["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
+            temp_dict["prompt"] = prompt
+            if temp_dict["negative_prompt"] is not None:
+                neg_prompt = temp_dict["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
+                temp_dict["negative_prompt"] = neg_prompt
         temp_prompts.append(temp_dict)
     prompts = temp_prompts
+    del temp_prompts
+    
     num_of_processes = distributed_state.num_processes
     # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
     # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
@@ -4743,93 +4752,10 @@ def sample_images_common(
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
 
     with torch.no_grad():
-        # with accelerator.autocast():
-        with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
-            if accelerator.is_main_process:
+        with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
             for prompt_dict in prompt_dict_lists[0]:
-# Allow run on main and sub processes
-#                if not accelerator.is_main_process:
-#                    continue
+                sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
 
-                assert isinstance(prompt_dict, dict)
-                negative_prompt = prompt_dict.get("negative_prompt")
-                sample_steps = prompt_dict.get("sample_steps", 30)
-                width = prompt_dict.get("width", 512)
-                height = prompt_dict.get("height", 512)
-                scale = prompt_dict.get("scale", 7.5)
-                seed = prompt_dict.get("seed")
-                controlnet_image = prompt_dict.get("controlnet_image")
-                prompt: str = prompt_dict.get("prompt", "")
-                sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
-
-                if seed is not None:
-                    torch.manual_seed(seed)
-                    torch.cuda.manual_seed(seed)
-
-                scheduler = schedulers.get(sampler_name)
-                if scheduler is None:
-                    scheduler = get_my_scheduler(
-                        sample_sampler=sampler_name,
-                        v_parameterization=args.v_parameterization,
-                    )
-                    schedulers[sampler_name] = scheduler
-                pipeline.scheduler = scheduler
-
-                if prompt_replacement is not None:
-                    prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
-                    if negative_prompt is not None:
-                        negative_prompt = negative_prompt.replace(prompt_replacement[0], prompt_replacement[1])
-
-                if controlnet_image is not None:
-                    controlnet_image = Image.open(controlnet_image).convert("RGB")
-                    controlnet_image = controlnet_image.resize((width, height), Image.LANCZOS)
-
-                height = max(64, height - height % 8)  # round to divisible by 8
-                width = max(64, width - width % 8)  # round to divisible by 8
-                print(f"prompt: {prompt}")
-                print(f"negative_prompt: {negative_prompt}")
-                print(f"height: {height}")
-                print(f"width: {width}")
-                print(f"sample_steps: {sample_steps}")
-                print(f"scale: {scale}")
-                print(f"sample_sampler: {sampler_name}")
-                if seed is not None:
-                    print(f"seed: {seed}")
-                with accelerator.autocast():
-                    latents = pipeline(
-                        prompt=prompt,
-                        height=height,
-                        width=width,
-                        num_inference_steps=sample_steps,
-                        guidance_scale=scale,
-                        negative_prompt=negative_prompt,
-                        controlnet=controlnet,
-                        controlnet_image=controlnet_image,
-                    )
-
-                image = pipeline.latents_to_image(latents)[0]
-                # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
-                ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-                num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
-                seed_suffix = "" if seed is None else f"_{seed}"
-                i: int = prompt_dict["enum"]
-                img_filename = (
-                    f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
-                )
-
-                image.save(os.path.join(save_dir, img_filename))
-
-            # wandb有効時のみログを送信
-                try:
-                    wandb_tracker = accelerator.get_tracker("wandb")
-                    try:
-                        import wandb
-                    except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-                        raise ImportError("No wandb / wandb がインストールされていないようです")
-
-                    wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-                except:  # wandb 無効時
-                    pass
 
     # clear pipeline and cache to reduce vram usage
     del pipeline
@@ -4841,7 +4767,85 @@ def sample_images_common(
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
 
+def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, pipeline, save_dir, prompt_dict):
+    assert isinstance(prompt_dict, dict)
+    negative_prompt = prompt_dict.get("negative_prompt")
+    sample_steps = prompt_dict.get("sample_steps", 30)
+    width = prompt_dict.get("width", 512)
+    height = prompt_dict.get("height", 512)
+    scale = prompt_dict.get("scale", 7.5)
+    seed = prompt_dict.get("seed")
+    controlnet_image = prompt_dict.get("controlnet_image")
+    prompt: str = prompt_dict.get("prompt", "")
+    sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+
+    scheduler = schedulers.get(sampler_name)
+    if scheduler is None:
+        scheduler = get_my_scheduler(
+            sample_sampler=sampler_name,
+            v_parameterization=args.v_parameterization,
+        )
+        schedulers[sampler_name] = scheduler
+    pipeline.scheduler = scheduler
+
+    if controlnet_image is not None:
+        controlnet_image = Image.open(controlnet_image).convert("RGB")
+        controlnet_image = controlnet_image.resize((width, height), Image.LANCZOS)
+
+        height = max(64, height - height % 8)  # round to divisible by 8
+        width = max(64, width - width % 8)  # round to divisible by 8
+        print(f"prompt: {prompt}")
+        print(f"negative_prompt: {negative_prompt}")
+        print(f"height: {height}")
+        print(f"width: {width}")
+        print(f"sample_steps: {sample_steps}")
+        print(f"scale: {scale}")
+        print(f"sample_sampler: {sampler_name}")
+        if seed is not None:
+            print(f"seed: {seed}")
+        with accelerator.autocast():
+            latents = pipeline(
+                prompt=prompt,
+                height=height,
+                width=width,
+                num_inference_steps=sample_steps,
+                guidance_scale=scale,
+                negative_prompt=negative_prompt,
+                controlnet=controlnet,
+                controlnet_image=controlnet_image,
+            )
+
+        image = pipeline.latents_to_image(latents)[0]
+        # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
+        ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
+        seed_suffix = "" if seed is None else f"_{seed}"
+        i: int = prompt_dict["enum"]
+        img_filename = (
+            f"{'' if args.output_name is None else args.output_name + '_'}{ts_str}_{num_suffix}_{i:02d}{seed_suffix}.png"
+        )
+
+        image.save(os.path.join(save_dir, img_filename))
+
+    # wandb有効時のみログを送信
+        try:
+            wandb_tracker = accelerator.get_tracker("wandb")
+            try:
+                import wandb
+            except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
+                raise ImportError("No wandb / wandb がインストールされていないようです")
+
+            wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
+        except:  # wandb 無効時
+            pass
 # endregion
+
+
+
 
 # region 前処理用
 
