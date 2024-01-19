@@ -4713,14 +4713,15 @@ def sample_images_common(
     # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processess available (number of devices available)
     # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
     per_process_prompts = generate_per_device_prompt_list(prompts, num_of_processes = distributed_state.num_processes, default_sampler = args.sample_sampler, prompt_replacement = prompt_replacement)
-    print(per_process_prompts)
 
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
 
     with torch.no_grad():
         with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
+            print(prompt_dict_lists)
             for prompt_dict in prompt_dict_lists[0]:
+                print(prompt_dict)
                 sample_image_inference(accelerator, args, pipeline, save_dir, prompt_dict)
 
 
