@@ -4780,6 +4780,7 @@ def generate_per_device_prompt_list(prompts, num_of_processes, default_sampler, 
     per_process_prompts = [[] for i in range(num_of_processes)]
     for i, prompt in enumerate(prompts):
         print(prompt)
+        prompt.pop("subset", None)
         if prompt_replacement is not None:
             prompt["prompt"] = prompt["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
             if prompt["negative_prompt"] is not None:
