@@ -4788,7 +4788,7 @@ def generate_per_device_prompt_list(prompts, num_of_processes, default_sampler, 
         if prompt_replacement is not None:
             prompt["prompt"] = prompt["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
             if prompt["negative_prompt"] is not None:
-                prompt"negative_prompt"] = prompt["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
+                prompt["negative_prompt"] = prompt["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
         per_process_prompts[i % num_of_processes].append(prompt)
         print(prompt)
     return per_process_prompts
