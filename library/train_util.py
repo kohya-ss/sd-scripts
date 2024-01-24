@@ -4778,8 +4778,8 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
     seed = prompt_dict.get("seed")
     controlnet_image = prompt_dict.get("controlnet_image")
     prompt: str = prompt_dict.get("prompt", "")
-    sampler_name: str = prompt_dict.get("sample_sampler")
-
+    sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+    
     if seed is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
