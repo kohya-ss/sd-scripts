@@ -4779,12 +4779,16 @@ def generate_per_device_prompt_list(prompts, num_of_processes, default_sampler, 
     # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
     per_process_prompts = [[] for i in range(num_of_processes)]
     for i, prompt in enumerate(prompts):
+        if isinstance(prompt, str):
+            prompt = line_to_prompt_dict(prompt)
+        assert isinstance(prompt, dict)
         print(prompt)
         prompt.pop("subset", None)
+        prompt["enum"] = i
         if prompt_replacement is not None:
             prompt["prompt"] = prompt["prompt"].replace(prompt_replacement[0], prompt_replacement[1])
             if prompt["negative_prompt"] is not None:
-                temp_dict["negative_prompt"] = temp_dict["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
+                prompt"negative_prompt"] = prompt["negative_prompt"].replace(prompt_replacement[0], prompt_replacement[1])
         per_process_prompts[i % num_of_processes].append(prompt)
         print(prompt)
     return per_process_prompts
