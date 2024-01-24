@@ -68,6 +68,25 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, gamma, v_prediction=False
     return loss
 
 
+def apply_soft_snr_weight(loss, timesteps, noise_scheduler, gamma, v_prediction=False):
+    snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
+    # min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
+    soft_min_snr_gamma_weight = 1 / (torch.pow(snr, 2) + (1 / float(gamma)))
+    with open("snr.txt", "a") as myfile:
+        myfile.write(f"{snr.item()},{gamma}\n")
+
+    # with open("snrmin.txt", "a") as myfile:
+    #     myfile.write(f"{min_snr_gamma.item()},{soft_min_snr_gamma.item()}\n")
+    # print("soft_min_snr_gamma", soft_min_snr_gamma, 1 / (snr + (1 / float(gamma))))
+    # print("min_snr_gamma", min_snr_gamma)
+    # if v_prediction:
+    #     snr_weight = torch.div(soft_min_snr_gamma, snr+1).float().to(loss.device)
+    # else:
+    #     snr_weight = torch.div(soft_min_snr_gamma, snr).float().to(loss.device)
+    loss = loss * soft_min_snr_gamma_weight
+    return loss
+
+
 def scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler):
     scale = get_snr_scale(timesteps, noise_scheduler)
     loss = loss * scale
@@ -102,6 +121,12 @@ def apply_debiased_estimation(loss, timesteps, noise_scheduler):
 def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted_captions: bool = True):
     parser.add_argument(
         "--min_snr_gamma",
+        type=float,
+        default=None,
+        help="gamma for reducing the weight of high loss timesteps. Lower numbers have stronger effect. 5 is recommended by paper. / 低いタイムステップでの高いlossに対して重みを減らすためのgamma値、低いほど効果が強く、論文では5が推奨",
+    )
+    parser.add_argument(
+        "--soft_min_snr_gamma",
         type=float,
         default=None,
         help="gamma for reducing the weight of high loss timesteps. Lower numbers have stronger effect. 5 is recommended by paper. / 低いタイムステップでの高いlossに対して重みを減らすためのgamma値、低いほど効果が強く、論文では5が推奨",
