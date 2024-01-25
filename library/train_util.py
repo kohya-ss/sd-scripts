@@ -3391,9 +3391,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
     if not args.resume_from_huggingface:
         print(f"resume training from local state: {args.resume}")
-        print(check_vram_usage(f"Before loading state from {args.resume}"))
         accelerator.load_state(args.resume)
-        print(check_vram_usage(f"After loading state from {args.resume}"))
         return
 
     print(f"resume training from huggingface state: {args.resume}")
@@ -3435,9 +3433,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
     if len(results) == 0:
         raise ValueError("No files found in the specified repo id/path/revision / 指定されたリポジトリID/パス/リビジョンにファイルが見つかりませんでした")
     dirname = os.path.dirname(results[0])
-    print(check_vram_usage(f"Before loading huggingface state from {args.resume}"))
     accelerator.load_state(dirname)
-    print(check_vram_usage(f"After loading huggingface state from {args.resume}"))
 
 
 def get_optimizer(args, trainable_params):
@@ -4666,7 +4662,6 @@ def sample_images_common(
 
     else:
         print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
-    print(check_vram_usage("Start of Image Sample Generation"))
     distributed_state = PartialState() #testing implementation of multi gpu distributed inference
     
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
@@ -4676,15 +4671,12 @@ def sample_images_common(
 
     org_vae_device = vae.device  # CPUにいるはず
     vae.to(distributed_state.device)
-    print(check_vram_usage("after load VAE"))
-
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
     if isinstance(text_encoder, (list, tuple)):
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
         text_encoder = accelerator.unwrap_model(text_encoder)
-    print(check_vram_usage("after load UNET"))
 
     # read prompts
 
@@ -4709,7 +4701,6 @@ def sample_images_common(
         v_parameterization=args.v_parameterization,
     )
     schedulers[args.sample_sampler] = default_scheduler
-    print(check_vram_usage("Before create pipeline"))
     pipeline = pipe_class(
         text_encoder=text_encoder,
         vae=vae,
@@ -4722,7 +4713,6 @@ def sample_images_common(
         clip_skip=args.clip_skip,
     )
     pipeline.to(distributed_state.device)
-    print(check_vram_usage("After create pipeline"))
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
     temp_prompts = []
@@ -4829,9 +4819,11 @@ def sample_images_common(
                         controlnet=controlnet,
                         controlnet_image=controlnet_image,
                     )
-
-                image = pipeline.latents_to_image(latents)[0]
                 print(check_vram_usage("After generate Latents"))
+                with torch.cuda.device(torch.cuda.current_device()):
+                    torch.cuda.empty_cache()
+                image = pipeline.latents_to_image(latents)[0]
+                print(check_vram_usage("After latents to image"))
 
                 ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
                 num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
