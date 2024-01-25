@@ -4635,9 +4635,6 @@ def line_to_prompt_dict(line: str) -> dict:
 
     return prompt_dict
 
-def check_vram_usage(at_called_point):
-    return f"\nChecking VRAM usage at: {at_called_point} on CUDA Device {torch.cuda.current_device()}\ntorch.cuda.memory_allocated: {(torch.cuda.memory_allocated()/1024/1024/1024)}\ntorch.cuda.memory_reserved: {(torch.cuda.memory_reserved()/1024/1024/1024)}\ntorch.cuda.max_memory_reserved: {(torch.cuda.max_memory_reserved()/1024/1024/1024)}\n{torch.cuda.memory_summary(None, True)}\n"
-
 def sample_images_common(
     pipe_class,
     accelerator: Accelerator,
@@ -4751,7 +4748,6 @@ def sample_images_common(
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
-    print(check_vram_usage(f"After load VAE on {org_vae_device}"))
 
 def generate_per_device_prompt_list(prompts, num_of_processes, prompt_replacement=None):
  
@@ -4821,16 +4817,7 @@ def sample_image_inference(accelerator: Accelerator, args: argparse.Namespace, p
             controlnet=controlnet,
             controlnet_image=controlnet_image,
         )
-    print(check_vram_usage(f"After generating latents"))
-    start = time.time()
-    with torch.cuda.device(torch.cuda.current_device()):
-        torch.cuda.empty_cache()
-    end = time.time()
-    print("The time to clear cuda cache is :",
-      (end-start) * 10**3, "ms")
-    print(check_vram_usage(f"After clear cache"))
     image = pipeline.latents_to_image(latents)[0]
-    print(check_vram_usage(f"After latents to image"))
     # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
     ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
     num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
