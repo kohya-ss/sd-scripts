@@ -220,11 +220,7 @@ class NetworkTrainer:
         print("preparing accelerator")
         accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
-        if accelerator.is_main_process:
-            accelerator.print(f"Running on main Accelerator on {torch.cuda.current_device()}")
-        else:
-           accelerator. print(f"Running on sub Accelerator on {torch.cuda.current_device()}")
-
+        
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
@@ -738,6 +734,7 @@ class NetworkTrainer:
             if os.path.exists(old_ckpt_file):
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
+    
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
