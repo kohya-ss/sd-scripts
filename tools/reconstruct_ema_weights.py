@@ -6,6 +6,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 import numpy as np
+from library import train_util
 
 def sigma_rel_to_gamma(sigma_rel):
     t = sigma_rel ** -2
@@ -35,6 +36,7 @@ def reconstruct_weights_from_snapshots(args):
 
     args.snapshot_dir = args.snapshot_dir.rstrip('\\').rstrip('/')
     snaps = os.listdir(args.snapshot_dir)
+    print(f"{len(snaps)} snapshots found")
     gammas = [float(os.path.splitext(s)[0].split("_")[-1]) for s in snaps] 
     # # load gammas from snapshots 
     #gammas = []
@@ -43,10 +45,10 @@ def reconstruct_weights_from_snapshots(args):
     #        gammas.append(float(f.get_tensor('ema_gamma')))
     ts = [int(os.path.splitext(s)[0].split("_")[-2]) for s in snaps]
 
-    if not args.target_step:
-        args.target_step = ts[-1] + 1
+    #if not args.target_step:
+    #    args.target_step = ts[-1] + 1
 
-    x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
+    x = solve_weights(ts, gammas, ts[-1] + 1, args.target_gamma)    # x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
     print(x)
     x = torch.from_numpy(x)
 
@@ -61,15 +63,15 @@ def reconstruct_weights_from_snapshots(args):
     merged_sd = None
     first_model_keys = set()
     dtype = torch.float
-    for i, s in enumerate(snaps):
+    for i, s in enumerate(tqdm(snaps)):
         # load snapshots and add weights 
 
         if merged_sd is None:
             # load first model
-            print(f"Loading {s}, x = {x[i].item()}...")
+            #print(f"Loading {s}, x = {x[i].item()}...")
             merged_sd = {}
             with safe_open(os.path.join(args.snapshot_dir, s), framework="pt", device=args.device) as f:
-                for key in tqdm(f.keys()):
+                for key in f.keys():
                     value = f.get_tensor(key)
 
                     first_model_keys.add(key)
@@ -77,15 +79,15 @@ def reconstruct_weights_from_snapshots(args):
                     value = x[i] * value.to(dtype)  # first model's value * ratio
                     merged_sd[key] = value
 
-            print(f"Model has {len(merged_sd)} keys " )
+            print(f" Model has {len(merged_sd)} keys " )
             continue
 
         # load other models
-        print(f"Loading {s}, x = {x[i].item()}...")
+        #print(f"Loading {s}, x = {x[i].item()}...")
 
         with safe_open(os.path.join(args.snapshot_dir, s), framework="pt", device=args.device) as f:
             model_keys = f.keys()
-            for key in tqdm(model_keys):
+            for key in model_keys:
                 if key not in merged_sd:
                     print(f"Skip: {key}")
                     continue
@@ -107,26 +109,34 @@ def reconstruct_weights_from_snapshots(args):
     # save
     if not args.output_dir:
         args.output_dir = os.path.dirname(args.snapshot_dir)
-    output_file = os.path.join(args.output_dir, os.path.basename(args.snapshot_dir).replace("_snapshots","") + "_gamma_{:4f}.safetensors".format(args.target_gamma))
+    output_file = os.path.join(args.output_dir, os.path.basename(args.snapshot_dir).replace("_snapshots","") + "_gamma_{:.2f}.safetensors".format(args.target_gamma))
 
     print(f"Saving to {output_file}...")
 
     # convert to save_dtype
     for k in merged_sd.keys():
         merged_sd[k] = merged_sd[k].to(save_dtype)
-
-    save_file(merged_sd, output_file)
+    
+    metadata = {}
+    with safe_open(os.path.join(args.snapshot_dir, snaps[-1]), framework="pt", device=args.device) as f:
+        metadata = f.metadata()
+    metadata["reconstructed_ema_gamma"] = str(args.target_gamma)
+    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(merged_sd, metadata)
+    metadata["sshs_model_hash"] = model_hash
+    metadata["sshs_legacy_hash"] = legacy_hash
+        
+    save_file(merged_sd, output_file, metadata)
 
     print("Done!")
         
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=" ")
-    parser.add_argument("snapshot_dir", type=str, help=" ")
-    parser.add_argument("--target_gamma", type=float, required=True, help=" ")
-    parser.add_argument("--target_step", type=int, default = None, help=" ")
-    parser.add_argument("--output_dir", type=str, default = None, help=" ")
+    parser = argparse.ArgumentParser(description="Reconstruct EMA weights from snapshots ")
+    parser.add_argument("snapshot_dir", type=str, help="Folder with snapshots ")
+    parser.add_argument("--target_gamma", type=float, required=True, help="Averaging factor. Recommended values: 5 - 40  ")
+    #parser.add_argument("--target_sigma_rel", type=float, help="Averaging length. Alternative way of specifying gamma. Allowed values: 0 < sigma_rel < 0.28 ")
+    #parser.add_argument("--target_step", type=int, default = None, help="Last step to average at ")
+    parser.add_argument("--output_dir", type=str, default = None, help="Output folder ")
     parser.add_argument("--device", type=str, default="cpu", help="Device to use, default is cpu")
     #parser.add_argument(
     #    "--precision", type=str, default="float", choices=["float", "fp16", "bf16"], help="Calculation precision, default is float"

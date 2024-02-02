@@ -3103,18 +3103,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="'traditional' = traditional EMA \
         'post-hoc' = karras EMA. Save multiple snaphots. Reconstruct any profile after training ",
     )
-    parser.add_argument(
-        "--ema_k_sigma_rel_1",
-        type=float,
-        default=0.05,
-        help="Averaging length for karras EMA profile.  0 < sigma_rel < 0.28 ",
-    )
-    parser.add_argument(
-        "--ema_k_sigma_rel_2",
-        type=float,
-        default=0.1,
-        help="Averaging length for karras EMA profile.  0 < sigma_rel < 0.28 ",
-    )
+    #parser.add_argument(
+    #    "--ema_k_sigma_rel_1",
+    #    type=float,
+    #    default=0.05,
+    #    help="Averaging length for karras EMA profile.  0 < sigma_rel < 0.28 ",
+    #)
+    #parser.add_argument(
+    #    "--ema_k_sigma_rel_2",
+    #    type=float,
+    #    default=0.1,
+    #    help="Averaging length for karras EMA profile.  0 < sigma_rel < 0.28 ",
+    #)
     parser.add_argument(
         "--ema_k_num_snapshots",
         type=int,
@@ -3154,12 +3154,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=10,
         help="Update EMA every x steps ",
     )
-    parser.add_argument(
-        "--ema_device",
-        type=str,
-        default="cpu", 
-        help=" "
-    )
+    #parser.add_argument(
+    #    "--ema_device",
+    #    type=str,
+    #    default="cpu", 
+    #    help=" "
+    #)
 
 
     # SAI Model spec
