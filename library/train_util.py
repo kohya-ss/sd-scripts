@@ -2054,7 +2054,7 @@ def debug_dataset(train_dataset, show_input_ids=False):
 
                 if show_input_ids:
                     print(f"input ids: {iid}")
-                    if "input_ids2" in example:
+                    if "input_ids2" in example and example["input_ids2"] is not None:
                         print(f"input ids2: {example['input_ids2'][j]}")
                 if example["images"] is not None:
                     im = example["images"][j]
@@ -2071,6 +2071,11 @@ def debug_dataset(train_dataset, show_input_ids=False):
                         cond_img = cond_img[:, :, ::-1]
                         if os.name == "nt":
                             cv2.imshow("cond_img", cond_img)
+                    
+                    for key in example.keys():
+                        if key in ["images", "conditioning_images", "input_ids", "input_ids2"]:
+                            continue
+                        print(f"{key}: {example[key][j] if example[key] is not None else None}")
 
                     if os.name == "nt":  # only windows
                         cv2.imshow("img", im)
