@@ -50,7 +50,7 @@ def reconstruct_weights_from_snapshots(args):
 
     x = solve_weights(ts, gammas, ts[-1] + 1, args.target_gamma)    # x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
     print(x)
-    x = torch.from_numpy(x)
+    x = torch.from_numpy(x)  # .to(device=args.device)
 
     if args.saving_precision == "fp16":
         save_dtype = torch.float16

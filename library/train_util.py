@@ -3125,18 +3125,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_beta",
         type=float,
         default=0.9999,
-        help="Max ema decay ",
+        help="Max ema decay. Only for traditional EMA ",
     )
     parser.add_argument(
         "--ema_karras_beta",
         action="store_true", 
-        help="use the karras time dependent beta "
+        help="use the karras time dependent beta. Only for traditional EMA "
     )
     parser.add_argument(
         "--ema_warmup_power",
         type=float,
         default=2/3,
-        help="If gamma=1 and power=1, implements a simple average. gamma=1, power=2/3 are \
+        help="Only for traditional EMA. If gamma=1 and power=1, implements a simple average. gamma=1, power=2/3 are \
         good values for models you plan to train for a million or more steps (reaches decay \
         factor 0.999 at 31.6K steps, 0.9999 at 1M steps), gamma=1, power=3/4 for models \
         you plan to train for less (reaches decay factor 0.999 at 10K steps, 0.9999 at \
@@ -3146,7 +3146,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_update_after_step",
         type=int,
         default=100,
-        help="EMA warmup steps ",
+        help="EMA warmup steps. Only for traditional EMA. ",
     )
     parser.add_argument(
         "--ema_update_every",
