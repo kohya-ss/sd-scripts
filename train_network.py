@@ -538,6 +538,7 @@ class NetworkTrainer:
             "ss_scale_weight_norms": args.scale_weight_norms,
             "ss_ip_noise_gamma": args.ip_noise_gamma,
             "ss_debiased_estimation": bool(args.debiased_estimation_loss),
+            "ss_enable_ema": bool(args.enable_ema),
         }
 
         if use_user_config:
@@ -871,7 +872,6 @@ class NetworkTrainer:
                                 #save snapshot
                                 snapshot_dir = os.path.join(args.output_dir, args.output_name + "_ema_snapshots")
                                 os.makedirs(snapshot_dir, exist_ok=True)
-                                #snap_num = math.floor(ema.step / ema.post_hoc_snapshot_every)
                                 snapshot_name = os.path.join(snapshot_dir, "snapshot_{}_{:09d}_{:.6f}".format(i, e.step, e.post_hoc_gamma))
                                 save_model(snapshot_name + ".safetensors", e.ema_model, global_step, num_train_epochs)
                             check_and_update_ema(args, e, i)
@@ -963,7 +963,7 @@ class NetworkTrainer:
             save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
 
             if args.enable_ema and args.ema_type == 'traditional':
-                # direct EMA save
+                # save directly
                 ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
                 save_model(os.path.splitext(ckpt_name)[0] + "-EMA" + os.path.splitext(ckpt_name)[1], emas[0].ema_model, global_step, num_train_epochs, force_sync_upload=True)
 

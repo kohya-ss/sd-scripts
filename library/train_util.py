@@ -3099,9 +3099,9 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_type", 
         type=str,
         default="post-hoc", 
-        choices=["traditional","post-hoc"],
+        choices=["post-hoc"],  # ["traditional","post-hoc"]
         help="'traditional' = traditional EMA \
-        'post-hoc' = karras EMA. Save multiple snaphots. Reconstruct any profile after training ",
+        'post-hoc' = karras EMA. It saves multiple snaphots and allows to reconstruct different EMA profiles after training ",
     )
     #parser.add_argument(
     #    "--ema_k_sigma_rel_1",
@@ -3119,7 +3119,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_k_num_snapshots",
         type=int,
         default=8,
-        help="Number of saved snapshots for post-hoc ema ",
+        help="Number of saved snapshots. Only for post-hoc ema ",
     )
     parser.add_argument(
         "--ema_beta",
@@ -4999,17 +4999,21 @@ def inplace_lerp(src: torch.Tensor, tgt: torch.Tensor, weight, *, auto_move_devi
 
     src.lerp_(tgt, weight)
 
-def check_and_update_ema(args, ema, checkpoint_index=0):
-    #if args.ema_type == "post-hoc" and ((ema.step + 1) % ema.post_hoc_snapshot_every) == 0 and ema.step != 0:
-    #    #save snapshot
-    #    snapshot_dir = os.path.join(args.output_dir, args.output_name + "_ema_snapshots")
-    #    os.makedirs(snapshot_dir, exist_ok=True)
-    #    #snap_num = math.floor(ema.step / ema.post_hoc_snapshot_every)
-    #    snapshot_name = os.path.join(snapshot_dir, "snapshot_{}_{:09d}_{:04f}".format(checkpoint_index, ema.step, ema.post_hoc_gamma))
-    #    print("saving snapshot")
-    #    # TODO add metadata
-    #    safetensors.torch.save_file(ema.state_dict(), snapshot_name + ".safetensors")
+def check_and_update_ema(args, ema, checkpoint_index=0, model_type=None):
+    if model_type == "unet":
+        # TODO
+        # check and save
+        pass
     ema.update()
+
+def setup_emas(args, model):
+    emas = []
+    if args.ema_type == 'post-hoc':
+        snapshot_every = math.ceil(args.max_train_steps / args.ema_k_num_snapshots)
+        ema1 = EMA(model, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
+        ema2 = EMA(model, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
+        emas = [ema1, ema2]
+    return emas
 
 
 class EMA(torch.nn.Module):
@@ -5054,6 +5058,7 @@ class EMA(torch.nn.Module):
         post_hoc_gamma = 16.97,
         post_hoc_snapshot_every = 1000,
         sigma_rel = None,
+        model_type = None,
     ):
         super().__init__()
         self._beta = beta

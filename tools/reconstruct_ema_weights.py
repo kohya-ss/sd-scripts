@@ -29,10 +29,16 @@ def solve_weights(t_i, gamma_i, t_r, gamma_r):
     X = np.linalg.solve(A, B)
     return X
 
+# TODO add sample generation for different gammas
+
 
 def reconstruct_weights_from_snapshots(args):
-    # TODO add checks for target_step ?
-    #  copy metadata
+    # TODO add checks for target_step 
+
+    args.device = "cpu"
+    assert (args.target_sigma_rel or args.target_gamma) and not (args.target_sigma_rel and args.target_gamma), "Either target_sigma_rel or target_gamma is required"
+    if args.target_sigma_rel:
+        args.target_gamma = sigma_rel_to_gamma(args.target_sigma_rel)
 
     args.snapshot_dir = args.snapshot_dir.rstrip('\\').rstrip('/')
     snaps = os.listdir(args.snapshot_dir)
@@ -49,7 +55,7 @@ def reconstruct_weights_from_snapshots(args):
     #    args.target_step = ts[-1] + 1
 
     x = solve_weights(ts, gammas, ts[-1] + 1, args.target_gamma)    # x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
-    print(x)
+    #print(x)
     x = torch.from_numpy(x)  # .to(device=args.device)
 
     if args.saving_precision == "fp16":
@@ -133,8 +139,9 @@ def reconstruct_weights_from_snapshots(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reconstruct EMA weights from snapshots ")
     parser.add_argument("snapshot_dir", type=str, help="Folder with snapshots ")
-    parser.add_argument("--target_gamma", type=float, required=True, help="Averaging factor. Recommended values: 5 - 40  ")
-    #parser.add_argument("--target_sigma_rel", type=float, help="Averaging length. Alternative way of specifying gamma. Allowed values: 0 < sigma_rel < 0.28 ")
+    parser.add_argument("--target_gamma", type=float, help="Averaging factor. Recommended values: 5 - 50  ")  #  Lower gamma gives more weight to early steps 
+    #parser.add_argument("--base_model", type=str, help="If EMA is unet-only, text encoder and vae will be copied from this model.")
+    parser.add_argument("--target_sigma_rel", type=float, default = None, help="Averaging length. Alternative way of specifying gamma. Allowed values: 0 < sigma_rel < 0.28 ")
     #parser.add_argument("--target_step", type=int, default = None, help="Last step to average at ")
     parser.add_argument("--output_dir", type=str, default = None, help="Output folder ")
     parser.add_argument("--device", type=str, default="cpu", help="Device to use, default is cpu")

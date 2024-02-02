@@ -35,7 +35,10 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
 )
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
-
+from library.train_util import (
+    EMA,
+    check_and_update_ema,
+)
 
 UNET_NUM_BLOCKS_FOR_BLOCK_LR = 23
 
@@ -389,6 +392,11 @@ def train(args):
         text_encoder1.to(weight_dtype)
         text_encoder2.to(weight_dtype)
 
+    if args.enable_ema:      # u-net only
+        raise NotImplementedError
+        emas = train_util.setup_emas(args, unet)
+
+
     # acceleratorがなんかよろしくやってくれるらしい
     if train_unet:
         unet = accelerator.prepare(unet)
@@ -594,6 +602,9 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+                if args.enable_ema:
+                    raise NotImplementedError
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
