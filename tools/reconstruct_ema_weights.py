@@ -38,6 +38,7 @@ def reconstruct_weights_from_snapshots(args):
     args.device = "cpu"
     assert (args.target_sigma_rel or args.target_gamma) and not (args.target_sigma_rel and args.target_gamma), "Either target_sigma_rel or target_gamma is required"
     if args.target_sigma_rel:
+        assert 0 < args.target_sigma_rel < 0.28, "target_sigma_rel mush be in range from 0 to 0.28"
         args.target_gamma = sigma_rel_to_gamma(args.target_sigma_rel)
 
     args.snapshot_dir = args.snapshot_dir.rstrip('\\').rstrip('/')
@@ -139,7 +140,7 @@ def reconstruct_weights_from_snapshots(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reconstruct EMA weights from snapshots ")
     parser.add_argument("snapshot_dir", type=str, help="Folder with snapshots ")
-    parser.add_argument("--target_gamma", type=float, help="Averaging factor. Recommended values: 5 - 50  ")  #  Lower gamma gives more weight to early steps 
+    parser.add_argument("--target_gamma", type=float, help="Averaging factor. Recommended values: 5 - 50  ")  #  Lower gamma gives more weight to early steps? 
     #parser.add_argument("--base_model", type=str, help="If EMA is unet-only, text encoder and vae will be copied from this model.")
     parser.add_argument("--target_sigma_rel", type=float, default = None, help="Averaging length. Alternative way of specifying gamma. Allowed values: 0 < sigma_rel < 0.28 ")
     #parser.add_argument("--target_step", type=int, default = None, help="Last step to average at ")
