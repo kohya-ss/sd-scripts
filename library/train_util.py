@@ -3145,7 +3145,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--ema_update_after_step",
         type=int,
-        default=100,
+        default=0,
         help="EMA warmup steps. Only for traditional EMA. ",
     )
     parser.add_argument(
@@ -5010,8 +5010,8 @@ def setup_emas(args, model):
     emas = []
     if args.ema_type == 'post-hoc':
         snapshot_every = math.ceil(args.max_train_steps / args.ema_k_num_snapshots)
-        ema1 = EMA(model, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
-        ema2 = EMA(model, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
+        ema1 = EMA(model, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
+        ema2 = EMA(model, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
         emas = [ema1, ema2]
     return emas
 

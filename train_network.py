@@ -431,8 +431,8 @@ class NetworkTrainer:
                 emas = [ema]
             elif args.ema_type == 'post-hoc':
                 snapshot_every = math.ceil(args.max_train_steps / args.ema_k_num_snapshots)
-                ema1 = EMA(network, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
-                ema2 = EMA(network, update_after_step = 0, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
+                ema1 = EMA(network, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
+                ema2 = EMA(network, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
                 emas = [ema1, ema2]
 
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
