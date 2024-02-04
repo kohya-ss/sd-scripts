@@ -4520,6 +4520,26 @@ def append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names):
             )
 
 
+def training_info(args: argparse.Namespace, accelerator: Accelerator, train_dataloader: torch.utils.data.DataLoader, num_train_epochs: int):
+    train_dataset_group = train_dataloader.dataset
+    batch_size = [d.batch_size for d in train_dataset_group.datasets] 
+    total_batch_size = [d.batch_size* accelerator.num_processes * args.gradient_accumulation_steps for d in train_dataset_group.datasets] 
+    batch_size = batch_size[0] if len(batch_size) == 1 else batch_size
+    total_batch_size = total_batch_size[0] if len(total_batch_size) == 1 else total_batch_size
+    
+    accelerator.print("running training / 学習開始")
+    accelerator.print(f"  num examples / サンプル数: {train_dataset_group.num_train_images}")
+    accelerator.print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
+    accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
+    accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
+    accelerator.print(f"  batch size per device / バッチサイズ: {batch_size}")
+    accelerator.print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")        
+    accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
+    accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
+    
+    return batch_size, total_batch_size      
+
+
 # scheduler:
 SCHEDULER_LINEAR_START = 0.00085
 SCHEDULER_LINEAR_END = 0.0120
