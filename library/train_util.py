@@ -3964,6 +3964,8 @@ def prepare_accelerator(args: argparse.Namespace):
             zero3_init_flag=args.zero3_init_flag, zero3_save_16bit_model=args.zero3_save_16bit_model,
         )
         deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.train_batch_size
+        deepspeed_plugin.deepspeed_config['train_batch_size'] = \
+            args.train_batch_size * args.gradient_accumulation_steps * int(os.environ['WORLD_SIZE'])
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,

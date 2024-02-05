@@ -391,6 +391,12 @@ def train(args):
 
     if args.deepspeed:
         # Wrapping model for DeepSpeed
+        import deepspeed
+        if args.offload_optimizer_device is not None:
+            accelerator.print('[DeepSpeed] start to manually build cpu_adam.')
+            deepspeed.ops.op_builder.CPUAdamBuilder().load()
+            accelerator.print('[DeepSpeed] building cpu_adam done.')
+
         class DeepSpeedModel(torch.nn.Module): 
             def __init__(self, unet, text_encoder) -> None:
                 super().__init__()
