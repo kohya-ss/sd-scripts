@@ -4042,28 +4042,23 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 
 
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
-    # load models for each process
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
             print(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
-
             text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
                 args,
                 weight_dtype,
                 accelerator.device if args.lowram else "cpu",
                 unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
             )
-
             # work on low-ram device
             if args.lowram:
                 text_encoder.to(accelerator.device)
                 unet.to(accelerator.device)
                 vae.to(accelerator.device)
-
             gc.collect()
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
-
     return text_encoder, vae, unet, load_stable_diffusion_format
 
 

@@ -392,23 +392,20 @@ def train(args):
     if args.deepspeed:
         # Wrapping model for DeepSpeed
         class DeepSpeedModel(torch.nn.Module): 
-            def __init__(self, unet, text_encoder, vae) -> None:
+            def __init__(self, unet, text_encoder) -> None:
                 super().__init__()
                 self.unet = unet
                 self.text_encoders = self.text_encoder = torch.nn.ModuleList(text_encoder)
-                self.vae = vae
                 
             def get_models(self):
-                return self.unet, self.text_encoders, self.vae
+                return self.unet, self.text_encoders
         text_encoders = [text_encoder1, text_encoder2]
-        unet.to(accelerator.device, dtype=weight_dtype)
-        [t_enc.to(accelerator.device, dtype=weight_dtype) for t_enc in text_encoders]
-        ds_model = DeepSpeedModel(unet, text_encoders, vae)
+        ds_model = DeepSpeedModel(unet, text_encoders)
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
         # Now, ds_model is an instance of DeepSpeedEngine. 
-        unet, text_encoders, vae = ds_model.get_models() # for compatiblility
-        vae.to(vae_dtype) # to avoid explicitly half-vae
-        text_encoder1, text_encoder2 = text_encoders[0], text_encoders[1]
+        unet, text_encoders = ds_model.get_models() # for compatiblility
+        text_encoder1, text_encoder2 = text_encoder = text_encoders
+        training_models = [unet, text_encoder1, text_encoder2]
     else: # acceleratorがなんかよろしくやってくれるらしい
         if train_unet:
             unet = accelerator.prepare(unet)
@@ -493,10 +490,10 @@ def train(args):
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
             with accelerator.accumulate(*training_models):
-                if "latents" in batch and batch["latents"] is not None:
-                    latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
-                else:
-                    with torch.no_grad():
+                with torch.no_grad(): # why this block differ within train_network.py?
+                    if "latents" in batch and batch["latents"] is not None:
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
+                    else:
                         # latentに変換
                         latents = vae.encode(batch["images"].to(vae_dtype)).latent_dist.sample().to(weight_dtype)
 
@@ -504,7 +501,7 @@ def train(args):
                         if torch.any(torch.isnan(latents)):
                             accelerator.print("NaN found in latents, replacing with zeros")
                             latents = torch.nan_to_num(latents, 0, out=latents)
-                latents = latents * sdxl_model_util.VAE_SCALE_FACTOR
+                    latents = latents * sdxl_model_util.VAE_SCALE_FACTOR
 
                 if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
                     input_ids1 = batch["input_ids"]
