@@ -364,7 +364,7 @@ class NetworkTrainer:
                     len(train_dataloader) / args.gradient_accumulation_steps
                 )
                 accelerator.print(
-                    f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
+                    f"[DeepSpeed] override steps not dividing by {accelerator.num_processes}. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
                 )
             else:
                 args.max_train_steps = args.max_train_epochs * math.ceil(
@@ -420,23 +420,18 @@ class NetworkTrainer:
         if args.deepspeed:
             # wrapping model
             class DeepSpeedModel(torch.nn.Module): 
-                def __init__(self, unet, text_encoder, vae, network) -> None:
+                def __init__(self, unet, text_encoder, network) -> None:
                     super().__init__()
                     self.unet = unet
                     self.text_encoders = self.text_encoder = torch.nn.ModuleList(text_encoder)
-                    self.vae = vae
                     self.network = network
                     
                 def get_models(self):
-                    return self.unet, self.text_encoders, self.vae, self.network
-            
-            unet.to(accelerator.device, dtype=unet_weight_dtype)
-            [t_enc.to(accelerator.device, dtype=te_weight_dtype) for t_enc in text_encoders]
-            ds_model = DeepSpeedModel(unet, text_encoders, vae, network)
+                    return self.unet, self.text_encoders, self.network
+            ds_model = DeepSpeedModel(unet, text_encoders, network)
             ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
             # Now, ds_model is an instance of DeepSpeedEngine. 
-            unet, text_encoders, vae, network = ds_model.get_models() # for compatiblility
-            vae.to(vae_dtype) # to avoid explicitly half-vae
+            unet, text_encoders, network = ds_model.get_models() # for compatiblility
             text_encoder = text_encoders
         else:
             if train_unet:
