@@ -749,7 +749,6 @@ class BaseDataset(torch.utils.data.Dataset):
                         fixed_tokens = flex_tokens[: subset.keep_tokens]
                         flex_tokens = tokens[subset.keep_tokens :]
                 if subset.use_object_template or subset.use_style_template:
-                    print(f"use template for training captions.")
                     imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
                     imagenet_template = [random.choice(imagenet_templates)]
                     caption = imagenet_template + fixed_tokens  
