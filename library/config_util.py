@@ -180,8 +180,8 @@ class ConfigSanitizer:
         "shuffle_caption": bool,
         "keep_tokens": int,
         "keep_tokens_separator": str,
-        "use_object_template": bool
-        "use_style_template": bool
+        "use_object_template": bool,
+        "use_style_template": bool,
         "token_warmup_min": int,
         "token_warmup_step": Any(float, int),
         "caption_prefix": str,

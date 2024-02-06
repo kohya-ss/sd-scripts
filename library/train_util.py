@@ -91,55 +91,55 @@ STEP_DIFFUSERS_DIR_NAME = "{}-step{:08d}"
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
 
 imagenet_templates_small = [
-    "a photo of a",
-    "a rendering of a",
-    "a cropped photo of the",
-    "the photo of a",
-    "a photo of a clean",
-    "a photo of a dirty",
-    "a dark photo of the",
-    "a photo of my",
-    "a photo of the cool",
-    "a close-up photo of a",
-    "a bright photo of the",
-    "a cropped photo of a",
-    "a photo of the",
-    "a good photo of the",
-    "a photo of one",
-    "a close-up photo of the",
-    "a rendition of the",
-    "a photo of the clean",
-    "a rendition of a",
-    "a photo of a nice",
-    "a good photo of a",
-    "a photo of the nice",
-    "a photo of the small",
-    "a photo of the weird",
-    "a photo of the large",
-    "a photo of a cool",
-    "a photo of a small",
+    "a photo of a ",
+    "a rendering of a ",
+    "a cropped photo of the ",
+    "the photo of a ",
+    "a photo of a clean ",
+    "a photo of a dirty ",
+    "a dark photo of the ",
+    "a photo of my ",
+    "a photo of the cool ",
+    "a close-up photo of a ",
+    "a bright photo of the ",
+    "a cropped photo of a ",
+    "a photo of the ",
+    "a good photo of the ",
+    "a photo of one ",
+    "a close-up photo of the ",
+    "a rendition of the ",
+    "a photo of the clean ",
+    "a rendition of a ",
+    "a photo of a nice ",
+    "a good photo of a ",
+    "a photo of the nice ",
+    "a photo of the small ",
+    "a photo of the weird ",
+    "a photo of the large ",
+    "a photo of a cool ",
+    "a photo of a small ",
 ]
 
 imagenet_style_templates_small = [
-    "a painting in the style of",
-    "a rendering in the style of",
-    "a cropped painting in the style of",
-    "the painting in the style of",
-    "a clean painting in the style of",
-    "a dirty painting in the style of",
-    "a dark painting in the style of",
-    "a picture in the style of",
-    "a cool painting in the style of",
-    "a close-up painting in the style of",
-    "a bright painting in the style of",
-    "a cropped painting in the style of",
-    "a good painting in the style of",
-    "a close-up painting in the style of",
-    "a rendition in the style of",
-    "a nice painting in the style of",
-    "a small painting in the style of",
-    "a weird painting in the style of",
-    "a large painting in the style of",
+    "a painting in the style of ",
+    "a rendering in the style of ",
+    "a cropped painting in the style of ",
+    "the painting in the style of ",
+    "a clean painting in the style of ",
+    "a dirty painting in the style of ",
+    "a dark painting in the style of ",
+    "a picture in the style of ",
+    "a cool painting in the style of ",
+    "a close-up painting in the style of ",
+    "a bright painting in the style of ",
+    "a cropped painting in the style of ",
+    "a good painting in the style of ",
+    "a close-up painting in the style of ",
+    "a rendition in the style of ",
+    "a nice painting in the style of ",
+    "a small painting in the style of ",
+    "a weird painting in the style of ",
+    "a large painting in the style of ",
 ]
 
 
@@ -749,10 +749,10 @@ class BaseDataset(torch.utils.data.Dataset):
                         fixed_tokens = flex_tokens[: subset.keep_tokens]
                         flex_tokens = tokens[subset.keep_tokens :]
                 if subset.use_object_template or subset.use_style_template:
-                    accelerator.print(f"use template for training captions.")
+                    print(f"use template for training captions.")
                     imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
-                    imagenet_template =  = random.choice(imagenet_templates)
-                    caption = imagenet_template + " " + fixed_tokens  
+                    imagenet_template = [random.choice(imagenet_templates)]
+                    caption = imagenet_template + fixed_tokens  
                 if subset.token_warmup_step < 1:  # 初回に上書きする
                     subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
                 if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
