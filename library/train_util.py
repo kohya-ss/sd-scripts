@@ -90,6 +90,59 @@ STEP_DIFFUSERS_DIR_NAME = "{}-step{:08d}"
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
 
+imagenet_templates_small = [
+    "a photo of a",
+    "a rendering of a",
+    "a cropped photo of the",
+    "the photo of a",
+    "a photo of a clean",
+    "a photo of a dirty",
+    "a dark photo of the",
+    "a photo of my",
+    "a photo of the cool",
+    "a close-up photo of a",
+    "a bright photo of the",
+    "a cropped photo of a",
+    "a photo of the",
+    "a good photo of the",
+    "a photo of one",
+    "a close-up photo of the",
+    "a rendition of the",
+    "a photo of the clean",
+    "a rendition of a",
+    "a photo of a nice",
+    "a good photo of a",
+    "a photo of the nice",
+    "a photo of the small",
+    "a photo of the weird",
+    "a photo of the large",
+    "a photo of a cool",
+    "a photo of a small",
+]
+
+imagenet_style_templates_small = [
+    "a painting in the style of",
+    "a rendering in the style of",
+    "a cropped painting in the style of",
+    "the painting in the style of",
+    "a clean painting in the style of",
+    "a dirty painting in the style of",
+    "a dark painting in the style of",
+    "a picture in the style of",
+    "a cool painting in the style of",
+    "a close-up painting in the style of",
+    "a bright painting in the style of",
+    "a cropped painting in the style of",
+    "a good painting in the style of",
+    "a close-up painting in the style of",
+    "a rendition in the style of",
+    "a nice painting in the style of",
+    "a small painting in the style of",
+    "a weird painting in the style of",
+    "a large painting in the style of",
+]
+
+
 try:
     import pillow_avif
 
@@ -352,6 +405,8 @@ class BaseSubset:
         caption_separator: str,
         keep_tokens: int,
         keep_tokens_separator: str,
+        use_object_template: bool,
+        use_style_template: bool, 
         color_aug: bool,
         flip_aug: bool,
         face_crop_aug_range: Optional[Tuple[float, float]],
@@ -370,6 +425,8 @@ class BaseSubset:
         self.caption_separator = caption_separator
         self.keep_tokens = keep_tokens
         self.keep_tokens_separator = keep_tokens_separator
+        self.use_object_template = use_object_template
+        self.use_style_template = use_style_template 
         self.color_aug = color_aug
         self.flip_aug = flip_aug
         self.face_crop_aug_range = face_crop_aug_range
@@ -398,6 +455,8 @@ class DreamBoothSubset(BaseSubset):
         caption_separator: str,
         keep_tokens,
         keep_tokens_separator,
+        use_object_template,
+        use_style_template,
         color_aug,
         flip_aug,
         face_crop_aug_range,
@@ -419,6 +478,8 @@ class DreamBoothSubset(BaseSubset):
             caption_separator,
             keep_tokens,
             keep_tokens_separator,
+            use_object_template,
+            use_style_template,
             color_aug,
             flip_aug,
             face_crop_aug_range,
@@ -454,6 +515,8 @@ class FineTuningSubset(BaseSubset):
         caption_separator,
         keep_tokens,
         keep_tokens_separator,
+        use_object_template,
+        use_style_template,
         color_aug,
         flip_aug,
         face_crop_aug_range,
@@ -475,6 +538,8 @@ class FineTuningSubset(BaseSubset):
             caption_separator,
             keep_tokens,
             keep_tokens_separator,
+            use_object_template,
+            use_style_template,
             color_aug,
             flip_aug,
             face_crop_aug_range,
@@ -507,6 +572,8 @@ class ControlNetSubset(BaseSubset):
         caption_separator,
         keep_tokens,
         keep_tokens_separator,
+        use_object_template,
+        use_style_template,
         color_aug,
         flip_aug,
         face_crop_aug_range,
@@ -528,6 +595,8 @@ class ControlNetSubset(BaseSubset):
             caption_separator,
             keep_tokens,
             keep_tokens_separator,
+            use_object_template,
+            use_style_template,
             color_aug,
             flip_aug,
             face_crop_aug_range,
@@ -651,7 +720,11 @@ class BaseDataset(torch.utils.data.Dataset):
             caption = subset.caption_prefix + " " + caption
         if subset.caption_suffix:
             caption = caption + " " + subset.caption_suffix
-
+        if subset.use_object_template or subset.use_style_template:
+            accelerator.print(f"use template for training captions.")
+            imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
+            imagenet_template =  = random.choice(imagenet_templates)
+            caption = imagenet_template + " " + caption  
         # dropoutの決定：tag dropがこのメソッド内にあるのでここで行うのが良い
         is_drop_out = subset.caption_dropout_rate > 0 and random.random() < subset.caption_dropout_rate
         is_drop_out = (
@@ -1754,6 +1827,8 @@ class ControlNetDataset(BaseDataset):
                 subset.caption_separator,
                 subset.keep_tokens,
                 subset.keep_tokens_separator,
+                subset.use_object_template,
+                subset.use_style_template,
                 subset.color_aug,
                 subset.flip_aug,
                 subset.face_crop_aug_range,
@@ -3198,6 +3273,16 @@ def add_dataset_arguments(
         default="",
         help="A custom separator to divide the caption into fixed and flexible parts. Tokens before this separator will not be shuffled. If not specified, '--keep_tokens' will be used to determine the fixed number of tokens."
         + " / captionを固定部分と可変部分に分けるためのカスタム区切り文字。この区切り文字より前のトークンはシャッフルされない。指定しない場合、'--keep_tokens'が固定部分のトークン数として使用される。",
+    )
+    parser.add_argument(
+        "--use_object_template",
+        action="store_true",
+        help="prefix default templates for object for caption text / キャプションは使わずデフォルトの物体用テンプレートで学習する",
+    )
+    parser.add_argument(
+        "--use_style_template",
+        action="store_true",
+        help="prefix default templates for stype for caption text / キャプションは使わずデフォルトのスタイル用テンプレートで学習する",
     )
     parser.add_argument(
         "--caption_prefix",

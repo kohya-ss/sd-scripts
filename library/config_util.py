@@ -57,6 +57,8 @@ class BaseSubsetParams:
     caption_separator: str = (",",)
     keep_tokens: int = 0
     keep_tokens_separator: str = (None,)
+    use_object_template: bool = False
+    use_style_template: bool = False 
     color_aug: bool = False
     flip_aug: bool = False
     face_crop_aug_range: Optional[Tuple[float, float]] = None
@@ -65,7 +67,7 @@ class BaseSubsetParams:
     caption_suffix: Optional[str] = None
     caption_dropout_rate: float = 0.0
     caption_dropout_every_n_epochs: int = 0
-    caption_tag_dropout_rate: float = 0.0
+    caption_tag_dropout_rate: float = 0.0   
     token_warmup_min: int = 1
     token_warmup_step: float = 0
 
@@ -178,6 +180,8 @@ class ConfigSanitizer:
         "shuffle_caption": bool,
         "keep_tokens": int,
         "keep_tokens_separator": str,
+        "use_object_template": bool
+        "use_style_template": bool
         "token_warmup_min": int,
         "token_warmup_step": Any(float, int),
         "caption_prefix": str,
@@ -501,6 +505,8 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           shuffle_caption: {subset.shuffle_caption}
           keep_tokens: {subset.keep_tokens}
           keep_tokens_separator: {subset.keep_tokens_separator}
+          use_object_template: bool = {subset.use_object_template}
+          use_style_template: bool = {subset.use_style_template}
           caption_dropout_rate: {subset.caption_dropout_rate}
           caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
           caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
