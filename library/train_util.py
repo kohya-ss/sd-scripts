@@ -720,11 +720,6 @@ class BaseDataset(torch.utils.data.Dataset):
             caption = subset.caption_prefix + " " + caption
         if subset.caption_suffix:
             caption = caption + " " + subset.caption_suffix
-        if subset.use_object_template or subset.use_style_template:
-            accelerator.print(f"use template for training captions.")
-            imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
-            imagenet_template =  = random.choice(imagenet_templates)
-            caption = imagenet_template + " " + caption  
         # dropoutの決定：tag dropがこのメソッド内にあるのでここで行うのが良い
         is_drop_out = subset.caption_dropout_rate > 0 and random.random() < subset.caption_dropout_rate
         is_drop_out = (
@@ -753,7 +748,11 @@ class BaseDataset(torch.utils.data.Dataset):
                     if subset.keep_tokens > 0:
                         fixed_tokens = flex_tokens[: subset.keep_tokens]
                         flex_tokens = tokens[subset.keep_tokens :]
-
+                if subset.use_object_template or subset.use_style_template:
+                    accelerator.print(f"use template for training captions.")
+                    imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
+                    imagenet_template =  = random.choice(imagenet_templates)
+                    caption = imagenet_template + " " + fixed_tokens  
                 if subset.token_warmup_step < 1:  # 初回に上書きする
                     subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
                 if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
