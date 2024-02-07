@@ -437,7 +437,8 @@ def train(args):
         text_encoder2.to(accelerator.device)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
-    if args.full_fp16:
+    if args.full_fp16 and not args.deepspeed:
+        # During deepseed training, accelerate not handles fp16/bf16|mixed precision directly via scaler. Let deepspeed engine do.
         train_util.patch_accelerator_for_fp16_training(accelerator)
 
     # resumeする

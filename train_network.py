@@ -359,20 +359,12 @@ class NetworkTrainer:
 
         # 学習ステップ数を計算する
         if args.max_train_epochs is not None:
-            if args.deepspeed:
-                args.max_train_steps = args.max_train_epochs * math.ceil(
-                    len(train_dataloader) / args.gradient_accumulation_steps
-                )
-                accelerator.print(
-                    f"[DeepSpeed] override steps not dividing by {accelerator.num_processes}. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
-                )
-            else:
-                args.max_train_steps = args.max_train_epochs * math.ceil(
-                    len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
-                )
-                accelerator.print(
-                    f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
-                )
+            args.max_train_steps = args.max_train_epochs * math.ceil(
+                len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
+            )
+            accelerator.print(
+                f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
+            )
 
         # データセット側にも学習ステップを送信
         train_dataset_group.set_max_train_steps(args.max_train_steps)
@@ -479,7 +471,8 @@ class NetworkTrainer:
             vae.to(accelerator.device, dtype=vae_dtype)
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
-        if args.full_fp16:
+        if args.full_fp16 and not args.deepspeed:
+            # During deepseed training, accelerate not handles fp16/bf16|mixed precision directly via scaler. Let deepspeed engine do.
             train_util.patch_accelerator_for_fp16_training(accelerator)
 
         # resumeする
