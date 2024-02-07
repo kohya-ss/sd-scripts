@@ -3971,6 +3971,9 @@ def prepare_accelerator(args: argparse.Namespace):
         deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.train_batch_size
         deepspeed_plugin.deepspeed_config['train_batch_size'] = \
             args.train_batch_size * args.gradient_accumulation_steps * int(os.environ['WORLD_SIZE'])
+        deepspeed_plugin.set_mixed_precision(args.mixed_precision)
+        if args.mixed_precision.lower() == "fp16":
+            deepspeed_plugin.deepspeed_config['fp16']['initial_scale_power'] = 0
         if args.full_fp16 or args.fp16_master_weights_and_gradients:
             deepspeed_plugin.deepspeed_config['fp16_master_weights_and_gradients'] = True
 
