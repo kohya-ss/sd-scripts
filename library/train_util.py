@@ -751,7 +751,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 if subset.use_object_template or subset.use_style_template:
                     imagenet_templates = imagenet_templates_small if subset.use_object_template else imagenet_style_templates_small
                     imagenet_template = [random.choice(imagenet_templates)]
-                    caption = imagenet_template + fixed_tokens  
+                    fixed_tokens = imagenet_template + fixed_tokens  
                 if subset.token_warmup_step < 1:  # 初回に上書きする
                     subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
                 if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
