@@ -2192,10 +2192,12 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 def load_image(image_path):
     image = Image.open(image_path)
     if not image.mode == "RGB":
-        image = image.convert("RGB")
+        image = Image.convert("RGBA") 
+        custom_bg = Image.new("RGBA", image.size, (255, 0, 0, 0))
+        merged_image = Image.alpha_composite(custom_bg, image)                    
+        image = merged_image.convert("RGB")
     img = np.array(image, np.uint8)
     return img
-
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
 def trim_and_resize_if_required(
