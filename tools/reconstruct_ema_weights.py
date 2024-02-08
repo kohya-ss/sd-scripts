@@ -31,11 +31,13 @@ def solve_weights(t_i, gamma_i, t_r, gamma_r):
 
 # TODO add sample generation for different gammas
 
+def stepnum(filename):
+    return int(os.path.splitext(filename)[0].split("_")[-2])
+
 
 def reconstruct_weights_from_snapshots(args):
-    # TODO add checks for target_step 
-
     args.device = "cpu"
+
     assert (args.target_sigma_rel or args.target_gamma) and not (args.target_sigma_rel and args.target_gamma), "Either target_sigma_rel or target_gamma is required"
     if args.target_sigma_rel:
         assert 0 < args.target_sigma_rel < 0.28, "target_sigma_rel mush be in range from 0 to 0.28"
@@ -44,19 +46,24 @@ def reconstruct_weights_from_snapshots(args):
     args.snapshot_dir = args.snapshot_dir.rstrip('\\').rstrip('/')
     snaps = os.listdir(args.snapshot_dir)
     print(f"{len(snaps)} snapshots found")
-    gammas = [float(os.path.splitext(s)[0].split("_")[-1]) for s in snaps] 
+
+    if not args.target_step:
+        args.target_step = stepnum(snaps[-1]) + 1
+    else:
+        snaps = [s for s in snaps if stepnum(s) <= args.target_step]
+    print(f"step: {args.target_step}")
+
+    gammas = [float(os.path.splitext(s)[0].split("_")[-1]) for s in snaps if stepnum(s) <= args.target_step] 
     # # load gammas from snapshots 
     #gammas = []
     #for s in snaps:
     #    with safe_open(os.path.join(args.snapshot_dir, s), framework="pt", device=args.device) as f:
     #        gammas.append(float(f.get_tensor('ema_gamma')))
-    ts = [int(os.path.splitext(s)[0].split("_")[-2]) for s in snaps]
+    ts = [int(os.path.splitext(s)[0].split("_")[-2]) for s in snaps if stepnum(s) <= args.target_step]
 
-    #if not args.target_step:
-    #    args.target_step = ts[-1] + 1
-
-    x = solve_weights(ts, gammas, ts[-1] + 1, args.target_gamma)    # x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
-    #print(x)
+    
+    x = solve_weights(ts, gammas, args.target_step, args.target_gamma)
+    print(x)
     x = torch.from_numpy(x)  # .to(device=args.device)
 
     if args.saving_precision == "fp16":
@@ -143,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("--target_gamma", type=float, help="Averaging factor. Recommended values: 5 - 50  ")  #  Lower gamma gives more weight to early steps 
     #parser.add_argument("--base_model", type=str, help="If EMA is unet-only, text encoder and vae will be copied from this model.")
     parser.add_argument("--target_sigma_rel", type=float, default = None, help="Averaging length. Alternative way of specifying gamma. Allowed values: 0 < sigma_rel < 0.28 ")
-    #parser.add_argument("--target_step", type=int, default = None, help="Last step to average at ")
+    parser.add_argument("--target_step", type=int, default = None, help="Last step to average at ")
     parser.add_argument("--output_dir", type=str, default = None, help="Output folder ")
     parser.add_argument("--device", type=str, default="cpu", help="Device to use, default is cpu")
     #parser.add_argument(

@@ -427,13 +427,15 @@ class NetworkTrainer:
         if args.enable_ema: 
             if args.ema_type == 'traditional':
                 ema = EMA(network, beta = args.ema_beta, karras_beta = args.ema_karras_beta, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, power = args.ema_warmup_power, include_online_model = False, allow_different_devices = True)
-                #ema.to(accelerator.device)
                 emas = [ema]
             elif args.ema_type == 'post-hoc':
-                snapshot_every = math.ceil(args.max_train_steps / args.ema_k_num_snapshots)
+                snapshot_every = math.floor(args.max_train_steps / args.ema_k_num_snapshots)
                 ema1 = EMA(network, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
                 ema2 = EMA(network, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
                 emas = [ema1, ema2]
+            if args.ema_on_gpu:
+                for e in emas:
+                    e.to(device=accelerator.device)
 
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
@@ -874,7 +876,8 @@ class NetworkTrainer:
                                 os.makedirs(snapshot_dir, exist_ok=True)
                                 snapshot_name = os.path.join(snapshot_dir, "snapshot_{}_{:09d}_{:.6f}".format(i, e.step, e.post_hoc_gamma))
                                 save_model(snapshot_name + ".safetensors", e.ema_model, global_step, num_train_epochs)
-                            check_and_update_ema(args, e, i)
+                            with accelerator.autocast():    # not sure if necessary
+                                check_and_update_ema(args, e, i)
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(

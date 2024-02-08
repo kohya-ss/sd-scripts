@@ -2856,7 +2856,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--max_token_length",
         type=int,
         default=None,
-        choices=[None, 150, 225],
+        choices=[None, 150, 225, 300, 375],
         help="max token length of text encoder (default for 75, 150 or 225) / text encoderのトークンの最大長（未指定で75、150または225が指定可）",
     )
     parser.add_argument(
@@ -3146,7 +3146,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ema_update_after_step",
         type=int,
         default=0,
-        help="EMA warmup steps. Only for traditional EMA. ",
+        help="EMA warmup steps. ",
     )
     parser.add_argument(
         "--ema_update_every",
@@ -3154,12 +3154,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=10,
         help="Update EMA every x steps ",
     )
-    #parser.add_argument(
-    #    "--ema_device",
-    #    type=str,
-    #    default="cpu", 
-    #    help=" "
-    #)
+    parser.add_argument(
+        "--ema_on_gpu",
+        action="store_true", 
+        help="Keep EMA weights in VRAM "
+    )
 
 
     # SAI Model spec
@@ -5009,7 +5008,7 @@ def check_and_update_ema(args, ema, checkpoint_index=0, model_type=None):
 def setup_emas(args, model):
     emas = []
     if args.ema_type == 'post-hoc':
-        snapshot_every = math.ceil(args.max_train_steps / args.ema_k_num_snapshots)
+        snapshot_every = math.floor(args.max_train_steps / args.ema_k_num_snapshots)
         ema1 = EMA(model, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 16.97, post_hoc_snapshot_every = snapshot_every)
         ema2 = EMA(model, update_after_step = args.ema_update_after_step, update_every = args.ema_update_every, include_online_model = False, allow_different_devices = True, post_hoc = True, post_hoc_gamma = 6.94, post_hoc_snapshot_every = snapshot_every)
         emas = [ema1, ema2]
