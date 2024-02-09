@@ -3975,7 +3975,11 @@ def prepare_accelerator(args: argparse.Namespace):
         if args.mixed_precision.lower() == "fp16":
             deepspeed_plugin.deepspeed_config['fp16']['initial_scale_power'] = 0
         if args.full_fp16 or args.fp16_master_weights_and_gradients:
-            deepspeed_plugin.deepspeed_config['fp16_master_weights_and_gradients'] = True
+            if args.offload_optimizer_device == "cpu":
+                deepspeed_plugin.deepspeed_config['fp16']['fp16_master_weights_and_grads'] = True
+                print("[DeepSpeed] full fp16 enable.")
+            else:
+                print("full fp16, fp16_master_weights_and_grads currently only supported using ZeRO-Offload with DeepSpeedCPUAdam.")
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
