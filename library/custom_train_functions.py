@@ -471,6 +471,27 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
     return noise
 
 
+def get_latent_masks(image_masks, latent_shape, device):
+    # given that masks lower the average loss this will counteract the effect
+    factor = torch.sqrt(image_masks.mean([1, 2]))
+    factor = torch.where(factor != 0.0, factor, 1.0)
+    factor = factor.reshape(factor.shape + (1,) * 2)
+    image_masks = image_masks / factor
+
+    masks = (
+        image_masks
+        .to(device)
+        .reshape(latent_shape[0], 1, latent_shape[2] * 8, latent_shape[3] * 8)
+    )
+    # resize to match latent
+    masks = torch.nn.functional.interpolate(
+        masks.float(),
+        size=latent_shape[-2:],
+        mode="nearest"
+    )
+    return masks
+
+
 """
 ##########################################
 # Perlin Noise

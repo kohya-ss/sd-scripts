@@ -33,6 +33,7 @@ from library.custom_train_functions import (
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
     apply_debiased_estimation,
+    get_latent_masks
 )
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -560,6 +561,11 @@ def train(args):
                     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
 
                 target = noise
+
+                if args.masked_loss and batch['masks'] is not None:
+                    mask = get_latent_masks(batch['masks'], noise_pred.shape, noise_pred.device)
+                    noise_pred = noise_pred * mask
+                    target = target * mask
 
                 if (
                     args.min_snr_gamma

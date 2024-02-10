@@ -31,6 +31,7 @@ from library.custom_train_functions import (
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
     apply_debiased_estimation,
+    get_latent_masks
 )
 
 imagenet_templates_small = [
@@ -581,6 +582,11 @@ class TextualInversionTrainer:
                         target = noise_scheduler.get_velocity(latents, noise, timesteps)
                     else:
                         target = noise
+
+                    if args.masked_loss and batch['masks'] is not None:
+                        mask = get_latent_masks(batch['masks'], noise_pred.shape, noise_pred.device)
+                        noise_pred = noise_pred * mask
+                        target = target * mask
 
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
                     loss = loss.mean([1, 2, 3])
