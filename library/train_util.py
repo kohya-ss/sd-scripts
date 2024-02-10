@@ -2213,10 +2213,11 @@ def load_image(image_path):
     image = Image.open(image_path)
     if not image.mode == "RGBA":
         image = image.convert("RGBA")
+    custom_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+    image = Image.alpha_composite(custom_bg, image)                    
     img = np.array(image, np.uint8)
     img[..., -1] = load_mask(image_path, img.shape[:2])
     return img
-
 
 def load_mask(image_path, target_shape):
     p = pathlib.Path(image_path)
@@ -2247,7 +2248,6 @@ def load_mask(image_path, target_shape):
         result = cv2.resize(result, dsize=target_shape, interpolation=cv2.INTER_LINEAR)
 
     return result
-
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
 def trim_and_resize_if_required(
