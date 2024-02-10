@@ -825,7 +825,7 @@ class NetworkTrainer:
                     else:
                         target = noise
 
-                    if args.masked_loss and batch['masks'] is not None:
+                    if (args.masked_loss or args.auto_masked_loss) and batch['masks'] is not None:
                         mask = get_latent_masks(batch['masks'], noise_pred.shape, noise_pred.device)
                         noise_pred = noise_pred * mask
                         target = target * mask
