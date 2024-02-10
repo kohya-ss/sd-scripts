@@ -325,21 +325,24 @@ class AugHelper:
         # )
         hue_shift_limit = 8
 
+        rgb_channels = image[:, :, :3] 
+        alpha_channel = image[:, :, 3] 
         # remove dependency to albumentations
         if random.random() <= 0.33:
             if random.random() > 0.5:
                 # hue shift
-                hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                hsv_img = cv2.cvtColor(rgb_channels, cv2.COLOR_BGR2HSV)
                 hue_shift = random.uniform(-hue_shift_limit, hue_shift_limit)
                 if hue_shift < 0:
                     hue_shift = 180 + hue_shift
                 hsv_img[:, :, 0] = (hsv_img[:, :, 0] + hue_shift) % 180
-                image = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
+                rgb_channels = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
             else:
                 # random gamma
                 gamma = random.uniform(0.95, 1.05)
-                image = np.clip(image**gamma, 0, 255).astype(np.uint8)
+                rgb_channels = np.clip(rgb_channels**gamma, 0, 255).astype(np.uint8)
 
+        image = np.dstack((rgb_channels, alpha_channel)) 
         return {"image": image}
 
     def get_augmentor(self, use_color_aug: bool):  # -> Optional[Callable[[np.ndarray], Dict[str, np.ndarray]]]:
@@ -3318,6 +3321,10 @@ def add_dataset_arguments(
 
     parser.add_argument(
         "--masked_loss", action="store_true", help="Enable masking of latent loss using grayscale mask images"
+    )
+
+    parser.add_argument(
+        "--auto_masked_loss", action="store_true", help="Enable auto-masking of latent loss for images that are completely white (255, 255, 255), completely black (0, 0, 0), and transparent / 完全に白い（255, 255, 255）、完全に黒い（0, 0, 0）、および透明な部分の画像の潜在損失の自動マスキングを有効にします"
     )
 
     parser.add_argument(
