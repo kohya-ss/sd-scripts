@@ -326,7 +326,7 @@ class AugHelper:
         hue_shift_limit = 8
 
         rgb_channels = image[:, :, :3] 
-        alpha_channel = image[:, :, 3] 
+        alpha_channel = image[:, :, -1]
         # remove dependency to albumentations
         if random.random() <= 0.33:
             if random.random() > 0.5:
@@ -1135,7 +1135,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
                 latents, original_size, crop_ltrb, flipped_latents, mask = load_latents_from_disk(image_info.latents_npz)
-                mask = mask / 255
                 if flipped:
                     latents = flipped_latents
                     mask = np.flip(mask, axis=1)
