@@ -362,6 +362,7 @@ class BaseSubset:
         flip_aug: bool,
         face_crop_aug_range: Optional[Tuple[float, float]],
         random_crop: bool,
+        mask_simple_background: bool,
         caption_dropout_rate: float,
         caption_dropout_every_n_epochs: int,
         caption_tag_dropout_rate: float,
@@ -380,6 +381,7 @@ class BaseSubset:
         self.flip_aug = flip_aug
         self.face_crop_aug_range = face_crop_aug_range
         self.random_crop = random_crop
+        self.mask_simple_background = mask_simple_background
         self.caption_dropout_rate = caption_dropout_rate
         self.caption_dropout_every_n_epochs = caption_dropout_every_n_epochs
         self.caption_tag_dropout_rate = caption_tag_dropout_rate
@@ -408,6 +410,7 @@ class DreamBoothSubset(BaseSubset):
         flip_aug,
         face_crop_aug_range,
         random_crop,
+        mask_simple_background: bool,
         caption_dropout_rate,
         caption_dropout_every_n_epochs,
         caption_tag_dropout_rate,
@@ -429,6 +432,7 @@ class DreamBoothSubset(BaseSubset):
             flip_aug,
             face_crop_aug_range,
             random_crop,
+            mask_simple_background,
             caption_dropout_rate,
             caption_dropout_every_n_epochs,
             caption_tag_dropout_rate,
@@ -464,6 +468,7 @@ class FineTuningSubset(BaseSubset):
         flip_aug,
         face_crop_aug_range,
         random_crop,
+        mask_simple_background: bool,
         caption_dropout_rate,
         caption_dropout_every_n_epochs,
         caption_tag_dropout_rate,
@@ -485,6 +490,7 @@ class FineTuningSubset(BaseSubset):
             flip_aug,
             face_crop_aug_range,
             random_crop,
+            mask_simple_background,
             caption_dropout_rate,
             caption_dropout_every_n_epochs,
             caption_tag_dropout_rate,
@@ -517,6 +523,7 @@ class ControlNetSubset(BaseSubset):
         flip_aug,
         face_crop_aug_range,
         random_crop,
+        mask_simple_background: bool,
         caption_dropout_rate,
         caption_dropout_every_n_epochs,
         caption_tag_dropout_rate,
@@ -538,6 +545,7 @@ class ControlNetSubset(BaseSubset):
             flip_aug,
             face_crop_aug_range,
             random_crop,
+            mask_simple_background,
             caption_dropout_rate,
             caption_dropout_every_n_epochs,
             caption_tag_dropout_rate,
@@ -955,7 +963,7 @@ class BaseDataset(torch.utils.data.Dataset):
         # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
         print("caching latents...")
         for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
+            cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop, subset.mask_simple_background)
 
     # weight_dtypeを指定するとText Encoderそのもの、およひ出力がweight_dtypeになる
     # SDXLでのみ有効だが、datasetのメソッドとする必要があるので、sdxl_train_util.pyではなくこちらに実装する
@@ -1172,7 +1180,23 @@ class BaseDataset(torch.utils.data.Dataset):
 
                     original_size = [im_w, im_h]
                     crop_ltrb = (0, 0, 0, 0)
-
+                    
+                if mask_simple_background:
+                    edge_width = max(1, min(image.shape[0], image.shape[1]) // 20)
+                    top_edge = image[:edge_width, :, :]
+                    bottom_edge = image[-edge_width:, :, :]
+                    left_edge = image[:, :edge_width, :].reshape(-1, image.shape[2])
+                    right_edge = image[:, -edge_width:, :].reshape(-1, image.shape[2])
+                    edges = np.concatenate([top_edge.reshape(-1, image.shape[2]), 
+                                            bottom_edge.reshape(-1, image.shape[2]),
+                                            left_edge, right_edge])
+                    colors, counts = np.unique(edges, axis=0, return_counts=True)
+                    simple_color = colors[counts.argmax()]
+                    simple_color_ratio = counts.max() / counts.sum()
+                    if simple_color_ratio > 0.3:
+                        simple_color_mask = np.all(image[:, :, :-1] == simple_color[:3], axis=2)
+                        image[simple_color_mask, -1] = 0
+                
                 # augmentation
                 aug = self.aug_helper.get_augmentor(subset.color_aug)
                 if aug is not None:
@@ -2212,12 +2236,11 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 def load_image(image_path):
     image = Image.open(image_path)
     if not image.mode == "RGBA":
-        image = image.convert("RGBA")
-    custom_bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
-    image = Image.alpha_composite(custom_bg, image)                    
+        image = image.convert("RGBA")    
     img = np.array(image, np.uint8)
     img[..., -1] = load_mask(image_path, img.shape[:2])
     return img
+
 
 def load_mask(image_path, target_shape):
     p = pathlib.Path(image_path)
@@ -2283,7 +2306,7 @@ def trim_and_resize_if_required(
 
 
 def cache_batch_latents(
-    vae: AutoencoderKL, cache_to_disk: bool, image_infos: List[ImageInfo], flip_aug: bool, random_crop: bool
+    vae: AutoencoderKL, cache_to_disk: bool, image_infos: List[ImageInfo], flip_aug: bool, random_crop: bool, mask_simple_background: bool
 ) -> None:
     r"""
     requires image_infos to have: absolute_path, bucket_reso, resized_size, latents_npz
@@ -2301,6 +2324,21 @@ def cache_batch_latents(
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
         image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
         # alpha channel contains loss mask, separate it
+        if mask_simple_background:
+            edge_width = max(1, min(image.shape[0], image.shape[1]) // 20)
+            top_edge = image[:edge_width, :, :]
+            bottom_edge = image[-edge_width:, :, :]
+            left_edge = image[:, :edge_width, :].reshape(-1, image.shape[2])
+            right_edge = image[:, -edge_width:, :].reshape(-1, image.shape[2])
+            edges = np.concatenate([top_edge.reshape(-1, image.shape[2]), 
+                                    bottom_edge.reshape(-1, image.shape[2]),
+                                    left_edge, right_edge])
+            colors, counts = np.unique(edges, axis=0, return_counts=True)
+            simple_color = colors[counts.argmax()]
+            simple_color_ratio = counts.max() / counts.sum()
+            if simple_color_ratio > 0.3:
+                simple_color_mask = np.all(image[:, :, :-1] == simple_color[:3], axis=2)
+                image[simple_color_mask, -1] = 0
         mask = image[:, :, -1] / 255
         image = image[:, :, :3]
         image = IMAGE_TRANSFORMS(image)
@@ -3323,7 +3361,7 @@ def add_dataset_arguments(
     )
 
     parser.add_argument(
-        "--auto_masked_loss", action="store_true", help="Enable auto-masking of latent loss for images that are completely white (255, 255, 255), completely black (0, 0, 0), and transparent / 完全に白い（255, 255, 255）、完全に黒い（0, 0, 0）、および透明な部分の画像の潜在損失の自動マスキングを有効にします"
+        "--mask_simple_background", action="store_true", help="Enable auto-masking of latent loss based on the dominant edge color if it occupies more than 30% of the image edges. This helps in focusing the model on the main content by ignoring simple or uniform background colors such as solid white or black. / 画像の端に占める主要な色が30%以上の場合に基づいて潜在的な損失の自動マスキングを有効にします。これにより、純白または純黒などの単純または均一な背景色を無視して、モデルがメインコンテンツに焦点を合わせるのに役立ちます。"
     )
 
     parser.add_argument(

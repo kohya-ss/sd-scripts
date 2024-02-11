@@ -61,6 +61,7 @@ class BaseSubsetParams:
     flip_aug: bool = False
     face_crop_aug_range: Optional[Tuple[float, float]] = None
     random_crop: bool = False
+    mask_simple_background: bool = False
     caption_prefix: Optional[str] = None
     caption_suffix: Optional[str] = None
     caption_dropout_rate: float = 0.0
@@ -175,6 +176,7 @@ class ConfigSanitizer:
         "flip_aug": bool,
         "num_repeats": int,
         "random_crop": bool,
+        "mask_simple_background": bool,
         "shuffle_caption": bool,
         "keep_tokens": int,
         "keep_tokens_separator": str,
@@ -510,6 +512,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           flip_aug: {subset.flip_aug}
           face_crop_aug_range: {subset.face_crop_aug_range}
           random_crop: {subset.random_crop}
+          mask_simple_background: {subset.mask_simple_background}          
           token_warmup_min: {subset.token_warmup_min},
           token_warmup_step: {subset.token_warmup_step},
       """
