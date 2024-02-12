@@ -1181,7 +1181,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     original_size = [im_w, im_h]
                     crop_ltrb = (0, 0, 0, 0)
                     
-                if mask_simple_background:
+                if subset.mask_simple_background:
                     edge_width = max(1, min(image.shape[0], image.shape[1]) // 20)
                     top_edge = image[:edge_width, :, :]
                     bottom_edge = image[-edge_width:, :, :]
