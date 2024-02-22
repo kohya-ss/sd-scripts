@@ -216,25 +216,20 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.deepspeed:
-        # wrapping model
-        import deepspeed
-        if args.offload_optimizer_device is not None:
-            accelerator.print('[DeepSpeed] start to manually build cpu_adam.')
-            deepspeed.ops.op_builder.CPUAdamBuilder().load()
-            accelerator.print('[DeepSpeed] building cpu_adam done.')
-        class DeepSpeedModel(torch.nn.Module): 
-            def __init__(self, unet, text_encoder) -> None:
-                super().__init__()
-                self.unet = unet
-                self.text_encoders = self.text_encoder = torch.nn.ModuleList(text_encoder)
-                
-            def get_models(self):
-                return self.unet, self.text_encoders
-        ds_model = DeepSpeedModel(unet, text_encoders)
+        training_models_dict = {}
+        training_models_dict["unet"] = unet
+        if train_text_encoder: training_models_dict["text_encoder"] = text_encoder
+
+        ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
-        # Now, ds_model is an instance of DeepSpeedEngine. 
-        unet, text_encoders = ds_model.get_models() # for compatiblility
-        text_encoder = text_encoders
+    
+        training_models = []
+        unet = ds_model.models["unet"]
+        training_models.append(unet)
+        if train_text_encoder:
+            text_encoder = ds_model.models["text_encoder"]
+            training_models.append(text_encoder)
+            
     else:
         if train_text_encoder:
             unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(

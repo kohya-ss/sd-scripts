@@ -3959,27 +3959,7 @@ def prepare_accelerator(args: argparse.Namespace):
         else None,
     )
     kwargs_handlers = list(filter(lambda x: x is not None, kwargs_handlers))
-    deepspeed_plugin = None
-    if args.deepspeed:
-        deepspeed_plugin = DeepSpeedPlugin(
-            zero_stage=args.zero_stage,
-            gradient_accumulation_steps=args.gradient_accumulation_steps, gradient_clipping=args.max_grad_norm,
-            offload_optimizer_device=args.offload_optimizer_device, offload_optimizer_nvme_path=args.offload_optimizer_nvme_path,
-            offload_param_device=args.offload_param_device, offload_param_nvme_path=args.offload_param_nvme_path,
-            zero3_init_flag=args.zero3_init_flag, zero3_save_16bit_model=args.zero3_save_16bit_model,
-        )
-        deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.train_batch_size
-        deepspeed_plugin.deepspeed_config['train_batch_size'] = \
-            args.train_batch_size * args.gradient_accumulation_steps * int(os.environ['WORLD_SIZE'])
-        deepspeed_plugin.set_mixed_precision(args.mixed_precision)
-        if args.mixed_precision.lower() == "fp16":
-            deepspeed_plugin.deepspeed_config['fp16']['initial_scale_power'] = 0
-        if args.full_fp16 or args.fp16_master_weights_and_gradients:
-            if args.offload_optimizer_device == "cpu":
-                deepspeed_plugin.deepspeed_config['fp16']['fp16_master_weights_and_grads'] = True
-                print("[DeepSpeed] full fp16 enable.")
-            else:
-                print("full fp16, fp16_master_weights_and_grads currently only supported using ZeRO-Offload with DeepSpeedCPUAdam.")
+    deepspeed_plugin = prepare_deepspeed_plugin(args)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -3992,6 +3972,62 @@ def prepare_accelerator(args: argparse.Namespace):
     )
     return accelerator
 
+def prepare_deepspeed_plugin(args: argparse.Namespace):
+    if args.deepspeed is None: return None
+    try:
+        import deepspeed
+    except ImportError as e:
+        print("deepspeed is not installed. please install deepspeed in your environment with following command. DS_BUILD_OPS=0 pip install deepspeed")
+        exit(1)
+
+    deepspeed_plugin = DeepSpeedPlugin(
+        zero_stage=args.zero_stage,
+        gradient_accumulation_steps=args.gradient_accumulation_steps, gradient_clipping=args.max_grad_norm,
+        offload_optimizer_device=args.offload_optimizer_device, offload_optimizer_nvme_path=args.offload_optimizer_nvme_path,
+        offload_param_device=args.offload_param_device, offload_param_nvme_path=args.offload_param_nvme_path,
+        zero3_init_flag=args.zero3_init_flag, zero3_save_16bit_model=args.zero3_save_16bit_model,
+    )
+    deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.train_batch_size
+    deepspeed_plugin.deepspeed_config['train_batch_size'] = \
+        args.train_batch_size * args.gradient_accumulation_steps * int(os.environ['WORLD_SIZE'])
+    deepspeed_plugin.set_mixed_precision(args.mixed_precision)
+    if args.mixed_precision.lower() == "fp16":
+        deepspeed_plugin.deepspeed_config['fp16']['initial_scale_power'] = 0 # preventing overflow.
+    if args.full_fp16 or args.fp16_master_weights_and_gradients:
+        if args.offload_optimizer_device == "cpu" and args.zero_stage == 2:
+            deepspeed_plugin.deepspeed_config['fp16']['fp16_master_weights_and_grads'] = True
+            print("[DeepSpeed] full fp16 enable.")
+        else:
+            print("[DeepSpeed]full fp16, fp16_master_weights_and_grads currently only supported using ZeRO-Offload with DeepSpeedCPUAdam on ZeRO-2 stage.")
+    
+    if args.offload_optimizer_device is not None:
+        print('[DeepSpeed] start to manually build cpu_adam.')
+        deepspeed.ops.op_builder.CPUAdamBuilder().load()
+        print('[DeepSpeed] building cpu_adam done.')
+
+    return deepspeed_plugin
+
+def prepare_deepspeed_model(args: argparse.Namespace, **models):
+    class DeepSpeedWrapper(torch.nn.Module):
+        def __init__(self, **kw_models) -> None:
+            super().__init__()
+            self.models = torch.nn.ModuleDict()
+
+            for key, model in kw_models.items():
+                if isinstance(model, list):
+                    model = torch.nn.ModuleList(model)
+                assert isinstance(model, torch.nn.Module), f"model must be an instance of torch.nn.Module, but got {key} is {type(model)}"
+                self.models.update(
+                    torch.nn.ModuleDict(
+                        {key: model}
+                    )
+                )
+
+        def get_models(self):
+            return self.models
+
+    ds_model = DeepSpeedWrapper(**models)
+    return ds_model
 
 def prepare_dtype(args: argparse.Namespace):
     weight_dtype = torch.float32

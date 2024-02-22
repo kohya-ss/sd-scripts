@@ -410,26 +410,22 @@ class NetworkTrainer:
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
         if args.deepspeed:
-            # wrapping model
-            import deepspeed
-            if args.offload_optimizer_device is not None:
-                accelerator.print('[DeepSpeed] start to manually build cpu_adam.')
-                deepspeed.ops.op_builder.CPUAdamBuilder().load()
-                accelerator.print('[DeepSpeed] building cpu_adam done.')
-            class DeepSpeedModel(torch.nn.Module): 
-                def __init__(self, unet, text_encoder, network) -> None:
-                    super().__init__()
-                    self.unet = unet
-                    self.text_encoders = self.text_encoder = torch.nn.ModuleList(text_encoder)
-                    self.network = network
-                    
-                def get_models(self):
-                    return self.unet, self.text_encoders, self.network
-            ds_model = DeepSpeedModel(unet, text_encoders, network)
+            training_models_dict = {}
+            if train_unet: training_models_dict["unet"] = unet
+            if train_text_encoder: training_models_dict["text_encoder"] = text_encoders
+            training_models_dict["network"] = network
+
+            ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
             ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
-            # Now, ds_model is an instance of DeepSpeedEngine. 
-            unet, text_encoders, network = ds_model.get_models() # for compatiblility
-            text_encoder = text_encoders
+            
+            if train_unet: unet = ds_model.models["unet"]
+            if train_text_encoder:
+                text_encoder = ds_model.models["text_encoder"]
+                if len(ds_model.models["text_encoder"]) > 1:
+                    text_encoders = text_encoder
+                else:
+                    text_encoders = [text_encoder]
+
         else:
             if train_unet:
                 unet = accelerator.prepare(unet)
