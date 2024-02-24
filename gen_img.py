@@ -2138,13 +2138,17 @@ def main(args):
 
             # 輪郭を新しい配列に描画
             cv2.drawContours(fz_mask, contours, -1, (0, 0, 0), 1)
-        
+
         fz_mask = fz_mask.astype(np.float32) / 255.0
         fz_mask = fz_mask[:, :, 0]
         fz_mask = torch.from_numpy(fz_mask).to(dtype).to(device)
 
         # only for sdxl
         unet.set_flexible_zero_slicing(fz_mask, args.flexible_zero_slicing_depth, args.flexible_zero_slicing_timesteps)
+
+    # Dilated Conv Hires fix
+    if args.dilated_conv_hires_fix_depth is not None:
+        unet.set_dilated_conv(args.dilated_conv_hires_fix_depth, args.dilated_conv_hires_fix_timesteps)
 
     # 画像サイズにオプション指定があるときはリサイズする
     if args.W is not None and args.H is not None:
@@ -3365,6 +3369,20 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="timesteps for flexible zero slicing / flexible zero slicingのtimesteps",
     )
+
+    parser.add_argument(
+        "--dilated_conv_hires_fix_depth",
+        type=int,
+        default=None,
+        help="depth for dilated conv hires fix / dilated conv hires fixのdepth",
+    )
+    parser.add_argument(
+        "--dilated_conv_hires_fix_timesteps",
+        type=int,
+        default=None,
+        help="timesteps for dilated conv hires fix / dilated conv hires fixのtimesteps",
+    )
+
     # # parser.add_argument(
     #     "--control_net_image_path", type=str, default=None, nargs="*", help="image for ControlNet guidance / ControlNetでガイドに使う画像"
     # )
