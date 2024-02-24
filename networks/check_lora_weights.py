@@ -20,12 +20,12 @@ def main(file):
     for key in keys:
         if "lora_up" in key or "lora_down" in key:
             values.append((key, sd[key]))
-    logger.info(f"number of LoRA modules: {len(values)}")
+    print(f"number of LoRA modules: {len(values)}")
 
     if args.show_all_keys:
         for key in [k for k in keys if k not in values]:
             values.append((key, sd[key]))
-        logger.info(f"number of all modules: {len(values)}")
+        print(f"number of all modules: {len(values)}")
 
     for key, value in values:
         value = value.to(torch.float32)
