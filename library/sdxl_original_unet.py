@@ -24,15 +24,17 @@
 
 import math
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, List, Optional
 import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from .utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 IN_CHANNELS: int = 4
@@ -1114,6 +1116,46 @@ class SdxlUNet2DConditionModel(nn.Module):
         return h
 
 
+def get_mask_from_mask_dic(mask_dic, shape):
+    if mask_dic is None or len(mask_dic) == 0:
+        return None
+    mask = mask_dic.get(shape, None)
+    if mask is None:
+        # resize from the original mask
+        mask = mask_dic.get((0, 0), None)
+        org_dtype = mask.dtype
+        if org_dtype == torch.bfloat16:
+            mask = mask.to(torch.float32)
+        mask = F.interpolate(mask, size=shape, mode="area")  # area is needed for keeping the mask value less than 1
+        mask = (mask == 1).to(dtype=org_dtype, device=mask.device)
+        mask_dic[shape] = mask
+        # for m in mask[0,0]:
+        #     print("".join([f"{int(v)}" for v in m]))
+
+    return mask
+
+
+# class Conv2dZeroSlicing(nn.Conv2d):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.mask_dic = None
+#         self.enable_flag = None
+
+#     def set_reference_for_enable_and_mask_dic(self, enable_flag, mask_dic):
+#         self.enable_flag = enable_flag
+#         self.mask_dic = mask_dic
+
+#     def forward(self, input: torch.Tensor) -> torch.Tensor:
+#         print(self.enable_flag, self.mask_dic, input.shape[-2:])
+#         if self.enable_flag is None or not self.enable_flag[0] or self.mask_dic is None or len(self.mask_dic) == 0:
+#             return super().forward(input)
+
+#         mask = get_mask_from_mask_dic(self.mask_dic, input.shape[-2:])
+#         if mask is not None:
+#             input = input * mask
+#         return super().forward(input)
+
+
 class InferSdxlUNet2DConditionModel:
     def __init__(self, original_unet: SdxlUNet2DConditionModel, **kwargs):
         self.delegate = original_unet
@@ -1129,10 +1171,70 @@ class InferSdxlUNet2DConditionModel:
         self.ds_timesteps_2 = None
         self.ds_ratio = None
 
+        # flexible zero slicing
+        self.fz_depth = None
+        self.fz_enable_flag = [False]
+        self.fz_mask_dic = {}
+        for name, module in self.delegate.named_modules():
+            if isinstance(module, nn.Conv2d):
+                if module.kernel_size == (3, 3):
+                    module.enable_flag = self.fz_enable_flag
+                    module.mask_dic = self.fz_mask_dic
+
+                    # replace forward method
+                    module.original_forward = module.forward
+
+                    def make_forward(module):
+                        def forward_conv2d_zero_slicing(input: torch.Tensor) -> torch.Tensor:
+                            if not module.enable_flag[0] or len(module.mask_dic) == 0:
+                                return module.original_forward(input)
+
+                            mask = get_mask_from_mask_dic(module.mask_dic, input.shape[-2:])
+                            input = input * mask
+                            return module.original_forward(input)
+
+                        return forward_conv2d_zero_slicing
+
+                    module.forward = make_forward(module)
+
+    # def forward_conv2d_zero_slicing(self, input: torch.Tensor) -> torch.Tensor:
+    #     print(self.__class__.__name__, "forward_conv2d_zero_slicing")
+    #     print(self.enable_flag, self.mask_dic, input.shape[-2:])
+    #     if self.fz_depth is None or not self.fz_enable_flag[0] or self.fz_mask_dic is None or len(self.fz_mask_dic) == 0:
+    #         return self.original_forward(input)
+
+    #     mask = get_mask_from_mask_dic(self.fz_mask_dic, input.shape[-2:])
+    #     if mask is not None:
+    #         input = input * mask
+    #     return self.original_forward(input)
+
+    # for name, module in list(self.delegate.named_modules()):
+    #     if isinstance(module, nn.Conv2d):
+    #         if module.kernel_size == (3, 3):
+    #             # replace Conv2d with Conv2dZeroSlicing
+    #             new_conv2d = Conv2dZeroSlicing(
+    #                 module.in_channels,
+    #                 module.out_channels,
+    #                 module.kernel_size,
+    #                 module.stride,
+    #                 module.padding,
+    #                 module.dilation,
+    #                 module.groups,
+    #                 module.bias is not None,
+    #                 module.padding_mode,
+    #             )
+    #             new_conv2d.set_reference_for_enable_and_mask_dic(self.fz_enable_flag, self.fz_mask_dic)
+    #             print(f"replace {name} with Conv2dZeroSlicing")
+    #             setattr(self.delegate, name, new_conv2d)
+
+    #             # copy parameters
+    #             new_conv2d.weight = module.weight
+    #             new_conv2d.bias = module.bias
+
     # call original model's methods
     def __getattr__(self, name):
         return getattr(self.delegate, name)
-    
+
     def __call__(self, *args, **kwargs):
         return self.delegate(*args, **kwargs)
 
@@ -1153,6 +1255,22 @@ class InferSdxlUNet2DConditionModel:
             self.ds_depth_2 = ds_depth_2 if ds_depth_2 is not None else -1
             self.ds_timesteps_2 = ds_timesteps_2 if ds_timesteps_2 is not None else 1000
             self.ds_ratio = ds_ratio
+
+    def set_flexible_zero_slicing(self, mask: torch.Tensor, depth: int, timesteps: int = None):
+        # mask is arbitrary shape, 0 for zero slicing.
+        if depth is None or depth < 0:
+            logger.info("Flexible zero slicing is disabled.")
+            self.fz_depth = None
+            self.fz_mask = None
+            self.fz_timesteps = None
+            self.fz_mask_dic.clear()
+        else:
+            logger.info(f"Flexible zero slicing is enabled: [depth={depth}]")
+            self.fz_depth = depth
+            self.fz_mask = mask
+            self.fz_timesteps = timesteps
+            self.fz_mask_dic.clear()
+            self.fz_mask_dic[(0, 0)] = mask.unsqueeze(0).unsqueeze(0)
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
         r"""
@@ -1188,7 +1306,14 @@ class InferSdxlUNet2DConditionModel:
         # h = x.type(self.dtype)
         h = x
 
+        self.fz_enable_flag[0] = False
+
         for depth, module in enumerate(_self.input_blocks):
+            # Flexible Zero Slicing
+            if self.fz_depth is not None:
+                self.fz_enable_flag[0] = depth >= self.fz_depth and timesteps[0] > self.fz_timesteps
+                # print(f"Flexible Zero Slicing: depth={depth}, timesteps={timesteps[0]}, enable={self.fz_enable_flag[0]}")
+
             # Deep Shrink
             if self.ds_depth_1 is not None:
                 if (depth == self.ds_depth_1 and timesteps[0] >= self.ds_timesteps_1) or (
@@ -1208,7 +1333,12 @@ class InferSdxlUNet2DConditionModel:
 
         h = call_module(_self.middle_block, h, emb, context)
 
-        for module in _self.output_blocks:
+        for depth, module in enumerate(_self.output_blocks):
+            # Flexible Zero Slicing
+            if self.fz_depth is not None and len(self.output_blocks) - depth <= self.fz_depth:
+                self.fz_enable_flag[0] = False
+                # print(f"Flexible Zero Slicing: depth={depth}, timesteps={timesteps[0]}, enable={self.fz_enable_flag[0]}")
+
             # Deep Shrink
             if self.ds_depth_1 is not None:
                 if hs[-1].shape[-2:] != h.shape[-2:]:
