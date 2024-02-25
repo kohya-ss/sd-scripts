@@ -2,6 +2,8 @@
 
 This is an experimental feature. There may be bugs.
 
+__Feb 25, 2024 Update:__  Fixed a bug that the LoRA weights trained can be loaded in ComfyUI. If you still have a problem, please let me know.
+
 __Feb 25, 2024 Update:__ Fixed a bug that Stage C training with mixed precision behaves the same as `--full_bf16` (fp16) regardless of `--full_bf16` (fp16) specified. 
 
 This is because the Stage C weights were loaded in bf16/fp16. With this fix, the memory usage without `--full_bf16` (fp16) specified will increase, so you may need to specify `--full_bf16` (fp16) as needed.
@@ -83,6 +85,8 @@ The following prompt options are available.
 # Stable Cascade Stage C の学習
 
 実験的機能です。不具合があるかもしれません。
+
+__2024/2/25 追記:__ 学習される LoRA の重みが ComfyUI で読み込めるよう修正しました。依然として不具合がある場合にはご連絡ください。
 
 __2024/2/25 追記:__ Mixed precision 時のStage C の学習が、 `--full_bf16` (fp16) の指定に関わらず `--full_bf16` (fp16) 指定時と同じ動作となる（と思われる）不具合を修正しました。
 
