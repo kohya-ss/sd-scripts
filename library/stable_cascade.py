@@ -199,7 +199,7 @@ class Attention(nn.Module):
         self.to_q = Linear(c, c, bias=True)
         self.to_k = Linear(c, c, bias=True)
         self.to_v = Linear(c, c, bias=True)
-        self.to_out = Linear(c, c, bias=True)
+        self.out_proj = Linear(c, c, bias=True)
         self.nhead = nhead
         self.dropout = dropout
         self.scale = (c // nhead) ** -0.5
@@ -237,7 +237,7 @@ class Attention(nn.Module):
             del q, k, v
             out = rearrange(out, "(b h) n d -> b n (h d)", h=self.nhead)
 
-        return self.to_out(out)
+        return self.out_proj(out)
 
     def _attention(self, query, key, value):
         # if self.upcast_attention:
