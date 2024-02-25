@@ -2,9 +2,13 @@
 
 This is an experimental feature. There may be bugs.
 
+__Feb 25, 2024 Update:__ Fixed a bug that Stage C training with mixed precision behaves the same as `--full_bf16` (fp16) regardless of `--full_bf16` (fp16) specified. 
+
+This is because the Stage C weights were loaded in bf16/fp16. With this fix, the memory usage without `--full_bf16` (fp16) specified will increase, so you may need to specify `--full_bf16` (fp16) as needed.
+
 __Feb 22, 2024 Update:__ Fixed a bug that LoRA is not applied to some modules (to_q/k/v and to_out) in Attention. Also, the model structure of Stage C has been changed, and you can choose xformers and SDPA (SDPA was used before). Please specify `--sdpa` or `--xformers` option.
 
-__Feb 20, 2024 Update:__ There was a problem with the preprocessing of the EffcientNetEncoder, and the latents became invalid (the saturation of the training results decreases). If you have cached `_sc_latents.npz` files with `--cache_latents_to_disk`, please delete them before training.
+__Feb 20, 2024 Update:__ There was a problem with the preprocessing of the EfficientNetEncoder, and the latents became invalid (the saturation of the training results decreases). If you have cached `_sc_latents.npz` files with `--cache_latents_to_disk`, please delete them before training.
 
 ## Usage
 
@@ -80,9 +84,13 @@ The following prompt options are available.
 
 実験的機能です。不具合があるかもしれません。
 
-__2024/2/22 追記:__ LoRAが一部のモジュール（Attention の to_q/k/v および to_out）に適用されない不具合を修正しました。また Stage C のモデル構造を変更し xformers と SDPA を選べるようになりました（今までは SDPA が使用されていました）。`--sdpa` または `--xformers` オプションを指定してください。
+__2024/2/25 追記:__ Mixed precision 時のStage C の学習が、 `--full_bf16` (fp16) の指定に関わらず `--full_bf16` (fp16) 指定時と同じ動作となる（と思われる）不具合を修正しました。
 
-__2024/2/20 追記:__ EffcientNetEncoder の前処理に不具合があり、latents が不正になっていました（学習結果の彩度が低下する現象が起きます）。`--cache_latents_to_disk` でキャッシュした `_sc_latents.npz` がある場合、いったん削除してから学習してください。
+Stage C の重みを bf16/fp16 で読み込んでいたためです。この修正により `--full_bf16` (fp16) 未指定時のメモリ使用量が増えますので、必要に応じて `--full_bf16` (fp16) を指定してください。
+
+__2024/2/22 追記:__ LoRA が一部のモジュール（Attention の to_q/k/v および to_out）に適用されない不具合を修正しました。また Stage C のモデル構造を変更し xformers と SDPA を選べるようになりました（今までは SDPA が使用されていました）。`--sdpa` または `--xformers` オプションを指定してください。
+
+__2024/2/20 追記:__ EfficientNetEncoder の前処理に不具合があり、latents が不正になっていました（学習結果の彩度が低下する現象が起きます）。`--cache_latents_to_disk` でキャッシュした `_sc_latents.npz` がある場合、いったん削除してから学習してください。
 
 ## 使い方
 
