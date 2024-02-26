@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -157,7 +158,7 @@ class NetworkTrainer:
 
         # データセットを準備する
         if args.dataset_class is None:
-            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
+            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
             if use_user_config:
                 logger.info(f"Loading dataset config from {args.dataset_config}")
                 user_config = config_util.load_user_config(args.dataset_config)
@@ -834,6 +835,16 @@ class NetworkTrainer:
                         target = noise
 
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+
+                    if args.masked_loss:
+                        # mask image is -1 to 1. we need to convert it to 0 to 1
+                        mask_image = batch["conditioning_images"].to(dtype=weight_dtype)[:, 0].unsqueeze(1)  # use R channel
+
+                        # resize to the same size as the loss
+                        mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
+                        mask_image = mask_image / 2 + 0.5
+                        loss = loss * mask_image
+
                     loss = loss.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -1049,6 +1060,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
+    )
+    parser.add_argument(
+        "--masked_loss",
+        action="store_true",
+        help="apply mask for caclulating loss. conditioning_data_dir is required for dataset. / 損失計算時にマスクを適用する。datasetにはconditioning_data_dirが必要",
     )
     return parser
 

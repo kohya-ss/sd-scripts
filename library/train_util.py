@@ -1810,6 +1810,9 @@ class ControlNetDataset(BaseDataset):
 
         db_subsets = []
         for subset in subsets:
+            assert (
+                not subset.random_crop
+            ), "random_crop is not supported in ControlNetDataset / random_cropはControlNetDatasetではサポートされていません"
             db_subset = DreamBoothSubset(
                 subset.image_dir,
                 False,
