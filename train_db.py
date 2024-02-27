@@ -187,7 +187,7 @@ def train(args):
         batch_size=1,
         shuffle=True,
         collate_fn=collator,
-        num_workers=n_workers,
+        num_workers=n_workers if not args.deepspeed else 1, # To avoid RuntimeError: DataLoader worker exited unexpectedly with exit code 1.
         persistent_workers=args.persistent_data_loader_workers,
     )
 
@@ -219,15 +219,31 @@ def train(args):
         text_encoder.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if train_text_encoder:
-        unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder, optimizer, train_dataloader, lr_scheduler
-        )
-    else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+    if args.deepspeed:
+        training_models_dict = {}
+        training_models_dict["unet"] = unet
+        if train_text_encoder: training_models_dict["text_encoder"] = text_encoder
 
-    if not train_text_encoder:
-        text_encoder.to(accelerator.device, dtype=weight_dtype)  # to avoid 'cpu' vs 'cuda' error
+        ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
+        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
+    
+        training_models = []
+        unet = ds_model.models["unet"]
+        training_models.append(unet)
+        if train_text_encoder:
+            text_encoder = ds_model.models["text_encoder"]
+            training_models.append(text_encoder)
+            
+    else:
+        if train_text_encoder:
+            unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+            )
+        else:
+            unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+
+        if not train_text_encoder:
+            text_encoder.to(accelerator.device, dtype=weight_dtype)  # to avoid 'cpu' vs 'cuda' error
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:

@@ -108,6 +108,7 @@ def train(args):
 
     # mixed precisionに対応した型を用意しておき適宜castする
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
+    vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
     # モデルを読み込む
     text_encoder, vae, unet, load_stable_diffusion_format = train_util.load_target_model(args, weight_dtype, accelerator)
@@ -158,7 +159,7 @@ def train(args):
 
     # 学習を準備する
     if cache_latents:
-        vae.to(accelerator.device, dtype=weight_dtype)
+        vae.to(accelerator.device, dtype=vae_dtype)
         vae.requires_grad_(False)
         vae.eval()
         with torch.no_grad():
@@ -191,7 +192,7 @@ def train(args):
     if not cache_latents:
         vae.requires_grad_(False)
         vae.eval()
-        vae.to(accelerator.device, dtype=weight_dtype)
+        vae.to(accelerator.device, dtype=vae_dtype)
 
     for m in training_models:
         m.requires_grad_(True)
@@ -218,7 +219,7 @@ def train(args):
         batch_size=1,
         shuffle=True,
         collate_fn=collator,
-        num_workers=n_workers,
+        num_workers=n_workers if not args.deepspeed else 1, # To avoid RuntimeError: DataLoader worker exited unexpectedly with exit code 1.
         persistent_workers=args.persistent_data_loader_workers,
     )
 
@@ -230,7 +231,7 @@ def train(args):
         accelerator.print(
             f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
         )
-
+        
     # データセット側にも学習ステップを送信
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
@@ -246,13 +247,28 @@ def train(args):
         unet.to(weight_dtype)
         text_encoder.to(weight_dtype)
 
-    # acceleratorがなんかよろしくやってくれるらしい
-    if args.train_text_encoder:
-        unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder, optimizer, train_dataloader, lr_scheduler
-        )
-    else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+    if args.deepspeed:
+        training_models_dict = {}
+        training_models_dict["unet"] = unet
+        if args.train_text_encoder: training_models_dict["text_encoder"] = text_encoder
+
+        ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
+        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
+    
+        training_models = []
+        unet = ds_model.models["unet"]
+        training_models.append(unet)
+        if args.train_text_encoder:
+            text_encoder = ds_model.models["text_encoder"]
+            training_models.append(text_encoder)
+            
+    else: # acceleratorがなんかよろしくやってくれるらしい
+        if args.train_text_encoder:
+            unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+            )
+        else:
+            unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:

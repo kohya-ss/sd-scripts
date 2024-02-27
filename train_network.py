@@ -357,7 +357,7 @@ class NetworkTrainer:
             batch_size=1,
             shuffle=True,
             collate_fn=collator,
-            num_workers=n_workers,
+            num_workers=n_workers if not args.deepspeed else 1, # To avoid RuntimeError: DataLoader worker exited unexpectedly with exit code 1.
             persistent_workers=args.persistent_data_loader_workers,
         )
 
@@ -413,20 +413,38 @@ class NetworkTrainer:
                 t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
-        if train_unet:
-            unet = accelerator.prepare(unet)
-        else:
-            unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
-        if train_text_encoder:
-            if len(text_encoders) > 1:
-                text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
-            else:
-                text_encoder = accelerator.prepare(text_encoder)
-                text_encoders = [text_encoder]
-        else:
-            pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
+        if args.deepspeed:
+            training_models_dict = {}
+            if train_unet: training_models_dict["unet"] = unet
+            if train_text_encoder: training_models_dict["text_encoder"] = text_encoders
+            training_models_dict["network"] = network
 
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+            ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
+            ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
+            
+            if train_unet: unet = ds_model.models["unet"]
+            if train_text_encoder:
+                text_encoder = ds_model.models["text_encoder"]
+                if len(ds_model.models["text_encoder"]) > 1:
+                    text_encoders = text_encoder
+                else:
+                    text_encoders = [text_encoder]
+
+        else:
+            if train_unet:
+                unet = accelerator.prepare(unet)
+            else:
+                unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+            if train_text_encoder:
+                if len(text_encoders) > 1:
+                    text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
+                else:
+                    text_encoder = accelerator.prepare(text_encoder)
+                    text_encoders = [text_encoder]
+            else:
+                pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
+
+            network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -453,7 +471,8 @@ class NetworkTrainer:
             vae.to(accelerator.device, dtype=vae_dtype)
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
-        if args.full_fp16:
+        if args.full_fp16 and not args.deepspeed:
+            # During deepseed training, accelerate not handles fp16/bf16|mixed precision directly via scaler. Let deepspeed engine do.
             train_util.patch_accelerator_for_fp16_training(accelerator)
 
         # resumeする
