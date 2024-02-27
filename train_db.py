@@ -11,7 +11,9 @@ import toml
 from tqdm import tqdm
 
 import torch
+from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from accelerate.utils import set_seed
@@ -46,6 +48,7 @@ logger = logging.getLogger(__name__)
 def train(args):
     train_util.verify_training_args(args)
     train_util.prepare_dataset_args(args, False)
+    deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
     cache_latents = args.cache_latents
@@ -187,7 +190,7 @@ def train(args):
         batch_size=1,
         shuffle=True,
         collate_fn=collator,
-        num_workers=n_workers if not args.deepspeed else 1, # To avoid RuntimeError: DataLoader worker exited unexpectedly with exit code 1.
+        num_workers=n_workers,
         persistent_workers=args.persistent_data_loader_workers,
     )
 
@@ -220,30 +223,27 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.deepspeed:
-        training_models_dict = {}
-        training_models_dict["unet"] = unet
-        if train_text_encoder: training_models_dict["text_encoder"] = text_encoder
+        if args.train_text_encoder:
+            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet, text_encoder=text_encoder)
+        else:
+            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)
+        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            ds_model, optimizer, train_dataloader, lr_scheduler
+        )
+        training_models = [ds_model]
 
-        ds_model = train_util.prepare_deepspeed_model(args, **training_models_dict)
-        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(ds_model, optimizer, train_dataloader, lr_scheduler)
-    
-        training_models = []
-        unet = ds_model.models["unet"]
-        training_models.append(unet)
-        if train_text_encoder:
-            text_encoder = ds_model.models["text_encoder"]
-            training_models.append(text_encoder)
-            
     else:
         if train_text_encoder:
             unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 unet, text_encoder, optimizer, train_dataloader, lr_scheduler
             )
+            training_models = [unet, text_encoder]
         else:
             unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+            training_models = [unet]
 
-        if not train_text_encoder:
-            text_encoder.to(accelerator.device, dtype=weight_dtype)  # to avoid 'cpu' vs 'cuda' error
+    if not train_text_encoder:
+        text_encoder.to(accelerator.device, dtype=weight_dtype)  # to avoid 'cpu' vs 'cuda' error
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:
@@ -312,8 +312,10 @@ def train(args):
                 if not args.gradient_checkpointing:
                     text_encoder.train(False)
                 text_encoder.requires_grad_(False)
+                if len(training_models) == 2:
+                    training_models = training_models[0]  # remove text_encoder from training_models
 
-            with accelerator.accumulate(unet):
+            with accelerator.accumulate(*training_models):
                 with torch.no_grad():
                     # latentに変換
                     if cache_latents:
@@ -480,6 +482,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, False, True)
     train_util.add_training_arguments(parser, True)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_sd_saving_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
