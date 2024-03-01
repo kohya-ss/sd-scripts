@@ -722,9 +722,10 @@ class BaseDataset(torch.utils.data.Dataset):
                     )
                     flex_tokens = flex_tokens[:tokens_len]
                 if subset.token_decay_step and self.current_step >= subset.token_decay_step and (self.max_train_steps - subset.token_decay_step) > 0:
+                    decay_progress = (self.current_step - subset.token_decay_step) / (self.max_train_steps - subset.token_decay_step)
                     tokens_len = (
                         math.floor(
-                            (self.current_step - subset.token_decay_step) * (len(flex_tokens) - subset.token_decay_min) / (self.max_train_steps - subset.token_decay_step)
+                            (1 - decay_progress) * (len(flex_tokens) - subset.token_decay_min) 
                         )
                         + subset.token_decay_min
                     )
