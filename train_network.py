@@ -683,6 +683,11 @@ class NetworkTrainer:
                 vae_name = os.path.basename(vae_name)
             metadata["ss_vae_name"] = vae_name
 
+        # token merging args
+        if args.tome_ratio:
+            metadata["ss_tome_ratio"] = args.tome_ratio
+            metadata["ss_stop_tome"] = args.stop_tome
+
         metadata = {k: str(v) for k, v in metadata.items()}
 
         # make minimum metadata for filtering
@@ -693,6 +698,15 @@ class NetworkTrainer:
 
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
         global_step = 0
+
+        # apply token merging optimization
+        if args.tome_ratio:
+            if args.stop_tome and args.stop_tome < 1.0:
+                args.stop_tome *= args.max_train_steps
+
+            from library import token_merging
+            logger.info(f"token merging ratio: {args.tome_ratio}")
+            token_merging.apply_patch(unet, ratio=args.tome_ratio, use_rand=False)
 
         noise_scheduler = DDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
@@ -758,6 +772,10 @@ class NetworkTrainer:
 
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
+                if args.stop_tome and global_step == args.stop_tome:
+                    accelerator.print(f"stop token merging at step {global_step}")
+                    token_merging.remove_patch(unet)
+
                 with accelerator.accumulate(network):
                     on_step_start(text_encoder, unet)
 
