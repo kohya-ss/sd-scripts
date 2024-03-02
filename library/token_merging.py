@@ -18,21 +18,27 @@ def make_tome_block(block_class: Type[torch.nn.Module]) -> Type[torch.nn.Module]
         # Save for unpatching later
         _parent = block_class
 
-        def forward(self, hidden_states: torch.Tensor, context: torch.Tensor = None, timestep=None) -> torch.Tensor:
-            m_a, m_c, m_m, u_a, u_c, u_m = compute_merge(hidden_states, self._tome_info)
+    def forward(self, hidden_states: torch.Tensor, context: torch.Tensor = None, timestep=None) -> torch.Tensor:
+        m_a, m_c, m_m, u_a, u_c, u_m = compute_merge(hidden_states, self._tome_info)
 
-            # 1. Self-Attention
-            norm_hidden_states = m_a(self.norm1(hidden_states))
-            hidden_states = u_a(self.attn1(norm_hidden_states)) + hidden_states
+        # 1. Self-Attention
+        norm_hidden_states = m_a(self.norm1(hidden_states))
+        hidden_states = u_a(self.attn1(norm_hidden_states)) + hidden_states
 
-            # 2. Cross-Attention
-            norm_hidden_states = m_c(self.norm2(hidden_states))
-            hidden_states = u_c(self.attn2(norm_hidden_states, context=context)) + hidden_states
+        # 2. Cross-Attention
+        norm_hidden_states = m_c(self.norm2(hidden_states))
+        hidden_states = u_c(self.attn2(norm_hidden_states, context=context)) + hidden_states
 
-            # 3. Feed-forward
-            hidden_states = u_m(self.ff(m_m(self.norm3(hidden_states)))) + hidden_states
+        # 3. Feed-forward
+        hidden_states = u_m(self.ff(m_m(self.norm3(hidden_states)))) + hidden_states
 
-            return hidden_states
+        return hidden_states
+
+    # don't overwrite checkpointing logic of SDXL
+    if hasattr(ToMeBlock, "forward_body"):
+        ToMeBlock.forward_body = forward
+    else:
+        ToMeBlock.forward = forward
 
     return ToMeBlock
 
