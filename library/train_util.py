@@ -3139,7 +3139,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--todo_factor",
         type=float,
-        help="token downsampling (ToDo) factor > 1 (recommend starting with 2)",
+        nargs="+",
+        help="token downsampling (ToDo) factor > 1 (recommend around 2-4). SD1/2 accepts up to 2 values (for depth_1 and depth_2)",
     )
     parser.add_argument(
         "--todo_args",

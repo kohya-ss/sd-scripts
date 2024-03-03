@@ -68,19 +68,38 @@ def hook_attention(attn: torch.nn.Module):
     attn._tome_info["hooks"].append(attn.register_forward_pre_hook(hook, with_kwargs=True))
 
 
-def patch_attention(unet: torch.nn.Module, args):
-    """ Patches the UNet's transformer blocks to apply token downsampling. """
-    is_sdxl = isinstance(unet, SdxlUNet2DConditionModel)
+def parse_todo_args(args, is_sdxl: bool) -> dict:
+    if len(args.todo_factor) > 2:
+        raise ValueError(f"--todo_factor expects 1 or 2 arguments, received {len(args.todo_factor)}")
+    elif is_sdxl and len(args.todo_factor) > 1:
+        raise ValueError(f"--todo_factor expects expects exactly 1 argument for SDXL, received {len(args.todo_factor)}")
+
     todo_kwargs = {
-        "downsample_factor_depth_1": args.todo_factor,
-        "downsample_factor_depth_2": args.todo_factor if is_sdxl else 1,  # SDXL doesn't have depth 1, so downsample here
+        "downsample_factor_depth_1": 1,
+        "downsample_factor_depth_2": 1,
         "downsample_method": "nearest-exact",
     }
+
+    if is_sdxl:
+        # SDXL doesn't have depth 1, so default to depth 2
+        todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[0]
+    else:
+        todo_kwargs["downsample_factor_depth_1"] = args.todo_factor[0]
+        todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[1] if len(args.todo_factor) == 2 else 1
+
     if args.todo_args:
         for arg in args.todo_args:
             key, value = arg.split("=")
             todo_kwargs[key] = ast.literal_eval(value)
     logger.info(f"enable token downsampling optimization | {todo_kwargs}")
+
+    return todo_kwargs
+
+
+def patch_attention(unet: torch.nn.Module, args):
+    """ Patches the UNet's transformer blocks to apply token downsampling. """
+    is_sdxl = isinstance(unet, SdxlUNet2DConditionModel)
+    todo_kwargs = parse_todo_args(args, is_sdxl)
 
     unet._tome_info = {
         "size": None,
