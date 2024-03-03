@@ -12,6 +12,7 @@ from tqdm import tqdm
 from transformers import CLIPTokenizer
 from library import model_util, sdxl_model_util, train_util, sdxl_original_unet
 from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
+from library import token_merging
 from .utils import setup_logging
 setup_logging()
 import logging
@@ -56,6 +57,10 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
 
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
+
+    # apply token merging patch
+    if args.todo_factor:
+        token_merging.patch_attention(unet, args)
 
     return load_stable_diffusion_format, text_encoder1, text_encoder2, vae, unet, logit_scale, ckpt_info
 
