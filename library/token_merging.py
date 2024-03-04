@@ -2,7 +2,6 @@
 #   https://github.com/ethansmith2000/ImprovedTokenMerge
 #   https://github.com/ethansmith2000/comfy-todo (MIT)
 
-import ast
 import math
 
 import torch
@@ -90,7 +89,10 @@ def parse_todo_args(args, is_sdxl: bool) -> dict:
     if args.todo_args:
         for arg in args.todo_args:
             key, value = arg.split("=")
-            todo_kwargs[key] = ast.literal_eval(value)
+            todo_kwargs[key] = value
+    todo_kwargs["downsample_factor_depth_1"] = float(todo_kwargs["downsample_factor_depth_1"])
+    todo_kwargs["downsample_factor_depth_2"] = float(todo_kwargs["downsample_factor_depth_2"])
+
     logger.info(f"enable token downsampling optimization | {todo_kwargs}")
 
     return todo_kwargs
