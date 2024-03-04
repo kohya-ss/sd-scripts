@@ -7,15 +7,8 @@ import math
 import torch
 import torch.nn.functional as F
 
-from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
-from library.utils import setup_logging
-setup_logging()
-import logging
-logger = logging.getLogger(__name__)
-
-
-def up_or_downsample(item, cur_w, cur_h, new_w, new_h, method):
+def up_or_downsample(item, cur_w, cur_h, new_w, new_h, method="nearest-exact"):
     batch_size = item.shape[0]
 
     item = item.reshape(batch_size, cur_h, cur_w, -1).permute(0, 3, 1, 2)
@@ -31,18 +24,15 @@ def compute_merge(x: torch.Tensor, tome_info: dict):
     downsample = int(math.ceil(math.sqrt(original_tokens // x.shape[1])))
     cur_h = original_h // downsample
     cur_w = original_w // downsample
-    downsample_factor_1 = tome_info["args"]["downsample_factor_depth_1"]
-    downsample_factor_2 = tome_info["args"]["downsample_factor_depth_2"]
+
+    args = tome_info["args"]
+    downsample_factor = args["downsample_factor"]
 
     merge_op = lambda x: x
-    if downsample == 1 and downsample_factor_1 > 1:
-        new_h = int(cur_h / downsample_factor_1)
-        new_w = int(cur_w / downsample_factor_1)
-        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h, tome_info["args"]["downsample_method"])
-    elif downsample == 2 and downsample_factor_2 > 1:
-        new_h = int(cur_h / downsample_factor_2)
-        new_w = int(cur_w / downsample_factor_2)
-        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h, tome_info["args"]["downsample_method"])
+    if downsample <= args["max_downsample"]:
+        new_h = int(cur_h / downsample_factor)
+        new_w = int(cur_w / downsample_factor)
+        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h)
 
     return merge_op
 
@@ -67,40 +57,22 @@ def hook_attention(attn: torch.nn.Module):
     attn._tome_info["hooks"].append(attn.register_forward_pre_hook(hook, with_kwargs=True))
 
 
-def parse_todo_args(args, is_sdxl: bool) -> dict:
-    if len(args.todo_factor) > 2:
-        raise ValueError(f"--todo_factor expects 1 or 2 arguments, received {len(args.todo_factor)}")
-    elif is_sdxl and len(args.todo_factor) > 1:
-        raise ValueError(f"--todo_factor expects expects exactly 1 argument for SDXL, received {len(args.todo_factor)}")
+def parse_todo_args(args, is_sdxl: bool = False) -> dict:
+    if args.todo_max_downsample is None:
+        args.todo_max_downsample = 2 if is_sdxl else 1
+    if is_sdxl and args.todo_max_downsample not in (2, 4):
+        raise ValueError(f"--todo_max_downsample for SDXL must be 2 or 4, received {args.todo_factor}")
 
     todo_kwargs = {
-        "downsample_factor_depth_1": 1,
-        "downsample_factor_depth_2": 1,
-        "downsample_method": "nearest-exact",
+        "downsample_factor": args.todo_factor,
+        "max_downsample": args.todo_max_downsample,
     }
-
-    if is_sdxl:
-        # SDXL doesn't have depth 1, so default to depth 2
-        todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[0]
-    else:
-        todo_kwargs["downsample_factor_depth_1"] = args.todo_factor[0]
-        todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[1] if len(args.todo_factor) == 2 else 1
-
-    if args.todo_args:
-        for arg in args.todo_args:
-            key, value = arg.split("=")
-            todo_kwargs[key] = value
-    todo_kwargs["downsample_factor_depth_1"] = float(todo_kwargs["downsample_factor_depth_1"])
-    todo_kwargs["downsample_factor_depth_2"] = float(todo_kwargs["downsample_factor_depth_2"])
-
-    logger.info(f"enable token downsampling optimization | {todo_kwargs}")
 
     return todo_kwargs
 
 
-def patch_attention(unet: torch.nn.Module, args):
+def patch_attention(unet: torch.nn.Module, args, is_sdxl=False):
     """ Patches the UNet's transformer blocks to apply token downsampling. """
-    is_sdxl = isinstance(unet, SdxlUNet2DConditionModel)
     todo_kwargs = parse_todo_args(args, is_sdxl)
 
     unet._tome_info = {

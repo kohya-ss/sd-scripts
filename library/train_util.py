@@ -3139,14 +3139,16 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--todo_factor",
         type=float,
-        nargs="+",
-        help="token downsampling (ToDo) factor > 1 (recommend around 2-4). SD1/2 accepts up to 2 values (for depth_1 and depth_2)",
+        help="token downsampling (ToDo) factor > 1 (recommend around 2-4)",
     )
     parser.add_argument(
-        "--todo_args",
-        type=str,
-        nargs="*",
-        help='additional arguments for ToDo (like "downsample_factor_depth_2=2")',
+        "--todo_max_downsample",
+        type=int,
+        choices=[1, 2, 4, 8],
+        help=(
+            "apply ToDo to layers with at most this amount of downsampling."
+            " SDXL only accepts 2 and 4. Recommend 1 or 2. Default 1 (or 2 for SDXL)"
+        ),
     )
 
     parser.add_argument(
@@ -4202,6 +4204,7 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
     # apply token merging patch
     if args.todo_factor:
         token_merging.patch_attention(unet, args)
+        logger.info(f"enable token downsampling optimization | {unet._tome_info['args']}")
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
