@@ -1203,7 +1203,10 @@ class BaseDataset(torch.utils.data.Dataset):
             flippeds.append(flipped)
 
             # captionとtext encoder outputを処理する
-            caption = image_info.caption  # default
+            raw_caption = image_info.caption  # default
+            captions = [s.strip() for s in raw_caption.split("\n") if len(s.strip())>0]
+            caption = random.choice(captions)
+
             if image_info.text_encoder_outputs1 is not None:
                 text_encoder_outputs1_list.append(image_info.text_encoder_outputs1)
                 text_encoder_outputs2_list.append(image_info.text_encoder_outputs2)
@@ -1419,7 +1422,7 @@ class DreamBoothDataset(BaseDataset):
                             logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
                             raise e
                         assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
-                        caption = lines[0].strip()
+                        caption = "\n".join([l.strip() for l in lines])
                     break
             return caption
 
