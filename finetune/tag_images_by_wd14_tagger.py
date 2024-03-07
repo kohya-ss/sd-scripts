@@ -85,20 +85,6 @@ def main(args):
     if not os.path.exists(args.model_dir) or args.force_download:
         logger.info(f"downloading wd14 tagger model from hf_hub. id: {args.repo_id}")
         snapshot_download(args.repo_id, cache_dir=args.model_dir, force_download=True)
-        # files = FILES
-        # if args.onnx:
-        #     files += FILES_ONNX
-        # for file in files:
-        #     hf_hub_download(args.repo_id, file, cache_dir=args.model_dir, force_download=True, force_filename=file)
-        # for file in SUB_DIR_FILES:
-        #     hf_hub_download(
-        #         args.repo_id,
-        #         file,
-        #         subfolder=SUB_DIR,
-        #         cache_dir=os.path.join(args.model_dir, SUB_DIR),
-        #         force_download=True,
-        #         force_filename=file,
-        #     )
     else:
         logger.info("using existing wd14 tagger model")
 
