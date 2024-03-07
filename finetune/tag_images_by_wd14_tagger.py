@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from PIL import Image
 from tqdm import tqdm
 
@@ -25,7 +25,7 @@ FILES = ["keras_metadata.pb", "saved_model.pb", "selected_tags.csv"]
 FILES_ONNX = ["model.onnx"]
 SUB_DIR = "variables"
 SUB_DIR_FILES = ["variables.data-00000-of-00001", "variables.index"]
-CSV_FILE = FILES[-1]
+CSV_FILE = [-1]
 
 
 def preprocess_image(image):
@@ -84,20 +84,21 @@ def main(args):
     # https://github.com/toriato/stable-diffusion-webui-wd14-tagger/issues/22
     if not os.path.exists(args.model_dir) or args.force_download:
         logger.info(f"downloading wd14 tagger model from hf_hub. id: {args.repo_id}")
-        files = FILES
-        if args.onnx:
-            files += FILES_ONNX
-        for file in files:
-            hf_hub_download(args.repo_id, file, cache_dir=args.model_dir, force_download=True, force_filename=file)
-        for file in SUB_DIR_FILES:
-            hf_hub_download(
-                args.repo_id,
-                file,
-                subfolder=SUB_DIR,
-                cache_dir=os.path.join(args.model_dir, SUB_DIR),
-                force_download=True,
-                force_filename=file,
-            )
+        snapshot_download(args.repo_id, cache_dir=args.model_dir, force_download=True)
+        # files = FILES
+        # if args.onnx:
+        #     files += FILES_ONNX
+        # for file in files:
+        #     hf_hub_download(args.repo_id, file, cache_dir=args.model_dir, force_download=True, force_filename=file)
+        # for file in SUB_DIR_FILES:
+        #     hf_hub_download(
+        #         args.repo_id,
+        #         file,
+        #         subfolder=SUB_DIR,
+        #         cache_dir=os.path.join(args.model_dir, SUB_DIR),
+        #         force_download=True,
+        #         force_filename=file,
+        #     )
     else:
         logger.info("using existing wd14 tagger model")
 
