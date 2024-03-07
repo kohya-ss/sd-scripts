@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from accelerate.utils import set_seed
@@ -378,7 +379,17 @@ def train(args):
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
     # lr schedulerを用意する
-    lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+    lr_scheduler = None
+    if optimizer == "galore":
+        from library import galore_optimizer
+
+        # if lr_scheduler is not layerwise, it is None. if layerwise, it is a dummy scheduler
+        optimizer, lr_scheduler = galore_optimizer.get_optimizer(
+            args, args.optimizer_type, params_to_optimize, training_models, accelerator.num_processes
+        )
+
+    if lr_scheduler is None:
+        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
     if args.full_fp16:

@@ -3671,7 +3671,7 @@ def get_optimizer(args, trainable_params):
         optimizer_class = lion_pytorch.Lion
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
-    elif optimizer_type.endswith("8bit".lower()):
+    elif optimizer_type.endswith("8bit".lower()) and not optimizer_type.startswith("GaLore".lower()):
         try:
             import bitsandbytes as bnb
         except ImportError:
@@ -3879,6 +3879,11 @@ def get_optimizer(args, trainable_params):
         logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type.startswith("GaLore".lower()):
+        logger.info(f"use GaLore optimizer | {optimizer_kwargs}")
+        optimizer = "galore"
+        return None, None, optimizer
 
     if optimizer is None:
         # 任意のoptimizerを使う
