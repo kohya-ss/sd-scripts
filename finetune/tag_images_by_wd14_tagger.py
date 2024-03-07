@@ -25,7 +25,7 @@ FILES = ["keras_metadata.pb", "saved_model.pb", "selected_tags.csv"]
 FILES_ONNX = ["model.onnx"]
 SUB_DIR = "variables"
 SUB_DIR_FILES = ["variables.data-00000-of-00001", "variables.index"]
-CSV_FILE = [-1]
+CSV_FILE = FILES[-1]
 
 
 def preprocess_image(image):
