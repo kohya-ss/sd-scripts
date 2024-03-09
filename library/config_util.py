@@ -98,7 +98,8 @@ class BaseDatasetParams:
     resolution: Optional[Tuple[int, int]] = None
     network_multiplier: float = 1.0
     debug_dataset: bool = False
-
+    validation_seed: Optional[int] = None
+    validation_split: float = 0.0
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
@@ -109,8 +110,7 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
-
-
+    
 @dataclass
 class FineTuningDatasetParams(BaseDatasetParams):
     batch_size: int = 1
@@ -222,8 +222,11 @@ class ConfigSanitizer:
         "enable_bucket": bool,
         "max_bucket_reso": int,
         "min_bucket_reso": int,
+        "validation_seed": int,
+        "validation_split": float,        
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
+        
     }
 
     # options handled by argparse but not handled by user config
@@ -460,100 +463,107 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
             dataset_klass = FineTuningDataset
 
         subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
-        dataset = dataset_klass(subsets=subsets, **asdict(dataset_blueprint.params))
+        dataset = dataset_klass(subsets=subsets, is_train=True, **asdict(dataset_blueprint.params))
         datasets.append(dataset)
 
-    # print info
-    info = ""
-    for i, dataset in enumerate(datasets):
-        is_dreambooth = isinstance(dataset, DreamBoothDataset)
-        is_controlnet = isinstance(dataset, ControlNetDataset)
-        info += dedent(
-            f"""\
-      [Dataset {i}]
-        batch_size: {dataset.batch_size}
-        resolution: {(dataset.width, dataset.height)}
-        enable_bucket: {dataset.enable_bucket}
-        network_multiplier: {dataset.network_multiplier}
-    """
-        )
+    val_datasets:List[Union[DreamBoothDataset, FineTuningDataset, ControlNetDataset]] = []
+    
+    for dataset_blueprint in dataset_group_blueprint.datasets:
+        if dataset_blueprint.params.validation_split <= 0.0:
+            continue
+        if dataset_blueprint.is_controlnet:
+            subset_klass = ControlNetSubset
+            dataset_klass = ControlNetDataset
+        elif dataset_blueprint.is_dreambooth:
+            subset_klass = DreamBoothSubset
+            dataset_klass = DreamBoothDataset
+        else:            
+            subset_klass = FineTuningSubset
+            dataset_klass = FineTuningDataset
+
+        subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
+        dataset = dataset_klass(subsets=subsets, is_train=False, **asdict(dataset_blueprint.params))
+        val_datasets.append(dataset)
+
+    def print_info(_datasets):
+        info = ""
+        for i, dataset in enumerate(_datasets):
+            is_dreambooth = isinstance(dataset, DreamBoothDataset)
+            is_controlnet = isinstance(dataset, ControlNetDataset)
+            info += dedent(f"""\
+                [Dataset {i}]
+                batch_size: {dataset.batch_size}
+                resolution: {(dataset.width, dataset.height)}
+                enable_bucket: {dataset.enable_bucket}
+            """)
 
         if dataset.enable_bucket:
-            info += indent(
-                dedent(
-                    f"""\
-        min_bucket_reso: {dataset.min_bucket_reso}
-        max_bucket_reso: {dataset.max_bucket_reso}
-        bucket_reso_steps: {dataset.bucket_reso_steps}
-        bucket_no_upscale: {dataset.bucket_no_upscale}
-      \n"""
-                ),
-                "  ",
-            )
+            info += indent(dedent(f"""\
+                min_bucket_reso: {dataset.min_bucket_reso}
+                max_bucket_reso: {dataset.max_bucket_reso}
+                bucket_reso_steps: {dataset.bucket_reso_steps}
+                bucket_no_upscale: {dataset.bucket_no_upscale}
+            \n"""), "  ")
         else:
             info += "\n"
-
         for j, subset in enumerate(dataset.subsets):
-            info += indent(
-                dedent(
-                    f"""\
-        [Subset {j} of Dataset {i}]
-          image_dir: "{subset.image_dir}"
-          image_count: {subset.img_count}
-          num_repeats: {subset.num_repeats}
-          shuffle_caption: {subset.shuffle_caption}
-          keep_tokens: {subset.keep_tokens}
-          keep_tokens_separator: {subset.keep_tokens_separator}
-          caption_dropout_rate: {subset.caption_dropout_rate}
-          caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
-          caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
-          caption_prefix: {subset.caption_prefix}
-          caption_suffix: {subset.caption_suffix}
-          color_aug: {subset.color_aug}
-          flip_aug: {subset.flip_aug}
-          face_crop_aug_range: {subset.face_crop_aug_range}
-          random_crop: {subset.random_crop}
-          token_warmup_min: {subset.token_warmup_min},
-          token_warmup_step: {subset.token_warmup_step},
-      """
-                ),
-                "  ",
-            )
+            info += indent(dedent(f"""\
+                [Subset {j} of Dataset {i}]
+                image_dir: "{subset.image_dir}"
+                image_count: {subset.img_count}
+                num_repeats: {subset.num_repeats}
+                shuffle_caption: {subset.shuffle_caption}
+                keep_tokens: {subset.keep_tokens}
+                caption_dropout_rate: {subset.caption_dropout_rate}
+                caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
+                caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
+                caption_prefix: {subset.caption_prefix}
+                caption_suffix: {subset.caption_suffix}
+                color_aug: {subset.color_aug}
+                flip_aug: {subset.flip_aug}
+                face_crop_aug_range: {subset.face_crop_aug_range}
+                random_crop: {subset.random_crop}
+                token_warmup_min: {subset.token_warmup_min},
+                token_warmup_step: {subset.token_warmup_step},
+            """), "  ")
 
-            if is_dreambooth:
-                info += indent(
-                    dedent(
-                        f"""\
-          is_reg: {subset.is_reg}
-          class_tokens: {subset.class_tokens}
-          caption_extension: {subset.caption_extension}
-        \n"""
-                    ),
-                    "    ",
-                )
-            elif not is_controlnet:
-                info += indent(
-                    dedent(
-                        f"""\
-          metadata_file: {subset.metadata_file}
-        \n"""
-                    ),
-                    "    ",
-                )
+        if is_dreambooth:
+            info += indent(dedent(f"""\
+                is_reg: {subset.is_reg}
+                class_tokens: {subset.class_tokens}
+                caption_extension: {subset.caption_extension}
+            \n"""), "    ")
+        elif not is_controlnet:
+            info += indent(dedent(f"""\
+                metadata_file: {subset.metadata_file}
+            \n"""), "    ")
 
-    logger.info(f'{info}')
+        print(info)
 
+    print_info(datasets)
+
+    if len(val_datasets) > 0:
+        print("Validation dataset")
+        print_info(val_datasets)         
+ 
     # make buckets first because it determines the length of dataset
     # and set the same seed for all datasets
     seed = random.randint(0, 2**31) # actual seed is seed + epoch_no
     for i, dataset in enumerate(datasets):
-        logger.info(f"[Dataset {i}]")
+        print(f"[Dataset {i}]")
+        dataset.make_buckets()
+        dataset.set_seed(seed)
+    
+    for i, dataset in enumerate(val_datasets):
+        print(f"[Validation Dataset {i}]")
         dataset.make_buckets()
         dataset.set_seed(seed)
 
-    return DatasetGroup(datasets)
-
-
+    return (
+        DatasetGroup(datasets),
+        DatasetGroup(val_datasets) if val_datasets else None
+    )        
+        
 def generate_dreambooth_subsets_config_by_subdirs(train_data_dir: Optional[str] = None, reg_data_dir: Optional[str] = None):
     def extract_dreambooth_params(name: str) -> Tuple[int, str]:
         tokens = name.split("_")
