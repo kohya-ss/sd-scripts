@@ -81,23 +81,24 @@ class ControlNetSubsetParams(BaseSubsetParams):
 
 @dataclass
 class BaseDatasetParams:
-  tokenizer: Union[CLIPTokenizer, List[CLIPTokenizer]] = None
-  max_token_length: int = None
-  resolution: Optional[Tuple[int, int]] = None
-  debug_dataset: bool = False
-  validation_seed: Optional[int] = None
-  validation_split: float = 0.0
+    tokenizer: Union[CLIPTokenizer, List[CLIPTokenizer]] = None
+    max_token_length: int = None
+    resolution: Optional[Tuple[int, int]] = None
+    network_multiplier: float = 1.0
+    debug_dataset: bool = False
+    validation_seed: Optional[int] = None
+    validation_split: float = 0.0
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
-  batch_size: int = 1
-  enable_bucket: bool = False
-  min_bucket_reso: int = 256
-  max_bucket_reso: int = 1024
-  bucket_reso_steps: int = 64
-  bucket_no_upscale: bool = False
-  prior_loss_weight: float = 1.0
-
+    batch_size: int = 1
+    enable_bucket: bool = False
+    min_bucket_reso: int = 256
+    max_bucket_reso: int = 1024
+    bucket_reso_steps: int = 64
+    bucket_no_upscale: bool = False
+    prior_loss_weight: float = 1.0
+    
 @dataclass
 class FineTuningDatasetParams(BaseDatasetParams):
   batch_size: int = 1
@@ -203,8 +204,9 @@ class ConfigSanitizer:
     "max_bucket_reso": int,
     "min_bucket_reso": int,
     "validation_seed": int,
-    "validation_split": float,
+    "validation_split": float,        
     "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
+    "network_multiplier": float,
   }
 
   # options handled by argparse but not handled by user config
