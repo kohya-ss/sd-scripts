@@ -1120,9 +1120,15 @@ class BaseDataset(torch.utils.data.Dataset):
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
-            loss_weights.append(
-                self.prior_loss_weight if image_info.is_reg else 1.0
-            )  # in case of fine tuning, is_reg is always False
+            sample_weight = 1.0
+            if args.sample_weight is not None:
+                sample_weight_path = os.path.splitext(info.absolute_path)[0] + ".weight"
+                try:
+                    with open(sample_weight_path, 'r', encoding='utf-8') as file:
+                        sample_weight = float(file.readline().strip())
+                except (OSError, ValueError):
+                    pass
+            loss_weights.append(sample_weight * (self.prior_loss_weight if image_info.is_reg else 1.0))  # in case of fine tuning, is_reg is always False
 
             flipped = subset.flip_aug and random.random() < 0.5  # not flipped or flipped with 50% chance
 
@@ -3194,6 +3200,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
             "--prior_loss_weight", type=float, default=1.0, help="loss weight for regularization images / 正則化画像のlossの重み"
         )
 
+    parser.add_argument(
+        "--sample_weight",
+        action="store_true",
+        help="Enables the use of sample weights for images, where each weight is read from a `.weight` file corresponding to the image. / 画像に対してサンプルウェイトを使用することを可能にします。各ウェイトは、画像に対応する .weight ファイルから読み取られます。",
+    )
 
 def verify_training_args(args: argparse.Namespace):
     r"""
