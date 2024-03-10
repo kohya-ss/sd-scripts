@@ -685,7 +685,7 @@ class NetworkTrainer:
 
         if args.todo_factor:
             metadata["ss_todo_factor"] = args.todo_factor
-            metadata["ss_todo_max_downsample"] = args.todo_max_downsample
+            metadata["ss_todo_max_depth"] = args.todo_max_depth
 
         metadata = {k: str(v) for k, v in metadata.items()}
 

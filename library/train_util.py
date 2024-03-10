@@ -69,7 +69,7 @@ from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipel
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
-from library import token_merging
+from library import token_downsampling
 from library.utils import setup_logging
 
 setup_logging()
@@ -3142,12 +3142,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="token downsampling (ToDo) factor > 1 (recommend around 2-4)",
     )
     parser.add_argument(
-        "--todo_max_downsample",
+        "--todo_max_depth",
         type=int,
-        choices=[1, 2, 4, 8],
+        choices=[1, 2, 3, 4],
         help=(
-            "apply ToDo to layers with at most this amount of downsampling."
-            " SDXL only accepts 2 and 4. Recommend 1 or 2. Default 1 (or 2 for SDXL)"
+            "apply ToDo to deeper layers (lower quailty for slight speed increase). SDXL only accepts 2 and 3. Recommend 1 or 2. Default 1 (or 2 for SDXL)"
         ),
     )
 
@@ -4203,8 +4202,8 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
     # apply token merging patch
     if args.todo_factor:
-        token_merging.patch_attention(unet, args)
-        logger.info(f"enable token downsampling optimization | {unet._tome_info['args']}")
+        token_downsampling.apply_patch(unet, args)
+        logger.info(f"enable token downsampling optimization | {unet._todo_info['args']}")
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
