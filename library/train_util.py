@@ -1204,8 +1204,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
             # captionとtext encoder outputを処理する
             raw_caption = image_info.caption  # default
-            captions = [s.strip() for s in raw_caption.split("\n") if len(s.strip())>0]
-            caption = random.choice(captions)
+            caption_lines = [s.strip() for s in raw_caption.split("\n") if len(s.strip())>0]
+            caption = random.choice(caption_lines)
 
             if image_info.text_encoder_outputs1 is not None:
                 text_encoder_outputs1_list.append(image_info.text_encoder_outputs1)
