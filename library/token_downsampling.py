@@ -26,10 +26,10 @@ def compute_merge(x: torch.Tensor, todo_info: dict):
     cur_w = original_w // downsample
 
     args = todo_info["args"]
-    downsample_factor = args["downsample_factor"]
 
     merge_op = lambda x: x
     if downsample <= args["max_depth"]:
+        downsample_factor = args["downsample_factor"][downsample]
         new_h = int(cur_h / downsample_factor)
         new_w = int(cur_w / downsample_factor)
         merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h)
@@ -58,14 +58,30 @@ def hook_attention(attn: torch.nn.Module):
 
 
 def parse_todo_args(args, is_sdxl: bool = False) -> dict:
+    # validate max_depth
     if args.todo_max_depth is None:
-        args.todo_max_depth = 2 if is_sdxl else 1
-    if is_sdxl and args.todo_max_depth not in (2, 3):
-        raise ValueError(f"--todo_max_depth for SDXL must be 2 or 3, received {args.todo_factor}")
+        args.todo_max_depth = min(len(args.todo_factor), 4)
+    if is_sdxl and args.todo_max_depth > 2:
+        raise ValueError(f"todo_max_depth for SDXL cannot be larger than 2, received {args.todo_max_depth}")
+
+    # validate factor
+    if len(args.todo_factor) > 1:
+        if len(args.todo_factor) != args.todo_max_depth:
+            raise ValueError(f"todo_factor number of values must be 1 or same as todo_max_depth, received {len(args.todo_factor)}")
+
+    # create dict of factors to support per-depth override
+    factors = args.todo_factor
+    if len(factors) == 1:
+        factors *= args.todo_max_depth
+    factors = {2**(i + int(is_sdxl)): factor for i, factor in enumerate(factors)}
+
+    # convert depth to powers of 2 to match layer dimensions: [1,2,3,4] -> [1,2,4,8]
+    # offset by 1 for sdxl which starts at 2
+    max_depth = 2**(args.todo_max_depth + int(is_sdxl) - 1)
 
     todo_kwargs = {
-        "downsample_factor": args.todo_factor,
-        "max_depth": 2**(args.todo_max_depth - 1),
+        "downsample_factor": factors,
+        "max_depth": max_depth,
     }
 
     return todo_kwargs

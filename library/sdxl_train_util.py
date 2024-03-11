@@ -61,7 +61,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
     # apply token merging patch
     if args.todo_factor:
         token_downsampling.apply_patch(unet, args, is_sdxl=True)
-        logger.info(f"enable token downsampling optimization | {unet._todo_info['args']}")
+        logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
 
     return load_stable_diffusion_format, text_encoder1, text_encoder2, vae, unet, logit_scale, ckpt_info
 

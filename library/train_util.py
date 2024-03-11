@@ -3139,7 +3139,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--todo_factor",
         type=float,
-        help="token downsampling (ToDo) factor > 1 (recommend around 2-4)",
+        nargs="+",
+        help="token downsampling (ToDo) factor > 1 (recommend around 2-4). Specify multiple to set factor for each depth",
     )
     parser.add_argument(
         "--todo_max_depth",
@@ -4203,7 +4204,7 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
     # apply token merging patch
     if args.todo_factor:
         token_downsampling.apply_patch(unet, args)
-        logger.info(f"enable token downsampling optimization | {unet._todo_info['args']}")
+        logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
