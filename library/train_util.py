@@ -3089,8 +3089,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     )
     parser.add_argument(
         "--noise_offset_random_strength",
-        type=bool,
-        default=False,
+        action="store_true",
         help="use random strength between 0~noise_offset for noise offset. / noise offsetにおいて、0からnoise_offsetの間でランダムな強度を使用します。",
     )
     parser.add_argument(
@@ -3108,8 +3107,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     )
     parser.add_argument(
         "--ip_noise_gamma_random_strength",
-        type=bool,
-        default=False,
+        action="store_true",
         help="Use random strength between 0~ip_noise_gamma for input perturbation noise."
         + "/ input perturbation noiseにおいて、0からip_noise_gammaの間でランダムな強度を使用します。",
     )
