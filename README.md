@@ -260,6 +260,7 @@ ControlNet dataset is used to specify the mask. The mask images should be the RG
 
 ### Working in progress
 
+- Colab seems to stop with log output. Try specifying `--console_log_simple` option in the training script to disable rich logging.
 - `train_network.py` and `sdxl_train_network.py` are modified to record some dataset settings in the metadata of the trained model (`caption_prefix`, `caption_suffix`, `keep_tokens_separator`, `secondary_separator`, `enable_wildcard`).
 - Some features are added to the dataset subset settings.
   - `secondary_separator` is added to specify the tag separator that is not the target of shuffling or dropping. 
@@ -269,6 +270,8 @@ ControlNet dataset is used to specify the mask. The mask images should be the RG
   - The existing features `caption_prefix` and `caption_suffix` can be used together. `caption_prefix` and `caption_suffix` are processed first, and then `enable_wildcard`, `keep_tokens_separator`, shuffling and dropping, and `secondary_separator` are processed in order.
   - The examples are [shown below](#example-of-dataset-settings--データセット設定の記述例).
 
+
+- Colab での動作時、ログ出力で停止してしまうようです。学習スクリプトに `--console_log_simple` オプションを指定し、rich のロギングを無効してお試しください。
 - `train_network.py` および `sdxl_train_network.py` で、学習したモデルのメタデータに一部のデータセット設定が記録されるよう修正しました（`caption_prefix`、`caption_suffix`、`keep_tokens_separator`、`secondary_separator`、`enable_wildcard`）。
 - データセットのサブセット設定にいくつかの機能を追加しました。
   - シャッフルの対象とならないタグ分割識別子の指定 `secondary_separator` を追加しました。`secondary_separator=";;;"` のように指定します。`secondary_separator` で区切ることで、その部分はシャッフル、drop 時にまとめて扱われます。詳しくは記述例をご覧ください。
