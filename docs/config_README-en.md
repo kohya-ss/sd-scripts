@@ -1,4 +1,5 @@
 Original by kohya-ss
+
 A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
 
 # Config Readme
