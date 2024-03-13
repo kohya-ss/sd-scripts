@@ -63,6 +63,7 @@ from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
 from PIL import Image
+import imagesize
 import cv2
 import safetensors.torch
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
@@ -1073,8 +1074,7 @@ class BaseDataset(torch.utils.data.Dataset):
             )
 
     def get_image_size(self, image_path):
-        image = Image.open(image_path)
-        return image.size
+        return imagesize.get(image_path)
 
     def load_image_with_face_info(self, subset: BaseSubset, image_path: str):
         img = load_image(image_path)
@@ -3314,6 +3314,9 @@ def add_dataset_arguments(
     parser: argparse.ArgumentParser, support_dreambooth: bool, support_caption: bool, support_caption_dropout: bool
 ):
     # dataset common
+    parser.add_argument(
+        "--dataset_from_pkl", action="store_true"
+    )
     parser.add_argument(
         "--train_data_dir", type=str, default=None, help="directory for train images / 学習画像データのディレクトリ"
     )
