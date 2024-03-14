@@ -81,7 +81,7 @@ def _load_target_model(
         # Diffusers model is loaded to CPU
         from diffusers import StableDiffusionXLPipeline
 
-        variant = "fp16" if weight_dtype == torch.float16 else None
+        variant = "fp16" if weight_dtype == torch.float16 else "bf16" if weight_dtype == torch.bfloat16 else None
         logger.info(f"load Diffusers pretrained models: {name_or_path}, variant={variant}")
         try:
             try:
