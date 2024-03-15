@@ -1420,7 +1420,8 @@ class DreamBoothDataset(BaseDataset):
                             logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
                             raise e
                         assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
-                        caption = '[[[WiLdCaRd]]]'.join(lines)
+                        filtered_lines = [line for line in lines if line.strip()]
+                        caption = '[[[WiLdCaRd]]]'.join(filtered_lines)
                     break
             return caption
 
