@@ -839,10 +839,18 @@ class NetworkTrainer:
                     if args.masked_loss:
                         # mask image is -1 to 1. we need to convert it to 0 to 1
                         mask_image = batch["conditioning_images"].to(dtype=weight_dtype)[:, 0].unsqueeze(1)  # use R channel
-
+                        mask_random_remove_near = 0.5
+                        mask_random_remove_background = 0.5
+                        mask_remove_near = 0
+                        mask_remove_background = 0
                         # resize to the same size as the loss
                         mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
                         mask_image = mask_image / 2 + 0.5
+                        remove_near_value = args.mask_remove_near + (torch.rand(1, device=accelerator.device) * (args.mask_random_remove_near - args.mask_remove_near))
+                        remove_background_value = args.mask_remove_background + (torch.rand(1, device=accelerator.device) * (args.mask_random_remove_background - args.mask_remove_background))
+                        mask_image = torch.where((1 - mask_image) < remove_near_value, torch.tensor(1.0, device=accelerator.device), mask_image)                        
+                        mask_image = torch.where(mask_image < remove_background_value, torch.tensor(0.0, device=accelerator.device), mask_image)
+                        
                         loss = loss * mask_image
 
                     loss = loss.mean([1, 2, 3])
@@ -1066,8 +1074,31 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apply mask for calculating loss. conditioning_data_dir is required for dataset. / 損失計算時にマスクを適用する。datasetにはconditioning_data_dirが必要",
     )
+    parser.add_argument(
+        "--mask_random_remove_near",
+        type=float,
+        default=0,
+        help="maximum random value for removing near mask. / 近くのマスクをランダムに削除するための最大値"
+    )
+    parser.add_argument(
+        "--mask_random_remove_background",
+        type=float,
+        default=0,
+        help="maximum random value for removing background mask. / 背景マスクをランダムに削除するための最大値"
+    )
+    parser.add_argument(
+        "--mask_remove_near",
+        type=float,
+        default=0,
+        help="fixed value for removing near mask. / 近くのマスクを削除するための固定値"
+    )
+    parser.add_argument(
+        "--mask_remove_background",
+        type=float,
+        default=0,
+        help="fixed value for removing background mask. / 背景マスクを削除するための固定値"
+    )
     return parser
-
 
 if __name__ == "__main__":
     parser = setup_parser()
