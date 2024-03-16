@@ -1529,18 +1529,20 @@ class DreamBoothDataset(BaseDataset):
                         logger.warning(missing_caption + f"... and {remaining_missing_captions} more")
                         break
                     logger.warning(missing_caption)
-            
+
             if cache_meta:
                 logger.info(f"cache metadata for {subset.image_dir}")
+                if sizes is None or sizes[0] is None:
+                    sizes = [self.get_image_size(img_path) for img_path in img_paths]
                 # [img_path, caption, resolution]
                 data = [
-                    (img_path, caption, " ".join(str(x) for x in self.get_image_size(img_path)))
-                    for img_path, caption in zip(img_paths, captions)
+                    (img_path, caption, " ".join(str(x) for x in size))
+                    for img_path, caption, size in zip(img_paths, captions, sizes)
                 ]
                 with open(f"{subset.image_dir}/dataset.txt", "w", encoding="utf-8") as f:
                     f.write("\n".join(["<|##|>".join(x) for x in data]))
                 logger.info(f"cache metadata done for {subset.image_dir}")
-            
+
             return img_paths, captions, sizes
 
         logger.info("prepare images.")
