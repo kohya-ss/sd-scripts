@@ -1,6 +1,5 @@
 import argparse
 import random
-import pickle
 
 from accelerate.utils import set_seed
 
@@ -99,7 +98,6 @@ if __name__ == "__main__":
     args = train_util.read_config_from_file(args, parser)
     if args.max_token_length is None:
         args.max_token_length = 75
+    args.cache_meta = True
 
     dataset_group = make_dataset(args)
-    with open(f"{args.train_data_dir}/dataset-meta.pkl", "wb") as f:
-        pickle.dump(dataset_group, f)
