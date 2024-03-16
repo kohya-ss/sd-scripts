@@ -3121,11 +3121,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="enable noise offset with this value (if enabled, around 0.1 is recommended) / Noise offsetを有効にしてこの値を設定する（有効にする場合は0.1程度を推奨）",
     )
     parser.add_argument(
-        "--noise_offset_random_strength",
-        action="store_true",
-        help="use random strength between 0~noise_offset for noise offset. / noise offsetにおいて、0からnoise_offsetの間でランダムな強度を使用します。",
-    )
-    parser.add_argument(
         "--multires_noise_iterations",
         type=int,
         default=None,
@@ -4703,11 +4698,7 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:
-        if args.noise_offset_random_strength:
-            noise_offset = torch.rand(1, device=latents.device) * args.noise_offset
-        else:
-            noise_offset = args.noise_offset
-        noise = custom_train_functions.apply_noise_offset(latents, noise, noise_offset, args.adaptive_noise_scale)
+        noise = custom_train_functions.apply_noise_offset(latents, noise, args.noise_offset, args.adaptive_noise_scale)
     if args.multires_noise_iterations:
         noise = custom_train_functions.pyramid_noise_like(
             noise, latents.device, args.multires_noise_iterations, args.multires_noise_discount
