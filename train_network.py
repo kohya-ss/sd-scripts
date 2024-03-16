@@ -157,25 +157,7 @@ class NetworkTrainer:
         tokenizers = tokenizer if isinstance(tokenizer, list) else [tokenizer]
 
         # データセットを準備する
-        if args.dataset_from_pkl:
-            logger.info(f"Loading dataset from cached meta")
-            with open(f"{args.train_data_dir}/dataset-meta.pkl", "rb") as f:
-                train_dataset_group = pickle.load(f)
-            assert isinstance(train_dataset_group, DatasetGroup)
-            logger.info(f"Dataset Loaded")
-            logger.info(f"Dataset have {train_dataset_group.num_train_images} images")
-            logger.info(f"Dataset have {train_dataset_group.num_reg_images} reg images")
-            
-            # To simulate the correct behavior of random operations
-            # To avoid any potential to cause "seed breaking changes"
-            dataset_seed = random.randint(0, 2**31)
-            for dataset in train_dataset_group.datasets:
-                dataset.tokenizers = tokenizers
-                dataset.tokenizer_max_length = dataset.tokenizers[0].model_max_length if args.max_token_length is None else args.max_token_length + 2
-                dataset.set_seed(0)
-                dataset.shuffle_buckets()
-                dataset.set_seed(dataset_seed)
-        elif args.dataset_class is None:
+        if args.dataset_class is None:
             blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
             if use_user_config:
                 logger.info(f"Loading dataset config from {args.dataset_config}")

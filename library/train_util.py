@@ -3337,9 +3337,6 @@ def add_dataset_arguments(
 ):
     # dataset common
     parser.add_argument(
-        "--dataset_from_pkl", action="store_true"
-    )
-    parser.add_argument(
         "--cache_meta", action="store_true"
     )
     parser.add_argument(
