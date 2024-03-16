@@ -3340,6 +3340,12 @@ def add_dataset_arguments(
         "--dataset_from_pkl", action="store_true"
     )
     parser.add_argument(
+        "--cache_meta", action="store_true"
+    )
+    parser.add_argument(
+        "--use_cached_meta", action="store_true"
+    )
+    parser.add_argument(
         "--train_data_dir", type=str, default=None, help="directory for train images / 学習画像データのディレクトリ"
     )
     parser.add_argument(
