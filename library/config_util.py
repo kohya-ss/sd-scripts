@@ -323,7 +323,10 @@ class ConfigSanitizer:
 
             self.dataset_schema = validate_flex_dataset
         elif support_dreambooth:
-            self.dataset_schema = self.db_dataset_schema
+            if support_controlnet:
+                self.dataset_schema = self.cn_dataset_schema
+            else:
+                self.dataset_schema = self.db_dataset_schema
         elif support_finetuning:
             self.dataset_schema = self.ft_dataset_schema
         elif support_controlnet:

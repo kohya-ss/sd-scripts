@@ -40,6 +40,7 @@ from library.custom_train_functions import (
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
     apply_debiased_estimation,
+    apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
 
@@ -835,16 +836,8 @@ class NetworkTrainer:
                         target = noise
 
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
-
                     if args.masked_loss:
-                        # mask image is -1 to 1. we need to convert it to 0 to 1
-                        mask_image = batch["conditioning_images"].to(dtype=weight_dtype)[:, 0].unsqueeze(1)  # use R channel
-
-                        # resize to the same size as the loss
-                        mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
-                        mask_image = mask_image / 2 + 0.5
-                        loss = loss * mask_image
-
+                        loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -968,6 +961,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, True)
+    train_util.add_masked_loss_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
@@ -1060,11 +1054,6 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
-    )
-    parser.add_argument(
-        "--masked_loss",
-        action="store_true",
-        help="apply mask for calculating loss. conditioning_data_dir is required for dataset. / 損失計算時にマスクを適用する。datasetにはconditioning_data_dirが必要",
     )
     return parser
 
