@@ -364,6 +364,16 @@ It becomes `1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best 
 `1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best quality, rating: general` や `1girl, hatsune miku, vocaloid, white shirt, smile, stage, microphone, best quality, rating: general` などになります。
 
 
+### Mar 15, 2024 / 2024/3/15: v0.8.5
+
+- Fixed a bug that the value of timestep embedding during SDXL training was incorrect.
+  - The inference with the generation script is also fixed.
+  - The impact is unknown, but please update for SDXL training.
+
+- SDXL 学習時の timestep embedding の値が誤っていたのを修正しました。
+  - 生成スクリプトでの推論時についてもあわせて修正しました。
+  - 影響の度合いは不明ですが、SDXL の学習時にはアップデートをお願いいたします。
+
 ### Feb 24, 2024 / 2024/2/24: v0.8.4
 
 - The log output has been improved. PR [#905](https://github.com/kohya-ss/sd-scripts/pull/905) Thanks to shirayu!
