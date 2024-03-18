@@ -71,6 +71,8 @@ class BaseSubsetParams:
     caption_tag_dropout_rate: float = 0.0
     token_warmup_min: int = 1
     token_warmup_step: float = 0
+    token_decay_min: int = 1
+    token_decay_step: float = 0
 
 
 @dataclass
@@ -183,6 +185,8 @@ class ConfigSanitizer:
         "keep_tokens_separator": str,
         "token_warmup_min": int,
         "token_warmup_step": Any(float, int),
+        "token_decay_min": int,
+        "token_decay_step": Any(float, int),
         "caption_prefix": str,
         "caption_suffix": str,
     }
@@ -515,6 +519,8 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           random_crop: {subset.random_crop}
           token_warmup_min: {subset.token_warmup_min},
           token_warmup_step: {subset.token_warmup_step},
+          token_decay_min: {subset.token_decay_min},
+          token_decay_step: {subset.token_decay_step},
       """
                 ),
                 "  ",
