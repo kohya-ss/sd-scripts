@@ -658,6 +658,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.replacements[str_from] = str_to
 
     def process_caption(self, subset: BaseSubset, caption):
+        caption = random.choice(caption.split('[[[WiLdCaRd]]]'))
         # caption に prefix/suffix を付ける
         if subset.caption_prefix:
             caption = subset.caption_prefix + " " + caption
@@ -1419,7 +1420,8 @@ class DreamBoothDataset(BaseDataset):
                             logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
                             raise e
                         assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
-                        caption = lines[0].strip()
+                        filtered_lines = [line for line in lines if line.strip()]
+                        caption = '[[[WiLdCaRd]]]'.join(filtered_lines)
                     break
             return caption
 
