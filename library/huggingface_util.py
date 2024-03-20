@@ -5,9 +5,12 @@ import argparse
 import os
 from library.utils import fire_in_thread
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 def exists_repo(repo_id: str, repo_type: str, revision: str = "main", token: str = None):
     api = HfApi(
@@ -44,19 +47,14 @@ def upload(
 
     def uploader():
         try:
+            # 自前でスレッド化しているので run_as_future は明示的に False にする（Hub APIのバグかもしれない）
             if is_folder:
                 api.upload_folder(
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    folder_path=src,
-                    path_in_repo=path_in_repo,
+                    repo_id=repo_id, repo_type=repo_type, folder_path=src, path_in_repo=path_in_repo, run_as_future=False
                 )
             else:
                 api.upload_file(
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    path_or_fileobj=src,
-                    path_in_repo=path_in_repo,
+                    repo_id=repo_id, repo_type=repo_type, path_or_fileobj=src, path_in_repo=path_in_repo, run_as_future=False
                 )
         except Exception as e:  # RuntimeErrorを確認済みだが他にあると困るので
             logger.error("===========================================")
