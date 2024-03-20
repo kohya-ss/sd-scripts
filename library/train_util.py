@@ -3545,7 +3545,7 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
         exit(1)
 
     logger.info(f"Loading settings from {config_path}...")
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding='utf-8') as f:
         config_dict = toml.load(f)
 
     # combine all sections into one
