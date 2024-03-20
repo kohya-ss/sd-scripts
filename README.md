@@ -33,6 +33,7 @@ Most of the documents are written in Japanese.
 * [Training guide - common](./docs/train_README-ja.md) : data preparation, options etc... 
   * [Chinese version](./docs/train_README-zh.md)
 * [Dataset config](./docs/config_README-ja.md) 
+  * [English version](./docs/config_README-en.md)
 * [DreamBooth training guide](./docs/train_db_README-ja.md)
 * [Step by Step fine-tuning guide](./docs/fine_tune_README_ja.md):
 * [training LoRA](./docs/train_network_README-ja.md)
@@ -252,6 +253,7 @@ ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [docum
 ### Working in progress
 
 - Colab seems to stop with log output. Try specifying `--console_log_simple` option in the training script to disable rich logging.
+- The `.toml` file for the dataset config is now read in UTF-8 encoding. PR [#1167](https://github.com/kohya-ss/sd-scripts/pull/1167) Thanks to Horizon1704!
 - `train_network.py` and `sdxl_train_network.py` are modified to record some dataset settings in the metadata of the trained model (`caption_prefix`, `caption_suffix`, `keep_tokens_separator`, `secondary_separator`, `enable_wildcard`).
 - Some features are added to the dataset subset settings.
   - `secondary_separator` is added to specify the tag separator that is not the target of shuffling or dropping. 
@@ -260,15 +262,29 @@ ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [docum
   - `keep_tokens_separator` is updated to be used twice in the caption. When you specify `keep_tokens_separator="|||"`, the part divided by the second `|||` is not shuffled or dropped and remains at the end.
   - The existing features `caption_prefix` and `caption_suffix` can be used together. `caption_prefix` and `caption_suffix` are processed first, and then `enable_wildcard`, `keep_tokens_separator`, shuffling and dropping, and `secondary_separator` are processed in order.
   - The examples are [shown below](#example-of-dataset-settings--データセット設定の記述例).
+- The support for v3 repositories is added to `tag_image_by_wd14_tagger.py` (`--onnx` option only). PR [#1192](https://github.com/kohya-ss/sd-scripts/pull/1192) Thanks to sdbds!
+  - Onnx may need to be updated. Onnx is not installed by default, so please install or update it with `pip install onnx==1.15.0 onnxruntime-gpu==1.17.1` etc. Please also check the comments in `requirements.txt`.
+- The model is now saved in the subdirectory as `--repo_id` in `tag_image_by_wd14_tagger.py` . This caches multiple repo_id models. Please delete unnecessary files under `--model_dir`.
+- The options `--noise_offset_random_strength` and `--ip_noise_gamma_random_strength` are added to each training script. These options can be used to vary the noise offset and ip noise gamma in the range of 0 to the specified value. PR [#1177](https://github.com/kohya-ss/sd-scripts/pull/1177) Thanks to KohakuBlueleaf!
+- The [English version of the dataset settings documentation](./docs/config_README-en.md) is added. PR [#1175](https://github.com/kohya-ss/sd-scripts/pull/1175) Thanks to darkstorm2150!
+- The options `--save_state_on_train_end` are added to each training script. PR [#1168](https://github.com/kohya-ss/sd-scripts/pull/1168) Thanks to gesen2egee!
 
 
 - Colab での動作時、ログ出力で停止してしまうようです。学習スクリプトに `--console_log_simple` オプションを指定し、rich のロギングを無効してお試しください。
+- データセット設定の `.toml` ファイルが UTF-8 encoding で読み込まれるようになりました。PR [#1167](https://github.com/kohya-ss/sd-scripts/pull/1167) Horizon1704 氏に感謝します。
 - `train_network.py` および `sdxl_train_network.py` で、学習したモデルのメタデータに一部のデータセット設定が記録されるよう修正しました（`caption_prefix`、`caption_suffix`、`keep_tokens_separator`、`secondary_separator`、`enable_wildcard`）。
 - データセットのサブセット設定にいくつかの機能を追加しました。
   - シャッフルの対象とならないタグ分割識別子の指定 `secondary_separator` を追加しました。`secondary_separator=";;;"` のように指定します。`secondary_separator` で区切ることで、その部分はシャッフル、drop 時にまとめて扱われます。詳しくは記述例をご覧ください。
   - `enable_wildcard` を追加しました。`true` にするとワイルドカード記法 `{aaa|bbb|ccc}` が使えます。詳しくは記述例をご覧ください。
   - `keep_tokens_separator` をキャプション内に 2 つ使えるようにしました。たとえば `keep_tokens_separator="|||"` と指定したとき、`1girl, hatsune miku, vocaloid ||| stage, mic ||| best quality, rating: general` とキャプションを指定すると、二番目の `|||` で分割された部分はシャッフル、drop されず末尾に残ります。
   - 既存の機能 `caption_prefix` と `caption_suffix` とあわせて使えます。`caption_prefix` と `caption_suffix` は一番最初に処理され、その後、ワイルドカード、`keep_tokens_separator`、シャッフルおよび drop、`secondary_separator` の順に処理されます。
+- `tag_image_by_wd14_tagger.py` で v3 のリポジトリがサポートされました（`--onnx` 指定時のみ有効）。 PR [#1192](https://github.com/kohya-ss/sd-scripts/pull/1192) sdbds 氏に感謝します。
+  - Onnx のバージョンアップが必要になるかもしれません。デフォルトでは Onnx はインストールされていませんので、`pip install onnx==1.15.0 onnxruntime-gpu==1.17.1` 等でインストール、アップデートしてください。`requirements.txt` のコメントもあわせてご確認ください。
+- `tag_image_by_wd14_tagger.py` で、モデルを`--repo_id` のサブディレクトリに保存するようにしました。これにより複数のモデルファイルがキャッシュされます。`--model_dir` 直下の不要なファイルは削除願います。
+- 各学習スクリプトに、noise offset、ip noise gammaを、それぞれ 0~指定した値の範囲で変動させるオプション `--noise_offset_random_strength` および `--ip_noise_gamma_random_strength` が追加されました。 PR [#1177](https://github.com/kohya-ss/sd-scripts/pull/1177) KohakuBlueleaf 氏に感謝します。
+- データセット設定の[英語版ドキュメント](./docs/config_README-en.md) が追加されました。PR [#1175](https://github.com/kohya-ss/sd-scripts/pull/1175) darkstorm2150 氏に感謝します。
+- 各学習スクリプトに、学習終了時に state を保存する `--save_state_on_train_end` オプションが追加されました。 PR [#1168](https://github.com/kohya-ss/sd-scripts/pull/1168) gesen2egee 氏に感謝します。
+
 
 #### Example of dataset settings / データセット設定の記述例:
 
@@ -358,12 +374,15 @@ It becomes `1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best 
 ### Mar 15, 2024 / 2024/3/15: v0.8.5
 
 - Fixed a bug that the value of timestep embedding during SDXL training was incorrect.
+  - Please update for SDXL training.
   - The inference with the generation script is also fixed.
-  - The impact is unknown, but please update for SDXL training.
+  - This fix appears to resolve an issue where unintended artifacts occurred in trained models under certain conditions. 
+We would like to express our deep gratitude to Mark Saint (cacoe) from leonardo.ai, for reporting the issue and cooperating with the verification, and to gcem156 for the advice provided in identifying the part of the code that needed to be fixed.
 
 - SDXL 学習時の timestep embedding の値が誤っていたのを修正しました。
+  - SDXL の学習時にはアップデートをお願いいたします。
   - 生成スクリプトでの推論時についてもあわせて修正しました。
-  - 影響の度合いは不明ですが、SDXL の学習時にはアップデートをお願いいたします。
+  - この修正により、特定の条件下で学習されたモデルに意図しないアーティファクトが発生する問題が解消されるようです。問題を報告いただき、また検証にご協力いただいた leonardo.ai の Mark Saint (cacoe) 氏、および修正点の特定に関するアドバイスをいただいた gcem156 氏に深く感謝いたします。
 
 ### Feb 24, 2024 / 2024/2/24: v0.8.4
 

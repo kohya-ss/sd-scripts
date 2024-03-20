@@ -22,9 +22,12 @@ huggingface-hub==0.20.1
 # for WD14 captioning (tensorflow)
 # tensorflow==2.10.1
 # for WD14 captioning (onnx)
-# onnx==1.14.1
-# onnxruntime-gpu==1.16.0
-# onnxruntime==1.16.0
+# onnx==1.15.0
+# onnxruntime-gpu==1.17.1
+# onnxruntime==1.17.1
+# for cuda 12.1(default 11.8)
+# onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+
 # this is for onnx: 
 # protobuf==3.20.3
 # open clip for SDXL
