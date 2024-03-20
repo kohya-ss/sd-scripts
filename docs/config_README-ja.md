@@ -1,5 +1,3 @@
-For non-Japanese speakers: this README is provided only in Japanese in the current state. Sorry for inconvenience. We will provide English version in the near future.
-
 `--dataset_config` で渡すことができる設定ファイルに関する説明です。
 
 ## 概要
@@ -140,11 +138,27 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 | `shuffle_caption` | `true` | o | o | o |
 | `caption_prefix` | `“masterpiece, best quality, ”` | o | o | o |
 | `caption_suffix` | `“, from side”` | o | o | o |
+| `caption_separator` | （通常は設定しません） | o | o | o |
+| `keep_tokens_separator` | `“|||”` | o | o | o |
+| `secondary_separator` | `“;;;”` | o | o | o |
+| `enable_wildcard` | `true` | o | o | o |
 
 * `num_repeats`
     * サブセットの画像の繰り返し回数を指定します。fine tuning における `--dataset_repeats` に相当しますが、`num_repeats` はどの学習方法でも指定可能です。
 * `caption_prefix`, `caption_suffix`
     * キャプションの前、後に付与する文字列を指定します。シャッフルはこれらの文字列を含めた状態で行われます。`keep_tokens` を指定する場合には注意してください。
+
+* `caption_separator`
+    * タグを区切る文字列を指定します。デフォルトは `,` です。このオプションは通常は設定する必要はありません。
+
+* `keep_tokens_separator`
+    *  キャプションで固定したい部分を区切る文字列を指定します。たとえば `aaa, bbb ||| ccc, ddd, eee, fff ||| ggg, hhh` のように指定すると、`aaa, bbb` と `ggg, hhh` の部分はシャッフル、drop されず残ります。間のカンマは不要です。結果としてプロンプトは `aaa, bbb, eee, ccc, fff, ggg, hhh` や `aaa, bbb, fff, ccc, eee, ggg, hhh` などになります。
+
+* `secondary_separator`
+    * 追加の区切り文字を指定します。この区切り文字で区切られた部分は一つのタグとして扱われ、シャッフル、drop されます。その後、`caption_separator` に置き換えられます。たとえば `aaa;;;bbb;;;ccc` のように指定すると、`aaa,bbb,ccc` に置き換えられるか、まとめて drop されます。
+
+* `enable_wildcard`
+    * ワイルドカード記法を有効にします。ワイルドカード記法については後述します。
 
 ### DreamBooth 方式専用のオプション
 
@@ -280,4 +294,61 @@ resolution = 768
 * `voluptuous.error.MultipleInvalid: expected int for dictionary value @ ...`: 指定する値の形式が不正というエラーです。値の形式が間違っている可能性が高いです。`int` の部分は対象となるオプションによって変わります。この README に載っているオプションの「設定例」が役立つかもしれません。
 * `voluptuous.error.MultipleInvalid: extra keys not allowed @ ...`: 対応していないオプション名が存在している場合に発生するエラーです。オプション名を間違って記述しているか、誤って紛れ込んでいる可能性が高いです。
 
+## その他
 
+### Example of configuration file, 設定ファイルの記述例
+
+```toml
+[general]
+flip_aug = true
+color_aug = false
+resolution = [1024, 1024]
+
+[[datasets]]
+batch_size = 6
+enable_bucket = true
+bucket_no_upscale = true
+caption_extension = ".txt"
+keep_tokens_separator= "|||"
+shuffle_caption = true
+caption_tag_dropout_rate = 0.1
+secondary_separator = ";;;" # subset 側に書くこともできます / can be written in the subset side
+enable_wildcard = true # 同上 / same as above
+
+  [[datasets.subsets]]
+  image_dir = "/path/to/image_dir"
+  num_repeats = 1
+
+  # ||| の前後はカンマは不要です（自動的に追加されます） / No comma is required before and after ||| (it is added automatically)
+  caption_prefix = "1girl, hatsune miku, vocaloid |||" 
+  
+  # ||| の後はシャッフル、drop されず残ります / After |||, it is not shuffled or dropped and remains
+  # 単純に文字列として連結されるので、カンマなどは自分で入れる必要があります / It is simply concatenated as a string, so you need to put commas yourself
+  caption_suffix = ", anime screencap ||| masterpiece, rating: general"
+```
+
+### キャプション記述例、secondary_separator 記法：`secondary_separator = ";;;"` の場合
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, sky;;;cloud;;;day, outdoors
+```
+`sky;;;cloud;;;day` の部分はシャッフル、drop されず `sky,cloud,day` に置換されます。シャッフル、drop が有効な場合、まとめて（一つのタグとして）処理されます。つまり `vocaloid, 1girl, upper body, sky,cloud,day, outdoors, hatsune miku` （シャッフル）や `vocaloid, 1girl, outdoors, looking at viewer, upper body, hatsune miku` （drop されたケース）などになります。
+
+### キャプション記述例、ワイルドカード記法： `enable_wildcard = true` の場合
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, {simple|white} background
+```
+ランダムに `simple` または `white` が選ばれ、`simple background` または `white background` になります。
+
+```txt
+1girl, hatsune miku, vocaloid, {{retro style}}
+```
+タグ文字列に `{` や `}` そのものを含めたい場合は `{{` や `}}` のように二つ重ねてください（この例では実際に学習に用いられるキャプションは `{retro style}` になります）。
+
+### キャプション記述例、`keep_tokens_separator` 記法： `keep_tokens_separator = "|||"` の場合
+
+```txt
+1girl, hatsune miku, vocaloid ||| stage, microphone, white shirt, smile ||| best quality, rating: general
+```
+`1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best quality, rating: general` や `1girl, hatsune miku, vocaloid, white shirt, smile, stage, microphone, best quality, rating: general` などになります。
