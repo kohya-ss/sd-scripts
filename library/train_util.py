@@ -2936,13 +2936,13 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--save_state",
         action="store_true",
-        help="save training state additionally (including optimizer states etc.) / optimizerなど学習状態も含めたstateを追加で保存する",
+        help="save training state additionally (including optimizer states etc.) when saving model / optimizerなど学習状態も含めたstateをモデル保存時に追加で保存する",
     )
     parser.add_argument(
         "--save_state_on_train_end",
         action="store_true",
-        help="save training state additionally (including optimizer states etc.) on train end / optimizerなど学習状態も含めたstateを追加で保存する",
-    )   
+        help="save training state (including optimizer states etc.) on train end / optimizerなど学習状態も含めたstateを学習完了時に保存する",
+    )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
 
     parser.add_argument("--train_batch_size", type=int, default=1, help="batch size for training / 学習時のバッチサイズ")
@@ -3550,7 +3550,7 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
         exit(1)
 
     logger.info(f"Loading settings from {config_path}...")
-    with open(config_path, "r", encoding='utf-8') as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config_dict = toml.load(f)
 
     # combine all sections into one
