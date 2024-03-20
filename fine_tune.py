@@ -457,7 +457,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if args.save_state and is_main_process:
+    if is_main_process and (args.save_state or args.save_state_on_train_end):        
         train_util.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
