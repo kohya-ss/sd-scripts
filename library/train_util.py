@@ -4870,10 +4870,14 @@ def sample_images_common(
             return
         if args.sample_every_n_epochs is not None:
             # sample_every_n_steps は無視する
-            if epoch is None or epoch % args.sample_every_n_epochs != 0:
+            if (epoch is None
+                or args.sample_every_n_epochs <= 0
+                or epoch % args.sample_every_n_epochs != 0):
                 return
         else:
-            if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
+            if (args.sample_every_n_steps <= 0
+                or steps % args.sample_every_n_steps != 0
+                or epoch is not None):  # steps is not divisible or end of epoch
                 return
 
     logger.info("")
