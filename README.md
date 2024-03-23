@@ -58,18 +58,16 @@ Give unrestricted script access to powershell so venv can work:
 Open a regular Powershell terminal and type the following inside:
 
 ```powershell
+pip install poetry
 git clone https://github.com/kohya-ss/sd-scripts.git
 cd sd-scripts
 
-python -m venv venv
-.\venv\Scripts\activate
-
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118
-pip install --upgrade -r requirements.txt
-pip install xformers==0.0.20
+poetry install
+poetry shell
 
 accelerate config
 ```
+if you want to use WD14 captioning and BLIP captioning, type `poetry install --with wd14-onnx,blip`.
 
 __Note:__ Now bitsandbytes is optional. Please install any version of bitsandbytes as needed. Installation instructions are in the following section.
 
@@ -139,8 +137,7 @@ When a new release comes out you can upgrade your repo with the following comman
 ```powershell
 cd sd-scripts
 git pull
-.\venv\Scripts\activate
-pip install --use-pep517 --upgrade -r requirements.txt
+poetry install
 ```
 
 Once the commands have completed successfully you should be ready to use the new version.

@@ -53,22 +53,20 @@ PowerShellを使う場合、venvを使えるようにするためには以下の
 PowerShellを使う場合、通常の（管理者ではない）PowerShellを開き以下を順に実行します。
 
 ```powershell
+pip install poetry
 git clone https://github.com/kohya-ss/sd-scripts.git
 cd sd-scripts
 
-python -m venv venv
-.\venv\Scripts\activate
-
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118
-pip install --upgrade -r requirements.txt
-pip install xformers==0.0.20
+poetry install
+poetry shell
 
 accelerate config
 ```
 
+WD14 captioningとBLIP captioningを使う場合は、`poetry install --with wd14-onnx,blip`としてください。
+
 コマンドプロンプトでも同一です。
 
-（注:``python -m venv venv`` のほうが ``python -m venv --system-site-packages venv`` より安全そうなため書き換えました。globalなpythonにパッケージがインストールしてあると、後者だといろいろと問題が起きます。）
 
 accelerate configの質問には以下のように答えてください。（bf16で学習する場合、最後の質問にはbf16と答えてください。）
 
@@ -129,8 +127,7 @@ python -m pip install bitsandbytes==0.41.1 --prefer-binary --extra-index-url=htt
 ```powershell
 cd sd-scripts
 git pull
-.\venv\Scripts\activate
-pip install --use-pep517 --upgrade -r requirements.txt
+poetry install
 ```
 
 コマンドが成功すれば新しいバージョンが使用できます。
