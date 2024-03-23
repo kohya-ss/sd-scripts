@@ -1,0 +1,70 @@
+[tool.poetry]
+name = "sd-scripts"
+version = "0.8.5"
+description = "Training, generation and utility scripts for Stable Diffusion."
+authors = ["Kohya S"]
+license = "Apache License 2.0"
+readme = "README.md"
+packages = [ # finetune networks tools library のみをインストールする
+	{ include = "finetune", from = "."},
+	{ include = "networks", from = "."},
+	{ include = "tools", from = "."},
+	{ include = "library", from = "."},
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10.6,<3.12"
+torch = { version = "^2.2.1+cu121", source = "torch_cu121" }
+torchvision = { version = "^0.17.1+cu121", source = "torch_cu121" }
+torchaudio = { version = "^2.2.1+cu121", source = "torch_cu121" }
+xformers = {version = "^0.0.25", source = "torch_cu121"}
+accelerate = "^0.28.0"
+transformers = "^4.39.1"
+diffusers = "^0.27.2"
+ftfy = "^6.2.0"
+opencv-python = "^4.9.0.80"
+einops = "^0.7.0"
+pytorch-lightning = "^2.2.1"
+tensorboard = "^2.16.2"
+safetensors = "^0.4.2"
+altair = "^5.2.0"
+easygui = "^0.98.3"
+toml = "^0.10.2"
+voluptuous = "^0.14.2"
+huggingface-hub = "^0.21.4"
+open-clip-torch = "^2.24.0"
+rich = "^13.7.1"
+
+[[tool.poetry.source]]
+name = "torch_cu121"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "torch_cu118"
+url = "https://download.pytorch.org/whl/cu118"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "onnx_cu121"
+url = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
+priority = "explicit"
+
+[tool.poetry.group.wd14-onnx.dependencies]
+onnx = "^1.15.0"
+# onnxruntime-gpu = "^1.17.1" # cu118はこれで出来るはず?未検証
+onnxruntime-gpu = { version = "^1.17.1", source = "onnx_cu121" }
+onnxruntime = "^1.17.1"
+protobuf = "^5.26.0"
+
+# [tool.poetry.group.wd14-tensorflow.dependencies]
+# tensorflow = "^2.10.1"
+
+[tool.poetry.group.blip.dependencies]
+requests = "^2.31.0"
+timm = "^0.9.16"
+fairscale = "^0.4.13"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

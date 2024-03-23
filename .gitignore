@@ -2,6 +2,7 @@ logs
 __pycache__
 wd14_tagger_model
 venv
+.venv
 *.egg-info
 build
 .vscode
