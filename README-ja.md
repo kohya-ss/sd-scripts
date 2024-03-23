@@ -85,41 +85,6 @@ accelerate configの質問には以下のように答えてください。（bf1
 ※場合によって ``ValueError: fp16 mixed precision requires a GPU`` というエラーが出ることがあるようです。この場合、6番目の質問（
 ``What GPU(s) (by id) should be used for training on this machine as a comma-separated list? [all]:``）に「0」と答えてください。（id `0`のGPUが使われます。）
 
-### オプション：`bitsandbytes`（8bit optimizer）を使う
-
-`bitsandbytes`はオプションになりました。Linuxでは通常通りpipでインストールできます（0.41.1または以降のバージョンを推奨）。
-
-Windowsでは0.35.0または0.41.1を推奨します。
-
-- `bitsandbytes` 0.35.0: 安定しているとみられるバージョンです。AdamW8bitは使用できますが、他のいくつかの8bit optimizer、学習時の`full_bf16`オプションは使用できません。
-- `bitsandbytes` 0.41.1: Lion8bit、PagedAdamW8bit、PagedLion8bitをサポートします。`full_bf16`が使用できます。
-
-注：`bitsandbytes` 0.35.0から0.41.0までのバージョンには問題があるようです。 https://github.com/TimDettmers/bitsandbytes/issues/659
-
-以下の手順に従い、`bitsandbytes`をインストールしてください。
-
-### 0.35.0を使う場合
-
-PowerShellの例です。コマンドプロンプトではcpの代わりにcopyを使ってください。
-
-```powershell
-cd sd-scripts
-.\venv\Scripts\activate
-pip install bitsandbytes==0.35.0
-
-cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
-cp .\bitsandbytes_windows\cextension.py .\venv\Lib\site-packages\bitsandbytes\cextension.py
-cp .\bitsandbytes_windows\main.py .\venv\Lib\site-packages\bitsandbytes\cuda_setup\main.py
-```
-
-### 0.41.1を使う場合
-
-jllllll氏の配布されている[こちら](https://github.com/jllllll/bitsandbytes-windows-webui) または他の場所から、Windows用のwhlファイルをインストールしてください。
-
-```powershell
-python -m pip install bitsandbytes==0.41.1 --prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
-```
-
 ## アップグレード
 
 新しいリリースがあった場合、以下のコマンドで更新できます。

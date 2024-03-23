@@ -69,13 +69,6 @@ accelerate config
 ```
 if you want to use WD14 captioning and BLIP captioning, type `poetry install --with wd14-onnx,blip`.
 
-__Note:__ Now bitsandbytes is optional. Please install any version of bitsandbytes as needed. Installation instructions are in the following section.
-
-<!-- 
-cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
-cp .\bitsandbytes_windows\cextension.py .\venv\Lib\site-packages\bitsandbytes\cextension.py
-cp .\bitsandbytes_windows\main.py .\venv\Lib\site-packages\bitsandbytes\cuda_setup\main.py
--->
 Answers to accelerate config:
 
 ```txt
@@ -92,43 +85,6 @@ note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is o
 ``What GPU(s) (by id) should be used for training on this machine as a comma-separated list? [all]:`` 
 
 (Single GPU with id `0` will be used.)
-
-### Optional: Use `bitsandbytes` (8bit optimizer)
-
-For 8bit optimizer, you need to install `bitsandbytes`. For Linux, please install `bitsandbytes` as usual (0.41.1 or later is recommended.)
-
-For Windows, there are several versions of `bitsandbytes`:
-
-- `bitsandbytes` 0.35.0: Stable version. AdamW8bit is available. `full_bf16` is not available.
-- `bitsandbytes` 0.41.1: Lion8bit, PagedAdamW8bit and PagedLion8bit are available. `full_bf16` is available.
-
-Note: `bitsandbytes`above 0.35.0 till 0.41.0 seems to have an issue: https://github.com/TimDettmers/bitsandbytes/issues/659
-
-Follow the instructions below to install `bitsandbytes` for Windows.
-
-### bitsandbytes 0.35.0 for Windows
-
-Open a regular Powershell terminal and type the following inside:
-
-```powershell
-cd sd-scripts
-.\venv\Scripts\activate
-pip install bitsandbytes==0.35.0
-
-cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
-cp .\bitsandbytes_windows\cextension.py .\venv\Lib\site-packages\bitsandbytes\cextension.py
-cp .\bitsandbytes_windows\main.py .\venv\Lib\site-packages\bitsandbytes\cuda_setup\main.py
-```
-
-This will install `bitsandbytes` 0.35.0 and copy the necessary files to the `bitsandbytes` directory.
-
-### bitsandbytes 0.41.1 for Windows
-
-Install the Windows version whl file from [here](https://github.com/jllllll/bitsandbytes-windows-webui) or other sources, like:
-
-```powershell
-python -m pip install bitsandbytes==0.41.1 --prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
-```
 
 ## Upgrade
 
