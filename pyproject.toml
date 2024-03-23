@@ -20,7 +20,7 @@ torchaudio = { version = "^2.2.1+cu121", source = "torch_cu121" }
 xformers = {version = "^0.0.25", source = "torch_cu121"}
 accelerate = "^0.28.0"
 transformers = "^4.39.1"
-diffusers = "^0.27.2"
+diffusers = {extras = ["torch"], version = "^0.27.2"}
 ftfy = "^6.2.0"
 opencv-python = "^4.9.0.80"
 einops = "^0.7.0"
