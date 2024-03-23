@@ -293,7 +293,35 @@ As a temporary measure, we will list common errors and their solutions. If you e
 
 ## Miscellaneous
 
-### Example of configuration file, 設定ファイルの記述例
+### Multi-line captions
+
+By setting `enable_wildcard = true`, multiple-line captions are also enabled. If the caption file consists of multiple lines, one line is randomly selected as the caption. 
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
+a girl with a microphone standing on a stage
+detailed digital art of a girl with a microphone on a stage
+```
+
+It can be combined with wildcard notation.
+
+In metadata files, you can also specify multiple-line captions. In the `.json` metadata file, use `\n` to represent a line break. If the caption file consists of multiple lines, `merge_captions_to_metadata.py` will create a metadata file in this format.
+
+The tags in the metadata (`tags`) are added to each line of the caption.
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": "a cartoon of a frog with the word frog on it\ntest multiline caption1\ntest multiline caption2",
+        "tags": "open mouth, simple background, standing, no humans, animal, black background, frog, animal costume, animal focus"
+    },
+    ...
+}
+```
+
+In this case, the actual caption will be `a cartoon of a frog with the word frog on it, open mouth, simple background ...`, `test multiline caption1, open mouth, simple background ...`, `test multiline caption2, open mouth, simple background ...`, etc.
+
+### Example of configuration file : `secondary_separator`, wildcard notation, `keep_tokens_separator`, etc.
 
 ```toml
 [general]

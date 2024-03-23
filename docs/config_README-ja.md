@@ -158,7 +158,7 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
     * 追加の区切り文字を指定します。この区切り文字で区切られた部分は一つのタグとして扱われ、シャッフル、drop されます。その後、`caption_separator` に置き換えられます。たとえば `aaa;;;bbb;;;ccc` のように指定すると、`aaa,bbb,ccc` に置き換えられるか、まとめて drop されます。
 
 * `enable_wildcard`
-    * ワイルドカード記法を有効にします。ワイルドカード記法については後述します。
+    * ワイルドカード記法および複数行キャプションを有効にします。ワイルドカード記法、複数行キャプションについては後述します。
 
 ### DreamBooth 方式専用のオプション
 
@@ -296,7 +296,35 @@ resolution = 768
 
 ## その他
 
-### Example of configuration file, 設定ファイルの記述例
+### 複数行キャプション
+
+`enable_wildcard = true` を設定することで、複数行キャプションも同時に有効になります。キャプションファイルが複数の行からなる場合、ランダムに一つの行が選ばれてキャプションとして利用されます。
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
+a girl with a microphone standing on a stage
+detailed digital art of a girl with a microphone on a stage
+```
+
+ワイルドカード記法と組み合わせることも可能です。
+
+メタデータファイルでも同様に複数行キャプションを指定することができます。メタデータの .json 内には、`\n` を使って改行を表現してください。キャプションファイルが複数行からなる場合、`merge_captions_to_metadata.py` を使うと、この形式でメタデータファイルが作成されます。
+
+メタデータのタグ (`tags`) は、キャプションの各行に追加されます。
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": "a cartoon of a frog with the word frog on it\ntest multiline caption1\ntest multiline caption2",
+        "tags": "open mouth, simple background, standing, no humans, animal, black background, frog, animal costume, animal focus"
+    },
+    ...
+}
+```
+
+この場合、実際のキャプションは `a cartoon of a frog with the word frog on it, open mouth, simple background ...` または `test multiline caption1, open mouth, simple background ...`、 `test multiline caption2, open mouth, simple background ...` 等になります。
+
+### 設定ファイルの記述例：追加の区切り文字、ワイルドカード記法、`keep_tokens_separator` 等
 
 ```toml
 [general]
