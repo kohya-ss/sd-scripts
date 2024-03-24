@@ -1525,7 +1525,7 @@ class DreamBoothDataset(BaseDataset):
         logger.info("prepare images.")
         num_train_images = 0
         num_reg_images = 0
-        reg_infos: List[ImageInfo] = []
+        reg_infos: List[Tuple[ImageInfo, DreamBoothSubset]] = []
         for subset in subsets:
             if subset.num_repeats < 1:
                 logger.warning(
