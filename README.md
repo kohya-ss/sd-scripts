@@ -20,7 +20,7 @@ This repository contains the scripts for:
 
 The file does not contain requirements for PyTorch. Because the version of PyTorch depends on the environment, it is not included in the file. Please install PyTorch first according to the environment. See installation instructions below.
 
-The scripts are tested with Pytorch 2.1.1. 2.0.1 and 1.12.1 is not tested but should work.
+The scripts are tested with Pytorch 2.1.2. 2.0.1 and 1.12.1 is not tested but should work.
 
 ## Links to usage documentation
 
@@ -64,9 +64,9 @@ cd sd-scripts
 python -m venv venv
 .\venv\Scripts\activate
 
-pip install torch==2.1.1 torchvision==0.16.1 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
 pip install --upgrade -r requirements.txt
-pip install xformers==0.0.23 --index-url https://download.pytorch.org/whl/cu118
+pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu118
 
 accelerate config
 ```
@@ -75,7 +75,7 @@ If `python -m venv` shows only `python`, change `python` to `py`.
 
 __Note:__ Now `bitsandbytes==0.43.0`, `prodigyopt==1.0` and `lion-pytorch==0.0.6` are included in the requirements.txt. If you'd like to use the another version, please install it manually.
 
-This installation is for CUDA 11.8. If you use a different version of CUDA, please install the appropriate version of PyTorch and xformers. For example, if you use CUDA 12, please install `pip install torch==2.1.1 torchvision==0.16.1 --index-url https://download.pytorch.org/whl/cu121` and `pip install xformers==0.0.23 --index-url https://download.pytorch.org/whl/cu121`.
+This installation is for CUDA 11.8. If you use a different version of CUDA, please install the appropriate version of PyTorch and xformers. For example, if you use CUDA 12, please install `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` and `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121`.
 
 <!-- 
 cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
