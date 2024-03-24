@@ -6,6 +6,7 @@ import sys
 import random
 import time
 import json
+import pickle
 from multiprocessing import Value
 import toml
 
@@ -23,7 +24,7 @@ from library import model_util
 
 import library.train_util as train_util
 from library.train_util import (
-    DreamBoothDataset,
+    DreamBoothDataset, DatasetGroup
 )
 import library.config_util as config_util
 from library.config_util import (

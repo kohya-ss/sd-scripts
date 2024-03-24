@@ -111,6 +111,8 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
+    cache_meta: bool = False
+    use_cached_meta: bool = False
 
 
 @dataclass
@@ -228,6 +230,8 @@ class ConfigSanitizer:
         "min_bucket_reso": int,
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
+        "cache_meta": bool,
+        "use_cached_meta": bool,
     }
 
     # options handled by argparse but not handled by user config
