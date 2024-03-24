@@ -1,6 +1,9 @@
 Original Source by kohya-ss
 
+First version:
 A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
+
+Some parts are manually added.
 
 # Config Readme
 
@@ -143,11 +146,23 @@ These options are related to subset configuration.
 | `shuffle_caption` | `true` | o | o | o |
 | `caption_prefix` | `"masterpiece, best quality, "` | o | o | o |
 | `caption_suffix` | `", from side"` | o | o | o |
+| `caption_separator` |  (not specified) | o | o | o |
+| `keep_tokens_separator` | `“|||”` | o | o | o |
+| `secondary_separator` | `“;;;”` | o | o | o |
+| `enable_wildcard` | `true` | o | o | o |
 
 * `num_repeats`
     * Specifies the number of repeats for images in a subset. This is equivalent to `--dataset_repeats` in fine-tuning but can be specified for any training method.
 * `caption_prefix`, `caption_suffix`
     * Specifies the prefix and suffix strings to be appended to the captions. Shuffling is performed with these strings included. Be cautious when using `keep_tokens`.
+* `caption_separator`
+    * Specifies the string to separate the tags. The default is `,`. This option is usually not necessary to set.
+* `keep_tokens_separator`
+    * Specifies the string to separate the parts to be fixed in the caption. For example, if you specify `aaa, bbb ||| ccc, ddd, eee, fff ||| ggg, hhh`, the parts `aaa, bbb` and `ggg, hhh` will remain, and the rest will be shuffled and dropped. The comma in between is not necessary. As a result, the prompt will be `aaa, bbb, eee, ccc, fff, ggg, hhh` or `aaa, bbb, fff, ccc, eee, ggg, hhh`, etc.
+* `secondary_separator`
+    * Specifies an additional separator. The part separated by this separator is treated as one tag and is shuffled and dropped. It is then replaced by `caption_separator`. For example, if you specify `aaa;;;bbb;;;ccc`, it will be replaced by `aaa,bbb,ccc` or dropped together.
+* `enable_wildcard`
+    * Enables wildcard notation. This will be explained later.
 
 ### DreamBooth-specific options
 
@@ -276,4 +291,90 @@ As a temporary measure, we will list common errors and their solutions. If you e
 * `voluptuous.error.MultipleInvalid: expected int for dictionary value @ ...`: This error occurs when the specified value format is incorrect. It is highly likely that the value format is incorrect. The `int` part changes depending on the target option. The example configurations in this README may be helpful.
 * `voluptuous.error.MultipleInvalid: extra keys not allowed @ ...`: This error occurs when there is an option name that is not supported. It is highly likely that you misspelled the option name or mistakenly included it.
 
+## Miscellaneous
+
+### Multi-line captions
+
+By setting `enable_wildcard = true`, multiple-line captions are also enabled. If the caption file consists of multiple lines, one line is randomly selected as the caption. 
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
+a girl with a microphone standing on a stage
+detailed digital art of a girl with a microphone on a stage
+```
+
+It can be combined with wildcard notation.
+
+In metadata files, you can also specify multiple-line captions. In the `.json` metadata file, use `\n` to represent a line break. If the caption file consists of multiple lines, `merge_captions_to_metadata.py` will create a metadata file in this format.
+
+The tags in the metadata (`tags`) are added to each line of the caption.
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": "a cartoon of a frog with the word frog on it\ntest multiline caption1\ntest multiline caption2",
+        "tags": "open mouth, simple background, standing, no humans, animal, black background, frog, animal costume, animal focus"
+    },
+    ...
+}
+```
+
+In this case, the actual caption will be `a cartoon of a frog with the word frog on it, open mouth, simple background ...`, `test multiline caption1, open mouth, simple background ...`, `test multiline caption2, open mouth, simple background ...`, etc.
+
+### Example of configuration file : `secondary_separator`, wildcard notation, `keep_tokens_separator`, etc.
+
+```toml
+[general]
+flip_aug = true
+color_aug = false
+resolution = [1024, 1024]
+
+[[datasets]]
+batch_size = 6
+enable_bucket = true
+bucket_no_upscale = true
+caption_extension = ".txt"
+keep_tokens_separator= "|||"
+shuffle_caption = true
+caption_tag_dropout_rate = 0.1
+secondary_separator = ";;;" # subset 側に書くこともできます / can be written in the subset side
+enable_wildcard = true # 同上 / same as above
+
+  [[datasets.subsets]]
+  image_dir = "/path/to/image_dir"
+  num_repeats = 1
+
+  # ||| の前後はカンマは不要です（自動的に追加されます） / No comma is required before and after ||| (it is added automatically)
+  caption_prefix = "1girl, hatsune miku, vocaloid |||" 
+  
+  # ||| の後はシャッフル、drop されず残ります / After |||, it is not shuffled or dropped and remains
+  # 単純に文字列として連結されるので、カンマなどは自分で入れる必要があります / It is simply concatenated as a string, so you need to put commas yourself
+  caption_suffix = ", anime screencap ||| masterpiece, rating: general"
+```
+
+### Example of caption, secondary_separator notation: `secondary_separator = ";;;"`
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, sky;;;cloud;;;day, outdoors
+```
+The part `sky;;;cloud;;;day` is replaced with `sky,cloud,day` without shuffling or dropping. When shuffling and dropping are enabled, it is processed as a whole (as one tag). For example, it becomes `vocaloid, 1girl, upper body, sky,cloud,day, outdoors, hatsune miku` (shuffled) or `vocaloid, 1girl, outdoors, looking at viewer, upper body, hatsune miku` (dropped).
+
+### Example of caption, enable_wildcard notation: `enable_wildcard = true`
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, {simple|white} background
+```
+`simple` or `white` is randomly selected, and it becomes `simple background` or `white background`.
+
+```txt
+1girl, hatsune miku, vocaloid, {{retro style}}
+```
+If you want to include `{` or `}` in the tag string, double them like `{{` or `}}` (in this example, the actual caption used for training is `{retro style}`).
+
+### Example of caption, `keep_tokens_separator` notation: `keep_tokens_separator = "|||"`
+
+```txt
+1girl, hatsune miku, vocaloid ||| stage, microphone, white shirt, smile ||| best quality, rating: general
+```
+It becomes `1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best quality, rating: general` or `1girl, hatsune miku, vocaloid, white shirt, smile, stage, microphone, best quality, rating: general` etc.
 
