@@ -6,7 +6,6 @@ import sys
 import random
 import time
 import json
-import pickle
 from multiprocessing import Value
 import toml
 
@@ -14,18 +13,15 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
-init_ipex()
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 from library import model_util
 
 import library.train_util as train_util
-from library.train_util import (
-    DreamBoothDataset, DatasetGroup
-)
+from library.train_util import DreamBoothDataset
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
