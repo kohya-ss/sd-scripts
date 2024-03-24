@@ -1473,7 +1473,7 @@ class DreamBoothDataset(BaseDataset):
                             raise e
                         assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
                         if enable_wildcard:
-                            caption = "\n".join([line.strip() for line in lines if line.strip() != ""]) # 空行を除く、改行で連結
+                            caption = "\n".join([line.strip() for line in lines if line.strip() != ""])  # 空行を除く、改行で連結
                         else:
                             caption = lines[0].strip()
                     break
@@ -3337,6 +3337,18 @@ def verify_training_args(args: argparse.Namespace):
             f"zero_terminal_snr is enabled, but v_parameterization is not enabled. training will be unexpected"
             + " / zero_terminal_snrが有効ですが、v_parameterizationが有効ではありません。学習結果は想定外になる可能性があります"
         )
+
+    if args.sample_every_n_epochs is not None and args.sample_every_n_epochs <= 0:
+        logger.warning(
+            "sample_every_n_epochs is less than or equal to 0, so it will be disabled / sample_every_n_epochsに0以下の値が指定されたため無効になります"
+        )
+        args.sample_every_n_epochs = None
+
+    if args.sample_every_n_steps is not None and args.sample_every_n_steps <= 0:
+        logger.warning(
+            "sample_every_n_steps is less than or equal to 0, so it will be disabled / sample_every_n_stepsに0以下の値が指定されたため無効になります"
+        )
+        args.sample_every_n_steps = None
 
 
 def add_dataset_arguments(
