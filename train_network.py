@@ -1,5 +1,6 @@
 import importlib
 import argparse
+import gc
 import math
 import os
 import sys
@@ -10,13 +11,18 @@ from multiprocessing import Value
 import toml
 
 from tqdm import tqdm
-
 import torch
-from library.device_utils import init_ipex, clean_memory_on_device
-init_ipex()
-
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+try:
+    import intel_extension_for_pytorch as ipex
+
+    if torch.xpu.is_available():
+        from library.ipex import ipex_init
+
+        ipex_init()
+except Exception:
+    pass
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 from library import model_util
@@ -40,12 +46,6 @@ from library.custom_train_functions import (
     add_v_prediction_like_loss,
     apply_debiased_estimation,
 )
-from library.utils import setup_logging, add_logging_arguments
-
-setup_logging()
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class NetworkTrainer:
@@ -117,7 +117,7 @@ class NetworkTrainer:
         self, args, accelerator, unet, vae, tokenizers, text_encoders, data_loader, weight_dtype
     ):
         for t_enc in text_encoders:
-            t_enc.to(accelerator.device, dtype=weight_dtype)
+            t_enc.to(accelerator.device)
 
     def get_text_cond(self, args, accelerator, batch, tokenizers, text_encoders, weight_dtype):
         input_ids = batch["input_ids"].to(accelerator.device)
@@ -141,7 +141,7 @@ class NetworkTrainer:
         training_started_at = time.time()
         train_util.verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
-        setup_logging(args, reset=True)
+        reducedLr = False
 
         cache_latents = args.cache_latents
         use_dreambooth_method = args.in_json is None
@@ -159,18 +159,18 @@ class NetworkTrainer:
         if args.dataset_class is None:
             blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
             if use_user_config:
-                logger.info(f"Loading dataset config from {args.dataset_config}")
+                print(f"Loading dataset config from {args.dataset_config}")
                 user_config = config_util.load_user_config(args.dataset_config)
                 ignored = ["train_data_dir", "reg_data_dir", "in_json"]
                 if any(getattr(args, attr) is not None for attr in ignored):
-                    logger.warning(
+                    print(
                         "ignoring the following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
                             ", ".join(ignored)
                         )
                     )
             else:
                 if use_dreambooth_method:
-                    logger.info("Using DreamBooth method.")
+                    print("Using DreamBooth method.")
                     user_config = {
                         "datasets": [
                             {
@@ -181,7 +181,7 @@ class NetworkTrainer:
                         ]
                     }
                 else:
-                    logger.info("Training with captions.")
+                    print("Training with captions.")
                     user_config = {
                         "datasets": [
                             {
@@ -210,7 +210,7 @@ class NetworkTrainer:
             train_util.debug_dataset(train_dataset_group)
             return
         if len(train_dataset_group) == 0:
-            logger.error(
+            print(
                 "No data found. Please verify arguments (train_data_dir must be the parent of folders with images) / 画像がありません。引数指定を確認してください（train_data_dirには画像があるフォルダではなく、画像があるフォルダの親フォルダを指定する必要があります）"
             )
             return
@@ -223,7 +223,7 @@ class NetworkTrainer:
         self.assert_extra_args(args, train_dataset_group)
 
         # acceleratorを準備する
-        logger.info("preparing accelerator")
+        print("preparing accelerator")
         accelerator = train_util.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
 
@@ -272,12 +272,13 @@ class NetworkTrainer:
             with torch.no_grad():
                 train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
             vae.to("cpu")
-            clean_memory_on_device(accelerator.device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
 
             accelerator.wait_for_everyone()
 
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
-        # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
         self.cache_text_encoder_outputs_if_needed(
             args, accelerator, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
         )
@@ -309,12 +310,11 @@ class NetworkTrainer:
             )
         if network is None:
             return
-        network_has_multiplier = hasattr(network, "set_multiplier")
 
         if hasattr(network, "prepare_network"):
             network.prepare_network(args)
         if args.scale_weight_norms and not hasattr(network, "apply_max_norm_regularization"):
-            logger.warning(
+            print(
                 "warning: scale_weight_norms is specified but the network does not support it / scale_weight_normsが指定されていますが、ネットワークが対応していません"
             )
             args.scale_weight_norms = False
@@ -349,8 +349,8 @@ class NetworkTrainer:
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
         # dataloaderを準備する
-        # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
-        n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
+        # DataLoaderのプロセス数：0はメインプロセスになる
+        n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)  # cpu_count-1 ただし最大で指定された数まで
 
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset_group,
@@ -372,7 +372,9 @@ class NetworkTrainer:
 
         # データセット側にも学習ステップを送信
         train_dataset_group.set_max_train_steps(args.max_train_steps)
-
+        
+        if args.stop_text_encoder_training is None:
+            args.stop_text_encoder_training = args.max_train_steps + 1  # do not stop until end
         # lr schedulerを用意する
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
@@ -390,33 +392,17 @@ class NetworkTrainer:
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
 
-        unet_weight_dtype = te_weight_dtype = weight_dtype
-        # Experimental Feature: Put base model into fp8 to save vram
-        if args.fp8_base:
-            assert torch.__version__ >= "2.1.0", "fp8_base requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0が必要です。"
-            assert (
-                args.mixed_precision != "no"
-            ), "fp8_base requires mixed precision='fp16' or 'bf16' / fp8を使う場合はmixed_precision='fp16'または'bf16'が必要です。"
-            accelerator.print("enable fp8 training.")
-            unet_weight_dtype = torch.float8_e4m3fn
-            te_weight_dtype = torch.float8_e4m3fn
-
         unet.requires_grad_(False)
-        unet.to(dtype=unet_weight_dtype)
+        unet.to(dtype=weight_dtype)
         for t_enc in text_encoders:
             t_enc.requires_grad_(False)
 
-            # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
-            if t_enc.device.type != "cpu":
-                t_enc.to(dtype=te_weight_dtype)
-                # nn.Embedding not support FP8
-                t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
-
-        # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
+        # acceleratorがなんかよろしくやってくれるらしい
+        # TODO めちゃくちゃ冗長なのでコードを整理する
         if train_unet:
             unet = accelerator.prepare(unet)
         else:
-            unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+            unet.to(accelerator.device, dtype=weight_dtype)  # move to device because unet is not prepared by accelerator
         if train_text_encoder:
             if len(text_encoders) > 1:
                 text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
@@ -424,8 +410,8 @@ class NetworkTrainer:
                 text_encoder = accelerator.prepare(text_encoder)
                 text_encoders = [text_encoder]
         else:
-            pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
-
+            for t_enc in text_encoders:
+                t_enc.to(accelerator.device, dtype=weight_dtype)
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
 
         if args.gradient_checkpointing:
@@ -438,6 +424,9 @@ class NetworkTrainer:
                 if train_text_encoder:
                     t_enc.text_model.embeddings.requires_grad_(True)
 
+            # set top parameter requires_grad = True for gradient checkpointing works
+            if not train_text_encoder:  # train U-Net only
+                unet.parameters().__next__().requires_grad_(True)
         else:
             unet.eval()
             for t_enc in text_encoders:
@@ -564,11 +553,6 @@ class NetworkTrainer:
                         "random_crop": bool(subset.random_crop),
                         "shuffle_caption": bool(subset.shuffle_caption),
                         "keep_tokens": subset.keep_tokens,
-                        "keep_tokens_separator": subset.keep_tokens_separator,
-                        "secondary_separator": subset.secondary_separator,
-                        "enable_wildcard": bool(subset.enable_wildcard),
-                        "caption_prefix": subset.caption_prefix,
-                        "caption_suffix": subset.caption_suffix,
                     }
 
                     image_dir_or_metadata_file = None
@@ -704,7 +688,7 @@ class NetworkTrainer:
         if accelerator.is_main_process:
             init_kwargs = {}
             if args.wandb_run_name:
-                init_kwargs["wandb"] = {"name": args.wandb_run_name}
+                init_kwargs['wandb'] = {'name': args.wandb_run_name}
             if args.log_tracker_config is not None:
                 init_kwargs = toml.load(args.log_tracker_config)
             accelerator.init_trackers(
@@ -773,17 +757,7 @@ class NetworkTrainer:
                                 accelerator.print("NaN found in latents, replacing with zeros")
                                 latents = torch.nan_to_num(latents, 0, out=latents)
                         latents = latents * self.vae_scale_factor
-
-                    # get multiplier for each sample
-                    if network_has_multiplier:
-                        multipliers = batch["network_multipliers"]
-                        # if all multipliers are same, use single multiplier
-                        if torch.all(multipliers == multipliers[0]):
-                            multipliers = multipliers[0].item()
-                        else:
-                            raise NotImplementedError("multipliers for each sample is not supported yet")
-                        # print(f"set multiplier: {multipliers}")
-                        accelerator.unwrap_model(network).set_multiplier(multipliers)
+                    b_size = latents.shape[0]
 
                     with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
                         # Get the text embedding for conditioning
@@ -807,24 +781,10 @@ class NetworkTrainer:
                         args, noise_scheduler, latents
                     )
 
-                    # ensure the hidden state will require grad
-                    if args.gradient_checkpointing:
-                        for x in noisy_latents:
-                            x.requires_grad_(True)
-                        for t in text_encoder_conds:
-                            t.requires_grad_(True)
-
                     # Predict the noise residual
                     with accelerator.autocast():
                         noise_pred = self.call_unet(
-                            args,
-                            accelerator,
-                            unet,
-                            noisy_latents.requires_grad_(train_unet),
-                            timesteps,
-                            text_encoder_conds,
-                            batch,
-                            weight_dtype,
+                            args, accelerator, unet, noisy_latents, timesteps, text_encoder_conds, batch, weight_dtype
                         )
 
                     if args.v_parameterization:
@@ -851,12 +811,16 @@ class NetworkTrainer:
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
                     accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        if args.max_grad_norm != 0.0:
-                            params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
-                            accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-
+                    self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+                    if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                        params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)                    
+                    if global_step == args.stop_text_encoder_training:
+                        lr_scheduler.scheduler.base_lrs[0] = 1e-10                    
+                    if optimizer.param_groups[0]['lr'] == 1e-10 and reducedLr == False:
+                        print("")
+                        print(f"STEP {global_step} REACHED, TEXT ENCODER LEARNING RATE DECREASED TO {optimizer.param_groups[0]['lr']}")
+                        reducedLr = True
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
@@ -947,13 +911,12 @@ class NetworkTrainer:
             ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
             save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
 
-            logger.info("model saved.")
+            print("model saved.")
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
-    add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, True)
@@ -961,9 +924,7 @@ def setup_parser() -> argparse.ArgumentParser:
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
 
-    parser.add_argument(
-        "--no_metadata", action="store_true", help="do not save metadata in output model / メタデータを出力先モデルに保存しない"
-    )
+    parser.add_argument("--no_metadata", action="store_true", help="do not save metadata in output model / メタデータを出力先モデルに保存しない")
     parser.add_argument(
         "--save_model_as",
         type=str,
@@ -975,17 +936,10 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unet_lr", type=float, default=None, help="learning rate for U-Net / U-Netの学習率")
     parser.add_argument("--text_encoder_lr", type=float, default=None, help="learning rate for Text Encoder / Text Encoderの学習率")
 
+    parser.add_argument("--network_weights", type=str, default=None, help="pretrained weights for network / 学習するネットワークの初期重み")
+    parser.add_argument("--network_module", type=str, default=None, help="network module to train / 学習対象のネットワークのモジュール")
     parser.add_argument(
-        "--network_weights", type=str, default=None, help="pretrained weights for network / 学習するネットワークの初期重み"
-    )
-    parser.add_argument(
-        "--network_module", type=str, default=None, help="network module to train / 学習対象のネットワークのモジュール"
-    )
-    parser.add_argument(
-        "--network_dim",
-        type=int,
-        default=None,
-        help="network dimensions (depends on each network) / モジュールの次元数（ネットワークにより定義は異なります）",
+        "--network_dim", type=int, default=None, help="network dimensions (depends on each network) / モジュールの次元数（ネットワークにより定義は異なります）"
     )
     parser.add_argument(
         "--network_alpha",
@@ -1000,25 +954,14 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Drops neurons out of training every step (0 or None is default behavior (no dropout), 1 would drop all neurons) / 訓練時に毎ステップでニューロンをdropする（0またはNoneはdropoutなし、1は全ニューロンをdropout）",
     )
     parser.add_argument(
-        "--network_args",
-        type=str,
-        default=None,
-        nargs="*",
-        help="additional arguments for network (key=value) / ネットワークへの追加の引数",
+        "--network_args", type=str, default=None, nargs="*", help="additional arguments for network (key=value) / ネットワークへの追加の引数"
+    )
+    parser.add_argument("--network_train_unet_only", action="store_true", help="only training U-Net part / U-Net関連部分のみ学習する")
+    parser.add_argument(
+        "--network_train_text_encoder_only", action="store_true", help="only training Text Encoder part / Text Encoder関連部分のみ学習する"
     )
     parser.add_argument(
-        "--network_train_unet_only", action="store_true", help="only training U-Net part / U-Net関連部分のみ学習する"
-    )
-    parser.add_argument(
-        "--network_train_text_encoder_only",
-        action="store_true",
-        help="only training Text Encoder part / Text Encoder関連部分のみ学習する",
-    )
-    parser.add_argument(
-        "--training_comment",
-        type=str,
-        default=None,
-        help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列",
+        "--training_comment", type=str, default=None, help="arbitrary comment string stored in metadata / メタデータに記録する任意のコメント文字列"
     )
     parser.add_argument(
         "--dim_from_weights",
@@ -1049,6 +992,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
+    )
+    parser.add_argument(
+        "--stop_text_encoder_training",
+        type=int,
+        default=None,
+        help="steps to stop text encoder training, -1 for no training / Text Encoderの学習を止めるステップ数、-1で最初から学習しない",
     )
     return parser
 
