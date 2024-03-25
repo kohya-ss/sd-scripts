@@ -319,7 +319,7 @@ def train(args):
                 with torch.no_grad():
                     # latentに変換
                     if cache_latents:
-                        latents = batch["latents"].to(accelerator.device)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * 0.18215

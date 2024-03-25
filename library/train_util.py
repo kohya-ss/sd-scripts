@@ -20,7 +20,7 @@ from typing import (
     Tuple,
     Union,
 )
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs
+from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
 import glob
 import math
 import os

@@ -328,7 +328,7 @@ def train(args):
             with accelerator.accumulate(*training_models):
                 with torch.no_grad():
                     if "latents" in batch and batch["latents"] is not None:
-                        latents = batch["latents"].to(accelerator.device)  # .to(dtype=weight_dtype)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         # latentに変換
                         latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample().to(weight_dtype)
@@ -506,6 +506,11 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="learning rate for text encoder, default is same as unet / Text Encoderの学習率、デフォルトはunetと同じ",
+    )
+    parser.add_argument(
+        "--no_half_vae",
+        action="store_true",
+        help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
     )
 
     return parser
