@@ -9,12 +9,13 @@ from tqdm import tqdm
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
 
+
 init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 from transformers import CLIPTokenizer
-from library import model_util
+from library import deepspeed_utils, model_util
 
 import library.train_util as train_util
 import library.huggingface_util as huggingface_util
@@ -560,10 +561,10 @@ class TextualInversionTrainer:
                 with accelerator.accumulate(text_encoders[0]):
                     with torch.no_grad():
                         if "latents" in batch and batch["latents"] is not None:
-                            latents = batch["latents"].to(accelerator.device)
+                            latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                         else:
                             # latentに変換
-                            latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample()
+                            latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample().to(dtype=weight_dtype)
                         latents = latents * self.vae_scale_factor
 
                     # Get the text embedding for conditioning
@@ -754,6 +755,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_dataset_arguments(parser, True, True, False)
     train_util.add_training_arguments(parser, True)
     train_util.add_masked_loss_arguments(parser)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser, False)
