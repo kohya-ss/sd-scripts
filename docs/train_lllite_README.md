@@ -26,7 +26,9 @@ Due to the limitations of the inference environment, only CrossAttention (attn1 
 
 ### Preparing the dataset
 
-In addition to the normal dataset, please store the conditioning image in the directory specified by `conditioning_data_dir`. The conditioning image must have the same basename as the training image. The conditioning image will be automatically resized to the same size as the training image. The conditioning image does not require a caption file.
+In addition to the normal DreamBooth method dataset, please store the conditioning image in the directory specified by `conditioning_data_dir`. The conditioning image must have the same basename as the training image. The conditioning image will be automatically resized to the same size as the training image. The conditioning image does not require a caption file.
+
+(We do not support the finetuning method dataset.)
 
 ```toml
 [[datasets.subsets]]

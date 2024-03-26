@@ -257,9 +257,10 @@ class ConfigSanitizer:
     }
 
     def __init__(self, support_dreambooth: bool, support_finetuning: bool, support_controlnet: bool, support_dropout: bool) -> None:
-        assert (
-            support_dreambooth or support_finetuning or support_controlnet
-        ), "Neither DreamBooth mode nor fine tuning mode specified. Please specify one mode or more. / DreamBooth モードか fine tuning モードのどちらも指定されていません。1つ以上指定してください。"
+        assert support_dreambooth or support_finetuning or support_controlnet, (
+            "Neither DreamBooth mode nor fine tuning mode nor controlnet mode specified. Please specify one mode or more."
+            + " / DreamBooth モードか fine tuning モードか controlnet モードのどれも指定されていません。1つ以上指定してください。"
+        )
 
         self.db_subset_schema = self.__merge_dict(
             self.SUBSET_ASCENDABLE_SCHEMA,
@@ -326,7 +327,10 @@ class ConfigSanitizer:
 
             self.dataset_schema = validate_flex_dataset
         elif support_dreambooth:
-            self.dataset_schema = self.db_dataset_schema
+            if support_controlnet:
+                self.dataset_schema = self.cn_dataset_schema
+            else:
+                self.dataset_schema = self.db_dataset_schema
         elif support_finetuning:
             self.dataset_schema = self.ft_dataset_schema
         elif support_controlnet:

@@ -1,5 +1,3 @@
-__SDXL is now supported. The sdxl branch has been merged into the main branch. If you update the repository, please follow the upgrade instructions. Also, the version of accelerate has been updated, so please run accelerate config again.__ The documentation for SDXL training is [here](./README.md#sdxl-training).
-
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
 [__Change History__](#change-history) is moved to the bottom of the page. 
@@ -20,9 +18,9 @@ This repository contains the scripts for:
 
 ## About requirements.txt
 
-These files do not contain requirements for PyTorch. Because the versions of them depend on your environment. Please install PyTorch at first (see installation guide below.) 
+The file does not contain requirements for PyTorch. Because the version of PyTorch depends on the environment, it is not included in the file. Please install PyTorch first according to the environment. See installation instructions below.
 
-The scripts are tested with Pytorch 2.0.1. 1.12.1 is not tested but should work.
+The scripts are tested with Pytorch 2.1.2. 2.0.1 and 1.12.1 is not tested but should work.
 
 ## Links to usage documentation
 
@@ -32,12 +30,13 @@ Most of the documents are written in Japanese.
 
 * [Training guide - common](./docs/train_README-ja.md) : data preparation, options etc... 
   * [Chinese version](./docs/train_README-zh.md)
+* [SDXL training](./docs/train_SDXL-en.md) (English version)
 * [Dataset config](./docs/config_README-ja.md) 
   * [English version](./docs/config_README-en.md)
 * [DreamBooth training guide](./docs/train_db_README-ja.md)
 * [Step by Step fine-tuning guide](./docs/fine_tune_README_ja.md):
-* [training LoRA](./docs/train_network_README-ja.md)
-* [training Textual Inversion](./docs/train_ti_README-ja.md)
+* [Training LoRA](./docs/train_network_README-ja.md)
+* [Training Textual Inversion](./docs/train_ti_README-ja.md)
 * [Image generation](./docs/gen_img_README-ja.md)
 * note.com [Model conversion](https://note.com/kohya_ss/n/n374f316fe4ad)
 
@@ -65,14 +64,18 @@ cd sd-scripts
 python -m venv venv
 .\venv\Scripts\activate
 
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
 pip install --upgrade -r requirements.txt
-pip install xformers==0.0.20
+pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu118
 
 accelerate config
 ```
 
-__Note:__ Now bitsandbytes is optional. Please install any version of bitsandbytes as needed. Installation instructions are in the following section.
+If `python -m venv` shows only `python`, change `python` to `py`.
+
+__Note:__ Now `bitsandbytes==0.43.0`, `prodigyopt==1.0` and `lion-pytorch==0.0.6` are included in the requirements.txt. If you'd like to use the another version, please install it manually.
+
+This installation is for CUDA 11.8. If you use a different version of CUDA, please install the appropriate version of PyTorch and xformers. For example, if you use CUDA 12, please install `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` and `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121`.
 
 <!-- 
 cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
@@ -91,47 +94,12 @@ Answers to accelerate config:
 - fp16
 ```
 
-note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is occurred in training. In this case, answer `0` for the 6th question: 
+If you'd like to use bf16, please answer `bf16` to the last question.
+
+Note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is occurred in training. In this case, answer `0` for the 6th question: 
 ``What GPU(s) (by id) should be used for training on this machine as a comma-separated list? [all]:`` 
 
 (Single GPU with id `0` will be used.)
-
-### Optional: Use `bitsandbytes` (8bit optimizer)
-
-For 8bit optimizer, you need to install `bitsandbytes`. For Linux, please install `bitsandbytes` as usual (0.41.1 or later is recommended.)
-
-For Windows, there are several versions of `bitsandbytes`:
-
-- `bitsandbytes` 0.35.0: Stable version. AdamW8bit is available. `full_bf16` is not available.
-- `bitsandbytes` 0.41.1: Lion8bit, PagedAdamW8bit and PagedLion8bit are available. `full_bf16` is available.
-
-Note: `bitsandbytes`above 0.35.0 till 0.41.0 seems to have an issue: https://github.com/TimDettmers/bitsandbytes/issues/659
-
-Follow the instructions below to install `bitsandbytes` for Windows.
-
-### bitsandbytes 0.35.0 for Windows
-
-Open a regular Powershell terminal and type the following inside:
-
-```powershell
-cd sd-scripts
-.\venv\Scripts\activate
-pip install bitsandbytes==0.35.0
-
-cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
-cp .\bitsandbytes_windows\cextension.py .\venv\Lib\site-packages\bitsandbytes\cextension.py
-cp .\bitsandbytes_windows\main.py .\venv\Lib\site-packages\bitsandbytes\cuda_setup\main.py
-```
-
-This will install `bitsandbytes` 0.35.0 and copy the necessary files to the `bitsandbytes` directory.
-
-### bitsandbytes 0.41.1 for Windows
-
-Install the Windows version whl file from [here](https://github.com/jllllll/bitsandbytes-windows-webui) or other sources, like:
-
-```powershell
-python -m pip install bitsandbytes==0.41.1 --prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
-```
 
 ## Upgrade
 
@@ -163,92 +131,16 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 [BLIP](https://github.com/salesforce/BLIP): BSD-3-Clause
 
 
-## SDXL training
-
-The documentation in this section will be moved to a separate document later.
-
-### Training scripts for SDXL
-
-- `sdxl_train.py` is a script for SDXL fine-tuning. The usage is almost the same as `fine_tune.py`, but it also supports DreamBooth dataset.
-  - `--full_bf16` option is added. Thanks to KohakuBlueleaf!
-    - This option enables the full bfloat16 training (includes gradients). This option is useful to reduce the GPU memory usage. 
-    - The full bfloat16 training might be unstable. Please use it at your own risk.
-  - The different learning rates for each U-Net block are now supported in sdxl_train.py. Specify with `--block_lr` option. Specify 23 values separated by commas like `--block_lr 1e-3,1e-3 ... 1e-3`.
-    - 23 values correspond to `0: time/label embed, 1-9: input blocks 0-8, 10-12: mid blocks 0-2, 13-21: output blocks 0-8, 22: out`.
-- `prepare_buckets_latents.py` now supports SDXL fine-tuning.
-
-- `sdxl_train_network.py` is a script for LoRA training for SDXL. The usage is almost the same as `train_network.py`.
-
-- Both scripts has following additional options:
-  - `--cache_text_encoder_outputs` and `--cache_text_encoder_outputs_to_disk`: Cache the outputs of the text encoders. This option is useful to reduce the GPU memory usage. This option cannot be used with options for shuffling or dropping the captions.
-  - `--no_half_vae`: Disable the half-precision (mixed-precision) VAE. VAE for SDXL seems to produce NaNs in some cases. This option is useful to avoid the NaNs.
-
-- `--weighted_captions` option is not supported yet for both scripts.
-
-- `sdxl_train_textual_inversion.py` is a script for Textual Inversion training for SDXL. The usage is almost the same as `train_textual_inversion.py`.
-  - `--cache_text_encoder_outputs` is not supported.
-  - There are two options for captions:
-    1. Training with captions. All captions must include the token string. The token string is replaced with multiple tokens.
-    2. Use `--use_object_template` or `--use_style_template` option. The captions are generated from the template. The existing captions are ignored.
-  - See below for the format of the embeddings.
-
-- `--min_timestep` and `--max_timestep` options are added to each training script. These options can be used to train U-Net with different timesteps. The default values are 0 and 1000.
-
-### Utility scripts for SDXL
-
-- `tools/cache_latents.py` is added. This script can be used to cache the latents to disk in advance. 
-  - The options are almost the same as `sdxl_train.py'. See the help message for the usage.
-  - Please launch the script as follows:
-    `accelerate launch  --num_cpu_threads_per_process 1 tools/cache_latents.py ...`
-  - This script should work with multi-GPU, but it is not tested in my environment.
-
-- `tools/cache_text_encoder_outputs.py` is added. This script can be used to cache the text encoder outputs to disk in advance. 
-  - The options are almost the same as `cache_latents.py` and `sdxl_train.py`. See the help message for the usage.
-
-- `sdxl_gen_img.py` is added. This script can be used to generate images with SDXL, including LoRA, Textual Inversion and ControlNet-LLLite. See the help message for the usage.
-
-### Tips for SDXL training
-
-- The default resolution of SDXL is 1024x1024.
-- The fine-tuning can be done with 24GB GPU memory with the batch size of 1. For 24GB GPU, the following options are recommended __for the fine-tuning with 24GB GPU memory__:
-  - Train U-Net only.
-  - Use gradient checkpointing.
-  - Use `--cache_text_encoder_outputs` option and caching latents.
-  - Use Adafactor optimizer. RMSprop 8bit or Adagrad 8bit may work. AdamW 8bit doesn't seem to work.
-- The LoRA training can be done with 8GB GPU memory (10GB recommended). For reducing the GPU memory usage, the following options are recommended:
-  - Train U-Net only.
-  - Use gradient checkpointing.
-  - Use `--cache_text_encoder_outputs` option and caching latents.
-  - Use one of 8bit optimizers or Adafactor optimizer.
-  - Use lower dim (4 to 8 for 8GB GPU).
-- `--network_train_unet_only` option is highly recommended for SDXL LoRA. Because SDXL has two text encoders, the result of the training will be unexpected.
-- PyTorch 2 seems to use slightly less GPU memory than PyTorch 1.
-- `--bucket_reso_steps` can be set to 32 instead of the default value 64. Smaller values than 32 will not work for SDXL training.
-
-Example of the optimizer settings for Adafactor with the fixed learning rate:
-```toml
-optimizer_type = "adafactor"
-optimizer_args = [ "scale_parameter=False", "relative_step=False", "warmup_init=False" ]
-lr_scheduler = "constant_with_warmup"
-lr_warmup_steps = 100
-learning_rate = 4e-7 # SDXL original learning rate
-```
-
-### Format of Textual Inversion embeddings for SDXL
-
-```python
-from safetensors.torch import save_file
-
-state_dict = {"clip_g": embs_for_text_encoder_1280, "clip_l": embs_for_text_encoder_768}
-save_file(state_dict, file)
-```
-
-### ControlNet-LLLite
-
-ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [documentation](./docs/train_lllite_README.md) for details.
-
-
 ## Change History
+
+### Masked loss
+
+`train_network.py`, `sdxl_train_network.py` and `sdxl_train.py` now support the masked loss. `--masked_loss` option is added. 
+
+NOTE: `train_network.py` and `sdxl_train.py` are not tested yet.
+
+ControlNet dataset is used to specify the mask. The mask images should be the RGB images. The pixel value 255 in R channel is treated as the mask (the loss is calculated only for the pixels with the mask), and 0 is treated as the non-mask. See details for the dataset specification in the [LLLite documentation](./docs/train_lllite_README.md#preparing-the-dataset).
+
 
 ### Working in progress
 
@@ -361,6 +253,8 @@ We would like to express our deep gratitude to Mark Saint (cacoe) from leonardo.
 
 Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.
 最近の更新情報は [Release](https://github.com/kohya-ss/sd-scripts/releases) をご覧ください。
+
+## Additional Information
 
 ### Naming of LoRA
 
