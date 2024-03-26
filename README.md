@@ -133,6 +133,15 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
+### Masked loss
+
+`train_network.py`, `sdxl_train_network.py` and `sdxl_train.py` now support the masked loss. `--masked_loss` option is added. 
+
+NOTE: `train_network.py` and `sdxl_train.py` are not tested yet.
+
+ControlNet dataset is used to specify the mask. The mask images should be the RGB images. The pixel value 255 in R channel is treated as the mask (the loss is calculated only for the pixels with the mask), and 0 is treated as the non-mask. See details for the dataset specification in the [LLLite documentation](./docs/train_lllite_README.md#preparing-the-dataset).
+
+
 ### Working in progress
 
 - Colab seems to stop with log output. Try specifying `--console_log_simple` option in the training script to disable rich logging.

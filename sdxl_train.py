@@ -12,6 +12,7 @@ from tqdm import tqdm
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
 
+
 init_ipex()
 
 from accelerate.utils import set_seed
@@ -40,6 +41,7 @@ from library.custom_train_functions import (
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
     apply_debiased_estimation,
+    apply_masked_loss,
 )
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -126,7 +128,7 @@ def train(args):
 
     # データセットを準備する
     if args.dataset_class is None:
-        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
+        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
         if args.dataset_config is not None:
             logger.info(f"Load dataset config from {args.dataset_config}")
             user_config = config_util.load_user_config(args.dataset_config)
@@ -595,9 +597,12 @@ def train(args):
                     or args.scale_v_pred_loss_like_noise_pred
                     or args.v_pred_like_loss
                     or args.debiased_estimation_loss
+                    or args.masked_loss
                 ):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                    if args.masked_loss:
+                        loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
 
                     if args.min_snr_gamma:
@@ -763,6 +768,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, False)
+    train_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_sd_saving_arguments(parser)
     train_util.add_optimizer_arguments(parser)
@@ -799,7 +805,6 @@ def setup_parser() -> argparse.ArgumentParser:
         help=f"learning rates for each block of U-Net, comma-separated, {UNET_NUM_BLOCKS_FOR_BLOCK_LR} values / "
         + f"U-Netの各ブロックの学習率、カンマ区切り、{UNET_NUM_BLOCKS_FOR_BLOCK_LR}個の値",
     )
-
     return parser
 
 

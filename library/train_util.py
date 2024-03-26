@@ -1835,6 +1835,9 @@ class ControlNetDataset(BaseDataset):
 
         db_subsets = []
         for subset in subsets:
+            assert (
+                not subset.random_crop
+            ), "random_crop is not supported in ControlNetDataset / random_cropはControlNetDatasetではサポートされていません"
             db_subset = DreamBoothSubset(
                 subset.image_dir,
                 False,
@@ -1885,7 +1888,7 @@ class ControlNetDataset(BaseDataset):
 
         # assert all conditioning data exists
         missing_imgs = []
-        cond_imgs_with_img = set()
+        cond_imgs_with_pair = set()
         for image_key, info in self.dreambooth_dataset_delegate.image_data.items():
             db_subset = self.dreambooth_dataset_delegate.image_to_subset[image_key]
             subset = None
@@ -1899,23 +1902,29 @@ class ControlNetDataset(BaseDataset):
                 logger.warning(f"not directory: {subset.conditioning_data_dir}")
                 continue
 
-            img_basename = os.path.basename(info.absolute_path)
-            ctrl_img_path = os.path.join(subset.conditioning_data_dir, img_basename)
-            if not os.path.exists(ctrl_img_path):
+            img_basename = os.path.splitext(os.path.basename(info.absolute_path))[0]
+            ctrl_img_path = glob_images(subset.conditioning_data_dir, img_basename)
+            if len(ctrl_img_path) < 1:
                 missing_imgs.append(img_basename)
+                continue
+            ctrl_img_path = ctrl_img_path[0]
+            ctrl_img_path = os.path.abspath(ctrl_img_path)  # normalize path
 
             info.cond_img_path = ctrl_img_path
-            cond_imgs_with_img.add(ctrl_img_path)
+            cond_imgs_with_pair.add(os.path.splitext(ctrl_img_path)[0])  # remove extension because Windows is case insensitive
 
         extra_imgs = []
         for subset in subsets:
             conditioning_img_paths = glob_images(subset.conditioning_data_dir, "*")
-            extra_imgs.extend(
-                [cond_img_path for cond_img_path in conditioning_img_paths if cond_img_path not in cond_imgs_with_img]
-            )
+            conditioning_img_paths = [os.path.abspath(p) for p in conditioning_img_paths]  # normalize path
+            extra_imgs.extend([p for p in conditioning_img_paths if os.path.splitext(p)[0] not in cond_imgs_with_pair])
 
-        assert len(missing_imgs) == 0, f"missing conditioning data for {len(missing_imgs)} images: {missing_imgs}"
-        assert len(extra_imgs) == 0, f"extra conditioning data for {len(extra_imgs)} images: {extra_imgs}"
+        assert (
+            len(missing_imgs) == 0
+        ), f"missing conditioning data for {len(missing_imgs)} images / 制御用画像が見つかりませんでした: {missing_imgs}"
+        assert (
+            len(extra_imgs) == 0
+        ), f"extra conditioning data for {len(extra_imgs)} images / 余分な制御用画像があります: {extra_imgs}"
 
         self.conditioning_image_transforms = IMAGE_TRANSFORMS
 
@@ -3049,6 +3058,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--full_bf16", action="store_true", help="bf16 training including gradients / 勾配も含めてbf16で学習する"
     )  # TODO move to SDXL training, because it is not supported by SD1/2
     parser.add_argument("--fp8_base", action="store_true", help="use fp8 for base model / base modelにfp8を使う")
+
     parser.add_argument(
         "--ddp_timeout",
         type=int,
@@ -3111,6 +3121,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="specify WandB API key to log in before starting training (optional). / WandB APIキーを指定して学習開始前にログインする（オプション）",
     )
+
     parser.add_argument(
         "--noise_offset",
         type=float,
@@ -3282,6 +3293,20 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         parser.add_argument(
             "--prior_loss_weight", type=float, default=1.0, help="loss weight for regularization images / 正則化画像のlossの重み"
         )
+
+
+def add_masked_loss_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--conditioning_data_dir",
+        type=str,
+        default=None,
+        help="conditioning data directory / 条件付けデータのディレクトリ",
+    )
+    parser.add_argument(
+        "--masked_loss",
+        action="store_true",
+        help="apply mask for calculating loss. conditioning_data_dir is required for dataset. / 損失計算時にマスクを適用する。datasetにはconditioning_data_dirが必要",
+    )
 
 
 def verify_training_args(args: argparse.Namespace):
