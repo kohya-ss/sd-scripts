@@ -177,6 +177,7 @@ Options related to the configuration of DreamBooth subsets.
 | `image_dir` | `'C:\hoge'` | - | - | o (required) |
 | `caption_extension` | `".txt"` | o | o | o |
 | `class_tokens` | `"sks girl"` | - | - | o |
+| `cache_info` | `false` | o | o | o |
 | `is_reg` | `false` | - | - | o |
 
 Firstly, note that for `image_dir`, the path to the image files must be specified as being directly in the directory. Unlike the previous DreamBooth method, where images had to be placed in subdirectories, this is not compatible with that specification. Also, even if you name the folder something like "5_cat", the number of repeats of the image and the class name will not be reflected. If you want to set these individually, you will need to explicitly specify them using `num_repeats` and `class_tokens`.
@@ -187,6 +188,9 @@ Firstly, note that for `image_dir`, the path to the image files must be specifie
 * `class_tokens`
     * Sets the class tokens.
     * Only used during training when a corresponding caption file does not exist. The determination of whether or not to use it is made on a per-image basis. If `class_tokens` is not specified and a caption file is not found, an error will occur.
+* `cache_info`
+    * Specifies whether to cache the image size and caption. If not specified, it is set to `false`. The cache is saved in `metadata_cache.json` in `image_dir`.
+    * Caching speeds up the loading of the dataset after the first time. It is effective when dealing with thousands of images or more.
 * `is_reg`
     * Specifies whether the subset images are for normalization. If not specified, it is set to `false`, meaning that the images are not for normalization.
 

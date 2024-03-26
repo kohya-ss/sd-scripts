@@ -14,19 +14,14 @@ from tqdm import tqdm
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
 
-
 init_ipex()
-
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 from library import deepspeed_utils, model_util
 
 import library.train_util as train_util
-from library.train_util import (
-    DreamBoothDataset,
-)
+from library.train_util import DreamBoothDataset
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,

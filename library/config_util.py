@@ -85,6 +85,7 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     is_reg: bool = False
     class_tokens: Optional[str] = None
     caption_extension: str = ".caption"
+    cache_info: bool = False
 
 
 @dataclass
@@ -96,6 +97,7 @@ class FineTuningSubsetParams(BaseSubsetParams):
 class ControlNetSubsetParams(BaseSubsetParams):
     conditioning_data_dir: str = None
     caption_extension: str = ".caption"
+    cache_info: bool = False
 
 
 @dataclass
@@ -205,6 +207,7 @@ class ConfigSanitizer:
     DB_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
         "class_tokens": str,
+        "cache_info": bool,
     }
     DB_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
@@ -217,6 +220,7 @@ class ConfigSanitizer:
     }
     CN_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
+        "cache_info": bool,
     }
     CN_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
