@@ -228,7 +228,7 @@ def main(args):
                     if tag_name not in undesired_tags:
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
                         character_tag_text += caption_separator + tag_name
-                        combined_tags.insert(0,tag_name) # insert to the beggining
+                        combined_tags.insert(0,tag_name) # insert to the beginning
 
             #最初の4つはratingなので無視する
             # First 4 labels are actually ratings: pick one with argmax
@@ -241,7 +241,7 @@ def main(args):
             if found_rating not in undesired_tags:
                 tag_freq[found_rating] = tag_freq.get(found_rating, 0) + 1
                 rating_tag_text = found_rating
-                combined_tags.insert(0,found_rating) # insert to the beggining
+                combined_tags.insert(0,found_rating) # insert to the beginning
 
             # 先頭のカンマを取る
             if len(general_tag_text) > 0:
