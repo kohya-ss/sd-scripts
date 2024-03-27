@@ -142,12 +142,23 @@ def main(args):
 
         del model
 
-        ort_sess = ort.InferenceSession(
-            onnx_path,
-            providers=(
-                ["CUDAExecutionProvider"] if "CUDAExecutionProvider" in ort.get_available_providers() else ["CPUExecutionProvider"]
-            ),
-        )
+        if "OpenVINOExecutionProvider" in ort.get_available_providers():
+            # requires provider options for gpu support
+            # fp16 causes nonsense outputs
+            ort_sess = ort.InferenceSession(
+                onnx_path,
+                providers=(["OpenVINOExecutionProvider"]),
+                provider_options=[{'device_type' : "GPU_FP32"}],
+            )
+        else:
+            ort_sess = ort.InferenceSession(
+                onnx_path,
+                providers=(
+                    ["CUDAExecutionProvider"] if "CUDAExecutionProvider" in ort.get_available_providers() else
+                    ["ROCMExecutionProvider"] if "ROCMExecutionProvider" in ort.get_available_providers() else
+                    ["CPUExecutionProvider"]
+                ),
+            )
     else:
         from tensorflow.keras.models import load_model
 
