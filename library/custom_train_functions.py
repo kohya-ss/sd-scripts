@@ -4,9 +4,12 @@ import random
 import re
 from typing import List, Optional, Union
 from .utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 def prepare_scheduler_for_custom_training(noise_scheduler, device):
     if hasattr(noise_scheduler, "all_snr"):
@@ -64,7 +67,7 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, gamma, v_prediction=False
     snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
     min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
     if v_prediction:
-        snr_weight = torch.div(min_snr_gamma, snr+1).float().to(loss.device)
+        snr_weight = torch.div(min_snr_gamma, snr + 1).float().to(loss.device)
     else:
         snr_weight = torch.div(min_snr_gamma, snr).float().to(loss.device)
     loss = loss * snr_weight
@@ -92,12 +95,14 @@ def add_v_prediction_like_loss(loss, timesteps, noise_scheduler, v_pred_like_los
     loss = loss + loss / scale * v_pred_like_loss
     return loss
 
+
 def apply_debiased_estimation(loss, timesteps, noise_scheduler):
     snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
     snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
-    weight = 1/torch.sqrt(snr_t)
+    weight = 1 / torch.sqrt(snr_t)
     loss = weight * loss
     return loss
+
 
 # TODO train_utilと分散しているのでどちらかに寄せる
 
@@ -472,6 +477,17 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
 
     noise = noise + noise_offset * torch.randn((latents.shape[0], latents.shape[1], 1, 1), device=latents.device)
     return noise
+
+
+def apply_masked_loss(loss, batch):
+    # mask image is -1 to 1. we need to convert it to 0 to 1
+    mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
+
+    # resize to the same size as the loss
+    mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
+    mask_image = mask_image / 2 + 0.5
+    loss = loss * mask_image
+    return loss
 
 
 """
