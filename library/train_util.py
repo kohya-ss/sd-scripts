@@ -159,6 +159,8 @@ class ImageInfo:
         self.text_encoder_outputs1: Optional[torch.Tensor] = None
         self.text_encoder_outputs2: Optional[torch.Tensor] = None
         self.text_encoder_pool2: Optional[torch.Tensor] = None
+        self.alpha_mask: Optional[np.ndarray] = None
+        self.use_alpha_mask: bool = False
 
 
 class BucketManager:
@@ -379,6 +381,7 @@ class BaseSubset:
         caption_suffix: Optional[str],
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
+        alpha_mask: bool,
     ) -> None:
         self.image_dir = image_dir
         self.num_repeats = num_repeats
@@ -403,6 +406,7 @@ class BaseSubset:
 
         self.img_count = 0
 
+        self.alpha_mask = alpha_mask
 
 class DreamBoothSubset(BaseSubset):
     def __init__(
@@ -430,6 +434,7 @@ class DreamBoothSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        alpha_mask,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -453,6 +458,7 @@ class DreamBoothSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            alpha_mask,
         )
 
         self.is_reg = is_reg
@@ -491,6 +497,7 @@ class FineTuningSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        alpha_mask,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -514,6 +521,7 @@ class FineTuningSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            alpha_mask,
         )
 
         self.metadata_file = metadata_file
@@ -549,6 +557,7 @@ class ControlNetSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        alpha_mask,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -572,6 +581,7 @@ class ControlNetSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            alpha_mask,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
@@ -985,6 +995,8 @@ class BaseDataset(torch.utils.data.Dataset):
         for info in tqdm(image_infos):
             subset = self.image_to_subset[info.image_key]
 
+            info.use_alpha_mask = subset.alpha_mask
+
             if info.latents_npz is not None:  # fine tuning dataset
                 continue
 
@@ -1088,8 +1100,8 @@ class BaseDataset(torch.utils.data.Dataset):
     def get_image_size(self, image_path):
         return imagesize.get(image_path)
 
-    def load_image_with_face_info(self, subset: BaseSubset, image_path: str):
-        img = load_image(image_path)
+    def load_image_with_face_info(self, subset: BaseSubset, image_path: str, alpha_mask=False):
+        img = load_image(image_path, alpha_mask)
 
         face_cx = face_cy = face_w = face_h = 0
         if subset.face_crop_aug_range is not None:
@@ -1166,6 +1178,7 @@ class BaseDataset(torch.utils.data.Dataset):
         input_ids_list = []
         input_ids2_list = []
         latents_list = []
+        alpha_mask_list = []
         images = []
         original_sizes_hw = []
         crop_top_lefts = []
@@ -1193,6 +1206,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 else:
                     latents = image_info.latents_flipped
 
+                alpha_mask = image_info.alpha_mask
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
                 latents, original_size, crop_ltrb, flipped_latents = load_latents_from_disk(image_info.latents_npz)
@@ -1201,10 +1215,11 @@ class BaseDataset(torch.utils.data.Dataset):
                     del flipped_latents
                 latents = torch.FloatTensor(latents)
 
+                alpha_mask = image_info.alpha_mask
                 image = None
             else:
                 # 画像を読み込み、必要ならcropする
-                img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(subset, image_info.absolute_path)
+                img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(subset, image_info.absolute_path, subset.alpha_mask)
                 im_h, im_w = img.shape[0:2]
 
                 if self.enable_bucket:
@@ -1233,6 +1248,13 @@ class BaseDataset(torch.utils.data.Dataset):
                     original_size = [im_w, im_h]
                     crop_ltrb = (0, 0, 0, 0)
 
+                if subset.alpha_mask:
+                    if img.shape[2] == 4:
+                        alpha_mask = img[:, :, 3]  # [W,H]
+                    else:
+                        alpha_mask = np.ones_like(img[:, :, 0])  # [W,H]
+                img = img[:, :, :3]  # remove alpha channel
+
                 # augmentation
                 aug = self.aug_helper.get_augmentor(subset.color_aug)
                 if aug is not None:
@@ -1248,6 +1270,15 @@ class BaseDataset(torch.utils.data.Dataset):
             latents_list.append(latents)
 
             target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
+
+            if subset.alpha_mask and alpha_mask is not None:
+                if flipped:
+                    alpha_mask = alpha_mask[:, ::-1, :].copy()
+                alpha_mask = cv2.resize(
+                    alpha_mask, target_size, interpolation=cv2.INTER_AREA
+                )
+                alpha_mask = self.image_transforms(alpha_mask)
+                alpha_mask_list.append(alpha_mask)
 
             if not flipped:
                 crop_left_top = (crop_ltrb[0], crop_ltrb[1])
@@ -1347,6 +1378,8 @@ class BaseDataset(torch.utils.data.Dataset):
         example["flippeds"] = flippeds
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
+
+        example["alpha_mask"] = torch.stack(alpha_mask_list).to(memory_format=torch.contiguous_format).float() if alpha_mask_list[0] is not None else None
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
@@ -2345,10 +2378,13 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
     return train_dataset_group
 
 
-def load_image(image_path):
+def load_image(image_path, alpha=False):
     image = Image.open(image_path)
     if not image.mode == "RGB":
-        image = image.convert("RGB")
+        if alpha:
+            image = image.convert("RGBA")
+        else:
+            image = image.convert("RGB")
     img = np.array(image, np.uint8)
     return img
 
@@ -2399,10 +2435,20 @@ def cache_batch_latents(
     latents_original_size and latents_crop_ltrb are also set
     """
     images = []
+    alpha_masks = []
     for info in image_infos:
-        image = load_image(info.absolute_path) if info.image is None else np.array(info.image, np.uint8)
+        image = load_image(info.absolute_path, info.use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
         image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
+        if info.use_alpha_mask:
+            if image.shape[2] == 4:
+                alpha_mask = image[:, :, 3] # [W,H]
+                image = image[:, :, :3]
+            else:
+                alpha_mask = np.ones_like(image[:, :, 0]) # [W,H]
+            alpha_masks.append(alpha_mask)
+        else:
+            alpha_masks.append(None)
         image = IMAGE_TRANSFORMS(image)
         images.append(image)
 
@@ -2422,7 +2468,7 @@ def cache_batch_latents(
     else:
         flipped_latents = [None] * len(latents)
 
-    for info, latent, flipped_latent in zip(image_infos, latents, flipped_latents):
+    for info, latent, flipped_latent, alpha_mask in zip(image_infos, latents, flipped_latents, alpha_masks):
         # check NaN
         if torch.isnan(latents).any() or (flipped_latent is not None and torch.isnan(flipped_latent).any()):
             raise RuntimeError(f"NaN detected in latents: {info.absolute_path}")
@@ -2433,6 +2479,8 @@ def cache_batch_latents(
             info.latents = latent
             if flip_aug:
                 info.latents_flipped = flipped_latent
+
+        info.alpha_mask = alpha_mask
 
     if not HIGH_VRAM:
         clean_memory_on_device(vae.device)
@@ -3560,6 +3608,11 @@ def add_dataset_arguments(
         type=float,
         default=0,
         help="tag length reaches maximum on N steps (or N*max_train_steps if N<1) / N（N<1ならN*max_train_steps）ステップでタグ長が最大になる。デフォルトは0（最初から最大）",
+    )
+    parser.add_argument(
+        "--alpha_mask",
+        action="store_true",
+        help="use alpha channel as mask for training / 画像のアルファチャンネルをlossのマスクに使用する",
     )
 
     parser.add_argument(

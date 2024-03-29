@@ -602,7 +602,9 @@ def train(args):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
                     loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
                     if args.masked_loss:
-                        loss = apply_masked_loss(loss, batch)
+                        loss = apply_masked_loss(loss, batch["conditioning_images"][:, 0].unsqueeze(1))
+                    if "alpha_mask" in batch and batch["alpha_mask"] is not None:
+                        loss = apply_masked_loss(loss, batch["alpha_mask"])
                     loss = loss.mean([1, 2, 3])
 
                     if args.min_snr_gamma:

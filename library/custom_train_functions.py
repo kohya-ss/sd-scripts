@@ -479,9 +479,10 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
     return noise
 
 
-def apply_masked_loss(loss, batch):
+def apply_masked_loss(loss, mask_image):
     # mask image is -1 to 1. we need to convert it to 0 to 1
-    mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
+    # mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
+    mask_image = mask_image.to(dtype=loss.dtype)
 
     # resize to the same size as the loss
     mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
