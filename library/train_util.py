@@ -1165,7 +1165,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
             if subset.alpha_mask and alpha_mask is not None:
                 if flipped:
-                    alpha_mask = alpha_mask[:, ::-1, :].copy()
+                    alpha_mask = alpha_mask[:, ::-1].copy()
                 alpha_mask = cv2.resize(
                     alpha_mask, target_size, interpolation=cv2.INTER_AREA
                 )
