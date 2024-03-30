@@ -1159,6 +1159,8 @@ class BaseDataset(torch.utils.data.Dataset):
                     else:
                         alpha_mask = np.full((im_w, im_h), 255, dtype=np.uint8) # [W,H]
                     alpha_mask = transforms.ToTensor()(alpha_mask)
+                else:
+                    alpha_mask = None
                 img = img[:, :, :3]  # remove alpha channel
 
                 latents = None
