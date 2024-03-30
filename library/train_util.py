@@ -159,7 +159,8 @@ class ImageInfo:
         self.text_encoder_outputs1: Optional[torch.Tensor] = None
         self.text_encoder_outputs2: Optional[torch.Tensor] = None
         self.text_encoder_pool2: Optional[torch.Tensor] = None
-        self.alpha_mask: Optional[np.ndarray] = None
+        self.alpha_mask: Optional[torch.Tensor] = None
+        self.alpha_mask_flipped: Optional[torch.Tensor] = None
         self.use_alpha_mask: bool = False
 
 
@@ -1095,19 +1096,22 @@ class BaseDataset(torch.utils.data.Dataset):
                 crop_ltrb = image_info.latents_crop_ltrb  # calc values later if flipped
                 if not flipped:
                     latents = image_info.latents
+                    alpha_mask = image_info.alpha_mask
                 else:
                     latents = image_info.latents_flipped
-
-                alpha_mask = image_info.alpha_mask
+                    alpha_mask = image_info.alpha_mask_flipped
+                
                 image = None
             elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
-                latents, original_size, crop_ltrb, flipped_latents = load_latents_from_disk(image_info.latents_npz)
+                latents, original_size, crop_ltrb, flipped_latents, alpha_mask, flipped_alpha_mask = load_latents_from_disk(image_info.latents_npz)
                 if flipped:
                     latents = flipped_latents
+                    alpha_mask = flipped_alpha_mask
                     del flipped_latents
+                    del flipped_alpha_mask
                 latents = torch.FloatTensor(latents)
+                alpha_mask = torch.FloatTensor(alpha_mask)
 
-                alpha_mask = image_info.alpha_mask
                 image = None
             else:
                 # 画像を読み込み、必要ならcropする
@@ -1140,13 +1144,6 @@ class BaseDataset(torch.utils.data.Dataset):
                     original_size = [im_w, im_h]
                     crop_ltrb = (0, 0, 0, 0)
 
-                if subset.alpha_mask:
-                    if img.shape[2] == 4:
-                        alpha_mask = img[:, :, 3]  # [W,H]
-                    else:
-                        alpha_mask = np.full((im_w, im_h), 255, dtype=np.uint8) # [W,H]
-                img = img[:, :, :3]  # remove alpha channel
-
                 # augmentation
                 aug = self.aug_helper.get_augmentor(subset.color_aug)
                 if aug is not None:
@@ -1155,22 +1152,22 @@ class BaseDataset(torch.utils.data.Dataset):
                 if flipped:
                     img = img[:, ::-1, :].copy()  # copy to avoid negative stride problem
 
+                if subset.alpha_mask:
+                    if img.shape[2] == 4:
+                        alpha_mask = img[:, :, 3]  # [W,H]
+                    else:
+                        alpha_mask = np.full((im_w, im_h), 255, dtype=np.uint8) # [W,H]
+                    alpha_mask = transforms.ToTensor()(alpha_mask)
+                img = img[:, :, :3]  # remove alpha channel
+
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
 
             images.append(image)
             latents_list.append(latents)
+            alpha_mask_list.append(alpha_mask)
 
             target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
-
-            if subset.alpha_mask and alpha_mask is not None:
-                if flipped:
-                    alpha_mask = alpha_mask[:, ::-1].copy()
-                alpha_mask = cv2.resize(
-                    alpha_mask, target_size, interpolation=cv2.INTER_AREA
-                )
-                alpha_mask = transforms.ToTensor()(alpha_mask)
-                alpha_mask_list.append(alpha_mask)
 
             if not flipped:
                 crop_left_top = (crop_ltrb[0], crop_ltrb[1])
@@ -1271,7 +1268,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
 
-        example["alpha_mask"] = torch.stack(alpha_mask_list).to(memory_format=torch.contiguous_format).float() if alpha_mask_list[0] is not None else None
+        example["alpha_mask"] = torch.stack(alpha_mask_list) if alpha_mask_list[0] is not None else None
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
@@ -2066,7 +2063,7 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
 # 戻り値は、latents_tensor, (original_size width, original_size height), (crop left, crop top)
 def load_latents_from_disk(
     npz_path,
-) -> Tuple[Optional[torch.Tensor], Optional[List[int]], Optional[List[int]], Optional[torch.Tensor]]:
+) -> Tuple[Optional[torch.Tensor], Optional[List[int]], Optional[List[int]], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     npz = np.load(npz_path)
     if "latents" not in npz:
         raise ValueError(f"error: npz is old format. please re-generate {npz_path}")
@@ -2075,13 +2072,19 @@ def load_latents_from_disk(
     original_size = npz["original_size"].tolist()
     crop_ltrb = npz["crop_ltrb"].tolist()
     flipped_latents = npz["latents_flipped"] if "latents_flipped" in npz else None
-    return latents, original_size, crop_ltrb, flipped_latents
+    alpha_mask = npz["alpha_mask"] if "alpha_mask" in npz else None
+    flipped_alpha_mask = npz["flipped_alpha_mask"] if "flipped_alpha_mask" in npz else None
+    return latents, original_size, crop_ltrb, flipped_latents, alpha_mask, flipped_alpha_mask
 
 
-def save_latents_to_disk(npz_path, latents_tensor, original_size, crop_ltrb, flipped_latents_tensor=None):
+def save_latents_to_disk(npz_path, latents_tensor, original_size, crop_ltrb, flipped_latents_tensor=None, alpha_mask=None, flipped_alpha_mask=None):
     kwargs = {}
     if flipped_latents_tensor is not None:
         kwargs["latents_flipped"] = flipped_latents_tensor.float().cpu().numpy()
+    if alpha_mask is not None:
+        kwargs["alpha_mask"] = alpha_mask.float().cpu().numpy()
+    if flipped_alpha_mask is not None:
+        kwargs["flipped_alpha_mask"] = flipped_alpha_mask.float().cpu().numpy()
     np.savez(
         npz_path,
         latents=latents_tensor.float().cpu().numpy(),
@@ -2338,9 +2341,7 @@ def cache_batch_latents(
                 image = image[:, :, :3]
             else:
                 alpha_mask = np.full_like(image[:, :, 0], 255, dtype=np.uint8) # [W,H]
-            alpha_masks.append(alpha_mask)
-        else:
-            alpha_masks.append(None)
+            alpha_masks.append(transforms.ToTensor()(alpha_mask))
         image = IMAGE_TRANSFORMS(image)
         images.append(image)
 
@@ -2353,26 +2354,35 @@ def cache_batch_latents(
     with torch.no_grad():
         latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
 
+    if info.use_alpha_mask:
+        alpha_masks = torch.stack(alpha_masks, dim=0).to(device=vae.device, dtype=vae.dtype)
+    else:
+        alpha_masks = [None] * len(image_infos)
+
     if flip_aug:
         img_tensors = torch.flip(img_tensors, dims=[3])
         with torch.no_grad():
             flipped_latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+        if info.use_alpha_mask:
+            flipped_alpha_masks = torch.flip(alpha_masks, dims=[3])
     else:
         flipped_latents = [None] * len(latents)
+        flipped_alpha_masks = [None] * len(image_infos)
 
-    for info, latent, flipped_latent, alpha_mask in zip(image_infos, latents, flipped_latents, alpha_masks):
+    for info, latent, flipped_latent, alpha_mask, flipped_alpha_mask in zip(image_infos, latents, flipped_latents, alpha_masks, flipped_alpha_masks):
         # check NaN
         if torch.isnan(latents).any() or (flipped_latent is not None and torch.isnan(flipped_latent).any()):
             raise RuntimeError(f"NaN detected in latents: {info.absolute_path}")
 
         if cache_to_disk:
-            save_latents_to_disk(info.latents_npz, latent, info.latents_original_size, info.latents_crop_ltrb, flipped_latent)
+            save_latents_to_disk(info.latents_npz, latent, info.latents_original_size, info.latents_crop_ltrb, flipped_latent, alpha_mask, flipped_alpha_mask)
         else:
             info.latents = latent
             if flip_aug:
                 info.latents_flipped = flipped_latent
 
-        info.alpha_mask = alpha_mask
+            info.alpha_mask = alpha_mask
+            info.alpha_mask_flipped = flipped_alpha_mask
 
     if not HIGH_VRAM:
         clean_memory_on_device(vae.device)
