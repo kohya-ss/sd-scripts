@@ -1110,7 +1110,8 @@ class BaseDataset(torch.utils.data.Dataset):
                     del flipped_latents
                     del flipped_alpha_mask
                 latents = torch.FloatTensor(latents)
-                alpha_mask = torch.FloatTensor(alpha_mask)
+                if alpha_mask is not None:
+                    alpha_mask = torch.FloatTensor(alpha_mask)
 
                 image = None
             else:
