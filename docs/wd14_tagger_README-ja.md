@@ -77,7 +77,8 @@ python tag_images_by_wd14_tagger.py --onnx --repo_id SmilingWolf/wd-swinv2-tagge
 - `--character_tag_expand` : キャラクタータグのシリーズ名を展開します。たとえば `chara_name_(series)` のタグを `chara_name, series` に分割します。
 - `--always_first_tags` : あるタグが画像に出力されたとき、そのタグを最初に出力するタグを指定します。カンマ区切りで複数指定できます。たとえば `1girl,1boy` のように指定します。
 - `--caption_separator` : 出力するファイルでタグをこの文字列で区切ります。デフォルトは `, ` です。
-- `--tag_replacement` : タグの置換を行います。`tag1,tag2;tag3,tag4` のように指定します。たとえば `aira tsubase,aira tsubase (uniform)` （特定の衣装を学習させたいとき）のように指定します。
+- `--tag_replacement` : タグの置換を行います。`tag1,tag2;tag3,tag4` のように指定します。`,` および `;` を使う場合は `\` でエスケープしてください。\
+    たとえば `aira tsubase,aira tsubase (uniform)` （特定の衣装を学習させたいとき）、`aira tsubase,aira tsubase\, heir of shadows` （シリーズ名がタグに含まれないとき）のように指定します。
 
 `tag_replacement` は `character_tag_expand` の後に適用されます。
 
