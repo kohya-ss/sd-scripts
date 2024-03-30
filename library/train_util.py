@@ -1169,7 +1169,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 alpha_mask = cv2.resize(
                     alpha_mask, target_size, interpolation=cv2.INTER_AREA
                 )
-                alpha_mask = self.image_transforms(alpha_mask)
+                alpha_mask = transforms.ToTensor()(alpha_mask)
                 alpha_mask_list.append(alpha_mask)
 
             if not flipped:
