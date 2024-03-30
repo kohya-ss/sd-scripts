@@ -62,12 +62,12 @@ class ImageLoadingPrepDataset(torch.utils.data.Dataset):
         try:
             image = Image.open(img_path).convert("RGB")
             image = preprocess_image(image)
-            tensor = torch.tensor(image)
+            # tensor = torch.tensor(image) # これ Tensor に変換する必要ないな……(;･∀･)
         except Exception as e:
             logger.error(f"Could not load image path / 画像を読み込めません: {img_path}, error: {e}")
             return None
 
-        return (tensor, img_path)
+        return (image, img_path)
 
 
 def collate_fn_remove_corrupted(batch):
@@ -110,7 +110,7 @@ def main(args):
     else:
         logger.info("using existing wd14 tagger model")
 
-    # 画像を読み込む
+    # モデルを読み込む
     if args.onnx:
         import torch
         import onnx
@@ -178,8 +178,43 @@ def main(args):
     general_tags = [row[1] for row in rows[0:] if row[2] == "0"]
     character_tags = [row[1] for row in rows[0:] if row[2] == "4"]
 
-    # 画像を読み込む
+    # preprocess tags in advance
+    if args.character_tag_expand:
+        for i, tag in enumerate(character_tags):
+            if tag.endswith(")"):
+                # chara_name_(series) -> chara_name, series
+                # chara_name_(costume)_(series) -> chara_name_(costume), series
+                tags = tag.split("(")
+                character_tag = "(".join(tags[:-1])
+                if character_tag.endswith("_"):
+                    character_tag = character_tag[:-1]
+                series_tag = tags[-1].replace(")", "")
+                character_tags[i] = character_tag + args.caption_separator + series_tag
 
+    if args.remove_underscore:
+        rating_tags = [tag.replace("_", " ") if len(tag) > 3 else tag for tag in rating_tags]
+        general_tags = [tag.replace("_", " ") if len(tag) > 3 else tag for tag in general_tags]
+        character_tags = [tag.replace("_", " ") if len(tag) > 3 else tag for tag in character_tags]
+
+    if args.tag_replacement is not None:
+        # escape , and ; in tag_replacement: wd14 tag names may contain , and ;
+        escaped_tag_replacements = args.tag_replacement.replace("\\,", "@@@@").replace("\\;", "####")
+        tag_replacements = escaped_tag_replacements.split(";")
+        for tag_replacement in tag_replacements:
+            tags = tag_replacement.split(",")  # source, target
+            assert len(tags) == 2, f"tag replacement must be in the format of `source,target` / タグの置換は `置換元,置換先` の形式で指定してください: {args.tag_replacement}"
+
+            source, target = [tag.replace("@@@@", ",").replace("####", ";") for tag in tags]
+            logger.info(f"replacing tag: {source} -> {target}")
+
+            if source in general_tags:
+                general_tags[general_tags.index(source)] = target
+            elif source in character_tags:
+                character_tags[character_tags.index(source)] = target
+            elif source in rating_tags:
+                rating_tags[rating_tags.index(source)] = target
+
+    # 画像を読み込む
     train_data_dir_path = Path(args.train_data_dir)
     image_paths = train_util.glob_images_pathlib(train_data_dir_path, args.recursive)
     logger.info(f"found {len(image_paths)} images.")
@@ -188,7 +223,12 @@ def main(args):
 
     caption_separator = args.caption_separator
     stripped_caption_separator = caption_separator.strip()
-    undesired_tags = set(args.undesired_tags.split(stripped_caption_separator))
+    undesired_tags = args.undesired_tags.split(stripped_caption_separator)
+    undesired_tags = set([tag.strip() for tag in undesired_tags if tag.strip() != ""])
+
+    always_first_tags = None
+    if args.always_first_tags is not None:
+        always_first_tags = [tag for tag in args.always_first_tags.split(stripped_caption_separator) if tag.strip() != ""]
 
     def run_batch(path_imgs):
         imgs = np.array([im for _, im in path_imgs])
@@ -208,13 +248,11 @@ def main(args):
             character_tag_text = ""
             general_tag_text = ""
 
-            # それ以降はタグなのでconfidenceがthresholdより高いものを追加する
-            # Everything else is tags: pick any where prediction confidence > threshold
+            # 最初の4つ以降はタグなのでconfidenceがthreshold以上のものを追加する
+            # First 4 labels are ratings, the rest are tags: pick any where prediction confidence >= threshold
             for i, p in enumerate(prob[4:]):
                 if i < len(general_tags) and p >= args.general_threshold:
                     tag_name = general_tags[i]
-                    if args.remove_underscore and len(tag_name) > 3:  # ignore emoji tags like >_< and ^_^
-                        tag_name = tag_name.replace("_", " ")
 
                     if tag_name not in undesired_tags:
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
@@ -222,30 +260,37 @@ def main(args):
                         combined_tags.append(tag_name)
                 elif i >= len(general_tags) and p >= args.character_threshold:
                     tag_name = character_tags[i - len(general_tags)]
-                    if args.remove_underscore and len(tag_name) > 3:
-                        tag_name = tag_name.replace("_", " ")
 
                     if tag_name not in undesired_tags:
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
                         character_tag_text += caption_separator + tag_name
                         if args.character_tags_first: # insert to the beginning
-                            combined_tags.insert(0,tag_name)
+                            combined_tags.insert(0, tag_name)
                         else:
                             combined_tags.append(tag_name)
 
-            #最初の4つはratingなので無視する
+            # 最初の4つはratingなのでargmaxで選ぶ
             # First 4 labels are actually ratings: pick one with argmax
-            if args.use_rating_tags:
-                ratings_names = prob[:4]
-                rating_index = ratings_names.argmax()
+            if args.use_rating_tags or args.use_rating_tags_as_last_tag:
+                ratings_probs = prob[:4]
+                rating_index = ratings_probs.argmax()
                 found_rating = rating_tags[rating_index]
-                if args.remove_underscore and len(found_rating) > 3:
-                    found_rating = found_rating.replace("_", " ")
 
                 if found_rating not in undesired_tags:
                     tag_freq[found_rating] = tag_freq.get(found_rating, 0) + 1
                     rating_tag_text = found_rating
-                    combined_tags.insert(0,found_rating) # insert to the beginning
+                    if args.use_rating_tags:
+                        combined_tags.insert(0, found_rating) # insert to the beginning
+                    else:
+                        combined_tags.append(found_rating)
+
+            # 一番最初に置くタグを指定する
+            # Always put some tags at the beginning
+            if always_first_tags is not None:
+                for tag in always_first_tags:
+                    if tag in combined_tags:
+                        combined_tags.remove(tag)
+                        combined_tags.insert(0, tag)
 
             # 先頭のカンマを取る
             if len(general_tag_text) > 0:
@@ -303,9 +348,7 @@ def main(args):
                 continue
 
             image, image_path = data
-            if image is not None:
-                image = image.detach().numpy()
-            else:
+            if image is None:
                 try:
                     image = Image.open(image_path)
                     if image.mode != "RGB":
@@ -407,7 +450,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="comma-separated list of undesired tags to remove from the output / 出力から除外したいタグのカンマ区切りのリスト",
     )
     parser.add_argument(
-        "--frequency_tags", action="store_true", help="Show frequency of tags for images / 画像ごとのタグの出現頻度を表示する"
+        "--frequency_tags", action="store_true", help="Show frequency of tags for images / タグの出現頻度を表示する"
     )
     parser.add_argument(
         "--onnx", action="store_true", help="use onnx model for inference / onnxモデルを推論に使用する"
@@ -416,16 +459,39 @@ def setup_parser() -> argparse.ArgumentParser:
         "--append_tags", action="store_true", help="Append captions instead of overwriting / 上書きではなくキャプションを追記する"
     )
     parser.add_argument(
-        "--use_rating_tags", action="store_true", help="Adds rating tags as the first tag",
+        "--use_rating_tags", action="store_true", help="Adds rating tags as the first tag / レーティングタグを最初のタグとして追加する",
     )
     parser.add_argument(
-        "--character_tags_first", action="store_true", help="Always inserts character tags before the general tags",
+        "--use_rating_tags_as_last_tag", action="store_true", help="Adds rating tags as the last tag / レーティングタグを最後のタグとして追加する",
+    )
+    parser.add_argument(
+        "--character_tags_first", action="store_true", help="Always inserts character tags before the general tags / characterタグを常にgeneralタグの前に出力する",
+    )
+    parser.add_argument(
+        "--always_first_tags",
+        type=str,
+        default=None,
+        help="comma-separated list of tags to always put at the beginning, e.g. `1girl,1boy`"
+        + " / 必ず先頭に置くタグのカンマ区切りリスト、例 : `1girl,1boy`",
     )
     parser.add_argument(
         "--caption_separator",
         type=str,
         default=", ",
         help="Separator for captions, include space if needed / キャプションの区切り文字、必要ならスペースを含めてください",
+    )
+    parser.add_argument(
+        "--tag_replacement",
+        type=str,
+        default=None,
+        help="tag replacement in the format of `source1,target1;source2,target2; ...`. Escape `,` and `;` with `\`. e.g. `tag1,tag2;tag3,tag4`"
+        + " / タグの置換を `置換元1,置換先1;置換元2,置換先2; ...`で指定する。`\` で `,` と `;` をエスケープできる。例: `tag1,tag2;tag3,tag4`",
+    )
+    parser.add_argument(
+        "--character_tag_expand",
+        action="store_true",
+        help="expand tag tail parenthesis to another tag for character tags. `chara_name_(series)` becomes `chara_name, series`"
+        + " / キャラクタタグの末尾の括弧を別のタグに展開する。`chara_name_(series)` は `chara_name, series` になる",
     )
 
     return parser
