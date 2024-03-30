@@ -190,6 +190,16 @@ def Tensor_cuda(self, device=None, *args, **kwargs):
     else:
         return original_Tensor_cuda(self, device, *args, **kwargs)
 
+original_Tensor_pin_memory = torch.Tensor.pin_memory
+@wraps(torch.Tensor.pin_memory)
+def Tensor_pin_memory(self, device=None, *args, **kwargs):
+    if device is None:
+        device = "xpu"
+    if check_device(device):
+        return original_Tensor_pin_memory(self, return_xpu(device), *args, **kwargs)
+    else:
+        return original_Tensor_pin_memory(self, device, *args, **kwargs)
+
 original_UntypedStorage_init = torch.UntypedStorage.__init__
 @wraps(torch.UntypedStorage.__init__)
 def UntypedStorage_init(*args, device=None, **kwargs):
@@ -259,10 +269,12 @@ def torch_Generator(device=None):
 original_torch_load = torch.load
 @wraps(torch.load)
 def torch_load(f, map_location=None, *args, **kwargs):
+    if map_location is None:
+        map_location = "xpu"
     if check_device(map_location):
-        return original_torch_load(f, map_location=return_xpu(map_location), *args, **kwargs)
+        return original_torch_load(f, *args, map_location=return_xpu(map_location), **kwargs)
     else:
-        return original_torch_load(f, map_location=map_location, *args, **kwargs)
+        return original_torch_load(f, *args, map_location=map_location, **kwargs)
 
 
 # Hijack Functions:
@@ -270,6 +282,7 @@ def ipex_hijacks():
     torch.tensor = torch_tensor
     torch.Tensor.to = Tensor_to
     torch.Tensor.cuda = Tensor_cuda
+    torch.Tensor.pin_memory = Tensor_pin_memory
     torch.UntypedStorage.__init__ = UntypedStorage_init
     torch.UntypedStorage.cuda = UntypedStorage_cuda
     torch.empty = torch_empty
