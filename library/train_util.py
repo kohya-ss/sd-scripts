@@ -1144,7 +1144,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     if img.shape[2] == 4:
                         alpha_mask = img[:, :, 3]  # [W,H]
                     else:
-                        alpha_mask = np.ones_like(img[:, :, 0])  # [W,H]
+                        alpha_mask = np.full((im_w, im_h), 255, dtype=np.uint8) # [W,H]
                 img = img[:, :, :3]  # remove alpha channel
 
                 # augmentation
@@ -2337,7 +2337,7 @@ def cache_batch_latents(
                 alpha_mask = image[:, :, 3] # [W,H]
                 image = image[:, :, :3]
             else:
-                alpha_mask = np.ones_like(image[:, :, 0]) # [W,H]
+                alpha_mask = np.full_like(image[:, :, 0], 255, dtype=np.uint8) # [W,H]
             alpha_masks.append(alpha_mask)
         else:
             alpha_masks.append(None)
