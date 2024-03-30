@@ -2355,7 +2355,7 @@ def cache_batch_latents(
         latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
 
     if info.use_alpha_mask:
-        alpha_masks = torch.stack(alpha_masks, dim=0).to(device=vae.device, dtype=vae.dtype)
+        alpha_masks = torch.stack(alpha_masks, dim=0).to("cpu")
     else:
         alpha_masks = [None] * len(image_infos)
 
