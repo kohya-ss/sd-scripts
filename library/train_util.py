@@ -2358,6 +2358,7 @@ def cache_batch_latents(
         alpha_masks = torch.stack(alpha_masks, dim=0).to("cpu")
     else:
         alpha_masks = [None] * len(image_infos)
+        flipped_alpha_masks = [None] * len(image_infos)
 
     if flip_aug:
         img_tensors = torch.flip(img_tensors, dims=[3])
