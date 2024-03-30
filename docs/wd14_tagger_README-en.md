@@ -78,7 +78,10 @@ python tag_images_by_wd14_tagger.py --onnx --repo_id SmilingWolf/wd-swinv2-tagge
 - `--character_tag_expand`: Expand character tag series names. For example, split the tag `chara_name_(series)` into `chara_name, series`.  
 - `--always_first_tags`: Specify tags to always output first when a certain tag appears in an image. Multiple tags can be specified, separated by commas. For example, `1girl,1boy`.
 - `--caption_separator`: Separate tags with this string in the output file. Default is `, `.
-- `--tag_replacement`: Perform tag replacement. Specify in the format `tag1,tag2;tag3,tag4`. 
+- `--tag_replacement`: Perform tag replacement. Specify in the format `tag1,tag2;tag3,tag4`. For example, specify `aira tsubase,aira tsubase (uniform)` (when you want to train a specific costume).
+
+
+When using `tag_replacement`, it is applied after `character_tag_expand`.
 
 When specifying `remove_underscore`, specify `undesired_tags`, `always_first_tags`, and `tag_replacement` without including underscores.
 
