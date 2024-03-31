@@ -4605,7 +4605,6 @@ def save_sd_model_on_train_end_common(
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
 def get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, device):
-    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
 
     #TODO: if a huber loss is selected, it will use constant timesteps for each batch
     # as. In the future there may be a smarter way
