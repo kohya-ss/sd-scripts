@@ -419,7 +419,7 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
-                timesteps, huber_c = train_util.get_timesteps_and_huber_c(args, 0, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
+                timesteps, huber_c = train_util.get_timesteps_and_huber_c(args, 0, noise_scheduler.config.num_train_timesteps, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)

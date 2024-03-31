@@ -4604,7 +4604,7 @@ def save_sd_model_on_train_end_common(
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
-def get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, device):
+def get_timesteps_and_huber_c(args, min_timestep, max_timestep, num_train_timesteps, b_size, device):
 
     #TODO: if a huber loss is selected, it will use constant timesteps for each batch
     # as. In the future there may be a smarter way
@@ -4614,7 +4614,7 @@ def get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, device):
         )
         timestep = timesteps.item()
 
-        alpha = - math.log(args.huber_c) / max_timestep
+        alpha = - math.log(args.huber_c) / num_train_timesteps
         huber_c = math.exp(-alpha * timestep)
         timesteps = timesteps.repeat(b_size).to(device)
     elif args.loss_type == 'huber':
@@ -4648,7 +4648,7 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, latents.device)
+    timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
