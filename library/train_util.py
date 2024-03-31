@@ -3087,6 +3087,19 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="set maximum time step for U-Net training (1~1000, default is 1000) / U-Net学習時のtime stepの最大値を設定する（1~1000で指定、省略時はデフォルト値(1000)）",
     )
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="l2",
+        choices=["l2", "huber", "huber_scheduled"],
+        help="The type of loss to use and whether it's scheduled based on the timestep"
+    )
+    parser.add_argument(
+        "--huber_c",
+        type=float,
+        default=0.1,
+        help="The huber loss parameter. Only used if one of the huber loss modes is selected with loss_type.",
+    )
 
     parser.add_argument(
         "--lowram",
