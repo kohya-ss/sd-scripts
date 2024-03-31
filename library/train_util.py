@@ -4608,6 +4608,30 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
     timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
+
+    #TODO: if a huber loss is selected, it will use constant timesteps for each batch
+    # as. In the future there may be a smarter way
+    if args.loss_type == 'huber_scheduled':
+        timesteps = torch.randint(
+            0, noise_scheduler.config.num_train_timesteps, (1,), device='cpu'
+        )
+        timestep = timesteps.item()
+
+        alpha = - math.log(args.huber_c) / max_timestep
+        huber_c = math.exp(-alpha * timestep)
+        timesteps = timesteps.repeat(b_size).to(latents.device)
+    elif args.loss_type == 'huber':
+        # for fairness in comparison 
+        timesteps = torch.randint(
+            min_timestep, max_timestep, (1,), device='cpu'
+        )
+        timesteps = timesteps.repeat(b_size).to(latents.device)
+        huber_c = args.huber_c
+    elif args.loss_type == 'l2':
+        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
+        huber_c = 1 # may be anything, as it's not used
+    else:
+        raise NotImplementedError(f'Unknown loss type {args.loss_type}')
     timesteps = timesteps.long()
 
     # Add noise to the latents according to the noise magnitude at each timestep
@@ -4617,8 +4641,20 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     else:
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-    return noise, noisy_latents, timesteps
+    return noise, noisy_latents, timesteps, huber_c
 
+# NOTE: if you're using the scheduled version, huber_c has to depend on the timesteps already
+def conditional_loss(model_pred:torch.Tensor, target:torch.Tensor, reduction:str="mean", loss_type:str="l2", huber_c:float=0.1):
+    
+    if loss_type == 'l2':
+        loss = torch.nn.functional.mse_loss(model_pred, target, reduction=reduction)
+    elif loss_type == 'huber' or loss_type == 'huber_scheduled':
+        loss = torch.mean(
+            huber_c * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
+        )
+    else:
+        raise NotImplementedError(f'Unsupported Loss Type {loss_type}')
+    return loss
 
 def append_lr_to_logs(logs, lr_scheduler, optimizer_type, including_unet=True):
     names = []
