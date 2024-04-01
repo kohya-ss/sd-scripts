@@ -323,6 +323,8 @@ def train(args):
         init_kwargs = {}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
+        else:
+            init_kwargs["wandb"] = {"name": args.output_name, "config": args}
         accelerator.init_trackers(
             "lllite_control_net_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs
         )

@@ -225,7 +225,7 @@ def train(args):
             )
         vae.to("cpu")
         clean_memory_on_device(accelerator.device)
-        
+
         accelerator.wait_for_everyone()
 
     if args.gradient_checkpointing:
@@ -342,6 +342,9 @@ def train(args):
             init_kwargs["wandb"] = {"name": args.wandb_run_name}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
+        else:
+            run_name = args.wandb_run_name if args.wandb_run_name else args.output_name
+            init_kwargs["wandb"] = {"name": run_name, "config": args}
         accelerator.init_trackers(
             "controlnet_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs
         )
