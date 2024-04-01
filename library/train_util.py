@@ -3098,7 +3098,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--huber_schedule",
         type=str,
         default="exponential",
-        choices=["constant", "exponential", "snr"], #TODO: add snr
+        choices=["constant", "exponential", "snr"],
         help="The type of loss to use and whether it's scheduled based on the timestep"
     )
     parser.add_argument(
@@ -4611,7 +4611,7 @@ def save_sd_model_on_train_end_common(
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
-def get_timesteps_and_huber_c(args, min_timestep, max_timestep, num_train_timesteps, b_size, device):
+def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, device):
 
     #TODO: if a huber loss is selected, it will use constant timesteps for each batch
     # as. In the future there may be a smarter way
@@ -4623,12 +4623,12 @@ def get_timesteps_and_huber_c(args, min_timestep, max_timestep, num_train_timest
         timestep = timesteps.item()
 
         if args.huber_schedule == "exponential":
-            alpha = - math.log(args.huber_c) / num_train_timesteps
+            alpha = - math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
             huber_c = math.exp(-alpha * timestep)
         elif args.huber_schedule == "snr":
-            # TODO
-            huber_c = args.huber_c # Placeholder
-            pass
+            alphas_cumprod = noise_scheduler.alphas_cumprod[timestep]
+            sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
+            huber_c = (1 - args.huber_c) / (1 + sigmas)**2 + args.huber_c
         elif args.huber_schedule == "constant":
             huber_c = args.huber_c
         else:
@@ -4659,7 +4659,7 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
+    timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
