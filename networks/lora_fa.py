@@ -1033,7 +1033,14 @@ class LoRANetwork(torch.nn.Module):
         return lr_weight
 
     # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr, , unet_lora_plus_ratio=None, text_encoder_lora_plus_ratio=None):
+    def prepare_optimizer_params(
+        self,
+        text_encoder_lr,
+        unet_lr,
+        default_lr,
+        unet_lora_plus_ratio=None,
+        text_encoder_lora_plus_ratio=None
+    ):
         self.requires_grad_(True)
         all_params = []
 
@@ -1068,7 +1075,11 @@ class LoRANetwork(torch.nn.Module):
             return params
 
         if self.text_encoder_loras:
-            params = assemble_params(self.text_encoder_loras, text_encoder_lr, text_encoder_lora_plus_ratio)
+            params = assemble_params(
+                self.text_encoder_loras,
+                text_encoder_lr if text_encoder_lr is not None else default_lr,
+                text_encoder_lora_plus_ratio
+            )
             all_params.extend(params)
 
         if self.unet_loras:
@@ -1083,14 +1094,19 @@ class LoRANetwork(torch.nn.Module):
 
                 # blockごとにパラメータを設定する
                 for idx, block_loras in block_idx_to_lora.items():
-                    if unet_lr is not None:
-                        params = assemble_params(block_loras, unet_lr * self.get_lr_weight(block_loras[0]), unet_lora_plus_ratio)
-                    elif default_lr is not None:
-                        params = assemble_params(block_loras, default_lr * self.get_lr_weight(block_loras[0]), unet_lora_plus_ratio)
+                    params = assemble_params(
+                        block_loras,
+                        (unet_lr if unet_lr is not None else default_lr) * self.get_lr_weight(block_loras[0]),
+                        unet_lora_plus_ratio
+                    )
                     all_params.extend(params)
 
             else:
-                params = assemble_params(self.unet_loras, unet_lr, unet_lora_plus_ratio)
+                params = assemble_params(
+                    self.unet_loras,
+                    default_lr if unet_lr is None else unet_lr,
+                    unet_lora_plus_ratio
+                )
                 all_params.extend(params)
 
         return all_params
