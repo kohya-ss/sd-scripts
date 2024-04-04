@@ -63,6 +63,7 @@ from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
 from PIL import Image
+import imagesize
 import cv2
 import safetensors.torch
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
@@ -70,6 +71,7 @@ import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
 from library import token_downsampling
+import library.deepspeed_utils as deepspeed_utils
 from library.utils import setup_logging
 
 setup_logging()
@@ -410,6 +412,7 @@ class DreamBoothSubset(BaseSubset):
         is_reg: bool,
         class_tokens: Optional[str],
         caption_extension: str,
+        cache_info: bool,
         num_repeats,
         shuffle_caption,
         caption_separator: str,
@@ -458,6 +461,7 @@ class DreamBoothSubset(BaseSubset):
         self.caption_extension = caption_extension
         if self.caption_extension and not self.caption_extension.startswith("."):
             self.caption_extension = "." + self.caption_extension
+        self.cache_info = cache_info
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, DreamBoothSubset):
@@ -527,6 +531,7 @@ class ControlNetSubset(BaseSubset):
         image_dir: str,
         conditioning_data_dir: str,
         caption_extension: str,
+        cache_info: bool,
         num_repeats,
         shuffle_caption,
         caption_separator,
@@ -574,6 +579,7 @@ class ControlNetSubset(BaseSubset):
         self.caption_extension = caption_extension
         if self.caption_extension and not self.caption_extension.startswith("."):
             self.caption_extension = "." + self.caption_extension
+        self.cache_info = cache_info
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, ControlNetSubset):
@@ -694,6 +700,10 @@ class BaseDataset(torch.utils.data.Dataset):
         else:
             # process wildcards
             if subset.enable_wildcard:
+                # if caption is multiline, random choice one line
+                if "\n" in caption:
+                    caption = random.choice(caption.split("\n"))
+
                 # wildcard is like '{aaa|bbb|ccc...}'
                 # escape the curly braces like {{ or }}
                 replacer1 = "⦅"
@@ -712,6 +722,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 # unescape the curly braces
                 caption = caption.replace(replacer1, "{").replace(replacer2, "}")
+            else:
+                # if caption is multiline, use the first line
+                caption = caption.split("\n")[0]
 
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
                 fixed_tokens = []
@@ -1074,8 +1087,7 @@ class BaseDataset(torch.utils.data.Dataset):
             )
 
     def get_image_size(self, image_path):
-        image = Image.open(image_path)
-        return image.size
+        return imagesize.get(image_path)
 
     def load_image_with_face_info(self, subset: BaseSubset, image_path: str):
         img = load_image(image_path)
@@ -1404,6 +1416,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
 
 class DreamBoothDataset(BaseDataset):
+    IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
+
     def __init__(
         self,
         subsets: Sequence[DreamBoothSubset],
@@ -1447,7 +1461,7 @@ class DreamBoothDataset(BaseDataset):
             self.bucket_reso_steps = None  # この情報は使われない
             self.bucket_no_upscale = False
 
-        def read_caption(img_path, caption_extension):
+        def read_caption(img_path, caption_extension, enable_wildcard):
             # captionの候補ファイル名を作る
             base_name = os.path.splitext(img_path)[0]
             base_name_face_det = base_name
@@ -1466,7 +1480,10 @@ class DreamBoothDataset(BaseDataset):
                             logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
                             raise e
                         assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
-                        caption = lines[0].strip()
+                        if enable_wildcard:
+                            caption = "\n".join([line.strip() for line in lines if line.strip() != ""])  # 空行を除く、改行で連結
+                        else:
+                            caption = lines[0].strip()
                     break
             return caption
 
@@ -1475,26 +1492,54 @@ class DreamBoothDataset(BaseDataset):
                 logger.warning(f"not directory: {subset.image_dir}")
                 return [], []
 
-            img_paths = glob_images(subset.image_dir, "*")
+            info_cache_file = os.path.join(subset.image_dir, self.IMAGE_INFO_CACHE_FILE)
+            use_cached_info_for_subset = subset.cache_info
+            if use_cached_info_for_subset:
+                logger.info(
+                    f"using cached image info for this subset / このサブセットで、キャッシュされた画像情報を使います: {info_cache_file}"
+                )
+                if not os.path.isfile(info_cache_file):
+                    logger.warning(
+                        f"image info file not found. You can ignore this warning if this is the first time to use this subset"
+                        + " / キャッシュファイルが見つかりませんでした。初回実行時はこの警告を無視してください: {metadata_file}"
+                    )
+                    use_cached_info_for_subset = False
+
+            if use_cached_info_for_subset:
+                # json: {`img_path`:{"caption": "caption...", "resolution": [width, height]}, ...}
+                with open(info_cache_file, "r", encoding="utf-8") as f:
+                    metas = json.load(f)
+                img_paths = list(metas.keys())
+                sizes = [meta["resolution"] for meta in metas.values()]
+
+                # we may need to check image size and existence of image files, but it takes time, so user should check it before training
+            else:
+                img_paths = glob_images(subset.image_dir, "*")
+                sizes = [None] * len(img_paths)
+
             logger.info(f"found directory {subset.image_dir} contains {len(img_paths)} image files")
 
-            # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
-            captions = []
-            missing_captions = []
-            for img_path in img_paths:
-                cap_for_img = read_caption(img_path, subset.caption_extension)
-                if cap_for_img is None and subset.class_tokens is None:
-                    logger.warning(
-                        f"neither caption file nor class tokens are found. use empty caption for {img_path} / キャプションファイルもclass tokenも見つかりませんでした。空のキャプションを使用します: {img_path}"
-                    )
-                    captions.append("")
-                    missing_captions.append(img_path)
-                else:
-                    if cap_for_img is None:
-                        captions.append(subset.class_tokens)
+            if use_cached_info_for_subset:
+                captions = [meta["caption"] for meta in metas.values()]
+                missing_captions = [img_path for img_path, caption in zip(img_paths, captions) if caption is None or caption == ""]
+            else:
+                # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
+                captions = []
+                missing_captions = []
+                for img_path in img_paths:
+                    cap_for_img = read_caption(img_path, subset.caption_extension, subset.enable_wildcard)
+                    if cap_for_img is None and subset.class_tokens is None:
+                        logger.warning(
+                            f"neither caption file nor class tokens are found. use empty caption for {img_path} / キャプションファイルもclass tokenも見つかりませんでした。空のキャプションを使用します: {img_path}"
+                        )
+                        captions.append("")
                         missing_captions.append(img_path)
                     else:
-                        captions.append(cap_for_img)
+                        if cap_for_img is None:
+                            captions.append(subset.class_tokens)
+                            missing_captions.append(img_path)
+                        else:
+                            captions.append(cap_for_img)
 
             self.set_tag_frequency(os.path.basename(subset.image_dir), captions)  # タグ頻度を記録
 
@@ -1511,12 +1556,24 @@ class DreamBoothDataset(BaseDataset):
                         logger.warning(missing_caption + f"... and {remaining_missing_captions} more")
                         break
                     logger.warning(missing_caption)
-            return img_paths, captions
+
+            if not use_cached_info_for_subset and subset.cache_info:
+                logger.info(f"cache image info for / 画像情報をキャッシュします : {info_cache_file}")
+                sizes = [self.get_image_size(img_path) for img_path in tqdm(img_paths, desc="get image size")]
+                matas = {}
+                for img_path, caption, size in zip(img_paths, captions, sizes):
+                    matas[img_path] = {"caption": caption, "resolution": list(size)}
+                with open(info_cache_file, "w", encoding="utf-8") as f:
+                    json.dump(matas, f, ensure_ascii=False, indent=2)
+                logger.info(f"cache image info done for / 画像情報を出力しました : {info_cache_file}")
+
+            # if sizes are not set, image size will be read in make_buckets
+            return img_paths, captions, sizes
 
         logger.info("prepare images.")
         num_train_images = 0
         num_reg_images = 0
-        reg_infos: List[ImageInfo] = []
+        reg_infos: List[Tuple[ImageInfo, DreamBoothSubset]] = []
         for subset in subsets:
             if subset.num_repeats < 1:
                 logger.warning(
@@ -1530,7 +1587,7 @@ class DreamBoothDataset(BaseDataset):
                 )
                 continue
 
-            img_paths, captions = load_dreambooth_dir(subset)
+            img_paths, captions, sizes = load_dreambooth_dir(subset)
             if len(img_paths) < 1:
                 logger.warning(
                     f"ignore subset with image_dir='{subset.image_dir}': no images found / 画像が見つからないためサブセットを無視します"
@@ -1542,10 +1599,12 @@ class DreamBoothDataset(BaseDataset):
             else:
                 num_train_images += subset.num_repeats * len(img_paths)
 
-            for img_path, caption in zip(img_paths, captions):
+            for img_path, caption, size in zip(img_paths, captions, sizes):
                 info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
+                if size is not None:
+                    info.image_size = size
                 if subset.is_reg:
-                    reg_infos.append(info)
+                    reg_infos.append((info, subset))
                 else:
                     self.register_image(info, subset)
 
@@ -1566,7 +1625,7 @@ class DreamBoothDataset(BaseDataset):
             n = 0
             first_loop = True
             while n < num_train_images:
-                for info in reg_infos:
+                for info, subset in reg_infos:
                     if first_loop:
                         self.register_image(info, subset)
                         n += info.num_repeats
@@ -1658,10 +1717,24 @@ class FineTuningDataset(BaseDataset):
                 caption = img_md.get("caption")
                 tags = img_md.get("tags")
                 if caption is None:
-                    caption = tags
-                elif tags is not None and len(tags) > 0:
-                    caption = caption + ", " + tags
-                    tags_list.append(tags)
+                    caption = tags  # could be multiline
+                    tags = None
+
+                if subset.enable_wildcard:
+                    # tags must be single line
+                    if tags is not None:
+                        tags = tags.replace("\n", subset.caption_separator)
+
+                    # add tags to each line of caption
+                    if caption is not None and tags is not None:
+                        caption = "\n".join(
+                            [f"{line}{subset.caption_separator}{tags}" for line in caption.split("\n") if line.strip() != ""]
+                        )
+                else:
+                    # use as is
+                    if tags is not None and len(tags) > 0:
+                        caption = caption + subset.caption_separator + tags
+                        tags_list.append(tags)
 
                 if caption is None:
                     caption = ""
@@ -1811,11 +1884,15 @@ class ControlNetDataset(BaseDataset):
 
         db_subsets = []
         for subset in subsets:
+            assert (
+                not subset.random_crop
+            ), "random_crop is not supported in ControlNetDataset / random_cropはControlNetDatasetではサポートされていません"
             db_subset = DreamBoothSubset(
                 subset.image_dir,
                 False,
                 None,
-                subset.caption_extension,
+                subset.caption_extension, 
+                subset.cache_info,
                 subset.num_repeats,
                 subset.shuffle_caption,
                 subset.caption_separator,
@@ -1861,7 +1938,7 @@ class ControlNetDataset(BaseDataset):
 
         # assert all conditioning data exists
         missing_imgs = []
-        cond_imgs_with_img = set()
+        cond_imgs_with_pair = set()
         for image_key, info in self.dreambooth_dataset_delegate.image_data.items():
             db_subset = self.dreambooth_dataset_delegate.image_to_subset[image_key]
             subset = None
@@ -1875,23 +1952,29 @@ class ControlNetDataset(BaseDataset):
                 logger.warning(f"not directory: {subset.conditioning_data_dir}")
                 continue
 
-            img_basename = os.path.basename(info.absolute_path)
-            ctrl_img_path = os.path.join(subset.conditioning_data_dir, img_basename)
-            if not os.path.exists(ctrl_img_path):
+            img_basename = os.path.splitext(os.path.basename(info.absolute_path))[0]
+            ctrl_img_path = glob_images(subset.conditioning_data_dir, img_basename)
+            if len(ctrl_img_path) < 1:
                 missing_imgs.append(img_basename)
+                continue
+            ctrl_img_path = ctrl_img_path[0]
+            ctrl_img_path = os.path.abspath(ctrl_img_path)  # normalize path
 
             info.cond_img_path = ctrl_img_path
-            cond_imgs_with_img.add(ctrl_img_path)
+            cond_imgs_with_pair.add(os.path.splitext(ctrl_img_path)[0])  # remove extension because Windows is case insensitive
 
         extra_imgs = []
         for subset in subsets:
             conditioning_img_paths = glob_images(subset.conditioning_data_dir, "*")
-            extra_imgs.extend(
-                [cond_img_path for cond_img_path in conditioning_img_paths if cond_img_path not in cond_imgs_with_img]
-            )
+            conditioning_img_paths = [os.path.abspath(p) for p in conditioning_img_paths]  # normalize path
+            extra_imgs.extend([p for p in conditioning_img_paths if os.path.splitext(p)[0] not in cond_imgs_with_pair])
 
-        assert len(missing_imgs) == 0, f"missing conditioning data for {len(missing_imgs)} images: {missing_imgs}"
-        assert len(extra_imgs) == 0, f"extra conditioning data for {len(extra_imgs)} images: {extra_imgs}"
+        assert (
+            len(missing_imgs) == 0
+        ), f"missing conditioning data for {len(missing_imgs)} images / 制御用画像が見つかりませんでした: {missing_imgs}"
+        assert (
+            len(extra_imgs) == 0
+        ), f"extra conditioning data for {len(extra_imgs)} images / 余分な制御用画像があります: {extra_imgs}"
 
         self.conditioning_image_transforms = IMAGE_TRANSFORMS
 
@@ -2937,7 +3020,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--save_state",
         action="store_true",
-        help="save training state additionally (including optimizer states etc.) / optimizerなど学習状態も含めたstateを追加で保存する",
+        help="save training state additionally (including optimizer states etc.) when saving model / optimizerなど学習状態も含めたstateをモデル保存時に追加で保存する",
+    )
+    parser.add_argument(
+        "--save_state_on_train_end",
+        action="store_true",
+        help="save training state (including optimizer states etc.) on train end / optimizerなど学習状態も含めたstateを学習完了時に保存する",
     )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
 
@@ -3020,6 +3108,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--full_bf16", action="store_true", help="bf16 training including gradients / 勾配も含めてbf16で学習する"
     )  # TODO move to SDXL training, because it is not supported by SD1/2
     parser.add_argument("--fp8_base", action="store_true", help="use fp8 for base model / base modelにfp8を使う")
+
     parser.add_argument(
         "--ddp_timeout",
         type=int,
@@ -3082,11 +3171,17 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="specify WandB API key to log in before starting training (optional). / WandB APIキーを指定して学習開始前にログインする（オプション）",
     )
+
     parser.add_argument(
         "--noise_offset",
         type=float,
         default=None,
         help="enable noise offset with this value (if enabled, around 0.1 is recommended) / Noise offsetを有効にしてこの値を設定する（有効にする場合は0.1程度を推奨）",
+    )
+    parser.add_argument(
+        "--noise_offset_random_strength",
+        action="store_true",
+        help="use random strength between 0~noise_offset for noise offset. / noise offsetにおいて、0からnoise_offsetの間でランダムな強度を使用します。",
     )
     parser.add_argument(
         "--multires_noise_iterations",
@@ -3100,6 +3195,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="enable input perturbation noise. used for regularization. recommended value: around 0.1 (from arxiv.org/abs/2301.11706) "
         + "/  input perturbation noiseを有効にする。正則化に使用される。推奨値: 0.1程度 (arxiv.org/abs/2301.11706 より)",
+    )
+    parser.add_argument(
+        "--ip_noise_gamma_random_strength",
+        action="store_true",
+        help="Use random strength between 0~ip_noise_gamma for input perturbation noise."
+        + "/ input perturbation noiseにおいて、0からip_noise_gammaの間でランダムな強度を使用します。",
     )
     # parser.add_argument(
     #     "--perlin_noise",
@@ -3258,6 +3359,20 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         )
 
 
+def add_masked_loss_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--conditioning_data_dir",
+        type=str,
+        default=None,
+        help="conditioning data directory / 条件付けデータのディレクトリ",
+    )
+    parser.add_argument(
+        "--masked_loss",
+        action="store_true",
+        help="apply mask for calculating loss. conditioning_data_dir is required for dataset. / 損失計算時にマスクを適用する。datasetにはconditioning_data_dirが必要",
+    )
+
+
 def verify_training_args(args: argparse.Namespace):
     r"""
     Verify training arguments. Also reflect highvram option to global variable
@@ -3313,6 +3428,18 @@ def verify_training_args(args: argparse.Namespace):
             + " / zero_terminal_snrが有効ですが、v_parameterizationが有効ではありません。学習結果は想定外になる可能性があります"
         )
 
+    if args.sample_every_n_epochs is not None and args.sample_every_n_epochs <= 0:
+        logger.warning(
+            "sample_every_n_epochs is less than or equal to 0, so it will be disabled / sample_every_n_epochsに0以下の値が指定されたため無効になります"
+        )
+        args.sample_every_n_epochs = None
+
+    if args.sample_every_n_steps is not None and args.sample_every_n_steps <= 0:
+        logger.warning(
+            "sample_every_n_steps is less than or equal to 0, so it will be disabled / sample_every_n_stepsに0以下の値が指定されたため無効になります"
+        )
+        args.sample_every_n_steps = None
+
 
 def add_dataset_arguments(
     parser: argparse.ArgumentParser, support_dreambooth: bool, support_caption: bool, support_caption_dropout: bool
@@ -3320,6 +3447,12 @@ def add_dataset_arguments(
     # dataset common
     parser.add_argument(
         "--train_data_dir", type=str, default=None, help="directory for train images / 学習画像データのディレクトリ"
+    )
+    parser.add_argument(
+        "--cache_info",
+        action="store_true",
+        help="cache meta information (caption and image size) for faster dataset loading. only available for DreamBooth"
+        + " / メタ情報（キャプションとサイズ）をキャッシュしてデータセット読み込みを高速化する。DreamBooth方式のみ有効",
     )
     parser.add_argument(
         "--shuffle_caption", action="store_true", help="shuffle separated caption / 区切られたcaptionの各要素をshuffleする"
@@ -3549,7 +3682,7 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
         exit(1)
 
     logger.info(f"Loading settings from {config_path}...")
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config_dict = toml.load(f)
 
     # combine all sections into one
@@ -4058,6 +4191,10 @@ def load_tokenizer(args: argparse.Namespace):
 
 
 def prepare_accelerator(args: argparse.Namespace):
+    """
+    this function also prepares deepspeed plugin
+    """
+
     if args.logging_dir is None:
         logging_dir = None
     else:
@@ -4103,6 +4240,8 @@ def prepare_accelerator(args: argparse.Namespace):
         ),
     )
     kwargs_handlers = list(filter(lambda x: x is not None, kwargs_handlers))
+    deepspeed_plugin = deepspeed_utils.prepare_deepspeed_plugin(args)
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -4110,6 +4249,7 @@ def prepare_accelerator(args: argparse.Namespace):
         project_dir=logging_dir,
         kwargs_handlers=kwargs_handlers,
         dynamo_backend=dynamo_backend,
+        deepspeed_plugin=deepspeed_plugin,
     )
     print("accelerator device:", accelerator.device)
     return accelerator
@@ -4180,7 +4320,6 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 
 
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
-    # load models for each process
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
             logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
@@ -4191,7 +4330,6 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
                 accelerator.device if args.lowram else "cpu",
                 unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
             )
-
             # work on low-ram device
             if args.lowram:
                 text_encoder.to(accelerator.device)
@@ -4676,7 +4814,11 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:
-        noise = custom_train_functions.apply_noise_offset(latents, noise, args.noise_offset, args.adaptive_noise_scale)
+        if args.noise_offset_random_strength:
+            noise_offset = torch.rand(1, device=latents.device) * args.noise_offset
+        else:
+            noise_offset = args.noise_offset
+        noise = custom_train_functions.apply_noise_offset(latents, noise, noise_offset, args.adaptive_noise_scale)
     if args.multires_noise_iterations:
         noise = custom_train_functions.pyramid_noise_like(
             noise, latents.device, args.multires_noise_iterations, args.multires_noise_discount
@@ -4693,7 +4835,11 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
     if args.ip_noise_gamma:
-        noisy_latents = noise_scheduler.add_noise(latents, noise + args.ip_noise_gamma * torch.randn_like(latents), timesteps)
+        if args.ip_noise_gamma_random_strength:
+            strength = torch.rand(1, device=latents.device) * args.ip_noise_gamma
+        else:
+            strength = args.ip_noise_gamma
+        noisy_latents = noise_scheduler.add_noise(latents, noise + strength * torch.randn_like(latents), timesteps)
     else:
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
