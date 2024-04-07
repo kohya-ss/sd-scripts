@@ -476,7 +476,7 @@ class NetworkTrainer:
             # pop weights of other models than network to save only network weights
             if accelerator.is_main_process:
                 remove_indices = []
-                for i,model in enumerate(models):
+                for i, model in enumerate(models):
                     if not isinstance(model, type(accelerator.unwrap_model(network))):
                         remove_indices.append(i)
                 for i in reversed(remove_indices):
@@ -569,6 +569,11 @@ class NetworkTrainer:
             "ss_scale_weight_norms": args.scale_weight_norms,
             "ss_ip_noise_gamma": args.ip_noise_gamma,
             "ss_debiased_estimation": bool(args.debiased_estimation_loss),
+            "ss_noise_offset_random_strength": args.noise_offset_random_strength,
+            "ss_ip_noise_gamma_random_strength": args.ip_noise_gamma_random_strength,
+            "ss_loss_type": args.loss_type,
+            "ss_huber_schedule": args.huber_schedule,
+            "ss_huber_c": args.huber_c,
         }
 
         if use_user_config:
@@ -873,7 +878,9 @@ class NetworkTrainer:
                     else:
                         target = noise
 
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                    loss = train_util.conditional_loss(
+                        noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                    )
                     if args.masked_loss:
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
