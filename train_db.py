@@ -11,7 +11,10 @@ import toml
 from tqdm import tqdm
 
 import torch
+from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
+
+
 init_ipex()
 
 from accelerate.utils import set_seed
@@ -32,6 +35,7 @@ from library.custom_train_functions import (
     apply_noise_offset,
     scale_v_prediction_loss_like_noise_prediction,
     apply_debiased_estimation,
+    apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
 
@@ -46,6 +50,7 @@ logger = logging.getLogger(__name__)
 def train(args):
     train_util.verify_training_args(args)
     train_util.prepare_dataset_args(args, False)
+    deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
     cache_latents = args.cache_latents
@@ -57,7 +62,7 @@ def train(args):
 
     # データセットを準備する
     if args.dataset_class is None:
-        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, False, False, True))
+        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, False, args.masked_loss, True))
         if args.dataset_config is not None:
             logger.info(f"Load dataset config from {args.dataset_config}")
             user_config = config_util.load_user_config(args.dataset_config)
@@ -219,12 +224,25 @@ def train(args):
         text_encoder.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if train_text_encoder:
-        unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+    if args.deepspeed:
+        if args.train_text_encoder:
+            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet, text_encoder=text_encoder)
+        else:
+            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)
+        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            ds_model, optimizer, train_dataloader, lr_scheduler
         )
+        training_models = [ds_model]
+
     else:
-        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+        if train_text_encoder:
+            unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                unet, text_encoder, optimizer, train_dataloader, lr_scheduler
+            )
+            training_models = [unet, text_encoder]
+        else:
+            unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+            training_models = [unet]
 
     if not train_text_encoder:
         text_encoder.to(accelerator.device, dtype=weight_dtype)  # to avoid 'cpu' vs 'cuda' error
@@ -296,12 +314,14 @@ def train(args):
                 if not args.gradient_checkpointing:
                     text_encoder.train(False)
                 text_encoder.requires_grad_(False)
+                if len(training_models) == 2:
+                    training_models = training_models[0]  # remove text_encoder from training_models
 
-            with accelerator.accumulate(unet):
+            with accelerator.accumulate(*training_models):
                 with torch.no_grad():
                     # latentに変換
                     if cache_latents:
-                        latents = batch["latents"].to(accelerator.device)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
                     latents = latents * 0.18215
@@ -326,7 +346,7 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
                 # Predict the noise residual
                 with accelerator.autocast():
@@ -338,7 +358,9 @@ def train(args):
                 else:
                     target = noise
 
-                loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                if args.masked_loss:
+                    loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -444,7 +466,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if args.save_state and is_main_process:
+    if is_main_process and (args.save_state or args.save_state_on_train_end):
         train_util.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
@@ -464,6 +486,8 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, False, True)
     train_util.add_training_arguments(parser, True)
+    train_util.add_masked_loss_arguments(parser)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_sd_saving_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
@@ -499,6 +523,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     train(args)
