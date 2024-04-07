@@ -137,6 +137,12 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
+### Apr 7, 2024 / 2024-04-07: v0.8.7
+
+- The default value of `huber_schedule` in Scheduled Huber Loss is changed from `exponential` to `snr`, which is expected to give better results.
+
+- Scheduled Huber Loss の `huber_schedule` のデフォルト値を `exponential` から、より良い結果が期待できる `snr` に変更しました。
+
 ### Apr 7, 2024 / 2024-04-07: v0.8.6
 
 #### Highlights
@@ -216,7 +222,7 @@ The newly added arguments loss_type, huber_schedule, and huber_c allow for the s
 See PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) for details.
 
 - `loss_type`: Specify the loss function type. Choose `huber` for Huber loss, `smooth_l1` for smooth L1 loss, and `l2` for MSE loss. The default is `l2`, which is the same as before.
-- `huber_schedule`: Specify the scheduling method. Choose `exponential`, `constant`, or `SNR`. The default is `exponential`.
+- `huber_schedule`: Specify the scheduling method. Choose `exponential`, `constant`, or `snr`. The default is `snr`.
 - `huber_c`: Specify the Huber's parameter. The default is `0.1`.
 
 Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.
@@ -297,7 +303,7 @@ Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for rece
 詳細は PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) をご覧ください。
 
 - `loss_type` : 損失関数の種類を指定します。`huber` で Huber損失、`smooth_l1` で smooth L1 損失、`l2` で MSE 損失を選択します。デフォルトは `l2` で、従来と同様です。
-- `huber_schedule` : スケジューリング方法を指定します。`exponential` で指数関数的、`constant` で一定、`snr` で信号対雑音比に基づくスケジューリングを選択します。デフォルトは `exponential` です。
+- `huber_schedule` : スケジューリング方法を指定します。`exponential` で指数関数的、`constant` で一定、`snr` で信号対雑音比に基づくスケジューリングを選択します。デフォルトは `snr` です。
 - `huber_c` : Huber損失のパラメータを指定します。デフォルトは `0.1` です。
 
 PR 内でいくつかの比較が共有されています。この機能を試す場合、最初は `--loss_type smooth_l1 --huber_schedule snr --huber_c 0.1` などで試してみるとよいかもしれません。
