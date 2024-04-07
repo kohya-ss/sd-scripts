@@ -5387,7 +5387,7 @@ class LossRecorder:
         self.loss_total: float = 0.0
 
     def add(self, *, epoch: int, step: int, loss: float) -> None:
-        if epoch == 0:
+        if epoch == 0 or step >= len(self.loss_list):
             self.loss_list.append(loss)
         else:
             self.loss_total -= self.loss_list[step]
