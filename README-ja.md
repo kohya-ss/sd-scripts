@@ -111,3 +111,47 @@ Conv2d 3x3への拡大は [cloneofsimo氏](https://github.com/cloneofsimo/lora) 
 
 [BLIP](https://github.com/salesforce/BLIP): BSD-3-Clause
 
+## その他の情報
+
+### LoRAの名称について
+
+`train_network.py` がサポートするLoRAについて、混乱を避けるため名前を付けました。ドキュメントは更新済みです。以下は当リポジトリ内の独自の名称です。
+
+1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers、リエラと読みます)
+
+    Linear 層およびカーネルサイズ 1x1 の Conv2d 層に適用されるLoRA
+
+2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers、セリアと読みます)
+
+    1.に加え、カーネルサイズ 3x3 の Conv2d 層に適用されるLoRA
+
+デフォルトではLoRA-LierLaが使われます。LoRA-C3Lierを使う場合は `--network_args` に `conv_dim` を指定してください。
+
+<!-- 
+LoRA-LierLa は[Web UI向け拡張](https://github.com/kohya-ss/sd-webui-additional-networks)、またはAUTOMATIC1111氏のWeb UIのLoRA機能で使用することができます。
+
+LoRA-C3Lierを使いWeb UIで生成するには拡張を使用してください。
+-->
+
+### 学習中のサンプル画像生成
+
+プロンプトファイルは例えば以下のようになります。
+
+```
+# prompt 1
+masterpiece, best quality, (1girl), in white shirts, upper body, looking at viewer, simple background --n low quality, worst quality, bad anatomy,bad composition, poor, low effort --w 768 --h 768 --d 1 --l 7.5 --s 28
+
+# prompt 2
+masterpiece, best quality, 1boy, in business suit, standing at street, looking back --n (low quality, worst quality), bad anatomy,bad composition, poor, low effort --w 576 --h 832 --d 2 --l 5.5 --s 40
+```
+
+  `#` で始まる行はコメントになります。`--n` のように「ハイフン二個＋英小文字」の形でオプションを指定できます。以下が使用可能できます。
+
+  * `--n` Negative prompt up to the next option.
+  * `--w` Specifies the width of the generated image.
+  * `--h` Specifies the height of the generated image.
+  * `--d` Specifies the seed of the generated image.
+  * `--l` Specifies the CFG scale of the generated image.
+  * `--s` Specifies the number of steps in the generation.
+
+  `( )` や `[ ]` などの重みづけも動作します。
