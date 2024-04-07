@@ -137,15 +137,16 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
-### Mar XX, 2024 / 2024/3/XX: v0.8.6
+### Apr 7, 2024 / 2024-04-07: v0.8.6
 
 #### Highlights
 
 - The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
   - Especially `imagesize` is newly added, so if you cannot update the libraries immediately, please install with `pip install imagesize==1.4.1` separately.
   - `bitsandbytes==0.43.0`, `prodigyopt==1.0`, `lion-pytorch==0.0.6` are included in the requirements.txt.
+    - `bitsandbytes` no longer requires complex procedures as it now officially supports Windows.  
   - Also, the PyTorch version is updated to 2.1.2 (PyTorch does not need to be updated immediately). In the upgrade procedure, PyTorch is not updated, so please manually install or update torch, torchvision, xformers if necessary (see [Upgrade PyTorch](#upgrade-pytorch)).
-- When logging to wandb is enabled, the entire command line is exposed. Therefore, it is recommended to write the API key of wandb and the token of HuggingFace in the configuration file (`.toml`). Thanks to bghira for raising the issue.
+- When logging to wandb is enabled, the entire command line is exposed. Therefore, it is recommended to write wandb API key and HuggingFace token in the configuration file (`.toml`). Thanks to bghira for raising the issue.
   - A warning is displayed at the start of training if such information is included in the command line.
   - Also, if there is an absolute path, the path may be exposed, so it is recommended to specify a relative path or write it in the configuration file. In such cases, an INFO log is displayed.
   - See [#1123](https://github.com/kohya-ss/sd-scripts/pull/1123) and PR [#1240](https://github.com/kohya-ss/sd-scripts/pull/1240) for details.
@@ -223,6 +224,7 @@ See PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) for details.
 - 依存ライブラリが更新されました。[アップグレード](./README-ja.md#アップグレード) を参照しライブラリを更新してください。
   - 特に `imagesize` が新しく追加されていますので、すぐにライブラリの更新ができない場合は `pip install imagesize==1.4.1` で個別にインストールしてください。
   - `bitsandbytes==0.43.0`、`prodigyopt==1.0`、`lion-pytorch==0.0.6` が requirements.txt に含まれるようになりました。
+    - `bitsandbytes` が公式に Windows をサポートしたため複雑な手順が不要になりました。
   - また PyTorch のバージョンを 2.1.2 に更新しました。PyTorch はすぐに更新する必要はありません。更新時は、アップグレードの手順では PyTorch が更新されませんので、torch、torchvision、xformers を手動でインストールしてください。
 - wandb へのログ出力が有効の場合、コマンドライン全体が公開されます。そのため、コマンドラインに wandb の API キーや HuggingFace のトークンなどが含まれる場合、設定ファイル（`.toml`）への記載をお勧めします。問題提起していただいた bghira 氏に感謝します。
   - このような場合には学習開始時に警告が表示されます。
@@ -315,27 +317,14 @@ The LoRA supported by `train_network.py` has been named to avoid confusion. The 
 
     In addition to 1., LoRA for Conv2d layers with 3x3 kernel 
     
-LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). LoRA-LierLa can be used with [our extension](https://github.com/kohya-ss/sd-webui-additional-networks) for AUTOMATIC1111's Web UI, or with the built-in LoRA feature of the Web UI.
+LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). 
+<!-- 
+LoRA-LierLa can be used with [our extension](https://github.com/kohya-ss/sd-webui-additional-networks) for AUTOMATIC1111's Web UI, or with the built-in LoRA feature of the Web UI.
 
-To use LoRA-C3Lier with Web UI, please use our extension.
+To use LoRA-C3Lier with Web UI, please use our extension. 
+-->
 
-### LoRAの名称について
-
-`train_network.py` がサポートするLoRAについて、混乱を避けるため名前を付けました。ドキュメントは更新済みです。以下は当リポジトリ内の独自の名称です。
-
-1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers、リエラと読みます)
-
-    Linear 層およびカーネルサイズ 1x1 の Conv2d 層に適用されるLoRA
-
-2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers、セリアと読みます)
-
-    1.に加え、カーネルサイズ 3x3 の Conv2d 層に適用されるLoRA
-
-LoRA-LierLa は[Web UI向け拡張](https://github.com/kohya-ss/sd-webui-additional-networks)、またはAUTOMATIC1111氏のWeb UIのLoRA機能で使用することができます。
-
-LoRA-C3Lierを使いWeb UIで生成するには拡張を使用してください。
-
-## Sample image generation during training
+### Sample image generation during training
   A prompt file might look like this, for example
 
 ```
@@ -356,26 +345,3 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
-
-## サンプル画像生成
-プロンプトファイルは例えば以下のようになります。
-
-```
-# prompt 1
-masterpiece, best quality, (1girl), in white shirts, upper body, looking at viewer, simple background --n low quality, worst quality, bad anatomy,bad composition, poor, low effort --w 768 --h 768 --d 1 --l 7.5 --s 28
-
-# prompt 2
-masterpiece, best quality, 1boy, in business suit, standing at street, looking back --n (low quality, worst quality), bad anatomy,bad composition, poor, low effort --w 576 --h 832 --d 2 --l 5.5 --s 40
-```
-
-  `#` で始まる行はコメントになります。`--n` のように「ハイフン二個＋英小文字」の形でオプションを指定できます。以下が使用可能できます。
-
-  * `--n` Negative prompt up to the next option.
-  * `--w` Specifies the width of the generated image.
-  * `--h` Specifies the height of the generated image.
-  * `--d` Specifies the seed of the generated image.
-  * `--l` Specifies the CFG scale of the generated image.
-  * `--s` Specifies the number of steps in the generation.
-
-  `( )` や `[ ]` などの重みづけも動作します。
-
