@@ -13,18 +13,15 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
-init_ipex()
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
-from library import model_util
+from library import deepspeed_utils, model_util
 
 import library.train_util as train_util
-from library.train_util import (
-    DreamBoothDataset,
-)
+from library.train_util import DreamBoothDataset
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
@@ -39,6 +36,7 @@ from library.custom_train_functions import (
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
     apply_debiased_estimation,
+    apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
 
@@ -141,6 +139,7 @@ class NetworkTrainer:
         training_started_at = time.time()
         train_util.verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
+        deepspeed_utils.prepare_deepspeed_args(args)
         setup_logging(args, reset=True)
 
         cache_latents = args.cache_latents
@@ -157,7 +156,7 @@ class NetworkTrainer:
 
         # データセットを準備する
         if args.dataset_class is None:
-            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
+            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
             if use_user_config:
                 logger.info(f"Loading dataset config from {args.dataset_config}")
                 user_config = config_util.load_user_config(args.dataset_config)
@@ -413,20 +412,36 @@ class NetworkTrainer:
                 t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
-        if train_unet:
-            unet = accelerator.prepare(unet)
+        if args.deepspeed:
+            ds_model = deepspeed_utils.prepare_deepspeed_model(
+                args,
+                unet=unet if train_unet else None,
+                text_encoder1=text_encoders[0] if train_text_encoder else None,
+                text_encoder2=text_encoders[1] if train_text_encoder and len(text_encoders) > 1 else None,
+                network=network,
+            )
+            ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                ds_model, optimizer, train_dataloader, lr_scheduler
+            )
+            training_model = ds_model
         else:
-            unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
-        if train_text_encoder:
-            if len(text_encoders) > 1:
-                text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
+            if train_unet:
+                unet = accelerator.prepare(unet)
             else:
-                text_encoder = accelerator.prepare(text_encoder)
-                text_encoders = [text_encoder]
-        else:
-            pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
+                unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+            if train_text_encoder:
+                if len(text_encoders) > 1:
+                    text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
+                else:
+                    text_encoder = accelerator.prepare(text_encoder)
+                    text_encoders = [text_encoder]
+            else:
+                pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
 
-        network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+            network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                network, optimizer, train_dataloader, lr_scheduler
+            )
+            training_model = network
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -455,6 +470,31 @@ class NetworkTrainer:
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
             train_util.patch_accelerator_for_fp16_training(accelerator)
+
+        # before resuming make hook for saving/loading to save/load the network weights only
+        def save_model_hook(models, weights, output_dir):
+            # pop weights of other models than network to save only network weights
+            if accelerator.is_main_process:
+                remove_indices = []
+                for i,model in enumerate(models):
+                    if not isinstance(model, type(accelerator.unwrap_model(network))):
+                        remove_indices.append(i)
+                for i in reversed(remove_indices):
+                    weights.pop(i)
+                # print(f"save model hook: {len(weights)} weights will be saved")
+
+        def load_model_hook(models, input_dir):
+            # remove models except network
+            remove_indices = []
+            for i, model in enumerate(models):
+                if not isinstance(model, type(accelerator.unwrap_model(network))):
+                    remove_indices.append(i)
+            for i in reversed(remove_indices):
+                models.pop(i)
+            # print(f"load model hook: {len(models)} models will be loaded")
+
+        accelerator.register_save_state_pre_hook(save_model_hook)
+        accelerator.register_load_state_pre_hook(load_model_hook)
 
         # resumeする
         train_util.resume_from_local_or_hf_if_specified(accelerator, args)
@@ -564,6 +604,11 @@ class NetworkTrainer:
                         "random_crop": bool(subset.random_crop),
                         "shuffle_caption": bool(subset.shuffle_caption),
                         "keep_tokens": subset.keep_tokens,
+                        "keep_tokens_separator": subset.keep_tokens_separator,
+                        "secondary_separator": subset.secondary_separator,
+                        "enable_wildcard": bool(subset.enable_wildcard),
+                        "caption_prefix": subset.caption_prefix,
+                        "caption_suffix": subset.caption_suffix,
                     }
 
                     image_dir_or_metadata_file = None
@@ -753,21 +798,21 @@ class NetworkTrainer:
 
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
-                with accelerator.accumulate(network):
+                with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
 
-                    with torch.no_grad():
-                        if "latents" in batch and batch["latents"] is not None:
-                            latents = batch["latents"].to(accelerator.device)
-                        else:
+                    if "latents" in batch and batch["latents"] is not None:
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
+                    else:
+                        with torch.no_grad():
                             # latentに変換
-                            latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample()
+                            latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample().to(dtype=weight_dtype)
 
                             # NaNが含まれていれば警告を表示し0に置き換える
                             if torch.any(torch.isnan(latents)):
                                 accelerator.print("NaN found in latents, replacing with zeros")
                                 latents = torch.nan_to_num(latents, 0, out=latents)
-                        latents = latents * self.vae_scale_factor
+                    latents = latents * self.vae_scale_factor
 
                     # get multiplier for each sample
                     if network_has_multiplier:
@@ -829,6 +874,8 @@ class NetworkTrainer:
                         target = noise
 
                     loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                    if args.masked_loss:
+                        loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -935,7 +982,7 @@ class NetworkTrainer:
 
         accelerator.end_training()
 
-        if is_main_process and args.save_state:
+        if is_main_process and (args.save_state or args.save_state_on_train_end):
             train_util.save_state_on_train_end(args, accelerator)
 
         if is_main_process:
@@ -952,6 +999,8 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, True)
+    train_util.add_masked_loss_arguments(parser)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
@@ -1052,6 +1101,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     trainer = NetworkTrainer()

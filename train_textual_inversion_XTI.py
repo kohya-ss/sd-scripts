@@ -8,7 +8,9 @@ from multiprocessing import Value
 from tqdm import tqdm
 
 import torch
+from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from accelerate.utils import set_seed
@@ -31,6 +33,7 @@ from library.custom_train_functions import (
     apply_noise_offset,
     scale_v_prediction_loss_like_noise_prediction,
     apply_debiased_estimation,
+    apply_masked_loss,
 )
 import library.original_unet as original_unet
 from XTI_hijack import unet_forward_XTI, downblock_forward_XTI, upblock_forward_XTI
@@ -200,7 +203,7 @@ def train(args):
     logger.info(f"create embeddings for {args.num_vectors_per_token} tokens, for {args.token_string}")
 
     # データセットを準備する
-    blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, False))
+    blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, False))
     if args.dataset_config is not None:
         logger.info(f"Load dataset config from {args.dataset_config}")
         user_config = config_util.load_user_config(args.dataset_config)
@@ -439,7 +442,7 @@ def train(args):
             with accelerator.accumulate(text_encoder):
                 with torch.no_grad():
                     if "latents" in batch and batch["latents"] is not None:
-                        latents = batch["latents"].to(accelerator.device)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         # latentに変換
                         latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
@@ -471,6 +474,8 @@ def train(args):
                     target = noise
 
                 loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                if args.masked_loss:
+                    loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -586,7 +591,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if args.save_state and is_main_process:
+    if is_main_process and (args.save_state or args.save_state_on_train_end):
         train_util.save_state_on_train_end(args, accelerator)
 
     updated_embs = text_encoder.get_input_embeddings().weight[token_ids_XTI].data.detach().clone()
@@ -662,6 +667,8 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, False)
     train_util.add_training_arguments(parser, True)
+    train_util.add_masked_loss_arguments(parser)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser, False)
@@ -707,6 +714,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     train(args)

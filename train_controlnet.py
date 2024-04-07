@@ -11,6 +11,7 @@ import toml
 from tqdm import tqdm
 
 import torch
+from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
 init_ipex()
 
@@ -396,7 +397,7 @@ def train(args):
             with accelerator.accumulate(controlnet):
                 with torch.no_grad():
                     if "latents" in batch and batch["latents"] is not None:
-                        latents = batch["latents"].to(accelerator.device)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         # latentに変換
                         latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
@@ -560,7 +561,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if is_main_process and args.save_state:
+    if is_main_process and (args.save_state or args.save_state_on_train_end):
         train_util.save_state_on_train_end(args, accelerator)
 
     # del accelerator  # この後メモリを使うのでこれは消す→printで使うので消さずにおく
@@ -579,6 +580,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, False, True, True)
     train_util.add_training_arguments(parser, False)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
@@ -610,6 +612,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     train(args)

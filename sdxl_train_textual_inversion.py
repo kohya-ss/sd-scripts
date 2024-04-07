@@ -7,7 +7,6 @@ import torch
 from library.device_utils import init_ipex
 init_ipex()
 
-import open_clip
 from library import sdxl_model_util, sdxl_train_util, train_util
 
 import train_textual_inversion
@@ -132,6 +131,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     trainer = SdxlTextualInversionTrainer()
