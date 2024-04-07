@@ -335,9 +335,14 @@ def train(args):
     lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        text_encoder, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.optimizer_type.lower().endswith("scheduleFree"):
+        text_encoder, optimizer, train_dataloader = accelerator.prepare(
+            text_encoder, optimizer, train_dataloader
+        )   
+    else:
+        text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            text_encoder, optimizer, train_dataloader, lr_scheduler
+        )
 
     index_no_updates = torch.arange(len(tokenizer)) < token_ids_XTI[0]
     # logger.info(len(index_no_updates), torch.sum(index_no_updates))

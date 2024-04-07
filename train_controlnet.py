@@ -276,9 +276,14 @@ def train(args):
         controlnet.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.optimizer_type.lower().endswith("scheduleFree"):
+        controlnet, optimizer, train_dataloader = accelerator.prepare(
+            controlnet, optimizer, train_dataloader
+        )
+    else:
+        controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            controlnet, optimizer, train_dataloader, lr_scheduler
+        )
 
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)

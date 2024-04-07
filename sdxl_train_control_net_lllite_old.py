@@ -254,9 +254,14 @@ def train(args):
         network.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, network, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.optimizer_type.lower().endswith("scheduleFree"):
+        unet, network, optimizer, train_dataloader = accelerator.prepare(
+            unet, network, optimizer, train_dataloader
+        )
+    else:
+        unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            unet, network, optimizer, train_dataloader, lr_scheduler
+        )
     network: control_net_lllite.ControlNetLLLite
 
     if args.gradient_checkpointing:

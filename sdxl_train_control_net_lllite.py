@@ -286,7 +286,10 @@ def train(args):
     unet.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
+    if args.optimizer_type.lower().endswith("scheduleFree"):
+        unet, optimizer, train_dataloader = accelerator.prepare(unet, optimizer, train_dataloader)
+    else:
+        unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
     if args.gradient_checkpointing:
         unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
