@@ -290,8 +290,12 @@ def train(args):
 
     if args.gradient_checkpointing:
         unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
+        if (args.optimizer_type.lower().endswith("schedulefree")):
+            optimizer.train()
     else:
         unet.eval()
+        if (args.optimizer_type.lower().endswith("schedulefree")):
+            optimizer.eval()
 
     # TextEncoderの出力をキャッシュするときにはCPUへ移動する
     if args.cache_text_encoder_outputs:
@@ -481,7 +485,8 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                lr_scheduler.step()
+                if not args.optimizer_type.lower().endswith("scheduleFree"):
+                    lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
             # Checks if the accelerator has performed an optimization step behind the scenes

@@ -446,6 +446,8 @@ class NetworkTrainer:
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
             unet.train()
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             for t_enc in text_encoders:
                 t_enc.train()
 
@@ -900,7 +902,8 @@ class NetworkTrainer:
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if not args.optimizer_type.lower().endswith("scheduleFree"):
+                        lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
