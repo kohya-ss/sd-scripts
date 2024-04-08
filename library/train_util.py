@@ -5215,7 +5215,7 @@ def sample_images_common(
         cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
     except Exception:
         pass
-
+    image_paths = []
     if distributed_state.num_processes <= 1:
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
         with torch.no_grad():
