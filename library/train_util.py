@@ -5220,9 +5220,9 @@ def sample_images_common(
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
         with torch.no_grad():
             for prompt_dict in prompts:
-                sample_image_inference(
+                image_paths = [sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
-                )
+                )]
     else:
         # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
         # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
@@ -5233,9 +5233,31 @@ def sample_images_common(
         with torch.no_grad():
             with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
                 for prompt_dict in prompt_dict_lists[0]:
-                    sample_image_inference(
+                    image_paths += [sample_image_inference(
                         accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
+                    )]
+    accelerator.wait_for_everyone()
+        # if not main process, return
+    if accelerator.is_main_process:
+        try:
+            import wandb
+            logger.info(image_paths)
+            wandb_logger = accelerator.get_tracker("wandb")
+            # parse base filename without ext from first image path
+            for image_path_saved in get_all_paths_like_imagepaths_by_time(image_paths[0]):
+                # 0327_bs768_lion_highres_focus_fixxl4_000020_13_20240329061413_42
+                # get 13
+                file_basename = os.path.basename(image_path_saved).split(".")[0]
+                sample_idx = int(file_basename.split("_")[-3])
+                logger.info(f"sample_idx: {sample_idx} -> {image_path_saved}")
+                wandb_logger.log(
+                    {f"sample_{sample_idx}" : wandb.Image(Image.open(image_path_saved))},
+                    commit=False,
+                    step=steps,
                     )
+        except Exception as e:
+            logger.warn(e)
+            pass
 
     # clear pipeline and cache to reduce vram usage
     del pipeline
@@ -5250,6 +5272,22 @@ def sample_images_common(
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
 
+def get_all_paths_like_imagepaths_by_time(image_path):
+    file_basename = os.path.basename(image_path).split(".")[0]
+    timestamp_str = file_basename.split("_")[-2]
+    original_timestamp = datetime.datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+    
+    front_fixed_part = "_".join(file_basename.split("_")[:-3])
+
+    for root, dirs, files in os.walk(os.path.dirname(image_path)):
+        for file in files:
+            front_fixed_part = "_".join(file_basename.split("_")[:-3])
+            if front_fixed_part in file:
+                timestamp_str = file.split("_")[-2]
+                timestamp = datetime.datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                # allow 60-second difference
+                if abs((timestamp - original_timestamp).total_seconds()) < 60:
+                    yield os.path.join(root, file)
 
 def sample_image_inference(
     accelerator: Accelerator,
@@ -5333,19 +5371,7 @@ def sample_image_inference(
     i: int = prompt_dict["enum"]
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
     image.save(os.path.join(save_dir, img_filename))
-
-    # wandb有効時のみログを送信
-    try:
-        wandb_tracker = accelerator.get_tracker("wandb")
-        try:
-            import wandb
-        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-            raise ImportError("No wandb / wandb がインストールされていないようです")
-
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-    except:  # wandb 無効時
-        pass
-
+    return os.path.join(save_dir, img_filename)
 
 # endregion
 
