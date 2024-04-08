@@ -135,7 +135,19 @@ IMAGE_TRANSFORMS = transforms.Compose(
 )
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
+SKIP_PATH_CHECK = False
 
+def set_skip_path_check(skip: bool):
+    global SKIP_PATH_CHECK
+    SKIP_PATH_CHECK = skip
+
+def os_path_exists(path):
+    """
+    Check if the path exists. Skips if 
+    """
+    if SKIP_PATH_CHECK: # this is necessary for NFS systems
+        return True
+    return os.path.exists(path)
 
 class ImageInfo:
     def __init__(self, image_key: str, num_repeats: int, caption: str, is_reg: bool, absolute_path: str) -> None:
@@ -1046,7 +1058,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 if not is_main_process:  # store to info only
                     continue
 
-                if os.path.exists(te_out_npz):
+                if os_path_exists(te_out_npz):
                     continue
 
             image_infos_to_cache.append(info)
@@ -1694,7 +1706,7 @@ class FineTuningDataset(BaseDataset):
                 abs_path = None
 
                 # まず画像を優先して探す
-                if os.path.exists(image_key):
+                if os_path_exists(image_key):
                     abs_path = image_key
                 else:
                     # わりといい加減だがいい方法が思いつかん
@@ -1704,11 +1716,11 @@ class FineTuningDataset(BaseDataset):
 
                 # なければnpzを探す
                 if abs_path is None:
-                    if os.path.exists(os.path.splitext(image_key)[0] + ".npz"):
+                    if os_path_exists(os.path.splitext(image_key)[0] + ".npz"):
                         abs_path = os.path.splitext(image_key)[0] + ".npz"
                     else:
                         npz_path = os.path.join(subset.image_dir, image_key + ".npz")
-                        if os.path.exists(npz_path):
+                        if os_path_exists(npz_path):
                             abs_path = npz_path
 
                 assert abs_path is not None, f"no image / 画像がありません: {image_key}"
@@ -1839,10 +1851,10 @@ class FineTuningDataset(BaseDataset):
         base_name = os.path.splitext(image_key)[0]
         npz_file_norm = base_name + ".npz"
 
-        if os.path.exists(npz_file_norm):
+        if os_path_exists(npz_file_norm):
             # image_key is full path
             npz_file_flip = base_name + "_flip.npz"
-            if not os.path.exists(npz_file_flip):
+            if not os_path_exists(npz_file_flip):
                 npz_file_flip = None
             return npz_file_norm, npz_file_flip
 
@@ -1854,10 +1866,10 @@ class FineTuningDataset(BaseDataset):
         npz_file_norm = os.path.join(subset.image_dir, image_key + ".npz")
         npz_file_flip = os.path.join(subset.image_dir, image_key + "_flip.npz")
 
-        if not os.path.exists(npz_file_norm):
+        if not os_path_exists(npz_file_norm):
             npz_file_norm = None
             npz_file_flip = None
-        elif not os.path.exists(npz_file_flip):
+        elif not os_path_exists(npz_file_flip):
             npz_file_flip = None
 
         return npz_file_norm, npz_file_flip
@@ -2120,7 +2132,7 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
 def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
     expected_latents_size = (reso[1] // 8, reso[0] // 8)  # bucket_resoはWxHなので注意
 
-    if not os.path.exists(npz_path):
+    if not os_path_exists(npz_path):
         return False
 
     npz = np.load(npz_path)
@@ -3696,6 +3708,12 @@ def add_sd_saving_arguments(parser: argparse.ArgumentParser):
         help="use safetensors format to save (if save_model_as is not specified) / checkpoint、モデルをsafetensors形式で保存する（save_model_as未指定時）",
     )
 
+def add_skip_check_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--skip_file_existence_check",
+        action="store_true",
+        help="skip check for images and latents existence, useful if your storage has low random access speed / 画像とlatentの存在チェックをスキップする。ストレージのランダムアクセス速度が遅い場合に有用",
+    )
 
 def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentParser):
     if not args.config_file:
@@ -4380,24 +4398,22 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 
 
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
-    for pi in range(accelerator.state.num_processes):
-        if pi == accelerator.state.local_process_index:
-            logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
+    logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}, {accelerator.process_index}")
+    text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
+        args,
+        weight_dtype,
+        accelerator.device if args.lowram else "cpu",
+        unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
+    )
+    # work on low-ram device
+    if args.lowram:
+        text_encoder.to(accelerator.device)
+        unet.to(accelerator.device)
+        vae.to(accelerator.device)
 
-            text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
-                args,
-                weight_dtype,
-                accelerator.device if args.lowram else "cpu",
-                unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
-            )
-            # work on low-ram device
-            if args.lowram:
-                text_encoder.to(accelerator.device)
-                unet.to(accelerator.device)
-                vae.to(accelerator.device)
-
-            clean_memory_on_device(accelerator.device)
-        accelerator.wait_for_everyone()
+    clean_memory_on_device(accelerator.device)
+    logger.info(f"Model loaded for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}, {accelerator.process_index}")
+    accelerator.wait_for_everyone()
     return text_encoder, vae, unet, load_stable_diffusion_format
 
 

@@ -222,8 +222,12 @@ class NetworkTrainer:
         self.assert_extra_args(args, train_dataset_group)
 
         # acceleratorを準備する
-        logger.info("preparing accelerator")
+        logger.info("prepare accelerator")
         accelerator = train_util.prepare_accelerator(args)
+        logger.info(f"Accelerator prepared at {accelerator.device} / process index : {accelerator.num_processes}, local process index : {accelerator.local_process_index}")
+        logger.info(f"Waiting for everyone / 他のプロセスを待機中")
+        accelerator.wait_for_everyone()
+        logger.info("All processes are ready / すべてのプロセスが準備完了")
         is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
@@ -1006,6 +1010,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, True)
+    train_util.add_skip_check_arguments(parser)
     train_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
@@ -1110,6 +1115,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
-
+    if args.skip_file_existence_check:
+        train_util.set_skip_path_check(True)
     trainer = NetworkTrainer()
     trainer.train(args)
