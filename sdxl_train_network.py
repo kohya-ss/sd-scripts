@@ -180,6 +180,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
-
+    train_util.set_skip_path_check(args.skip_file_existence_check)
     trainer = SdxlNetworkTrainer()
     trainer.train(args)
