@@ -137,15 +137,22 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
-### Mar XX, 2024 / 2024/3/XX: v0.8.6
+### Apr 7, 2024 / 2024-04-07: v0.8.7
+
+- The default value of `huber_schedule` in Scheduled Huber Loss is changed from `exponential` to `snr`, which is expected to give better results.
+
+- Scheduled Huber Loss の `huber_schedule` のデフォルト値を `exponential` から、より良い結果が期待できる `snr` に変更しました。
+
+### Apr 7, 2024 / 2024-04-07: v0.8.6
 
 #### Highlights
 
 - The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
   - Especially `imagesize` is newly added, so if you cannot update the libraries immediately, please install with `pip install imagesize==1.4.1` separately.
   - `bitsandbytes==0.43.0`, `prodigyopt==1.0`, `lion-pytorch==0.0.6` are included in the requirements.txt.
+    - `bitsandbytes` no longer requires complex procedures as it now officially supports Windows.  
   - Also, the PyTorch version is updated to 2.1.2 (PyTorch does not need to be updated immediately). In the upgrade procedure, PyTorch is not updated, so please manually install or update torch, torchvision, xformers if necessary (see [Upgrade PyTorch](#upgrade-pytorch)).
-- When logging to wandb is enabled, the entire command line is exposed. Therefore, it is recommended to write the API key of wandb and the token of HuggingFace in the configuration file (`.toml`). Thanks to bghira for raising the issue.
+- When logging to wandb is enabled, the entire command line is exposed. Therefore, it is recommended to write wandb API key and HuggingFace token in the configuration file (`.toml`). Thanks to bghira for raising the issue.
   - A warning is displayed at the start of training if such information is included in the command line.
   - Also, if there is an absolute path, the path may be exposed, so it is recommended to specify a relative path or write it in the configuration file. In such cases, an INFO log is displayed.
   - See [#1123](https://github.com/kohya-ss/sd-scripts/pull/1123) and PR [#1240](https://github.com/kohya-ss/sd-scripts/pull/1240) for details.
@@ -158,7 +165,7 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 - Fixed a bug that U-Net and Text Encoders are included in the state in `train_network.py` and `sdxl_train_network.py`. The saving and loading of the state are faster, the file size is smaller, and the memory usage when loading is reduced.
 - DeepSpeed is supported. PR [#1101](https://github.com/kohya-ss/sd-scripts/pull/1101)  and [#1139](https://github.com/kohya-ss/sd-scripts/pull/1139) Thanks to BootsofLagrangian! See PR [#1101](https://github.com/kohya-ss/sd-scripts/pull/1101) for details.
 - The masked loss is supported in each training script. PR [#1207](https://github.com/kohya-ss/sd-scripts/pull/1207) See [Masked loss](#about-masked-loss) for details.
-- Scheduled Huber Loss has been introduced to each training scripts. PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) Thanks to kabachuha for the PR and cheald, drhead, and others for the discussion! See [Scheduled Huber Loss](#about-scheduled-huber-loss) for details.
+- Scheduled Huber Loss has been introduced to each training scripts. PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) Thanks to kabachuha for the PR and cheald, drhead, and others for the discussion! See the PR and [Scheduled Huber Loss](#about-scheduled-huber-loss) for details.
 - The options `--noise_offset_random_strength` and `--ip_noise_gamma_random_strength` are added to each training script. These options can be used to vary the noise offset and ip noise gamma in the range of 0 to the specified value. PR [#1177](https://github.com/kohya-ss/sd-scripts/pull/1177) Thanks to KohakuBlueleaf!
 - The options `--save_state_on_train_end` are added to each training script. PR [#1168](https://github.com/kohya-ss/sd-scripts/pull/1168) Thanks to gesen2egee!
 - The options `--sample_every_n_epochs` and `--sample_every_n_steps` in each training script now display a warning and ignore them when a number less than or equal to `0` is specified. Thanks to S-Del for raising the issue.
@@ -215,14 +222,17 @@ The newly added arguments loss_type, huber_schedule, and huber_c allow for the s
 See PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) for details.
 
 - `loss_type`: Specify the loss function type. Choose `huber` for Huber loss, `smooth_l1` for smooth L1 loss, and `l2` for MSE loss. The default is `l2`, which is the same as before.
-- `huber_schedule`: Specify the scheduling method. Choose `exponential`, `constant`, or `SNR`. The default is `exponential`.
+- `huber_schedule`: Specify the scheduling method. Choose `exponential`, `constant`, or `snr`. The default is `snr`.
 - `huber_c`: Specify the Huber's parameter. The default is `0.1`.
+
+Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.
 
 #### 主要な変更点
 
 - 依存ライブラリが更新されました。[アップグレード](./README-ja.md#アップグレード) を参照しライブラリを更新してください。
   - 特に `imagesize` が新しく追加されていますので、すぐにライブラリの更新ができない場合は `pip install imagesize==1.4.1` で個別にインストールしてください。
   - `bitsandbytes==0.43.0`、`prodigyopt==1.0`、`lion-pytorch==0.0.6` が requirements.txt に含まれるようになりました。
+    - `bitsandbytes` が公式に Windows をサポートしたため複雑な手順が不要になりました。
   - また PyTorch のバージョンを 2.1.2 に更新しました。PyTorch はすぐに更新する必要はありません。更新時は、アップグレードの手順では PyTorch が更新されませんので、torch、torchvision、xformers を手動でインストールしてください。
 - wandb へのログ出力が有効の場合、コマンドライン全体が公開されます。そのため、コマンドラインに wandb の API キーや HuggingFace のトークンなどが含まれる場合、設定ファイル（`.toml`）への記載をお勧めします。問題提起していただいた bghira 氏に感謝します。
   - このような場合には学習開始時に警告が表示されます。
@@ -237,7 +247,7 @@ See PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) for details.
 - `train_network.py` および `sdxl_train_network.py` で、state に U-Net および Text Encoder が含まれる不具合を修正しました。state の保存、読み込みが高速化され、ファイルサイズも小さくなり、また読み込み時のメモリ使用量も削減されます。
 - DeepSpeed がサポートされました。PR [#1101](https://github.com/kohya-ss/sd-scripts/pull/1101) 、[#1139](https://github.com/kohya-ss/sd-scripts/pull/1139) BootsofLagrangian 氏に感謝します。詳細は PR [#1101](https://github.com/kohya-ss/sd-scripts/pull/1101) をご覧ください。
 - 各学習スクリプトでマスクロスをサポートしました。PR [#1207](https://github.com/kohya-ss/sd-scripts/pull/1207) 詳細は [マスクロスについて](#マスクロスについて) をご覧ください。
-- 各学習スクリプトに Scheduled Huber Loss を追加しました。PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) ご提案いただいた kabachuha 氏、および議論を深めてくださった cheald 氏、drhead 氏を始めとする諸氏に感謝します。詳細は [Scheduled Huber Loss について](#scheduled-huber-loss-について) をご覧ください。
+- 各学習スクリプトに Scheduled Huber Loss を追加しました。PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) ご提案いただいた kabachuha 氏、および議論を深めてくださった cheald 氏、drhead 氏を始めとする諸氏に感謝します。詳細は当該 PR および [Scheduled Huber Loss について](#scheduled-huber-loss-について) をご覧ください。
 - 各学習スクリプトに、noise offset、ip noise gammaを、それぞれ 0~指定した値の範囲で変動させるオプション `--noise_offset_random_strength` および `--ip_noise_gamma_random_strength` が追加されました。 PR [#1177](https://github.com/kohya-ss/sd-scripts/pull/1177) KohakuBlueleaf 氏に感謝します。
 - 各学習スクリプトに、学習終了時に state を保存する `--save_state_on_train_end` オプションが追加されました。 PR [#1168](https://github.com/kohya-ss/sd-scripts/pull/1168) gesen2egee 氏に感謝します。
 - 各学習スクリプトで `--sample_every_n_epochs` および `--sample_every_n_steps` オプションに `0` 以下の数値を指定した時、警告を表示するとともにそれらを無視するよう変更しました。問題提起していただいた S-Del 氏に感謝します。
@@ -278,9 +288,6 @@ See PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) for details.
 
 マスクの指定には ControlNet データセットを使用します。マスク画像は RGB 画像である必要があります。R チャンネルのピクセル値 255 がロス計算対象、0 がロス計算対象外になります。0-255 の値は、0-1 の範囲に変換されます（つまりピクセル値 128 の部分はロスの重みが半分になります）。データセットの詳細は [LLLite ドキュメント](./docs/train_lllite_README-ja.md#データセットの準備) をご覧ください。
 
-Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.
-最近の更新情報は [Release](https://github.com/kohya-ss/sd-scripts/releases) をご覧ください。
-
 #### Scheduled Huber Loss について
 
 各学習スクリプトに、学習データ中の異常値や外れ値（data corruption）への耐性を高めるための手法、Scheduled Huber Lossが導入されました。
@@ -296,10 +303,12 @@ Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for rece
 詳細は PR [#1228](https://github.com/kohya-ss/sd-scripts/pull/1228/) をご覧ください。
 
 - `loss_type` : 損失関数の種類を指定します。`huber` で Huber損失、`smooth_l1` で smooth L1 損失、`l2` で MSE 損失を選択します。デフォルトは `l2` で、従来と同様です。
-- `huber_schedule` : スケジューリング方法を指定します。`exponential` で指数関数的、`constant` で一定、`snr` で信号対雑音比に基づくスケジューリングを選択します。デフォルトは `exponential` です。
+- `huber_schedule` : スケジューリング方法を指定します。`exponential` で指数関数的、`constant` で一定、`snr` で信号対雑音比に基づくスケジューリングを選択します。デフォルトは `snr` です。
 - `huber_c` : Huber損失のパラメータを指定します。デフォルトは `0.1` です。
 
 PR 内でいくつかの比較が共有されています。この機能を試す場合、最初は `--loss_type smooth_l1 --huber_schedule snr --huber_c 0.1` などで試してみるとよいかもしれません。
+
+最近の更新情報は [Release](https://github.com/kohya-ss/sd-scripts/releases) をご覧ください。
 
 ## Additional Information
 
@@ -315,27 +324,14 @@ The LoRA supported by `train_network.py` has been named to avoid confusion. The 
 
     In addition to 1., LoRA for Conv2d layers with 3x3 kernel 
     
-LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). LoRA-LierLa can be used with [our extension](https://github.com/kohya-ss/sd-webui-additional-networks) for AUTOMATIC1111's Web UI, or with the built-in LoRA feature of the Web UI.
+LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). 
+<!-- 
+LoRA-LierLa can be used with [our extension](https://github.com/kohya-ss/sd-webui-additional-networks) for AUTOMATIC1111's Web UI, or with the built-in LoRA feature of the Web UI.
 
-To use LoRA-C3Lier with Web UI, please use our extension.
+To use LoRA-C3Lier with Web UI, please use our extension. 
+-->
 
-### LoRAの名称について
-
-`train_network.py` がサポートするLoRAについて、混乱を避けるため名前を付けました。ドキュメントは更新済みです。以下は当リポジトリ内の独自の名称です。
-
-1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers、リエラと読みます)
-
-    Linear 層およびカーネルサイズ 1x1 の Conv2d 層に適用されるLoRA
-
-2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers、セリアと読みます)
-
-    1.に加え、カーネルサイズ 3x3 の Conv2d 層に適用されるLoRA
-
-LoRA-LierLa は[Web UI向け拡張](https://github.com/kohya-ss/sd-webui-additional-networks)、またはAUTOMATIC1111氏のWeb UIのLoRA機能で使用することができます。
-
-LoRA-C3Lierを使いWeb UIで生成するには拡張を使用してください。
-
-## Sample image generation during training
+### Sample image generation during training
   A prompt file might look like this, for example
 
 ```
@@ -356,26 +352,3 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
-
-## サンプル画像生成
-プロンプトファイルは例えば以下のようになります。
-
-```
-# prompt 1
-masterpiece, best quality, (1girl), in white shirts, upper body, looking at viewer, simple background --n low quality, worst quality, bad anatomy,bad composition, poor, low effort --w 768 --h 768 --d 1 --l 7.5 --s 28
-
-# prompt 2
-masterpiece, best quality, 1boy, in business suit, standing at street, looking back --n (low quality, worst quality), bad anatomy,bad composition, poor, low effort --w 576 --h 832 --d 2 --l 5.5 --s 40
-```
-
-  `#` で始まる行はコメントになります。`--n` のように「ハイフン二個＋英小文字」の形でオプションを指定できます。以下が使用可能できます。
-
-  * `--n` Negative prompt up to the next option.
-  * `--w` Specifies the width of the generated image.
-  * `--h` Specifies the height of the generated image.
-  * `--d` Specifies the seed of the generated image.
-  * `--l` Specifies the CFG scale of the generated image.
-  * `--s` Specifies the number of steps in the generation.
-
-  `( )` や `[ ]` などの重みづけも動作します。
-
