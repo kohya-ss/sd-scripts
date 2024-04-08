@@ -793,7 +793,6 @@ class NetworkTrainer:
                         f"initial_step is specified but not resuming. lr scheduler will be started from the beginning / initial_stepが指定されていますがresumeしていないため、lr schedulerは最初から始まります"
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
-                initial_step *= accelerator.num_processes * args.gradient_accumulation_steps
             else:
                 # if not, only epoch no is skipped for informative purpose
                 epoch_to_start = initial_step // math.ceil(
@@ -865,23 +864,26 @@ class NetworkTrainer:
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
 
-            if initial_step > len(train_dataloader):
+            steps_per_epoch = math.ceil(len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps)
+            if initial_step > steps_per_epoch:
                 logger.info(f"skipping epoch {epoch+1} because initial_step (multiplied) is {initial_step}")
-                initial_step -= len(train_dataloader)
+                initial_step -= steps_per_epoch
                 continue
 
             metadata["ss_epoch"] = str(epoch + 1)
 
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
-            for step, batch in enumerate(train_dataloader):
-                current_step.value = global_step
+            active_dataloader = train_dataloader
+            if initial_step > 0:
+                logger.info(f"skipping {initial_step} batches in epoch {epoch+1}")
+                active_dataloader = accelerator.skip_first_batches(
+                    train_dataloader, initial_step * args.gradient_accumulation_steps
+                )
+                initial_step = 0
 
-                if initial_step > 0:
-                    # logger.info(f"skipping step {step+1} because initial_step (multiplied) is {initial_step}")
-                    loss_recorder.add(epoch=epoch, step=step, loss=0)  # add dummy loss
-                    initial_step -= 1
-                    continue
+            for step, batch in enumerate(active_dataloader):
+                current_step.value = global_step
 
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)

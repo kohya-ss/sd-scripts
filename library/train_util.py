@@ -649,8 +649,15 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def set_current_epoch(self, epoch):
         if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
-            self.shuffle_buckets()
-        self.current_epoch = epoch
+            if epoch > self.current_epoch:
+                logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                num_epochs = epoch - self.current_epoch
+                for _ in range(num_epochs):
+                    self.current_epoch += 1
+                    self.shuffle_buckets()
+            else:
+                logger.warning("epoch is not incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                self.current_epoch = epoch
 
     def set_current_step(self, step):
         self.current_step = step
@@ -941,7 +948,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self._length = len(self.buckets_indices)
 
     def shuffle_buckets(self):
-        # set random seed for this epoch
+        # set random seed for this epoch: current_epoch is not incremented
         random.seed(self.seed + self.current_epoch)
 
         random.shuffle(self.buckets_indices)
@@ -2346,10 +2353,10 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 
 
 def load_image(image_path):
-    image = Image.open(image_path)
-    if not image.mode == "RGB":
-        image = image.convert("RGB")
-    img = np.array(image, np.uint8)
+    with Image.open(image_path) as image:
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        img = np.array(image, np.uint8)
     return img
 
 
