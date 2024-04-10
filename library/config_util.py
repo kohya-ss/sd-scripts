@@ -498,10 +498,21 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
         else:            
             subset_klass = FineTuningSubset
             dataset_klass = FineTuningDataset
-        if subset_klass == DreamBoothSubset:
-            subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets if subset_blueprint.params.is_reg is False]
-        else:
-            subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
+
+        subsets = []
+        for subset_blueprint in dataset_blueprint.subsets:
+            subset_blueprint.params.num_repeats = 1
+            subset_blueprint.params.color_aug = False
+            subset_blueprint.params.flip_aug = False
+            subset_blueprint.params.random_crop = False
+            subset_blueprint.params.random_crop = None
+            subset_blueprint.params.caption_dropout_rate = 0.0
+            subset_blueprint.params.caption_dropout_every_n_epochs = 0
+            subset_blueprint.params.caption_tag_dropout_rate = 0.0
+            subset_blueprint.params.token_warmup_step = 0
+            if subset_klass != DreamBoothSubset or not subset_blueprint.params.is_reg:
+                subsets.append(subset_klass(**asdict(subset_blueprint.params)))
+
         dataset = dataset_klass(subsets=subsets, is_train=False, **asdict(dataset_blueprint.params))
         val_datasets.append(dataset)
 
