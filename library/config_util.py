@@ -85,6 +85,7 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     is_reg: bool = False
     class_tokens: Optional[str] = None
     caption_extension: str = ".caption"
+    cache_info: bool = False
 
 
 @dataclass
@@ -96,6 +97,7 @@ class FineTuningSubsetParams(BaseSubsetParams):
 class ControlNetSubsetParams(BaseSubsetParams):
     conditioning_data_dir: str = None
     caption_extension: str = ".caption"
+    cache_info: bool = False
 
 
 @dataclass
@@ -205,6 +207,7 @@ class ConfigSanitizer:
     DB_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
         "class_tokens": str,
+        "cache_info": bool,
     }
     DB_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
@@ -217,6 +220,7 @@ class ConfigSanitizer:
     }
     CN_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
+        "cache_info": bool,
     }
     CN_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
@@ -326,7 +330,10 @@ class ConfigSanitizer:
 
             self.dataset_schema = validate_flex_dataset
         elif support_dreambooth:
-            self.dataset_schema = self.db_dataset_schema
+            if support_controlnet:
+                self.dataset_schema = self.cn_dataset_schema
+            else:
+                self.dataset_schema = self.db_dataset_schema
         elif support_finetuning:
             self.dataset_schema = self.ft_dataset_schema
         elif support_controlnet:
@@ -578,7 +585,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                     "    ",
                 )
 
-    logger.info(f'{info}')
+    logger.info(f"{info}")
 
     # print validation info
     info = ""
@@ -662,7 +669,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
 
     # make buckets first because it determines the length of dataset
     # and set the same seed for all datasets
-    seed = random.randint(0, 2**31) # actual seed is seed + epoch_no
+    seed = random.randint(0, 2**31)  # actual seed is seed + epoch_no
     for i, dataset in enumerate(datasets):
         logger.info(f"[Dataset {i}]")
         dataset.make_buckets()
