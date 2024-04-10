@@ -455,9 +455,10 @@ class NetworkTrainer:
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
-            unet.train()
             if (args.optimizer_type.lower().endswith("schedulefree")):
                 optimizer.train()
+            unet.train()
+
             for t_enc in text_encoders:
                 t_enc.train()
 
@@ -466,6 +467,8 @@ class NetworkTrainer:
                     t_enc.text_model.embeddings.requires_grad_(True)
 
         else:
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
@@ -814,6 +817,8 @@ class NetworkTrainer:
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
+                if (args.optimizer_type.lower().endswith("schedulefree")):
+                    optimizer.train()
                 current_step.value = global_step
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
@@ -930,6 +935,9 @@ class NetworkTrainer:
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
+
+                if (args.optimizer_type.lower().endswith("schedulefree")):
+                    optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:

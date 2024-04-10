@@ -398,6 +398,8 @@ def train(args):
         current_epoch.value = epoch + 1
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(controlnet):
                 with torch.no_grad():
@@ -476,6 +478,9 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

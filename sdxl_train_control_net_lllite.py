@@ -292,13 +292,14 @@ def train(args):
         unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
     if args.gradient_checkpointing:
-        unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
         if (args.optimizer_type.lower().endswith("schedulefree")):
             optimizer.train()
+        unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
+
     else:
-        unet.eval()
         if (args.optimizer_type.lower().endswith("schedulefree")):
             optimizer.eval()
+        unet.eval()
 
     # TextEncoderの出力をキャッシュするときにはCPUへ移動する
     if args.cache_text_encoder_outputs:
@@ -397,6 +398,8 @@ def train(args):
         current_epoch.value = epoch + 1
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(unet):
                 with torch.no_grad():
@@ -491,6 +494,9 @@ def train(args):
                 if not args.optimizer_type.lower().endswith("scheduleFree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

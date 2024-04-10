@@ -366,6 +366,8 @@ def train(args):
         network.on_epoch_start()  # train()
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(network):
                 with torch.no_grad():
@@ -461,6 +463,9 @@ def train(args):
                 if not args.optimizer_type.lower().endswith("scheduleFree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

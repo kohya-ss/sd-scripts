@@ -315,13 +315,13 @@ def train(args):
 
         # 指定したステップ数までText Encoderを学習する：epoch最初の状態
         unet.train()
-        if (args.optimizer_type.lower().endswith("schedulefree")):
-            optimizer.train()
         # train==True is required to enable gradient_checkpointing
         if args.gradient_checkpointing or global_step < args.stop_text_encoder_training:
             text_encoder.train()
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             # 指定したステップ数でText Encoderの学習を止める
             if global_step == args.stop_text_encoder_training:
@@ -402,6 +402,9 @@ def train(args):
                 if not args.optimizer_type.lower().endswith("scheduleFree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

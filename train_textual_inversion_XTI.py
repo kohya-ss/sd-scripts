@@ -447,6 +447,8 @@ def train(args):
         loss_total = 0
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(text_encoder):
                 with torch.no_grad():
@@ -514,6 +516,9 @@ def train(args):
                     accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[index_no_updates] = orig_embeds_params[
                         index_no_updates
                     ]
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
