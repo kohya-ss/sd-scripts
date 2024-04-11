@@ -1511,17 +1511,6 @@ class DreamBoothDataset(BaseDataset):
                 logger.warning(f"not directory: {subset.image_dir}")
                 return [], []
 
-            img_paths = glob_images(subset.image_dir, "*")
-            if self.validation_split > 0.0:
-                img_paths = split_train_val(img_paths, self.is_train, self.validation_split, self.validation_seed)            
-            logger.info(f"found directory {subset.image_dir} contains {len(img_paths)} image files")
-
-            # 画像ファイルごとにプロンプトを読み込み、もしあればそちらを使う
-            captions = []
-            missing_captions = []
-            for img_path in img_paths:
-                cap_for_img = read_caption(img_path, subset.caption_extension)
-                if cap_for_img is None and subset.class_tokens is None:
             info_cache_file = os.path.join(subset.image_dir, self.IMAGE_INFO_CACHE_FILE)
             use_cached_info_for_subset = subset.cache_info
             if use_cached_info_for_subset:
@@ -1545,6 +1534,8 @@ class DreamBoothDataset(BaseDataset):
                 # we may need to check image size and existence of image files, but it takes time, so user should check it before training
             else:
                 img_paths = glob_images(subset.image_dir, "*")
+                if self.validation_split > 0.0:
+                    img_paths = split_train_val(img_paths, self.is_train, self.validation_split, self.validation_seed)
                 sizes = [None] * len(img_paths)
 
             logger.info(f"found directory {subset.image_dir} contains {len(img_paths)} image files")
