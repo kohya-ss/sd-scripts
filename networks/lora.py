@@ -1040,8 +1040,8 @@ class LoRANetwork(torch.nn.Module):
         text_encoder_lr,
         unet_lr,
         default_lr,
-        unet_loraplus_ratio=None,
         text_encoder_loraplus_ratio=None,
+        unet_loraplus_ratio=None,
         loraplus_ratio=None
     ):
         self.requires_grad_(True)
@@ -1069,7 +1069,8 @@ class LoRANetwork(torch.nn.Module):
                     else:
                         param_data["lr"] = lr
 
-                if ("lr" in param_data) and (param_data["lr"] == 0):
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    print("NO LR skipping!")
                     continue
 
                 params.append(param_data)
