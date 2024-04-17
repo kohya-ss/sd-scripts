@@ -2348,6 +2348,9 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 def load_image(image_path):
     image = Image.open(image_path)
     if not image.mode == "RGB":
+        if image.mode == "RGBA":
+            bg = Image.new("RGBA", image.size, (255, 255, 255))
+            image = Image.alpha_composite(bg, image)
         image = image.convert("RGB")
     img = np.array(image, np.uint8)
     return img
