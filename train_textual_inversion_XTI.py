@@ -335,7 +335,7 @@ def train(args):
     lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.optimizer_type.lower().endswith("scheduleFree"):
+    if args.optimizer_type.lower().endswith("schedulefree"):
         text_encoder, optimizer, train_dataloader = accelerator.prepare(
             text_encoder, optimizer, train_dataloader
         )   
@@ -507,7 +507,7 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("scheduleFree"):
+                if not args.optimizer_type.lower().endswith("schedulefree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 

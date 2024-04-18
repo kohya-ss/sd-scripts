@@ -420,7 +420,7 @@ class NetworkTrainer:
                 text_encoder2=text_encoders[1] if train_text_encoder and len(text_encoders) > 1 else None,
                 network=network,
             )
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 ds_model, optimizer, train_dataloader = accelerator.prepare(
                     ds_model, optimizer, train_dataloader
                 )    
@@ -443,7 +443,7 @@ class NetworkTrainer:
             else:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
             
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 network, optimizer, train_dataloader = accelerator.prepare(
                     network, optimizer, train_dataloader
                 )  
@@ -924,7 +924,7 @@ class NetworkTrainer:
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    if not args.optimizer_type.lower().endswith("scheduleFree"):
+                    if not args.optimizer_type.lower().endswith("schedulefree"):
                         lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 

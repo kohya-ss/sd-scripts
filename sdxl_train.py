@@ -415,7 +415,7 @@ def train(args):
             text_encoder2=text_encoder2 if train_text_encoder2 else None,
         )
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
-        if args.optimizer_type.lower().endswith("scheduleFree"):
+        if args.optimizer_type.lower().endswith("schedulefree"):
             ds_model, optimizer, train_dataloader = accelerator.prepare(
                 ds_model, optimizer, train_dataloader
             )
@@ -433,7 +433,7 @@ def train(args):
             text_encoder1 = accelerator.prepare(text_encoder1)
         if train_text_encoder2:
             text_encoder2 = accelerator.prepare(text_encoder2)
-        if args.optimizer_type.lower().endswith("scheduleFree"):
+        if args.optimizer_type.lower().endswith("schedulefree"):
             optimizer, train_dataloader = accelerator.prepare(optimizer, train_dataloader)
         else:
             optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
@@ -636,7 +636,7 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("scheduleFree"):
+                if not args.optimizer_type.lower().endswith("schedulefree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 

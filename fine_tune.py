@@ -255,7 +255,7 @@ def train(args):
             ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet, text_encoder=text_encoder)
         else:
             ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)
-        if args.optimizer_type.lower().endswith("scheduleFree"):
+        if args.optimizer_type.lower().endswith("schedulefree"):
             ds_model, optimizer, train_dataloader = accelerator.prepare(
                 ds_model, optimizer, train_dataloader
             )
@@ -267,7 +267,7 @@ def train(args):
     else:
         # acceleratorがなんかよろしくやってくれるらしい
         if args.train_text_encoder:
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 unet, text_encoder, optimizer, train_dataloader  = accelerator.prepare(
                     unet, text_encoder, optimizer, train_dataloader
                 )
@@ -276,7 +276,7 @@ def train(args):
                     unet, text_encoder, optimizer, train_dataloader, lr_scheduler
                 )
         else:
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 unet, optimizer, train_dataloader = accelerator.prepare(unet, optimizer, train_dataloader)
             else:
                 unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
@@ -405,7 +405,7 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("scheduleFree"):
+                if not args.optimizer_type.lower().endswith("schedulefree"):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 

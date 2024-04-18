@@ -276,7 +276,7 @@ def train(args):
         controlnet.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.optimizer_type.lower().endswith("scheduleFree"):
+    if args.optimizer_type.lower().endswith("schedulefree"):
         controlnet, optimizer, train_dataloader = accelerator.prepare(
             controlnet, optimizer, train_dataloader
         )

@@ -416,7 +416,7 @@ class TextualInversionTrainer:
 
         # acceleratorがなんかよろしくやってくれるらしい
         if len(text_encoders) == 1:
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 text_encoder_or_list, optimizer, train_dataloader = accelerator.preparet(
                     text_encoder_or_list, optimizer, train_dataloader
                 )   
@@ -426,7 +426,7 @@ class TextualInversionTrainer:
                 )
 
         elif len(text_encoders) == 2:
-            if args.optimizer_type.lower().endswith("scheduleFree"):
+            if args.optimizer_type.lower().endswith("schedulefree"):
                 text_encoder1, text_encoder2, optimizer, train_dataloader = accelerator.prepare(
                     text_encoders[0], text_encoders[1], optimizer, train_dataloader
                 )  
