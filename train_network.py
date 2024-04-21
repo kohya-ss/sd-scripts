@@ -481,7 +481,8 @@ class NetworkTrainer:
                     if not isinstance(model, type(accelerator.unwrap_model(network))):
                         remove_indices.append(i)
                 for i in reversed(remove_indices):
-                    weights.pop(i)
+                    if len(weights) > i:
+                        weights.pop(i)
                 # print(f"save model hook: {len(weights)} weights will be saved")
 
         def load_model_hook(models, input_dir):
