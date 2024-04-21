@@ -2135,8 +2135,10 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
                 return False
             if npz["latents_flipped"].shape[1:3] != expected_latents_size:
                 return False
-    except:
-        raise RuntimeError(f"Error loading file: {npz_path}")
+    except Exception as e:
+        print(npz_path)
+        print(e)
+        return False
 
     return True
 
