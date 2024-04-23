@@ -474,13 +474,15 @@ class NetworkTrainer:
         # before resuming make hook for saving/loading to save/load the network weights only
         def save_model_hook(models, weights, output_dir):
             # pop weights of other models than network to save only network weights
-            if accelerator.is_main_process:
+            # only main process or deepspeed https://github.com/huggingface/diffusers/issues/2606
+            if accelerator.is_main_process or args.deepspeed:
                 remove_indices = []
                 for i, model in enumerate(models):
                     if not isinstance(model, type(accelerator.unwrap_model(network))):
                         remove_indices.append(i)
                 for i in reversed(remove_indices):
-                    weights.pop(i)
+                    if len(weights) > i:
+                        weights.pop(i)
                 # print(f"save model hook: {len(weights)} weights will be saved")
 
         def load_model_hook(models, input_dir):
