@@ -290,7 +290,7 @@ def main(args):
                 for tag in always_first_tags:
                     if tag in combined_tags:
                         combined_tags.remove(tag)
-                        combined_tags.insert(0, tag)
+                    combined_tags.insert(0, tag)
 
             # 先頭のカンマを取る
             if len(general_tag_text) > 0:
