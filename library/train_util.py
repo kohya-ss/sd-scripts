@@ -2920,9 +2920,6 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         default=1,
         help="Polynomial power for polynomial scheduler / polynomialスケジューラでのpolynomial power",
     )
-    parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
-    parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")
-    parser.add_argument("--loraplus_text_encoder_lr_ratio", default=None, type=float, help="LoRA+ text encoder learning rate ratio")
 
 
 def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: bool):

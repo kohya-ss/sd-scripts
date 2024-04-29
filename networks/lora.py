@@ -490,6 +490,14 @@ def create_network(
         varbose=True,
     )
 
+    loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
+    loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
+    loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
+    loraplus_lr_ratio = float(loraplus_lr_ratio) if loraplus_lr_ratio is not None else None
+    loraplus_unet_lr_ratio = float(loraplus_unet_lr_ratio) if loraplus_unet_lr_ratio is not None else None
+    loraplus_text_encoder_lr_ratio = float(loraplus_text_encoder_lr_ratio) if loraplus_text_encoder_lr_ratio is not None else None
+    network.set_loraplus_lr_ratio(loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio)
+
     if up_lr_weight is not None or mid_lr_weight is not None or down_lr_weight is not None:
         network.set_block_lr_weight(up_lr_weight, mid_lr_weight, down_lr_weight)
 
@@ -1033,18 +1041,27 @@ class LoRANetwork(torch.nn.Module):
 
         return lr_weight
 
+    def set_loraplus_lr_ratio(self, loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio):
+        self.loraplus_lr_ratio = loraplus_lr_ratio
+        self.loraplus_unet_lr_ratio = loraplus_unet_lr_ratio
+        self.loraplus_text_encoder_lr_ratio = loraplus_text_encoder_lr_ratio
+
     # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
-    def prepare_optimizer_params(
-        self,
-        text_encoder_lr,
-        unet_lr,
-        default_lr,
-        text_encoder_loraplus_ratio=None,
-        unet_loraplus_ratio=None,
-        loraplus_ratio=None
-    ):
+    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
+        # TODO warn if optimizer is not compatible with LoRA+ (but it will cause error so we don't need to check it here?)
+        # if (
+        #     self.loraplus_lr_ratio is not None
+        #     or self.loraplus_text_encoder_lr_ratio is not None
+        #     or self.loraplus_unet_lr_ratio is not None
+        # ):
+        #     assert (
+        #         optimizer_type.lower() != "prodigy" and "dadapt" not in optimizer_type.lower()
+        #     ), "LoRA+ and Prodigy/DAdaptation is not supported / LoRA+とProdigy/DAdaptationの組み合わせはサポートされていません"
+
         self.requires_grad_(True)
+
         all_params = []
+        lr_descriptions = []
 
         def assemble_params(loras, lr, ratio):
             param_groups = {"lora": {}, "plus": {}}
@@ -1056,6 +1073,7 @@ class LoRANetwork(torch.nn.Module):
                         param_groups["lora"][f"{lora.lora_name}.{name}"] = param
 
             params = []
+            descriptions = []
             for key in param_groups.keys():
                 param_data = {"params": param_groups[key].values()}
 
@@ -1069,20 +1087,22 @@ class LoRANetwork(torch.nn.Module):
                         param_data["lr"] = lr
 
                 if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
-                    print("NO LR skipping!")
+                    logger.info("NO LR skipping!")
                     continue
 
                 params.append(param_data)
+                descriptions.append("plus" if key == "plus" else "")
 
-            return params
+            return params, descriptions
 
         if self.text_encoder_loras:
-            params = assemble_params(
+            params, descriptions = assemble_params(
                 self.text_encoder_loras,
                 text_encoder_lr if text_encoder_lr is not None else default_lr,
-                text_encoder_loraplus_ratio or loraplus_ratio
+                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
             )
             all_params.extend(params)
+            lr_descriptions.extend(["textencoder" + (" " + d if d else "") for d in descriptions])
 
         if self.unet_loras:
             if self.block_lr:
@@ -1096,22 +1116,24 @@ class LoRANetwork(torch.nn.Module):
 
                 # blockごとにパラメータを設定する
                 for idx, block_loras in block_idx_to_lora.items():
-                    params = assemble_params(
+                    params, descriptions = assemble_params(
                         block_loras,
                         (unet_lr if unet_lr is not None else default_lr) * self.get_lr_weight(block_loras[0]),
-                        unet_loraplus_ratio or loraplus_ratio
+                        self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
                     )
                     all_params.extend(params)
+                    lr_descriptions.extend([f"unet_block{idx}" + (" " + d if d else "") for d in descriptions])
 
             else:
-                params = assemble_params(
+                params, descriptions = assemble_params(
                     self.unet_loras,
                     unet_lr if unet_lr is not None else default_lr,
-                    unet_loraplus_ratio or loraplus_ratio
+                    self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
                 )
                 all_params.extend(params)
+                lr_descriptions.extend(["unet" + (" " + d if d else "") for d in descriptions])
 
-        return all_params
+        return all_params, lr_descriptions
 
     def enable_gradient_checkpointing(self):
         # not supported
