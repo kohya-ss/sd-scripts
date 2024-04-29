@@ -406,27 +406,63 @@ class DyLoRANetwork(torch.nn.Module):
         logger.info(f"weights are merged")
     """
 
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
+    # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
+    def prepare_optimizer_params(
+        self,
+        text_encoder_lr,
+        unet_lr,
+        default_lr,
+        text_encoder_loraplus_ratio=None,
+        unet_loraplus_ratio=None,
+        loraplus_ratio=None
+    ):
         self.requires_grad_(True)
         all_params = []
 
-        def enumerate_params(loras):
-            params = []
+        def assemble_params(loras, lr, ratio):
+            param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
-                params.extend(lora.parameters())
+                for name, param in lora.named_parameters():
+                    if ratio is not None and "lora_B" in name:
+                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
+                    else:
+                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+
+            params = []
+            for key in param_groups.keys():
+                param_data = {"params": param_groups[key].values()}
+
+                if len(param_data["params"]) == 0:
+                    continue
+
+                if lr is not None:
+                    if key == "plus":
+                        param_data["lr"] = lr * ratio
+                    else:
+                        param_data["lr"] = lr
+
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    continue
+
+                params.append(param_data)
+
             return params
 
         if self.text_encoder_loras:
-            param_data = {"params": enumerate_params(self.text_encoder_loras)}
-            if text_encoder_lr is not None:
-                param_data["lr"] = text_encoder_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.text_encoder_loras,
+                text_encoder_lr if text_encoder_lr is not None else default_lr,
+                text_encoder_loraplus_ratio or loraplus_ratio
+            )
+            all_params.extend(params)
 
         if self.unet_loras:
-            param_data = {"params": enumerate_params(self.unet_loras)}
-            if unet_lr is not None:
-                param_data["lr"] = unet_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.unet_loras,
+                default_lr if unet_lr is None else unet_lr,
+                unet_loraplus_ratio or loraplus_ratio
+            )
+            all_params.extend(params)
 
         return all_params
 
