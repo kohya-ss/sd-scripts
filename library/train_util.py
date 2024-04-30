@@ -5397,3 +5397,107 @@ class LossRecorder:
     @property
     def moving_average(self) -> float:
         return self.loss_total / len(self.loss_list)
+
+
+def generate_step_logs(
+    args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
+):
+    logs = {"loss/current": current_loss, "loss/average": avr_loss}
+
+    if keys_scaled is not None:
+        logs["max_norm/keys_scaled"] = keys_scaled
+        logs["max_norm/average_key_norm"] = mean_norm
+        logs["max_norm/max_key_norm"] = maximum_norm
+
+    lrs = lr_scheduler.get_last_lr()
+    optimizer = lr_scheduler.optimizers[-1]
+
+    if args.network_train_text_encoder_only or len(lrs) <= 2:  # not block lr (or single block)
+        if args.network_train_unet_only:
+            logs["lr/unet"] = float(lrs[0])
+        elif args.network_train_text_encoder_only:
+            logs["lr/textencoder"] = float(lrs[0])
+        else:
+            logs["lr/textencoder"] = float(lrs[0])
+            logs["lr/unet"] = float(lrs[-1])  # may be same to textencoder
+
+        if (
+            args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower()
+        ):  # tracking d*lr value of unet.
+            logs["lr/d*lr"] = (
+                optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+            )
+
+    else:
+        idx = 0
+        if not args.network_train_unet_only:
+            logs["lr/textencoder"] = float(lrs[0])
+
+            idx = 1
+
+        for i in range(idx, len(lrs)):
+            logs[f"lr/group{i}"] = float(lrs[i])
+            if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
+                logs[f"lr/d*lr/group{i}"] = (
+                    optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
+                )
+
+    logs = generate_momentum_logs(lr_scheduler, logs, args)
+
+    return logs
+
+def generate_momentum_logs(lr_scheduler, logs, args):
+    # Momentum in Adam-like optimizers uses uses betas
+    def is_beta_optimizer():
+        return args.optimizer_type.lower() in [
+            "AdamW".lower(),
+            "AdamW8Bit".lower(),
+            "Prodigy".lower(),
+            "DAdaptAdam".lower(),
+        ]
+
+    def is_momentum_optimizer():
+        return args.optimizer_type.lower() in [
+            "DAdaptSGD".lower(),
+            "SGD".lower(),
+        ]
+
+    def is_cyclic():
+        return args.lr_scheduler_type.lower() in [
+            "CyclicLR".lower(),
+            "OneCycleLR".lower(),
+        ]
+
+    # Momentum only supported by optimizers 
+    if is_beta_optimizer() is False and is_momentum_optimizer() is False:
+        return logs
+
+    # Only CyclicLR, OneCycleLR are modifying the momentum
+    if is_cyclic() is False:
+        return logs
+
+    lrs = lr_scheduler.get_last_lr()
+    optimizer = lr_scheduler.optimizers[-1]
+    m_key = "betas1" if is_beta_optimizer() else "momentum"
+
+    if (
+        args.network_train_text_encoder_only or len(lrs) <= 2
+    ):  # not block lr (or single block)
+        if args.network_train_unet_only:
+            logs[f"momentum/{m_key}-unet"] = optimizer.param_groups[0]["betas"][0]
+        elif args.network_train_text_encoder_only:
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
+        else:
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
+            logs[f"momentum/{m_key}-unet"] = optimizer.param_groups[-1]["betas"][0]
+    else:
+        idx = 0
+        if not args.network_train_unet_only:
+            logs[f"momentum/{m_key}-textencoder"] = optimizer.param_groups[0]["betas"][0]
+
+            idx = 1
+
+        for i in range(idx, len(lrs)):
+            logs[f"momentum/{m_key}-group{i:02d}"] = optimizer.param_groups[i]["betas"][0]
+
+    return logs

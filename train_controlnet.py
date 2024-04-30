@@ -42,20 +42,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# TODO 他のスクリプトと共通化する
-def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler):
-    logs = {
-        "loss/current": current_loss,
-        "loss/average": avr_loss,
-        "lr": lr_scheduler.get_last_lr()[0],
-    }
-
-    if args.optimizer_type.lower().startswith("DAdapt".lower()):
-        logs["lr/d*lr"] = lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
-
-    return logs
-
-
 def train(args):
     # session_id = random.randint(0, 2**32)
     # training_started_at = time.time()
@@ -515,7 +501,7 @@ def train(args):
             progress_bar.set_postfix(**logs)
 
             if args.logging_dir is not None:
-                logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
+                logs = train_util.generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
