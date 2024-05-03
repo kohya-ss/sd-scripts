@@ -346,13 +346,13 @@ class NetworkTrainer:
             else:
                 trainable_params = results
                 lr_descriptions = None
-        except TypeError:
+        except TypeError as e:
+            # logger.warning(f"{e}")
             # accelerator.print(
             #     "Deprecated: use prepare_optimizer_params(text_encoder_lr, unet_lr, learning_rate) instead of prepare_optimizer_params(text_encoder_lr, unet_lr)"
             # )
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
             lr_descriptions = None
-        print(lr_descriptions)
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
