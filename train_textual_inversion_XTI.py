@@ -335,9 +335,14 @@ def train(args):
     lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        text_encoder, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.optimizer_type.lower().endswith("schedulefree"):
+        text_encoder, optimizer, train_dataloader = accelerator.prepare(
+            text_encoder, optimizer, train_dataloader
+        )   
+    else:
+        text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            text_encoder, optimizer, train_dataloader, lr_scheduler
+        )
 
     index_no_updates = torch.arange(len(tokenizer)) < token_ids_XTI[0]
     # logger.info(len(index_no_updates), torch.sum(index_no_updates))
@@ -354,8 +359,12 @@ def train(args):
     unet.to(accelerator.device, dtype=weight_dtype)
     if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
         unet.train()
+        if (args.optimizer_type.lower().endswith("schedulefree")):
+            optimizer.train()
     else:
         unet.eval()
+        if (args.optimizer_type.lower().endswith("schedulefree")):
+            optimizer.eval()
 
     if not cache_latents:
         vae.requires_grad_(False)
@@ -438,6 +447,8 @@ def train(args):
         loss_total = 0
 
         for step, batch in enumerate(train_dataloader):
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(text_encoder):
                 with torch.no_grad():
@@ -496,7 +507,8 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                lr_scheduler.step()
+                if not args.optimizer_type.lower().endswith("schedulefree"):
+                    lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
                 # Let's make sure we don't update any embedding weights besides the newly added token
@@ -504,6 +516,9 @@ def train(args):
                     accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[index_no_updates] = orig_embeds_params[
                         index_no_updates
                     ]
+
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

@@ -416,14 +416,24 @@ class TextualInversionTrainer:
 
         # acceleratorがなんかよろしくやってくれるらしい
         if len(text_encoders) == 1:
-            text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                text_encoder_or_list, optimizer, train_dataloader, lr_scheduler
-            )
+            if args.optimizer_type.lower().endswith("schedulefree"):
+                text_encoder_or_list, optimizer, train_dataloader = accelerator.preparet(
+                    text_encoder_or_list, optimizer, train_dataloader
+                )   
+            else:
+                text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.preparet(
+                    text_encoder_or_list, optimizer, train_dataloader, lr_scheduler
+                )
 
         elif len(text_encoders) == 2:
-            text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                text_encoders[0], text_encoders[1], optimizer, train_dataloader, lr_scheduler
-            )
+            if args.optimizer_type.lower().endswith("schedulefree"):
+                text_encoder1, text_encoder2, optimizer, train_dataloader = accelerator.prepare(
+                    text_encoders[0], text_encoders[1], optimizer, train_dataloader
+                )  
+            else:
+                text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                    text_encoders[0], text_encoders[1], optimizer, train_dataloader, lr_scheduler
+                )
 
             text_encoder_or_list = text_encoders = [text_encoder1, text_encoder2]
 
@@ -452,8 +462,12 @@ class TextualInversionTrainer:
         unet.to(accelerator.device, dtype=weight_dtype)
         if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
             # TODO U-Netをオリジナルに置き換えたのでいらないはずなので、後で確認して消す
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.train()
             unet.train()
         else:
+            if (args.optimizer_type.lower().endswith("schedulefree")):
+                optimizer.eval()
             unet.eval()
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
@@ -557,6 +571,8 @@ class TextualInversionTrainer:
             loss_total = 0
 
             for step, batch in enumerate(train_dataloader):
+                if (args.optimizer_type.lower().endswith("schedulefree")):
+                    optimizer.train()
                 current_step.value = global_step
                 with accelerator.accumulate(text_encoders[0]):
                     with torch.no_grad():
@@ -626,6 +642,9 @@ class TextualInversionTrainer:
                             input_embeddings_weight[index_no_updates] = orig_embeds_params.to(input_embeddings_weight.dtype)[
                                 index_no_updates
                             ]
+
+                if (args.optimizer_type.lower().endswith("schedulefree")):
+                    optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
