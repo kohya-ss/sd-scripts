@@ -354,6 +354,16 @@ class NetworkTrainer:
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
             lr_descriptions = None
 
+        # if len(trainable_params) == 0:
+        #     accelerator.print("no trainable parameters found / 学習可能なパラメータが見つかりませんでした")
+        # for params in trainable_params:
+        #     for k, v in params.items():
+        #         if type(v) == float:
+        #             pass
+        #         else:
+        #             v = len(v)
+        #         accelerator.print(f"trainable_params: {k} = {v}")
+
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
         # dataloaderを準備する
