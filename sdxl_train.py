@@ -407,6 +407,7 @@ def train(args):
         text_encoder1.text_model.encoder.layers[-1].requires_grad_(False)
         text_encoder1.text_model.final_layer_norm.requires_grad_(False)
 
+    use_schedule_free_optimizer = args.optimizer_type.lower().endswith("schedulefree")
     if args.deepspeed:
         ds_model = deepspeed_utils.prepare_deepspeed_model(
             args,
@@ -415,14 +416,9 @@ def train(args):
             text_encoder2=text_encoder2 if train_text_encoder2 else None,
         )
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
-        if args.optimizer_type.lower().endswith("schedulefree"):
-            ds_model, optimizer, train_dataloader = accelerator.prepare(
-                ds_model, optimizer, train_dataloader
-            )
-        else:
-            ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                ds_model, optimizer, train_dataloader, lr_scheduler
-            )
+        ds_model, optimizer, train_dataloader = accelerator.prepare(ds_model, optimizer, train_dataloader)
+        if not use_schedule_free_optimizer:
+            lr_scheduler = accelerator.prepare(lr_scheduler)
         training_models = [ds_model]
 
     else:
@@ -433,10 +429,17 @@ def train(args):
             text_encoder1 = accelerator.prepare(text_encoder1)
         if train_text_encoder2:
             text_encoder2 = accelerator.prepare(text_encoder2)
-        if args.optimizer_type.lower().endswith("schedulefree"):
-            optimizer, train_dataloader = accelerator.prepare(optimizer, train_dataloader)
-        else:
-            optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
+        if not use_schedule_free_optimizer:
+            lr_scheduler = accelerator.prepare(lr_scheduler)
+        optimizer, train_dataloader = accelerator.prepare(optimizer, train_dataloader)
+
+    # make lambda function for calling optimizer.train() and optimizer.eval() if schedule-free optimizer is used
+    if use_schedule_free_optimizer:
+        optimizer_train_if_needed = lambda: optimizer.train()
+        optimizer_eval_if_needed = lambda: optimizer.eval()
+    else:
+        optimizer_train_if_needed = lambda: None
+        optimizer_eval_if_needed = lambda: None
 
     # TextEncoderの出力をキャッシュするときにはCPUへ移動する
     if args.cache_text_encoder_outputs:
@@ -511,8 +514,7 @@ def train(args):
             m.train()
 
         for step, batch in enumerate(train_dataloader):
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.train()
+            optimizer_train_if_needed()
             current_step.value = global_step
             with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
@@ -592,7 +594,9 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(
+                    args, noise_scheduler, latents
+                )
 
                 noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
@@ -610,7 +614,9 @@ def train(args):
                     or args.masked_loss
                 ):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                    loss = train_util.conditional_loss(
+                        noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                    )
                     if args.masked_loss:
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
@@ -626,7 +632,9 @@ def train(args):
 
                     loss = loss.mean()  # mean over batch dimension
                 else:
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="mean", loss_type=args.loss_type, huber_c=huber_c)
+                    loss = train_util.conditional_loss(
+                        noise_pred.float(), target.float(), reduction="mean", loss_type=args.loss_type, huber_c=huber_c
+                    )
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
@@ -636,12 +644,10 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("schedulefree"):
-                    lr_scheduler.step()
+                lr_scheduler.step() # if schedule-free optimizer is used, this is a no-op
                 optimizer.zero_grad(set_to_none=True)
 
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.eval()
+            optimizer_eval_if_needed()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -750,7 +756,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if args.save_state or args.save_state_on_train_end:        
+    if args.save_state or args.save_state_on_train_end:
         train_util.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す

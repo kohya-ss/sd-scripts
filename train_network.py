@@ -412,6 +412,7 @@ class NetworkTrainer:
                 t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
+        use_schedule_free_optimizer = args.optimizer_type.lower().endswith("schedulefree")
         if args.deepspeed:
             ds_model = deepspeed_utils.prepare_deepspeed_model(
                 args,
@@ -420,14 +421,9 @@ class NetworkTrainer:
                 text_encoder2=text_encoders[1] if train_text_encoder and len(text_encoders) > 1 else None,
                 network=network,
             )
-            if args.optimizer_type.lower().endswith("schedulefree"):
-                ds_model, optimizer, train_dataloader = accelerator.prepare(
-                    ds_model, optimizer, train_dataloader
-                )    
-            else:
-                ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    ds_model, optimizer, train_dataloader, lr_scheduler
-                )
+            ds_model, optimizer, train_dataloader = accelerator.prepare(ds_model, optimizer, train_dataloader)
+            if not use_schedule_free_optimizer:
+                lr_scheduler = accelerator.prepare(lr_scheduler)
             training_model = ds_model
         else:
             if train_unet:
@@ -442,21 +438,22 @@ class NetworkTrainer:
                     text_encoders = [text_encoder]
             else:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
-            
-            if args.optimizer_type.lower().endswith("schedulefree"):
-                network, optimizer, train_dataloader = accelerator.prepare(
-                    network, optimizer, train_dataloader
-                )  
-            else:
-                network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    network, optimizer, train_dataloader, lr_scheduler
-                )
+
+            network, optimizer, train_dataloader = accelerator.prepare(network, optimizer, train_dataloader)
+            if not use_schedule_free_optimizer:
+                lr_scheduler = accelerator.prepare(lr_scheduler)
             training_model = network
+
+        # make lambda function for calling optimizer.train() and optimizer.eval() if schedule-free optimizer is used
+        if use_schedule_free_optimizer:
+            optimizer_train_if_needed = lambda: optimizer.train()
+            optimizer_eval_if_needed = lambda: optimizer.eval()
+        else:
+            optimizer_train_if_needed = lambda: None
+            optimizer_eval_if_needed = lambda: None
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.train()
             unet.train()
 
             for t_enc in text_encoders:
@@ -467,8 +464,6 @@ class NetworkTrainer:
                     t_enc.text_model.embeddings.requires_grad_(True)
 
         else:
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.eval()
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
@@ -819,8 +814,7 @@ class NetworkTrainer:
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
-                if (args.optimizer_type.lower().endswith("schedulefree")):
-                    optimizer.train()
+                optimizer_train_if_needed()
                 current_step.value = global_step
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
@@ -926,8 +920,7 @@ class NetworkTrainer:
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    if not args.optimizer_type.lower().endswith("schedulefree"):
-                        lr_scheduler.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
@@ -938,8 +931,7 @@ class NetworkTrainer:
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
 
-                if (args.optimizer_type.lower().endswith("schedulefree")):
-                    optimizer.eval()
+                optimizer_eval_if_needed()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:

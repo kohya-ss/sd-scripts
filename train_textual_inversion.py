@@ -415,30 +415,28 @@ class TextualInversionTrainer:
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
         # acceleratorがなんかよろしくやってくれるらしい
+        use_schedule_free_optimizer = args.optimizer_type.lower().endswith("schedulefree")
         if len(text_encoders) == 1:
-            if args.optimizer_type.lower().endswith("schedulefree"):
-                text_encoder_or_list, optimizer, train_dataloader = accelerator.preparet(
-                    text_encoder_or_list, optimizer, train_dataloader
-                )   
-            else:
-                text_encoder_or_list, optimizer, train_dataloader, lr_scheduler = accelerator.preparet(
-                    text_encoder_or_list, optimizer, train_dataloader, lr_scheduler
-                )
-
+            text_encoder_or_list, optimizer, train_dataloader = accelerator.preparet(
+                text_encoder_or_list, optimizer, train_dataloader
+            )
         elif len(text_encoders) == 2:
-            if args.optimizer_type.lower().endswith("schedulefree"):
-                text_encoder1, text_encoder2, optimizer, train_dataloader = accelerator.prepare(
-                    text_encoders[0], text_encoders[1], optimizer, train_dataloader
-                )  
-            else:
-                text_encoder1, text_encoder2, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    text_encoders[0], text_encoders[1], optimizer, train_dataloader, lr_scheduler
-                )
-
+            text_encoder1, text_encoder2, optimizer, train_dataloader = accelerator.prepare(
+                text_encoders[0], text_encoders[1], optimizer, train_dataloader
+            )
             text_encoder_or_list = text_encoders = [text_encoder1, text_encoder2]
-
         else:
             raise NotImplementedError()
+        if not use_schedule_free_optimizer:
+            optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
+
+        # make lambda function for calling optimizer.train() and optimizer.eval() if schedule-free optimizer is used
+        if use_schedule_free_optimizer:
+            optimizer_train_if_needed = lambda: optimizer.train()
+            optimizer_eval_if_needed = lambda: optimizer.eval()
+        else:
+            optimizer_train_if_needed = lambda: None
+            optimizer_eval_if_needed = lambda: None
 
         index_no_updates_list = []
         orig_embeds_params_list = []
@@ -462,12 +460,8 @@ class TextualInversionTrainer:
         unet.to(accelerator.device, dtype=weight_dtype)
         if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
             # TODO U-Netをオリジナルに置き換えたのでいらないはずなので、後で確認して消す
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.train()
             unet.train()
         else:
-            if (args.optimizer_type.lower().endswith("schedulefree")):
-                optimizer.eval()
             unet.eval()
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
@@ -571,8 +565,7 @@ class TextualInversionTrainer:
             loss_total = 0
 
             for step, batch in enumerate(train_dataloader):
-                if (args.optimizer_type.lower().endswith("schedulefree")):
-                    optimizer.train()
+                optimizer_train_if_needed()
                 current_step.value = global_step
                 with accelerator.accumulate(text_encoders[0]):
                     with torch.no_grad():
@@ -604,7 +597,9 @@ class TextualInversionTrainer:
                     else:
                         target = noise
 
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                    loss = train_util.conditional_loss(
+                        noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                    )
                     if args.masked_loss:
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
@@ -643,8 +638,7 @@ class TextualInversionTrainer:
                                 index_no_updates
                             ]
 
-                if (args.optimizer_type.lower().endswith("schedulefree")):
-                    optimizer.eval()
+                optimizer_eval_if_needed()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
