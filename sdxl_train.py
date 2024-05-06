@@ -435,8 +435,8 @@ def train(args):
 
     # make lambda function for calling optimizer.train() and optimizer.eval() if schedule-free optimizer is used
     if use_schedule_free_optimizer:
-        optimizer_train_if_needed = lambda: optimizer.train()
-        optimizer_eval_if_needed = lambda: optimizer.eval()
+        optimizer_train_if_needed = lambda: (optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer).train()
+        optimizer_eval_if_needed = lambda: (optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer).eval()
     else:
         optimizer_train_if_needed = lambda: None
         optimizer_eval_if_needed = lambda: None
@@ -644,7 +644,7 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                lr_scheduler.step() # if schedule-free optimizer is used, this is a no-op
+                lr_scheduler.step()  # if schedule-free optimizer is used, this is a no-op
                 optimizer.zero_grad(set_to_none=True)
 
             optimizer_eval_if_needed()

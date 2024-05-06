@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -255,16 +256,14 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     use_schedule_free_optimizer = args.optimizer_type.lower().endswith("schedulefree")
-        unet, network, optimizer, train_dataloader = accelerator.prepare(
-            unet, network, optimizer, train_dataloader
-        )
+    unet, network, optimizer, train_dataloader = accelerator.prepare(unet, network, optimizer, train_dataloader)
     if not use_schedule_free_optimizer:
         lr_scheduler = accelerator.prepare(lr_scheduler)
 
     # make lambda function for calling optimizer.train() and optimizer.eval() if schedule-free optimizer is used
     if use_schedule_free_optimizer:
-        optimizer_train_if_needed = lambda: optimizer.train()
-        optimizer_eval_if_needed = lambda: optimizer.eval()
+        optimizer_train_if_needed = lambda: (optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer).train()
+        optimizer_eval_if_needed = lambda: (optimizer.optimizer if hasattr(optimizer, "optimizer") else optimizer).eval()
     else:
         optimizer_train_if_needed = lambda: None
         optimizer_eval_if_needed = lambda: None
@@ -419,7 +418,9 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(
+                    args, noise_scheduler, latents
+                )
 
                 noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
@@ -439,7 +440,9 @@ def train(args):
                 else:
                     target = noise
 
-                loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
+                loss = train_util.conditional_loss(
+                    noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                )
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
