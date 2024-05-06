@@ -466,13 +466,13 @@ class DyLoRANetwork(torch.nn.Module):
             params = assemble_params(
                 self.text_encoder_loras,
                 text_encoder_lr if text_encoder_lr is not None else default_lr,
-                self.loraplus_text_encoder_lr_ratio or self.loraplus_ratio,
+                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
             )
             all_params.extend(params)
 
         if self.unet_loras:
             params = assemble_params(
-                self.unet_loras, default_lr if unet_lr is None else unet_lr, self.loraplus_unet_lr_ratio or self.loraplus_ratio
+                self.unet_loras, default_lr if unet_lr is None else unet_lr, self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio
             )
             all_params.extend(params)
 
