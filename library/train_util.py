@@ -2923,7 +2923,8 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--fused_backward_pass",
         action="store_true",
-        help="Combines backward pass and optimizer step to reduce VRAM usage / バックワードパスとオプティマイザステップを組み合わせてVRAMの使用量を削減します。",
+        help="Combines backward pass and optimizer step to reduce VRAM usage. Only available in SDXL"
+        + " / バックワードパスとオプティマイザステップを組み合わせてVRAMの使用量を削減します。SDXLでのみ有効",
     )
 
 
