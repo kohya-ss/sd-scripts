@@ -477,7 +477,7 @@ def train(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                    params_to_clip = unet.get_trainable_params()
+                    params_to_clip = accelerator.unwrap_model(unet).get_trainable_params()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
