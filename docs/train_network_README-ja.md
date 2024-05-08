@@ -102,6 +102,8 @@ accelerate launch --num_cpu_threads_per_process 1 train_network.py
   * Text Encoderに関連するLoRAモジュールに、通常の学習率（--learning_rateオプションで指定）とは異なる学習率を使う時に指定します。Text Encoderのほうを若干低めの学習率（5e-5など）にしたほうが良い、という話もあるようです。
 * `--network_args`
   * 複数の引数を指定できます。後述します。
+* `--alpha_mask`
+  * 画像のアルファ値をマスクとして使用します。透過画像を学習する際に使用します。[PR #1223](https://github.com/kohya-ss/sd-scripts/pull/1223)
 
 `--network_train_unet_only` と `--network_train_text_encoder_only` の両方とも未指定時（デフォルト）はText EncoderとU-Netの両方のLoRAモジュールを有効にします。
 
