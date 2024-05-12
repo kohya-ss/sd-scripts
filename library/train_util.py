@@ -2123,17 +2123,22 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
     if not os.path.exists(npz_path):
         return False
 
-    npz = np.load(npz_path)
-    if "latents" not in npz or "original_size" not in npz or "crop_ltrb" not in npz:  # old ver?
-        return False
-    if npz["latents"].shape[1:3] != expected_latents_size:
-        return False
+    try:
+        npz = np.load(npz_path)
+        if "latents" not in npz or "original_size" not in npz or "crop_ltrb" not in npz:  # old ver?
+            return False
+        if npz["latents"].shape[1:3] != expected_latents_size:
+            return False
 
-    if flip_aug:
-        if "latents_flipped" not in npz:
-            return False
-        if npz["latents_flipped"].shape[1:3] != expected_latents_size:
-            return False
+        if flip_aug:
+            if "latents_flipped" not in npz:
+                return False
+            if npz["latents_flipped"].shape[1:3] != expected_latents_size:
+                return False
+    except Exception as e:
+        print(npz_path)
+        print(e)
+        return False
 
     return True
 
