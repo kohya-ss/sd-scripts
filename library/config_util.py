@@ -524,6 +524,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           shuffle_caption: {subset.shuffle_caption}
           keep_tokens: {subset.keep_tokens}
           keep_tokens_separator: {subset.keep_tokens_separator}
+          caption_separator: {subset.caption_separator}
           secondary_separator: {subset.secondary_separator}
           enable_wildcard: {subset.enable_wildcard}
           caption_dropout_rate: {subset.caption_dropout_rate}
