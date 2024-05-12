@@ -9,8 +9,10 @@ from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionMode
 from library import model_util
 from library import sdxl_original_unet
 from .utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 VAE_SCALE_FACTOR = 0.13025
@@ -171,8 +173,8 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
     # Load the state dict
     if model_util.is_safetensors(ckpt_path):
         checkpoint = None
-        if(disable_mmap):
-            state_dict = safetensors.torch.load(open(ckpt_path, 'rb').read())
+        if disable_mmap:
+            state_dict = safetensors.torch.load(open(ckpt_path, "rb").read())
         else:
             try:
                 state_dict = load_file(ckpt_path, device=map_location)
