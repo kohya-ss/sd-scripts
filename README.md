@@ -137,6 +137,14 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
+### Working in progress
+
+- Fixed some bugs when using DeepSpeed. Related [#1247]
+
+
+- DeepSpeed 使用時のいくつかのバグを修正しました。関連 [#1247]
+
+
 ### Apr 7, 2024 / 2024-04-07: v0.8.7
 
 - The default value of `huber_schedule` in Scheduled Huber Loss is changed from `exponential` to `snr`, which is expected to give better results.
