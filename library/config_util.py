@@ -191,6 +191,7 @@ class ConfigSanitizer:
         "keep_tokens": int,
         "keep_tokens_separator": str,
         "secondary_separator": str,
+        "caption_separator": str,
         "enable_wildcard": bool,
         "token_warmup_min": int,
         "token_warmup_step": Any(float, int),
