@@ -171,6 +171,12 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 - When there is an error in the cached latents file on disk, the file name is now displayed. PR [#1278](https://github.com/kohya-ss/sd-scripts/pull/1278) Thanks to Cauldrath!
 
+- Fixed an error that occurs when specifying `--max_dataloader_n_workers` in `tag_images_by_wd14_tagger.py` when Onnx is not used. PR [#1291](
+https://github.com/kohya-ss/sd-scripts/pull/1291) issue [#1290](
+https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
+
+- Fixed a bug that `caption_separator` cannot be specified in the subset in the dataset settings .toml file.  [#1312](https://github.com/kohya-ss/sd-scripts/pull/1312) and [#1313](https://github.com/kohya-ss/sd-scripts/pull/1312) Thanks to rockerBOO!
+
 - Fixed some bugs when using DeepSpeed. Related [#1247](https://github.com/kohya-ss/sd-scripts/pull/1247)
 
 - SDXL の学習時に Fused optimizer が使えるようになりました。PR [#1259](https://github.com/kohya-ss/sd-scripts/pull/1259) 2kpr 氏に感謝します。
@@ -204,6 +210,12 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
   - `sdxl_train.py`、`sdxl_train_network.py`、`sdxl_train_textual_inversion.py`、`sdxl_train_control_net_lllite.py` で使用可能です。
 
 - ディスクにキャッシュされた latents ファイルに何らかのエラーがあったとき、そのファイル名が表示されるようになりました。 PR [#1278](https://github.com/kohya-ss/sd-scripts/pull/1278) Cauldrath 氏に感謝します。
+
+- `tag_images_by_wd14_tagger.py` で Onnx 未使用時に `--max_dataloader_n_workers` を指定するとエラーになる不具合が修正されました。 PR [#1291](
+https://github.com/kohya-ss/sd-scripts/pull/1291) issue [#1290](
+https://github.com/kohya-ss/sd-scripts/pull/1290) frodo821 氏に感謝します。
+
+- データセット設定の .toml ファイルで、`caption_separator` が subset に指定できない不具合が修正されました。 PR [#1312](https://github.com/kohya-ss/sd-scripts/pull/1312) および [#1313](https://github.com/kohya-ss/sd-scripts/pull/1312) rockerBOO 氏に感謝します。
 
 - DeepSpeed 使用時のいくつかのバグを修正しました。関連 [#1247](https://github.com/kohya-ss/sd-scripts/pull/1247)
 
