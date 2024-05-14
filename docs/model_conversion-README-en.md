@@ -7,11 +7,11 @@ I made it compatible with both v1.x and v2.0.
 ## Downloading the Script
 Please download from here. The .zip contains two scripts, so place them in the same folder.
 
-*12/10 (v4) update: Added support for safetensors format of Diffusers model. Requires DiffUsers 0.10.2 (works with 0.10.0 or later, but 0.10.0 seems to have issues, so use 0.10.2). Update within the virtual environment with `pip install -U diffusers[torch]==0.10.2`.
+* [12/10 (v4) update](https://note.com/api/v2/attachments/download/3778af0a4024e079d7895109991e79d9): Added support for safetensors format of Diffusers model. Requires DiffUsers 0.10.2 (works with 0.10.0 or later, but 0.10.0 seems to have issues, so use 0.10.2). Update within the virtual environment with `pip install -U diffusers[torch]==0.10.2`.
 
-*12/5 (v3) update: Made a tentative fix as there were reports of errors when saving in safetensors format for some models. If you get an error with v2, please try v3 (other specifications are the same). I will delete v2 once I have thoroughly tested it.
+* [12/5 (v3) update](https://note.com/api/v2/attachments/download/82e3c2b9013c8b9b11cfc1b4e8a67c2d): Made a tentative fix as there were reports of errors when saving in safetensors format for some models. If you get an error with v2, please try v3 (other specifications are the same). I will delete v2 once I have thoroughly tested it.
 
-*12/5 (v2) update: Added support for safetensors format. Install safetensors with `pip install safetensors`.
+* [12/5 (v2) update](https://note.com/api/v2/attachments/download/b6b7158cd911ffd35f78948260d58e4a): Added support for safetensors format. Install safetensors with `pip install safetensors`.
 
 ## Usage
 ### Converting from Diffusers to Stable Diffusion .ckpt/.safetensors
