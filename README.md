@@ -43,7 +43,7 @@ Most of the documents are written in Japanese.
 * [LoRA training](./docs/train_network_README-en.md)
 * [Textual Inversion training](./docs/train_ti_README-en.md)
 * [Image generation](./docs/gen_img_README-en.md)
-* [Model conversion](https://note.com/kohya_ss/n/n374f316fe4ad) on note.com
+* [Model conversion](./docs/model_conversion-README-en.md)
 
 ## Windows Required Dependencies
 
