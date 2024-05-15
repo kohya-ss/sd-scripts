@@ -143,7 +143,7 @@ def _load_state_dict_on_device(model, state_dict, device, dtype=None):
     unexpected_keys = list(state_dict.keys() - model.state_dict().keys())
 
     # similar to model.load_state_dict()
-    if not missing_keys and not unexpected_keys:
+    if not missing_keys:
         for k in list(state_dict.keys()):
             set_module_tensor_to_device(model, k, device, value=state_dict.pop(k), dtype=dtype)
         return "<All keys matched successfully>"
