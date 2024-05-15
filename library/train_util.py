@@ -681,7 +681,6 @@ class BaseDataset(torch.utils.data.Dataset):
         input_ids = tokenizer(
             caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
         ).input_ids
-
         if self.tokenizer_max_length > tokenizer.model_max_length:
             input_ids = input_ids.squeeze(0)
             iids_list = []
@@ -948,6 +947,9 @@ class BaseDataset(torch.utils.data.Dataset):
         for info in image_infos_to_cache:
             input_ids1 = self.get_input_ids(info.caption, tokenizers[0])
             input_ids2 = self.get_input_ids(info.caption, tokenizers[1])
+            # print("info.caption", info.caption)
+            # print("input_ids1", input_ids1.shape)
+            # print("input_ids2", input_ids2.shape)
             batch.append((info, input_ids1, input_ids2))
 
             if len(batch) >= self.batch_size:
@@ -2878,6 +2880,14 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="path to tracker config file to use for logging / ログ出力に使用するtrackerの設定ファイルのパス",
     )
+
+    parser.add_argument(
+        "--global_step",
+        type=int,
+        default=1,
+        help="global step for training (used for logging)",
+    )
+
     parser.add_argument(
         "--wandb_api_key",
         type=str,
@@ -2943,6 +2953,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--lowram",
         action="store_true",
         help="enable low RAM optimization. e.g. load models to VRAM instead of RAM (for machines which have bigger VRAM than RAM such as Colab and Kaggle) / メインメモリが少ない環境向け最適化を有効にする。たとえばVRAMにモデルを読み込むなど（ColabやKaggleなどRAMに比べてVRAMが多い環境向け）",
+    )
+
+    parser.add_argument(
+        "--accumulation_n_steps", type=int, default=1, help="累積梯度N次後再更新權重，模擬大batch訓練"
     )
 
     parser.add_argument(
@@ -3023,6 +3037,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
     )
+
 
     if support_dreambooth:
         # DreamBooth training
@@ -3234,7 +3249,8 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
     if args.output_config:
         # check if config file exists
         if os.path.exists(config_path):
-            print(f"Config file already exists. Aborting... / 出力先の設定ファイルが既に存在します: {config_path}")
+            print(f"Config file already exists. Aborting... / 出力先の設定ファイルが既に存在します: {config_path}", flush=True)
+            raise Exception(f"Config file already exists. Aborting... / 出力先の設定ファイルが既に存在します: {config_path}")
             exit(1)
 
         # convert args to dictionary
@@ -3262,11 +3278,13 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
         with open(config_path, "w") as f:
             toml.dump(args_dict, f)
 
-        print(f"Saved config file / 設定ファイルを保存しました: {config_path}")
+        print(f"Saved config file / 設定ファイルを保存しました: {config_path}", flush=True)
+        raise Exception("Output config file and exit / 設定ファイルを出力して終了します")
         exit(0)
 
     if not os.path.exists(config_path):
-        print(f"{config_path} not found.")
+        print(f"{config_path} not found.", flush=True)
+        raise Exception(f"{config_path} not found.")
         exit(1)
 
     print(f"Loading settings from {config_path}...")
@@ -3772,6 +3790,7 @@ def prepare_accelerator(args: argparse.Namespace):
             if args.wandb_api_key is not None:
                 wandb.login(key=args.wandb_api_key)
 
+    print("args.mixed_precision", args.mixed_precision)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -4353,7 +4372,9 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
+    # timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
+    sigma = 6
+    timesteps = ((torch.randn((b_size,), device=latents.device).clip(-sigma, sigma) + sigma) / (2*sigma)) * (max_timestep - min_timestep) + min_timestep
     timesteps = timesteps.long()
 
     # Add noise to the latents according to the noise magnitude at each timestep
@@ -4376,7 +4397,16 @@ SCHEDLER_SCHEDULE = "scaled_linear"
 def sample_images(*args, **kwargs):
     return sample_images_common(StableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
 
+def image_grid(imgs, rows, cols):
+    assert len(imgs) <= rows * cols
 
+    w, h = imgs[0].size
+    grid = Image.new('RGB', size=(cols*w, rows*h))
+    grid_w, grid_h = grid.size
+    
+    for i, img in enumerate(imgs):
+        grid.paste(img, box=(i%cols*w, i//cols*h))
+    return grid
 def sample_images_common(
     pipe_class,
     accelerator,
@@ -4394,15 +4424,15 @@ def sample_images_common(
     """
     StableDiffusionLongPromptWeightingPipelineの改造版を使うようにしたので、clip skipおよびプロンプトの重みづけに対応した
     """
-    if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
-        return
-    if args.sample_every_n_epochs is not None:
-        # sample_every_n_steps は無視する
-        if epoch is None or epoch % args.sample_every_n_epochs != 0:
-            return
-    else:
-        if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
-            return
+    # if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
+    #     return
+    # if args.sample_every_n_epochs is not None:
+    #     # sample_every_n_steps は無視する
+    #     if epoch is None or epoch % args.sample_every_n_epochs != 0:
+    #         return
+    # else:
+    #     if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
+    #         return
 
     print(f"\ngenerating sample images at step / サンプル画像生成 ステップ: {steps}")
     if not os.path.isfile(args.sample_prompts):
@@ -4494,6 +4524,7 @@ def sample_images_common(
 
     with torch.no_grad():
         # with accelerator.autocast():
+        images = []
         for i, prompt in enumerate(prompts):
             if not accelerator.is_main_process:
                 continue
@@ -4605,18 +4636,22 @@ def sample_images_common(
             )
 
             image.save(os.path.join(save_dir, img_filename))
+            images.append(image)
 
-            # wandb有効時のみログを送信
+        # wandb有効時のみログを送信
+        try:
+            wandb_tracker = accelerator.get_tracker("wandb")
             try:
-                wandb_tracker = accelerator.get_tracker("wandb")
-                try:
-                    import wandb
-                except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-                    raise ImportError("No wandb / wandb がインストールされていないようです")
+                import wandb
+            except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
+                raise ImportError("No wandb / wandb がインストールされていないようです")
+            num_samples = len(images)
+            grid = image_grid(images, int(math.sqrt(num_samples)), int(math.sqrt(num_samples)))
 
-                wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-            except:  # wandb 無効時
-                pass
+            wandb_tracker.log({f"sample": wandb.Image(grid)})
+        except:  # wandb 無効時
+            print("wandb is not enabled / wandb無效")
+            pass
 
     # clear pipeline and cache to reduce vram usage
     del pipeline

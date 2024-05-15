@@ -1,0 +1,8 @@
+cat, fluffy, whiskers, green eyes
+dog, wagging tail, floppy ears, shiny coat
+rabbit, long ears, fluffy tail, hopping
+fish, scales, fins, swimming
+bird, feathers, beak, flying
+mouse, small, grey fur, pink tail
+horse, mane, galloping, strong
+cow, black spots, big eyes, grazing

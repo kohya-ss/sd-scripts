@@ -1,3 +1,5 @@
+import os
+os.environ["HF_HOME"] = r"C:\haggingface_cache"
 import argparse
 import torch
 try:

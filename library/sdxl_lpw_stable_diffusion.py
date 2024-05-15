@@ -285,6 +285,8 @@ def get_unweighted_text_embeddings(
     return text_embeddings, text_pool
 
 
+
+
 def get_weighted_text_embeddings(
     pipe,  # : SdxlStableDiffusionLongPromptWeightingPipeline,
     prompt: Union[str, List[str]],

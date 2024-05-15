@@ -1089,7 +1089,6 @@ class SdxlUNet2DConditionModel(nn.Module):
 
         h = h.type(x.dtype)
         h = call_module(self.out, h, emb, context)
-
         return h
 
 

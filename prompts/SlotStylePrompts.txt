@@ -1,0 +1,8 @@
+slot style, castle, knight, moat, foggy
+slot style, cityscape, neon, holograms, cyberpunk
+slot style, animals, forest, vibrant, playful
+slot style, science fiction, spaceship, metallic, sleek
+slot style, school, teenagers, cherry blossoms, spring
+slot style, portrait, woman, soft lighting, detailed
+slot style, swirls, bright colors, dynamic, expressive
+slot style, street scene, 1950s, cars, black and white
