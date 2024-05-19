@@ -167,6 +167,7 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 - Negative learning rates can now be specified during SDXL model training. PR [#1277](https://github.com/kohya-ss/sd-scripts/pull/1277) Thanks to Cauldrath!
   - The model is trained to move away from the training images, so the model is easily collapsed. Use with caution. A value close to 0 is recommended.
+  - When specifying from the command line, use `=` like `--learning_rate=-1e-7`.
 
 - Training scripts can now output training settings to wandb or Tensor Board logs. Specify the `--log_config` option. PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  Thanks to ccharest93, plucked, rockerBOO, and VelocityRa!
   - Some settings, such as API keys and directory specifications, are not output due to security issues.
@@ -219,6 +220,7 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
 
 - `sdxl_train.py` での SDXL モデル学習時に負の学習率が指定できるようになりました。PR [#1277](https://github.com/kohya-ss/sd-scripts/pull/1277) Cauldrath 氏に感謝します。
   - 学習画像から離れるように学習するため、モデルは容易に崩壊します。注意して使用してください。0 に近い値を推奨します。
+  - コマンドラインから指定する場合、`--learning_rate=-1e-7` のように`=` を使ってください。
 
 - 各学習スクリプトで学習設定を wandb や Tensor Board などのログに出力できるようになりました。`--log_config` オプションを指定してください。PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  ccharest93 氏、plucked 氏、rockerBOO 氏および VelocityRa 氏に感謝します。
   - API キーや各種ディレクトリ指定など、一部の設定はセキュリティ上の問題があるため出力されません。
