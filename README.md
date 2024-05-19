@@ -165,6 +165,9 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
   - Specify the learning rate and dim (rank) for each block.
   - See [Block-wise learning rates in LoRA](./docs/train_network_README-ja.md#階層別学習率) for details (Japanese only).
 
+- Training scripts can now output training settings to wandb or Tensor Board logs. Specify the `--log_config` option. PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  Thanks to ccharest93, plucked, rockerBOO, and VelocityRa!
+  - Some settings, such as API keys and directory specifications, are not output due to security issues.
+  
 - An option `--disable_mmap_load_safetensors` is added to disable memory mapping when loading the model's .safetensors in SDXL. PR [#1266](https://github.com/kohya-ss/sd-scripts/pull/1266) Thanks to Zovjsra!
   - It seems that the model file loading is faster in the WSL environment etc.
   - Available in `sdxl_train.py`, `sdxl_train_network.py`, `sdxl_train_textual_inversion.py`, and `sdxl_train_control_net_lllite.py`.
@@ -208,6 +211,9 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
 - SDXL の LoRA で階層別学習率、階層別 dim (rank) をサポートしました。PR [#1331](https://github.com/kohya-ss/sd-scripts/pull/1331) 
   - ブロックごとに学習率および dim (rank) を指定することができます。
   - 詳細は [LoRA の階層別学習率](./docs/train_network_README-ja.md#階層別学習率) をご覧ください。
+
+- 各学習スクリプトで学習設定を wandb や Tensor Board などのログに出力できるようになりました。`--log_config` オプションを指定してください。PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  ccharest93 氏、plucked 氏、rockerBOO 氏および VelocityRa 氏に感謝します。
+  - API キーや各種ディレクトリ指定など、一部の設定はセキュリティ上の問題があるため出力されません。
 
 - SDXL でモデルの .safetensors を読み込む際にメモリマッピングを無効化するオプション `--disable_mmap_load_safetensors` が追加されました。PR [#1266](https://github.com/kohya-ss/sd-scripts/pull/1266) Zovjsra 氏に感謝します。
   - WSL 環境等でモデルファイルの読み込みが高速化されるようです。
