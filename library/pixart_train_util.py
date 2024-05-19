@@ -15,7 +15,7 @@ from accelerate import Accelerator
 from diffusers import AutoencoderKL
 import pixart_model_util
 
-from library import model_util, train_util
+from library import model_util
 # Figure out weighting for T5?
 #from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
 from .utils import setup_logging
@@ -100,7 +100,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
 
-    return load_stable_diffusion_format, text_encoder, vae, dit, logit_scale, ckpt_info
+    return load_stable_diffusion_format, text_encoder, vae, dit, ckpt_info
 
 def load_vae(vae_id, dtype):
     logger.info(f"load VAE: {vae_id}")
