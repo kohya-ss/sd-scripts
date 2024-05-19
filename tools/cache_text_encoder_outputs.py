@@ -167,10 +167,17 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         if len(image_infos) > 0:
             is_sdxl = input_ids2_list[0] is not None
             b_input_ids1 = torch.stack([image_info.input_ids1 for image_info in image_infos])
-            b_input_ids2 = torch.stack([image_info.input_ids2 for image_info in image_infos])
-            b_attention_mask1 = torch.stack([image_info.attention_mask1 for image_info in image_infos])
+            b_input_ids2 = None
+            if is_sdxl:
+                b_input_ids2 = torch.stack([image_info.input_ids2 for image_info in image_infos])
+                b_input_ids = [b_input_ids1, b_input_ids2]
+                b_attention_mask1 = None
+            else:
+                b_attention_mask1 = torch.stack([image_info.attention_mask1 for image_info in image_infos])
+                b_input_ids = [b_input_ids1]
+            
             train_util.cache_batch_text_encoder_outputs(
-                image_infos, tokenizers, text_encoders, args.max_token_length, True, [b_input_ids1, b_input_ids2], weight_dtype, is_sdxl, b_attention_mask1
+                image_infos, tokenizers, text_encoders, args.max_token_length, True, b_input_ids, weight_dtype, is_sdxl, b_attention_mask1
             )
 
     accelerator.wait_for_everyone()
