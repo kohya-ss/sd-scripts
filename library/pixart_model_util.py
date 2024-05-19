@@ -41,7 +41,7 @@ def _load_state_dict_on_device(model, state_dict, device, dtype=None):
     raise RuntimeError("Error(s) in loading state_dict for {}:\n\t{}".format(model.__class__.__name__, "\n\t".join(error_msgs)))
 
 
-def load_models_from_pixart_checkpoint(model_version, ckpt_path, base_resolution, enable_ar_condition, max_token_length, text_encoder_path, vae_path, map_location, dtype=None):
+def load_models_from_pixart_checkpoint(model_version, ckpt_path, base_resolution, enable_ar_condition, max_token_length, text_encoder_path, load_t5_in_4bit, vae_path, map_location, dtype=None):
     # model_version is reserved for future use
     # dtype is used for full_fp16/bf16 integration. Text Encoder will remain fp32, because it runs on CPU when caching
 
@@ -85,7 +85,7 @@ def load_models_from_pixart_checkpoint(model_version, ckpt_path, base_resolution
     logger.info("loading T5 text encoders from huggingface")
 
     tokenizer = T5Tokenizer.from_pretrained(text_encoder_path, subfolder="tokenizer")
-    text_encoder = T5EncoderModel.from_pretrained(text_encoder_path, subfolder="text_encoder").to(map_location)
+    text_encoder = T5EncoderModel.from_pretrained(text_encoder_path, load_in_4bit=load_t5_in_4bit, subfolder="text_encoder").to(map_location)
 
     logger.info("Creating null embeds")
 
@@ -133,7 +133,6 @@ def save_pixart_checkpoint(
     steps,
     ckpt_info,
     vae,
-    logit_scale,
     metadata,
     save_dtype=None,
 ):

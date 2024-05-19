@@ -19,6 +19,7 @@ from library import model_util
 # Figure out weighting for T5?
 #from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
 from .utils import setup_logging
+import library.save_naming as save_naming
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
                 args.enable_ar_condition,
                 args.max_token_length,
                 args.text_encoder_path,
+                args.load_t5_in_4bit,
                 weight_dtype,
                 accelerator.device if args.lowram else "cpu",
                 model_dtype,
@@ -114,7 +116,7 @@ def load_vae(vae_id, dtype):
     return vae
 
 def _load_target_model(
-    name_or_path: str, base_resolution, vae_path: Optional[str], model_version: str, enable_ar_condition, max_token_length, text_encoder_path, weight_dtype, device="cpu", model_dtype=None
+    name_or_path: str, base_resolution, vae_path: Optional[str], model_version: str, enable_ar_condition, max_token_length, text_encoder_path, load_t5_in_4bit, weight_dtype, device="cpu", model_dtype=None
 ):
     # model_dtype only work with full fp16/bf16
     name_or_path = os.readlink(name_or_path) if os.path.islink(name_or_path) else name_or_path
@@ -127,7 +129,7 @@ def _load_target_model(
             vae,
             dit,
             ckpt_info,
-        ) = pixart_model_util.load_models_from_pixart_checkpoint(model_version, name_or_path, base_resolution, enable_ar_condition, max_token_length, text_encoder_path, vae_path, device, model_dtype)
+        ) = pixart_model_util.load_models_from_pixart_checkpoint(model_version, name_or_path, base_resolution, enable_ar_condition, max_token_length, text_encoder_path, load_t5_in_4bit, vae_path, device, model_dtype)
     else:
         raise Exception("kabachuha TODO")
 
@@ -221,7 +223,8 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
     closest_ratio = min(ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return ratios[closest_ratio], float(closest_ratio)
 
-def save_sd_model_on_train_end(
+
+def save_pixart_model_on_train_end(
     args: argparse.Namespace,
     src_path: str,
     save_stable_diffusion_format: bool,
@@ -232,17 +235,25 @@ def save_sd_model_on_train_end(
     text_encoder,
     dit,
     vae,
-    logit_scale,
     ckpt_info,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        raise NotImplementedError('kabachuha TODO')
-
-    def diffusers_saver(out_dir):
-        raise NotImplementedError('kabachuha TODO')
-
-    raise NotImplementedError('kabachuha TODO')
-
+        sai_metadata = {} # TODO: add metadata for pixart
+        pixart_model_util.save_pixart_checkpoint(
+            ckpt_file,
+            text_encoder,
+            dit,
+            epoch_no,
+            global_step,
+            ckpt_info,
+            vae,
+            sai_metadata,
+            save_dtype,
+        )
+    
+    save_naming.save_sd_model_on_train_end_common(
+        args, save_stable_diffusion_format, use_safetensors, epoch, global_step, sd_saver, None, logger
+    )
 
 # epochとstepの保存、メタデータにepoch/stepが含まれ引数が同じになるため、統合している
 # on_epoch_end: Trueならepoch終了時、Falseならstep経過時
@@ -260,16 +271,38 @@ def save_pixart_model_on_epoch_end_or_stepwise(
     text_encoder,
     dit,
     vae,
-    logit_scale,
     ckpt_info,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        raise NotImplementedError('kabachuha TODO')
+        sai_metadata = {} # kabachuha TODO
+        pixart_model_util.save_pixart_checkpoint(
+            ckpt_file,
+            text_encoder,
+            dit,
+            epoch_no,
+            global_step,
+            ckpt_info,
+            vae,
+            sai_metadata,
+            save_dtype,
+        )
 
     def diffusers_saver(out_dir):
-        raise NotImplementedError('kabachuha TODO')
+        raise NotImplementedError("kabachuha TODO")
 
-    raise NotImplementedError('kabachuha TODO')
+    save_naming.save_sd_model_on_epoch_end_or_stepwise_common(
+        args,
+        on_epoch_end,
+        accelerator,
+        save_original_format,
+        use_safetensors,
+        epoch,
+        num_train_epochs,
+        global_step,
+        sd_saver,
+        diffusers_saver,
+        logger
+    )
 
 
 def add_pixart_training_arguments(parser: argparse.ArgumentParser):
