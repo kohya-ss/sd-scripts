@@ -588,7 +588,7 @@ class ControlNetSubset(BaseSubset):
             return NotImplemented
         return self.image_dir == other.image_dir and self.conditioning_data_dir == other.conditioning_data_dir
 
-
+has_warned_about_mask = False
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -795,6 +795,23 @@ class BaseDataset(torch.utils.data.Dataset):
                     caption = caption.replace(str_from, str_to)
 
         return caption
+    
+    def get_input_ids_pixart(self, caption, tokenizer=None):
+        if tokenizer is None:
+            tokenizer = self.tokenizers[0]
+
+        tokenized = tokenizer(
+            caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
+        )
+
+        input_ids = tokenized.input_ids
+        attention_mask = tokenized.attention_mask
+
+        if self.tokenizer_max_length > tokenizer.model_max_length and attention_mask is not None:
+            if not has_warned_about_mask:
+                print('WARNING: attention mask extension is not tried on LLMs yet. The tokenization will just be truncated.')
+
+        return input_ids, attention_mask
 
     def get_input_ids(self, caption, tokenizer=None):
 
@@ -802,7 +819,7 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenizer = self.tokenizers[0]
 
         if not self.is_sdxl: # pixart
-            input_ids, attention_mask = pixart_train_util.get_input_ids_pixart(self, caption, tokenizer)
+            input_ids, attention_mask = self.get_input_ids_pixart(caption, tokenizer)
 
             return input_ids, attention_mask
         else:

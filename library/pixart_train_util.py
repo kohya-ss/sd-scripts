@@ -14,6 +14,7 @@ from transformers import T5EncoderModel, T5Tokenizer
 from accelerate import Accelerator
 from diffusers import AutoencoderKL
 import pixart_model_util
+import library.train_util as train_util
 
 from library import model_util
 # Figure out weighting for T5?
@@ -27,25 +28,6 @@ logger = logging.getLogger(__name__)
 TOKENIZER_PATH = "DeepFloyd/t5-v1_1-xxl"
 
 # DEFAULT_NOISE_OFFSET = 0.0357
-
-
-has_warned_about_mask = False
-def get_input_ids_pixart(self, caption, tokenizer=None):
-    if tokenizer is None:
-        tokenizer = self.tokenizers[0]
-
-    tokenized = tokenizer(
-        caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
-    )
-
-    input_ids = tokenized.input_ids
-    attention_mask = tokenized.attention_mask
-
-    if self.tokenizer_max_length > tokenizer.model_max_length and attention_mask is not None:
-        if not has_warned_about_mask:
-            print('WARNING: attention mask extension is not tried on LLMs yet. The tokenization will just be truncated.')
-
-    return input_ids, attention_mask
 
 def get_hidden_states_pixart(
     max_token_length: int,
@@ -348,6 +330,6 @@ def verify_pixart_training_args(args: argparse.Namespace, supportTextEncoderCach
                 + "cache_text_encoder_outputs_to_diskが有効になっているためcache_text_encoder_outputsが有効になりました"
             )
 
-
+# accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet
 def sample_images(*args, **kwargs):
-    raise NotImplementedError('kabachuha TODO')
+    return train_util.sample_images_common(SimplePixartPipeline, *args, **kwargs)

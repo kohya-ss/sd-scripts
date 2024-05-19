@@ -148,6 +148,7 @@ class PixartNetworkTrainer(train_network.NetworkTrainer):
 
         return noise_pred
 
+    # dit is named "unet" here not to add another vscode err
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
         pixart_train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
 
