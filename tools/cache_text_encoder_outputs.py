@@ -145,6 +145,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     # データ取得のためのループ
     for batch in tqdm(train_dataloader):
         absolute_paths = batch["absolute_paths"]
+        # these are lists or lists of Nones
         input_ids1_list = batch["input_ids1_list"]
         input_ids2_list = batch["input_ids2_list"]
         attention_masks1_list = batch["attention_masks1_list"]
@@ -158,7 +159,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                 if os.path.exists(image_info.text_encoder_outputs_npz):
                     logger.warning(f"Skipping {image_info.text_encoder_outputs_npz} because it already exists.")
                     continue
-                
+
             image_info.input_ids1 = input_ids1
             image_info.input_ids2 = input_ids2
             image_info.attention_mask1 = attention_mask1
