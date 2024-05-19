@@ -214,11 +214,13 @@ class ConfigSanitizer:
     DB_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
         "is_reg": bool,
+        "alpha_mask": bool,
     }
     # FT means FineTuning
     FT_SUBSET_DISTINCT_SCHEMA = {
         Required("metadata_file"): str,
         "image_dir": str,
+        "alpha_mask": bool,
     }
     CN_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
