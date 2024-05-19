@@ -42,16 +42,12 @@ class PixartNetworkTrainer(train_network.NetworkTrainer):
             text_encoder,
             vae,
             dit,
-            logit_scale,
             ckpt_info,
         ) = pixart_train_util.load_target_model(args, accelerator, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, weight_dtype)
 
-        # kabachuha TODO: check args
         self.load_stable_diffusion_format = load_stable_diffusion_format
-        self.logit_scale = logit_scale
         self.ckpt_info = ckpt_info
 
-        # NOTE: having multiple text encoders may be handy when SD3 releases later
         return sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, [text_encoder], vae, dit
 
     def load_tokenizer(self, args):
@@ -69,7 +65,7 @@ class PixartNetworkTrainer(train_network.NetworkTrainer):
                 # メモリ消費を減らす
                 logger.info("move vae and dit to cpu to save memory")
                 org_vae_device = vae.device
-                org_unet_device = dit.device
+                org_dit_device = dit.device
                 vae.to("cpu")
                 dit.to("cpu")
                 clean_memory_on_device(accelerator.device)
@@ -91,34 +87,39 @@ class PixartNetworkTrainer(train_network.NetworkTrainer):
             if not args.lowram:
                 logger.info("move vae and dit back to original device")
                 vae.to(org_vae_device)
-                dit.to(org_unet_device)
+                dit.to(org_dit_device)
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
             text_encoders[0].to(accelerator.device, dtype=weight_dtype)
 
     def get_text_cond(self, args, accelerator, batch, tokenizers, text_encoders, weight_dtype):
-        if "text_encoder_outputs_list" not in batch or batch["text_encoder_outputs_list"] is None:
+        if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
             input_ids1 = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
             with torch.enable_grad():
                 input_ids1 = input_ids1.to(accelerator.device)
-                encoder_hidden_states = train_util.get_hidden_states_pixart(
+                encoder_hidden_states, prompt_attention_mask = pixart_train_util.get_hidden_states_pixart(
                     args.max_token_length,
                     input_ids1,
+                    attention_mask,
                     tokenizers[0],
                     text_encoders[0],
                     None if not args.full_fp16 else weight_dtype,
                     accelerator=accelerator,
                 )
         else:
-            encoder_hidden_states = batch["text_encoder_outputs_list"].to(accelerator.device).to(weight_dtype)
+            encoder_hidden_states = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
+            prompt_attention_mask = batch["prompt_attention_mask"].to(accelerator.device).to(weight_dtype)
 
-        return encoder_hidden_states
+        return encoder_hidden_states, prompt_attention_mask
 
-    def call_dit(self, args, accelerator, dit, noisy_latents, timesteps, text_conds, attention_mask, batch, weight_dtype):
+    # dit named "unet" for compat
+    def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):
 
+        dit = unet
         aspect_ratio_table = pixart_aspect_ratios.select_aspect_ratio_table(f"ASPECT_RATIO_{args.resolution}")
 
-        noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
+        noisy_latents = noisy_latents.to(weight_dtype)
 
         # get size embeddings
         orig_size = batch["original_sizes_hw"].cpu().numpy()
@@ -141,8 +142,8 @@ class PixartNetworkTrainer(train_network.NetworkTrainer):
             added_cond_kwargs = {"resolution": resolution, "aspect_ratio": aspect_ratio}
 
         # Predict the noise residual and compute loss
-        noise_pred = dit(noisy_latents, encoder_hidden_states=text_conds,
-                                    encoder_attention_mask=attention_mask,
+        noise_pred = dit(noisy_latents, encoder_hidden_states=text_conds[0],
+                                    encoder_attention_mask=text_conds[1],
                                     timestep=timesteps,
                                     added_cond_kwargs=added_cond_kwargs).sample.chunk(2, 1)[0]
 
