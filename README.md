@@ -167,6 +167,8 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 - Training scripts can now output training settings to wandb or Tensor Board logs. Specify the `--log_config` option. PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  Thanks to ccharest93, plucked, rockerBOO, and VelocityRa!
   - Some settings, such as API keys and directory specifications, are not output due to security issues.
+
+- The ControlNet training script `train_controlnet.py` for SD1.5/2.x was not working, but it has been fixed. PR [#1284](https://github.com/kohya-ss/sd-scripts/pull/1284) Thanks to sdbds!
   
 - An option `--disable_mmap_load_safetensors` is added to disable memory mapping when loading the model's .safetensors in SDXL. PR [#1266](https://github.com/kohya-ss/sd-scripts/pull/1266) Thanks to Zovjsra!
   - It seems that the model file loading is faster in the WSL environment etc.
@@ -214,6 +216,8 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
 
 - 各学習スクリプトで学習設定を wandb や Tensor Board などのログに出力できるようになりました。`--log_config` オプションを指定してください。PR [#1285](https://github.com/kohya-ss/sd-scripts/pull/1285)  ccharest93 氏、plucked 氏、rockerBOO 氏および VelocityRa 氏に感謝します。
   - API キーや各種ディレクトリ指定など、一部の設定はセキュリティ上の問題があるため出力されません。
+
+- SD1.5/2.x 用の ControlNet 学習スクリプト `train_controlnet.py` が動作しなくなっていたのが修正されました。PR [#1284](https://github.com/kohya-ss/sd-scripts/pull/1284) sdbds 氏に感謝します。
 
 - SDXL でモデルの .safetensors を読み込む際にメモリマッピングを無効化するオプション `--disable_mmap_load_safetensors` が追加されました。PR [#1266](https://github.com/kohya-ss/sd-scripts/pull/1266) Zovjsra 氏に感謝します。
   - WSL 環境等でモデルファイルの読み込みが高速化されるようです。
