@@ -4735,64 +4735,68 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
         epoch_no = epoch  # 例: 最初のepochの途中で保存したら0になる、SDモデルに保存される
         remove_no = get_remove_step_no(args, global_step)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    if save_stable_diffusion_format:
-        ext = ".safetensors" if use_safetensors else ".ckpt"
+    if accelerator.is_main_process:
+        # for checkpoint saving, main process is enough
+        os.makedirs(args.output_dir, exist_ok=True)
+        if save_stable_diffusion_format:
+            ext = ".safetensors" if use_safetensors else ".ckpt"
 
-        if on_epoch_end:
-            ckpt_name = get_epoch_ckpt_name(args, ext, epoch_no)
-        else:
-            ckpt_name = get_step_ckpt_name(args, ext, global_step)
-
-        ckpt_file = os.path.join(args.output_dir, ckpt_name)
-        logger.info("")
-        logger.info(f"saving checkpoint: {ckpt_file}")
-        sd_saver(ckpt_file, epoch_no, global_step)
-
-        if args.huggingface_repo_id is not None:
-            huggingface_util.upload(args, ckpt_file, "/" + ckpt_name)
-
-        # remove older checkpoints
-        if remove_no is not None:
             if on_epoch_end:
-                remove_ckpt_name = get_epoch_ckpt_name(args, ext, remove_no)
+                ckpt_name = get_epoch_ckpt_name(args, ext, epoch_no)
             else:
-                remove_ckpt_name = get_step_ckpt_name(args, ext, remove_no)
+                ckpt_name = get_step_ckpt_name(args, ext, global_step)
 
-            remove_ckpt_file = os.path.join(args.output_dir, remove_ckpt_name)
-            if os.path.exists(remove_ckpt_file):
-                logger.info(f"removing old checkpoint: {remove_ckpt_file}")
-                os.remove(remove_ckpt_file)
+            ckpt_file = os.path.join(args.output_dir, ckpt_name)
+            logger.info("")
+            logger.info(f"saving checkpoint: {ckpt_file}")
+            sd_saver(ckpt_file, epoch_no, global_step)
 
-    else:
-        if on_epoch_end:
-            out_dir = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, epoch_no))
+            if args.huggingface_repo_id is not None:
+                huggingface_util.upload(args, ckpt_file, "/" + ckpt_name)
+
+            # remove older checkpoints
+            if remove_no is not None:
+                if on_epoch_end:
+                    remove_ckpt_name = get_epoch_ckpt_name(args, ext, remove_no)
+                else:
+                    remove_ckpt_name = get_step_ckpt_name(args, ext, remove_no)
+
+                remove_ckpt_file = os.path.join(args.output_dir, remove_ckpt_name)
+                if os.path.exists(remove_ckpt_file):
+                    logger.info(f"removing old checkpoint: {remove_ckpt_file}")
+                    os.remove(remove_ckpt_file)
+
         else:
-            out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, global_step))
-
-        logger.info("")
-        logger.info(f"saving model: {out_dir}")
-        diffusers_saver(out_dir)
-
-        if args.huggingface_repo_id is not None:
-            huggingface_util.upload(args, out_dir, "/" + model_name)
-
-        # remove older checkpoints
-        if remove_no is not None:
             if on_epoch_end:
-                remove_out_dir = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, remove_no))
+                out_dir = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, epoch_no))
             else:
-                remove_out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, remove_no))
+                out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, global_step))
 
-            if os.path.exists(remove_out_dir):
-                logger.info(f"removing old model: {remove_out_dir}")
-                shutil.rmtree(remove_out_dir)
+            logger.info("")
+            logger.info(f"saving model: {out_dir}")
+            diffusers_saver(out_dir)
+
+            if args.huggingface_repo_id is not None:
+                huggingface_util.upload(args, out_dir, "/" + model_name)
+
+            # remove older checkpoints
+            if remove_no is not None:
+                if on_epoch_end:
+                    remove_out_dir = os.path.join(args.output_dir, EPOCH_DIFFUSERS_DIR_NAME.format(model_name, remove_no))
+                else:
+                    remove_out_dir = os.path.join(args.output_dir, STEP_DIFFUSERS_DIR_NAME.format(model_name, remove_no))
+
+                if os.path.exists(remove_out_dir):
+                    logger.info(f"removing old model: {remove_out_dir}")
+                    shutil.rmtree(remove_out_dir)
 
     if args.save_state:
-        if on_epoch_end:
-            save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
-        else:
-            save_and_remove_state_stepwise(args, accelerator, global_step)
+        if accelerator.is_main_process or args.deepspeed:
+            # deepspeed needs to save the state with every single process
+            if on_epoch_end:
+                save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
+            else:
+                save_and_remove_state_stepwise(args, accelerator, global_step)
 
 
 def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
