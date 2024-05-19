@@ -360,7 +360,9 @@ def train(args):
 
                 loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
                 if args.masked_loss:
-                    loss = apply_masked_loss(loss, batch)
+                    loss = apply_masked_loss(loss, batch["conditioning_images"][:, 0].unsqueeze(1))
+                if "alpha_mask" in batch and batch["alpha_mask"] is not None:
+                    loss = apply_masked_loss(loss, batch["alpha_mask"])
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
