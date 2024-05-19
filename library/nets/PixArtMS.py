@@ -13,10 +13,9 @@ import torch.nn as nn
 from timm.models.layers import DropPath
 from timm.models.vision_transformer import Mlp
 
-from diffusion.model.builder import MODELS
-from diffusion.model.utils import auto_grad_checkpoint, to_2tuple
-from diffusion.model.nets.PixArt_blocks import t2i_modulate, CaptionEmbedder, AttentionKVCompress, MultiHeadCrossAttention, T2IFinalLayer, TimestepEmbedder, SizeEmbedder
-from diffusion.model.nets.PixArt import PixArt, get_2d_sincos_pos_embed
+from .PA_utils import MODELS, to_2tuple, auto_grad_checkpoint
+from .PixArt_blocks import t2i_modulate, CaptionEmbedder, AttentionKVCompress, MultiHeadCrossAttention, T2IFinalLayer, TimestepEmbedder, SizeEmbedder
+from .PixArt import PixArt, get_2d_sincos_pos_embed
 
 
 class PatchEmbed(nn.Module):

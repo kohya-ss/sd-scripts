@@ -16,11 +16,9 @@ import numpy as np
 from timm.models.layers import DropPath
 from timm.models.vision_transformer import PatchEmbed, Mlp
 
-from diffusion.model.builder import MODELS
-from diffusion.model.utils import auto_grad_checkpoint, to_2tuple
-from diffusion.model.nets.PixArt_blocks import t2i_modulate, CaptionEmbedder, AttentionKVCompress, MultiHeadCrossAttention, T2IFinalLayer, TimestepEmbedder, LabelEmbedder, FinalLayer
-from diffusion.utils.logger import get_root_logger
+from .PA_utils import MODELS, to_2tuple, auto_grad_checkpoint
 
+from .PixArt_blocks import t2i_modulate, CaptionEmbedder, AttentionKVCompress, MultiHeadCrossAttention, T2IFinalLayer, TimestepEmbedder, LabelEmbedder, FinalLayer
 
 class PixArtBlock(nn.Module):
     """
@@ -133,13 +131,13 @@ class PixArt(nn.Module):
 
         self.initialize_weights()
 
-        if config:
-            logger = get_root_logger(os.path.join(config.work_dir, 'train_log.log'))
-            logger.warning(f"position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}")
-            logger.warning(f"kv compress config: {self.kv_compress_config}")
-        else:
-            print(f'Warning: position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}')
-            print(f"kv compress config: {self.kv_compress_config}")
+        # if config:
+        #     logger = get_root_logger(os.path.join(config.work_dir, 'train_log.log'))
+        #     logger.warning(f"position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}")
+        #     logger.warning(f"kv compress config: {self.kv_compress_config}")
+        # else:
+        #     print(f'Warning: position embed interpolation: {self.pe_interpolation}, base size: {self.base_size}')
+        #     print(f"kv compress config: {self.kv_compress_config}")
 
 
     def forward(self, x, timestep, y, mask=None, data_info=None, **kwargs):
