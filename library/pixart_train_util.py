@@ -15,6 +15,7 @@ from accelerate import Accelerator
 from diffusers import AutoencoderKL
 import pixart_model_util
 import library.train_util as train_util
+from library.pixart_pipeline import SimplePixartPipeline
 
 from library import model_util
 # Figure out weighting for T5?
