@@ -50,6 +50,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.is_pixart = True
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -237,7 +238,8 @@ class NetworkTrainer:
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
 
         # モデルに xformers とか memory efficient attention を組み込む
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        if not self.is_pixart: # TODO: -- for now, let's leave only original xformers for PixArt
+            train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
         if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
             vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
