@@ -322,6 +322,10 @@ class NetworkTrainer:
 
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
+
+        if train_text_encoder and args.load_t5_in_4bit:
+            raise NotImplementedError("Training quantized T5 with Lora/etc. is not supported yet!")
+
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
