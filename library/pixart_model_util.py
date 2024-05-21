@@ -13,7 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 VAE_SCALE_FACTOR = 0.13025
-MODEL_VERSION_SDXL_BASE_V1_0 = "sdxl_base_v1-0"
+MODEL_VERSION_PIXART_SIGMA = "sigma"
 
 # Diffusersの設定を読み込むための参照モデル
 DIFFUSERS_REF_MODEL_ID_SDXL = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -83,6 +83,9 @@ def load_models_from_pixart_checkpoint(model_version, ckpt_path, base_resolution
 
     # Text Encoder is same to Stability AI's DF
     logger.info("loading T5 text encoders from huggingface")
+
+    if not load_t5_in_4bit:
+        print("WARNING: you did not specify loading T5 in 4 bit. If you are running on a consumer hardware, it can cost you a lot of VRAM usage without much quality gain")
 
     tokenizer = T5Tokenizer.from_pretrained(text_encoder_path, subfolder="tokenizer")
     text_encoder = T5EncoderModel.from_pretrained(text_encoder_path, load_in_4bit=load_t5_in_4bit, subfolder="text_encoder").to(map_location)

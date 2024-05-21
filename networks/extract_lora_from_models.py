@@ -9,7 +9,7 @@ import time
 import torch
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-from library import sai_model_spec, model_util, sdxl_model_util
+from library import sai_model_spec, model_util, sdxl_model_util, pixart_model_util
 import lora
 from library.utils import setup_logging
 setup_logging()
@@ -39,6 +39,7 @@ def svd(
     dim=4,
     v2=None,
     sdxl=None,
+    pixart=None,
     conv_dim=None,
     v_parameterization=None,
     device=None,
@@ -49,6 +50,12 @@ def svd(
     load_precision=None,
     load_original_model_to=None,
     load_tuned_model_to=None,
+    pixart_base_resolution=None,
+    pixart_enable_ar_condition=None,
+    pixart_max_token_length=None,
+    pixart_text_encoder_path=None,
+    pixart_load_t5_in_4bit=None,
+    pixart_vae_path="madebyollin/sdxl-vae-fp16-fix"
 ):
     def str_to_dtype(p):
         if p == "float":
@@ -68,7 +75,7 @@ def svd(
     work_device = "cpu"
 
     # load models
-    if not sdxl:
+    if not sdxl and not pixart:
         logger.info(f"loading original SD model : {model_org}")
         text_encoder_o, _, unet_o = model_util.load_models_from_stable_diffusion_checkpoint(v2, model_org)
         text_encoders_o = [text_encoder_o]
@@ -84,7 +91,7 @@ def svd(
             unet_t = unet_t.to(load_dtype)
 
         model_version = model_util.get_model_version_str_for_sd1_sd2(v2, v_parameterization)
-    else:
+    elif sdxl:
         device_org = load_original_model_to if load_original_model_to else "cpu"
         device_tuned = load_tuned_model_to if load_tuned_model_to else "cpu"
 
@@ -109,6 +116,33 @@ def svd(
             unet_t = unet_t.to(load_dtype)
 
         model_version = sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0
+    elif pixart:
+        device_org = load_original_model_to if load_original_model_to else "cpu"
+        device_tuned = load_tuned_model_to if load_tuned_model_to else "cpu"
+
+        logger.info(f"loading original PixArt model : {model_org}")
+        # unet_o -> dit_o again
+        text_encoder_o, _, unet_o, _ = pixart_model_util.load_models_from_pixart_checkpoint(
+            pixart_model_util.MODEL_VERSION_PIXART_SIGMA, model_org, pixart_base_resolution, pixart_enable_ar_condition, pixart_max_token_length, pixart_text_encoder_path, pixart_load_t5_in_4bit, pixart_vae_path, device_org
+        )
+        if load_dtype is not None:
+            text_encoder_o = text_encoder_o.to(load_dtype)
+            unet_o = unet_o.to(load_dtype)
+
+        text_encoders_o = [text_encoder_o]
+        logger.info(f"loading original SDXL model : {model_tuned}")
+        text_encoder_t, _, unet_t, _ = pixart_model_util.load_models_from_pixart_checkpoint(
+            pixart_model_util.MODEL_VERSION_PIXART_SIGMA, model_tuned, pixart_base_resolution, pixart_enable_ar_condition, pixart_max_token_length, pixart_text_encoder_path, pixart_load_t5_in_4bit, pixart_vae_path, device_tuned
+        )
+        if load_dtype is not None:
+            text_encoder_t = text_encoder_t.to(load_dtype)
+            unet_t = unet_t.to(load_dtype)
+
+        text_encoders_t = [text_encoder_t]
+        model_version = pixart_model_util.MODEL_VERSION_PIXART_SIGMA
+        no_metadata = True # -- overriding for now
+    else:
+        raise NotImplementedError("Unknown model type!")
 
     # create LoRA network to extract weights: Use dim (rank) as alpha
     if conv_dim is None:
@@ -276,6 +310,9 @@ def setup_parser() -> argparse.ArgumentParser:
         "--sdxl", action="store_true", help="load Stable Diffusion SDXL base model / Stable Diffusion SDXL baseのモデルを読み込む"
     )
     parser.add_argument(
+        "--pixart", action="store_true", help="load PixArt base model / PixArt baseのモデルを読み込む"
+    )
+    parser.add_argument(
         "--load_precision",
         type=str,
         default=None,
@@ -348,6 +385,36 @@ def setup_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="location to load tuned model, cpu or cuda, cuda:0, etc, default is cpu, only for SDXL / 派生モデル読み込み先、cpuまたはcuda、cuda:0など、省略時はcpu、SDXLのみ有効",
+    )
+
+    # TODO: revise on the usefulness
+    parser.add_argument(
+        "--pixart_base_resolution",
+        type=str,
+        default=1024,
+        help="TODO",
+    )
+    parser.add_argument(
+        "--pixart_enable_ar_condition",
+        action="store_true",
+        help="TODO",
+    )
+    parser.add_argument(
+        "--pixart_max_token_length",
+        type=str,
+        default=300,
+        help="TODO",
+    )
+    parser.add_argument(
+        "--pixart_text_encoder_path",
+        type=str,
+        default="DeepFloyd/t5-v1_1-xxl",
+        help="TODO",
+    )
+    parser.add_argument(
+        "--pixart_load_t5_in_4bit",
+        action="store_true",
+        help="TODO",
     )
 
     return parser
