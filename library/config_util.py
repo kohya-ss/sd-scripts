@@ -78,7 +78,6 @@ class BaseSubsetParams:
     caption_tag_dropout_rate: float = 0.0
     token_warmup_min: int = 1
     token_warmup_step: float = 0
-    alpha_mask: bool = False
 
 
 @dataclass
@@ -87,11 +86,13 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     class_tokens: Optional[str] = None
     caption_extension: str = ".caption"
     cache_info: bool = False
+    alpha_mask: bool = False
 
 
 @dataclass
 class FineTuningSubsetParams(BaseSubsetParams):
     metadata_file: Optional[str] = None
+    alpha_mask: bool = False
 
 
 @dataclass
