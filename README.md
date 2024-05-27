@@ -237,7 +237,7 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
 https://github.com/kohya-ss/sd-scripts/pull/1291) issue [#1290](
 https://github.com/kohya-ss/sd-scripts/pull/1290) frodo821 氏に感謝します。
 
-- データセット設定の .toml ファイルで、`caption_separator` が subset に指定できない不具合が修正されました。 PR [#1312](https://github.com/kohya-ss/sd-scripts/pull/1312) および [#1313](https://github.com/kohya-ss/sd-scripts/pull/1312) rockerBOO 氏に感謝します。
+- データセット設定の .toml ファイルで、`caption_separator` が subset に指定できない不具合が修正されました。 PR [#1312](https://github.com/kohya-ss/sd-scripts/pull/1312) および [#1313](https://github.com/kohya-ss/sd-scripts/pull/1313) rockerBOO 氏に感謝します。
 
 - ControlNet-LLLite 学習時の潜在バグが修正されました。 PR [#1322](https://github.com/kohya-ss/sd-scripts/pull/1322) aria1th 氏に感謝します。
 
