@@ -14,6 +14,11 @@
 
 学習画像それぞれに対応するマスク画像を用意する方法です。学習画像と同じファイル名のマスク画像を用意し、それを学習画像と別のディレクトリに保存します。
 
+- 学習画像
+  ![image](https://github.com/kohya-ss/sd-scripts/assets/52813779/607c5116-5f62-47de-8b66-9c4a597f0441)
+- マスク画像
+  ![image](https://github.com/kohya-ss/sd-scripts/assets/52813779/53e9b0f8-a4bf-49ed-882d-4026f84e8450)
+
 マスク画像は、学習画像と同じサイズで、学習する部分を白、無視する部分を黒で描画します。グレースケールにも対応しています（127 ならロス重みが 0.5 になります）。なお、正確にはマスク画像の R チャネルが用いられます。
 
 DreamBooth 方式の dataset で、`conditioning_data_dir` で指定したディレクトリにマスク画像を保存するしてください。ControlNet のデータセットと同じですので、詳細は [ControlNet-LLLite](train_lllite_README-ja.md#データセットの準備) を参照してください。
@@ -22,7 +27,11 @@ DreamBooth 方式の dataset で、`conditioning_data_dir` で指定したディ
 
 学習画像の透明度（アルファチャネル）がマスクとして使用されます。透明度が 0 の部分は無視され、255 の部分は学習されます。半透明の場合は、その透明度に応じてロス重みが変化します（127 ならおおむね 0.5）。
 
-学習時のスクリプトのオプション `--alpha_mask`、または dataset の設定ファイルの subset で、`alpha_mask` を指定してください。たとえば、以下のようになります。
+![image](https://github.com/kohya-ss/sd-scripts/assets/52813779/0baa129b-446a-4aac-b98c-7208efb0e75e)
+
+※それぞれの画像は透過PNG
+
+学習時のスクリプトのオプションに `--alpha_mask` を指定するか、dataset の設定ファイルの subset で、`alpha_mask` を指定してください。たとえば、以下のようになります。
 
 ```toml
 [[datasets.subsets]]
