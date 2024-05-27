@@ -161,6 +161,10 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
     - Example: `--network_args "loraplus_unet_lr_ratio=16" "loraplus_text_encoder_lr_ratio=4"` or `--network_args "loraplus_lr_ratio=16" "loraplus_text_encoder_lr_ratio=4"` etc.
   - `network_module` `networks.lora` and `networks.dylora` are available.
 
+- The feature to use the transparency (alpha channel) of the image as a mask in the loss calculation has been added. PR [#1223](https://github.com/kohya-ss/sd-scripts/pull/1223) Thanks to u-haru!
+  - The transparent part is ignored during training. Specify the `--alpha_mask` option in the training script or specify `alpha_mask = true` in the dataset configuration file.
+  - See [About masked loss](./docs/masked_loss_README.md) for details.
+
 - LoRA training in SDXL now supports block-wise learning rates and block-wise dim (rank). PR [#1331](https://github.com/kohya-ss/sd-scripts/pull/1331) 
   - Specify the learning rate and dim (rank) for each block.
   - See [Block-wise learning rates in LoRA](./docs/train_network_README-ja.md#階層別学習率) for details (Japanese only).
@@ -213,6 +217,10 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
   - `loraplus_unet_lr_ratio` と `loraplus_lr_ratio` で、U-Net および Text Encoder に個別の値を指定することも可能です。
     - 例：`--network_args "loraplus_unet_lr_ratio=16" "loraplus_text_encoder_lr_ratio=4"` または `--network_args "loraplus_lr_ratio=16" "loraplus_text_encoder_lr_ratio=4"` など
   - `network_module` の `networks.lora` および `networks.dylora` で使用可能です。
+
+- 画像の透明度（アルファチャネル）をロス計算時のマスクとして使用する機能が追加されました。PR [#1223](https://github.com/kohya-ss/sd-scripts/pull/1223) u-haru 氏に感謝します。
+  - 透明部分が学習時に無視されるようになります。学習スクリプトに `--alpha_mask` オプションを指定するか、データセット設定ファイルに `alpha_mask = true` を指定してください。
+  - 詳細は [マスクロスについて](./docs/masked_loss_README-ja.md) をご覧ください。
 
 - SDXL の LoRA で階層別学習率、階層別 dim (rank) をサポートしました。PR [#1331](https://github.com/kohya-ss/sd-scripts/pull/1331) 
   - ブロックごとに学習率および dim (rank) を指定することができます。
