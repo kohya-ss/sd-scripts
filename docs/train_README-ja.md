@@ -295,7 +295,7 @@ Stable Diffusion のv1は512\*512で学習されていますが、それに加�
 
 また任意の解像度で学習するため、事前に画像データの縦横比を統一しておく必要がなくなります。
 
-設定で有効、向こうが切り替えられますが、ここまでの設定ファイルの記述例では有効になっています（`true` が設定されています）。
+設定で有効、無効が切り替えられますが、ここまでの設定ファイルの記述例では有効になっています（`true` が設定されています）。
 
 学習解像度はパラメータとして与えられた解像度の面積（＝メモリ使用量）を超えない範囲で、64ピクセル単位（デフォルト、変更可）で縦横に調整、作成されます。
 
@@ -373,6 +373,10 @@ classがひとつで対象が複数の場合、正則化画像フォルダはひ
 - `--sample_every_n_steps` / `--sample_every_n_epochs`
     
     サンプル出力するステップ数またはエポック数を指定します。この数ごとにサンプル出力します。両方指定するとエポック数が優先されます。
+
+- `--sample_at_first`
+    
+    学習開始前にサンプル出力します。学習前との比較ができます。
 
 - `--sample_prompts`
 
@@ -609,10 +613,12 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     - AdamW : [torch.optim.AdamW](https://pytorch.org/docs/stable/generated/torch.optim.AdamW.html)
     - 過去のバージョンのオプション未指定時と同じ
     - AdamW8bit : 引数は同上
+    - PagedAdamW8bit : 引数は同上
     - 過去のバージョンの--use_8bit_adam指定時と同じ
     - Lion : https://github.com/lucidrains/lion-pytorch
     - 過去のバージョンの--use_lion_optimizer指定時と同じ
     - Lion8bit : 引数は同上
+    - PagedLion8bit : 引数は同上
     - SGDNesterov : [torch.optim.SGD](https://pytorch.org/docs/stable/generated/torch.optim.SGD.html), nesterov=True
     - SGDNesterov8bit : 引数は同上
     - DAdaptation(DAdaptAdamPreprint) : https://github.com/facebookresearch/dadaptation

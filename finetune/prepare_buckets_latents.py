@@ -8,13 +8,21 @@ from tqdm import tqdm
 import numpy as np
 from PIL import Image
 import cv2
+
 import torch
+from library.device_utils import init_ipex, get_preferred_device
+init_ipex()
+
 from torchvision import transforms
 
 import library.model_util as model_util
 import library.train_util as train_util
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = get_preferred_device()
 
 IMAGE_TRANSFORMS = transforms.Compose(
     [
@@ -34,16 +42,7 @@ def collate_fn_remove_corrupted(batch):
     return batch
 
 
-def get_latents(vae, images, weight_dtype):
-    img_tensors = [IMAGE_TRANSFORMS(image) for image in images]
-    img_tensors = torch.stack(img_tensors)
-    img_tensors = img_tensors.to(DEVICE, weight_dtype)
-    with torch.no_grad():
-        latents = vae.encode(img_tensors).latent_dist.sample().float().to("cpu").numpy()
-    return latents
-
-
-def get_npz_filename_wo_ext(data_dir, image_key, is_full_path, flip, recursive):
+def get_npz_filename(data_dir, image_key, is_full_path, recursive):
     if is_full_path:
         base_name = os.path.splitext(os.path.basename(image_key))[0]
         relative_path = os.path.relpath(os.path.dirname(image_key), data_dir)
@@ -51,30 +50,31 @@ def get_npz_filename_wo_ext(data_dir, image_key, is_full_path, flip, recursive):
         base_name = image_key
         relative_path = ""
 
-    if flip:
-        base_name += "_flip"
-
     if recursive and relative_path:
-        return os.path.join(data_dir, relative_path, base_name)
+        return os.path.join(data_dir, relative_path, base_name) + ".npz"
     else:
-        return os.path.join(data_dir, base_name)
+        return os.path.join(data_dir, base_name) + ".npz"
 
 
 def main(args):
     # assert args.bucket_reso_steps % 8 == 0, f"bucket_reso_steps must be divisible by 8 / bucket_reso_stepは8で割り切れる必要があります"
     if args.bucket_reso_steps % 8 > 0:
-        print(f"resolution of buckets in training time is a multiple of 8 / 学習時の各bucketの解像度は8単位になります")
+        logger.warning(f"resolution of buckets in training time is a multiple of 8 / 学習時の各bucketの解像度は8単位になります")
+    if args.bucket_reso_steps % 32 > 0:
+        logger.warning(
+            f"WARNING: bucket_reso_steps is not divisible by 32. It is not working with SDXL / bucket_reso_stepsが32で割り切れません。SDXLでは動作しません"
+        )
 
     train_data_dir_path = Path(args.train_data_dir)
     image_paths: List[str] = [str(p) for p in train_util.glob_images_pathlib(train_data_dir_path, args.recursive)]
-    print(f"found {len(image_paths)} images.")
+    logger.info(f"found {len(image_paths)} images.")
 
     if os.path.exists(args.in_json):
-        print(f"loading existing metadata: {args.in_json}")
+        logger.info(f"loading existing metadata: {args.in_json}")
         with open(args.in_json, "rt", encoding="utf-8") as f:
             metadata = json.load(f)
     else:
-        print(f"no metadata / メタデータファイルがありません: {args.in_json}")
+        logger.error(f"no metadata / メタデータファイルがありません: {args.in_json}")
         return
 
     weight_dtype = torch.float32
@@ -97,7 +97,7 @@ def main(args):
     if not args.bucket_no_upscale:
         bucket_manager.make_buckets()
     else:
-        print(
+        logger.warning(
             "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically / bucket_no_upscaleが指定された場合は、bucketの解像度は画像サイズから自動計算されるため、min_bucket_resoとmax_bucket_resoは無視されます"
         )
 
@@ -107,34 +107,7 @@ def main(args):
     def process_batch(is_last):
         for bucket in bucket_manager.buckets:
             if (is_last and len(bucket) > 0) or len(bucket) >= args.batch_size:
-                latents = get_latents(vae, [img for _, img in bucket], weight_dtype)
-                assert (
-                    latents.shape[2] == bucket[0][1].shape[0] // 8 and latents.shape[3] == bucket[0][1].shape[1] // 8
-                ), f"latent shape {latents.shape}, {bucket[0][1].shape}"
-
-                for (image_key, _), latent in zip(bucket, latents):
-                    npz_file_name = get_npz_filename_wo_ext(args.train_data_dir, image_key, args.full_path, False, args.recursive)
-                    np.savez(npz_file_name, latent)
-
-                # flip
-                if args.flip_aug:
-                    latents = get_latents(vae, [img[:, ::-1].copy() for _, img in bucket], weight_dtype)  # copyがないとTensor変換できない
-
-                    for (image_key, _), latent in zip(bucket, latents):
-                        npz_file_name = get_npz_filename_wo_ext(
-                            args.train_data_dir, image_key, args.full_path, True, args.recursive
-                        )
-                        np.savez(npz_file_name, latent)
-                else:
-                    # remove existing flipped npz
-                    for image_key, _ in bucket:
-                        npz_file_name = (
-                            get_npz_filename_wo_ext(args.train_data_dir, image_key, args.full_path, True, args.recursive) + ".npz"
-                        )
-                        if os.path.isfile(npz_file_name):
-                            print(f"remove existing flipped npz / 既存のflipされたnpzファイルを削除します: {npz_file_name}")
-                            os.remove(npz_file_name)
-
+                train_util.cache_batch_latents(vae, True, bucket, args.flip_aug, False)
                 bucket.clear()
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
@@ -165,7 +138,7 @@ def main(args):
                 if image.mode != "RGB":
                     image = image.convert("RGB")
             except Exception as e:
-                print(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
+                logger.error(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
                 continue
 
         image_key = image_path if args.full_path else os.path.splitext(os.path.basename(image_path))[0]
@@ -194,50 +167,19 @@ def main(args):
             resized_size[0] >= reso[0] and resized_size[1] >= reso[1]
         ), f"internal error resized size is small: {resized_size}, {reso}"
 
-        # 既に存在するファイルがあればshapeを確認して同じならskipする
+        # 既に存在するファイルがあればshape等を確認して同じならskipする
+        npz_file_name = get_npz_filename(args.train_data_dir, image_key, args.full_path, args.recursive)
         if args.skip_existing:
-            npz_files = [get_npz_filename_wo_ext(args.train_data_dir, image_key, args.full_path, False, args.recursive) + ".npz"]
-            if args.flip_aug:
-                npz_files.append(
-                    get_npz_filename_wo_ext(args.train_data_dir, image_key, args.full_path, True, args.recursive) + ".npz"
-                )
-
-            found = True
-            for npz_file in npz_files:
-                if not os.path.exists(npz_file):
-                    found = False
-                    break
-
-                dat = np.load(npz_file)["arr_0"]
-                if dat.shape[1] != reso[1] // 8 or dat.shape[2] != reso[0] // 8:  # latentsのshapeを確認
-                    found = False
-                    break
-            if found:
+            if train_util.is_disk_cached_latents_is_expected(reso, npz_file_name, args.flip_aug):
                 continue
 
-        # 画像をリサイズしてトリミングする
-        # PILにinter_areaがないのでcv2で……
-        image = np.array(image)
-        if resized_size[0] != image.shape[1] or resized_size[1] != image.shape[0]:  # リサイズ処理が必要？
-            image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)
-
-        if resized_size[0] > reso[0]:
-            trim_size = resized_size[0] - reso[0]
-            image = image[:, trim_size // 2 : trim_size // 2 + reso[0]]
-
-        if resized_size[1] > reso[1]:
-            trim_size = resized_size[1] - reso[1]
-            image = image[trim_size // 2 : trim_size // 2 + reso[1]]
-
-        assert (
-            image.shape[0] == reso[1] and image.shape[1] == reso[0]
-        ), f"internal error, illegal trimmed size: {image.shape}, {reso}"
-
-        # # debug
-        # cv2.imwrite(f"r:\\test\\img_{len(img_ar_errors)}.jpg", image[:, :, ::-1])
-
         # バッチへ追加
-        bucket_manager.add_image(reso, (image_key, image))
+        image_info = train_util.ImageInfo(image_key, 1, "", False, image_path)
+        image_info.latents_npz = npz_file_name
+        image_info.bucket_reso = reso
+        image_info.resized_size = resized_size
+        image_info.image = image
+        bucket_manager.add_image(reso, image_info)
 
         # バッチを推論するか判定して推論する
         process_batch(False)
@@ -249,15 +191,15 @@ def main(args):
     for i, reso in enumerate(bucket_manager.resos):
         count = bucket_counts.get(reso, 0)
         if count > 0:
-            print(f"bucket {i} {reso}: {count}")
+            logger.info(f"bucket {i} {reso}: {count}")
     img_ar_errors = np.array(img_ar_errors)
-    print(f"mean ar error: {np.mean(img_ar_errors)}")
+    logger.info(f"mean ar error: {np.mean(img_ar_errors)}")
 
     # metadataを書き出して終わり
-    print(f"writing metadata: {args.out_json}")
+    logger.info(f"writing metadata: {args.out_json}")
     with open(args.out_json, "wt", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
-    print("done!")
+    logger.info("done!")
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -281,7 +223,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="max resolution in fine tuning (width,height) / fine tuning時の最大画像サイズ 「幅,高さ」（使用メモリ量に関係します）",
     )
     parser.add_argument("--min_bucket_reso", type=int, default=256, help="minimum resolution for buckets / bucketの最小解像度")
-    parser.add_argument("--max_bucket_reso", type=int, default=1024, help="maximum resolution for buckets / bucketの最小解像度")
+    parser.add_argument("--max_bucket_reso", type=int, default=1024, help="maximum resolution for buckets / bucketの最大解像度")
     parser.add_argument(
         "--bucket_reso_steps",
         type=int,

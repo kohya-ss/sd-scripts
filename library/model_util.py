@@ -3,10 +3,20 @@
 
 import math
 import os
+
 import torch
+from library.device_utils import init_ipex
+init_ipex()
+
+import diffusers
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPTextConfig, logging
-from diffusers import AutoencoderKL, DDIMScheduler, StableDiffusionPipeline, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDIMScheduler, StableDiffusionPipeline  # , UNet2DConditionModel
 from safetensors.torch import load_file, save_file
+from library.original_unet import UNet2DConditionModel
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # DiffUsers版StableDiffusionのモデルパラメータ
 NUM_TRAIN_TIMESTEPS = 1000
@@ -126,17 +136,30 @@ def renew_vae_attention_paths(old_list, n_shave_prefix_segments=0):
         new_item = new_item.replace("norm.weight", "group_norm.weight")
         new_item = new_item.replace("norm.bias", "group_norm.bias")
 
-        new_item = new_item.replace("q.weight", "query.weight")
-        new_item = new_item.replace("q.bias", "query.bias")
+        if diffusers.__version__ < "0.17.0":
+            new_item = new_item.replace("q.weight", "query.weight")
+            new_item = new_item.replace("q.bias", "query.bias")
 
-        new_item = new_item.replace("k.weight", "key.weight")
-        new_item = new_item.replace("k.bias", "key.bias")
+            new_item = new_item.replace("k.weight", "key.weight")
+            new_item = new_item.replace("k.bias", "key.bias")
 
-        new_item = new_item.replace("v.weight", "value.weight")
-        new_item = new_item.replace("v.bias", "value.bias")
+            new_item = new_item.replace("v.weight", "value.weight")
+            new_item = new_item.replace("v.bias", "value.bias")
 
-        new_item = new_item.replace("proj_out.weight", "proj_attn.weight")
-        new_item = new_item.replace("proj_out.bias", "proj_attn.bias")
+            new_item = new_item.replace("proj_out.weight", "proj_attn.weight")
+            new_item = new_item.replace("proj_out.bias", "proj_attn.bias")
+        else:
+            new_item = new_item.replace("q.weight", "to_q.weight")
+            new_item = new_item.replace("q.bias", "to_q.bias")
+
+            new_item = new_item.replace("k.weight", "to_k.weight")
+            new_item = new_item.replace("k.bias", "to_k.bias")
+
+            new_item = new_item.replace("v.weight", "to_v.weight")
+            new_item = new_item.replace("v.bias", "to_v.bias")
+
+            new_item = new_item.replace("proj_out.weight", "to_out.0.weight")
+            new_item = new_item.replace("proj_out.bias", "to_out.0.bias")
 
         new_item = shave_segments(new_item, n_shave_prefix_segments=n_shave_prefix_segments)
 
@@ -191,8 +214,16 @@ def assign_to_checkpoint(
                 new_path = new_path.replace(replacement["old"], replacement["new"])
 
         # proj_attn.weight has to be converted from conv 1D to linear
-        if "proj_attn.weight" in new_path:
-            checkpoint[new_path] = old_checkpoint[path["old"]][:, :, 0]
+        reshaping = False
+        if diffusers.__version__ < "0.17.0":
+            if "proj_attn.weight" in new_path:
+                reshaping = True
+        else:
+            if ".attentions." in new_path and ".0.to_" in new_path and old_checkpoint[path["old"]].ndim > 2:
+                reshaping = True
+
+        if reshaping:
+            checkpoint[new_path] = old_checkpoint[path["old"]][:, :, 0, 0]
         else:
             checkpoint[new_path] = old_checkpoint[path["old"]]
 
@@ -361,7 +392,7 @@ def convert_ldm_unet_checkpoint(v2, checkpoint, config):
 
     # SDのv2では1*1のconv2dがlinearに変わっている
     # 誤って Diffusers 側を conv2d のままにしてしまったので、変換必要
-    if v2 and not config.get('use_linear_projection', False):
+    if v2 and not config.get("use_linear_projection", False):
         linear_transformer_to_conv(new_checkpoint)
 
     return new_checkpoint
@@ -540,6 +571,11 @@ def convert_ldm_clip_checkpoint_v1(checkpoint):
     for key in keys:
         if key.startswith("cond_stage_model.transformer"):
             text_model_dict[key[len("cond_stage_model.transformer.") :]] = checkpoint[key]
+
+    # remove position_ids for newer transformer, which causes error :(
+    if "text_model.embeddings.position_ids" in text_model_dict:
+        text_model_dict.pop("text_model.embeddings.position_ids")
+
     return text_model_dict
 
 
@@ -732,6 +768,105 @@ def convert_unet_state_dict_to_sd(v2, unet_state_dict):
     return new_state_dict
 
 
+def controlnet_conversion_map():
+    unet_conversion_map = [
+        ("time_embed.0.weight", "time_embedding.linear_1.weight"),
+        ("time_embed.0.bias", "time_embedding.linear_1.bias"),
+        ("time_embed.2.weight", "time_embedding.linear_2.weight"),
+        ("time_embed.2.bias", "time_embedding.linear_2.bias"),
+        ("input_blocks.0.0.weight", "conv_in.weight"),
+        ("input_blocks.0.0.bias", "conv_in.bias"),
+        ("middle_block_out.0.weight", "controlnet_mid_block.weight"),
+        ("middle_block_out.0.bias", "controlnet_mid_block.bias"),
+    ]
+
+    unet_conversion_map_resnet = [
+        ("in_layers.0", "norm1"),
+        ("in_layers.2", "conv1"),
+        ("out_layers.0", "norm2"),
+        ("out_layers.3", "conv2"),
+        ("emb_layers.1", "time_emb_proj"),
+        ("skip_connection", "conv_shortcut"),
+    ]
+
+    unet_conversion_map_layer = []
+    for i in range(4):
+        for j in range(2):
+            hf_down_res_prefix = f"down_blocks.{i}.resnets.{j}."
+            sd_down_res_prefix = f"input_blocks.{3*i + j + 1}.0."
+            unet_conversion_map_layer.append((sd_down_res_prefix, hf_down_res_prefix))
+
+            if i < 3:
+                hf_down_atn_prefix = f"down_blocks.{i}.attentions.{j}."
+                sd_down_atn_prefix = f"input_blocks.{3*i + j + 1}.1."
+                unet_conversion_map_layer.append((sd_down_atn_prefix, hf_down_atn_prefix))
+
+        if i < 3:
+            hf_downsample_prefix = f"down_blocks.{i}.downsamplers.0.conv."
+            sd_downsample_prefix = f"input_blocks.{3*(i+1)}.0.op."
+            unet_conversion_map_layer.append((sd_downsample_prefix, hf_downsample_prefix))
+
+    hf_mid_atn_prefix = "mid_block.attentions.0."
+    sd_mid_atn_prefix = "middle_block.1."
+    unet_conversion_map_layer.append((sd_mid_atn_prefix, hf_mid_atn_prefix))
+
+    for j in range(2):
+        hf_mid_res_prefix = f"mid_block.resnets.{j}."
+        sd_mid_res_prefix = f"middle_block.{2*j}."
+        unet_conversion_map_layer.append((sd_mid_res_prefix, hf_mid_res_prefix))
+
+    controlnet_cond_embedding_names = ["conv_in"] + [f"blocks.{i}" for i in range(6)] + ["conv_out"]
+    for i, hf_prefix in enumerate(controlnet_cond_embedding_names):
+        hf_prefix = f"controlnet_cond_embedding.{hf_prefix}."
+        sd_prefix = f"input_hint_block.{i*2}."
+        unet_conversion_map_layer.append((sd_prefix, hf_prefix))
+
+    for i in range(12):
+        hf_prefix = f"controlnet_down_blocks.{i}."
+        sd_prefix = f"zero_convs.{i}.0."
+        unet_conversion_map_layer.append((sd_prefix, hf_prefix))
+
+    return unet_conversion_map, unet_conversion_map_resnet, unet_conversion_map_layer
+
+
+def convert_controlnet_state_dict_to_sd(controlnet_state_dict):
+    unet_conversion_map, unet_conversion_map_resnet, unet_conversion_map_layer = controlnet_conversion_map()
+
+    mapping = {k: k for k in controlnet_state_dict.keys()}
+    for sd_name, diffusers_name in unet_conversion_map:
+        mapping[diffusers_name] = sd_name
+    for k, v in mapping.items():
+        if "resnets" in k:
+            for sd_part, diffusers_part in unet_conversion_map_resnet:
+                v = v.replace(diffusers_part, sd_part)
+            mapping[k] = v
+    for k, v in mapping.items():
+        for sd_part, diffusers_part in unet_conversion_map_layer:
+            v = v.replace(diffusers_part, sd_part)
+        mapping[k] = v
+    new_state_dict = {v: controlnet_state_dict[k] for k, v in mapping.items()}
+    return new_state_dict
+
+
+def convert_controlnet_state_dict_to_diffusers(controlnet_state_dict):
+    unet_conversion_map, unet_conversion_map_resnet, unet_conversion_map_layer = controlnet_conversion_map()
+
+    mapping = {k: k for k in controlnet_state_dict.keys()}
+    for sd_name, diffusers_name in unet_conversion_map:
+        mapping[sd_name] = diffusers_name
+    for k, v in mapping.items():
+        for sd_part, diffusers_part in unet_conversion_map_layer:
+            v = v.replace(sd_part, diffusers_part)
+        mapping[k] = v
+    for k, v in mapping.items():
+        if "resnets" in v:
+            for sd_part, diffusers_part in unet_conversion_map_resnet:
+                v = v.replace(sd_part, diffusers_part)
+            mapping[k] = v
+    new_state_dict = {v: controlnet_state_dict[k] for k, v in mapping.items()}
+    return new_state_dict
+
+
 # ================#
 # VAE Conversion #
 # ================#
@@ -779,14 +914,24 @@ def convert_vae_state_dict(vae_state_dict):
         sd_mid_res_prefix = f"mid.block_{i+1}."
         vae_conversion_map.append((sd_mid_res_prefix, hf_mid_res_prefix))
 
-    vae_conversion_map_attn = [
-        # (stable-diffusion, HF Diffusers)
-        ("norm.", "group_norm."),
-        ("q.", "query."),
-        ("k.", "key."),
-        ("v.", "value."),
-        ("proj_out.", "proj_attn."),
-    ]
+    if diffusers.__version__ < "0.17.0":
+        vae_conversion_map_attn = [
+            # (stable-diffusion, HF Diffusers)
+            ("norm.", "group_norm."),
+            ("q.", "query."),
+            ("k.", "key."),
+            ("v.", "value."),
+            ("proj_out.", "proj_attn."),
+        ]
+    else:
+        vae_conversion_map_attn = [
+            # (stable-diffusion, HF Diffusers)
+            ("norm.", "group_norm."),
+            ("q.", "to_q."),
+            ("k.", "to_k."),
+            ("v.", "to_v."),
+            ("proj_out.", "to_out.0."),
+        ]
 
     mapping = {k: k for k in vae_state_dict.keys()}
     for k, v in mapping.items():
@@ -803,7 +948,7 @@ def convert_vae_state_dict(vae_state_dict):
     for k, v in new_state_dict.items():
         for weight_name in weights_to_convert:
             if f"mid.attn_1.{weight_name}.weight" in k:
-                # print(f"Reshaping {k} for SD format")
+                # logger.info(f"Reshaping {k} for SD format: shape {v.shape} -> {v.shape} x 1 x 1")
                 new_state_dict[k] = reshape_weight_for_sd(v)
 
     return new_state_dict
@@ -852,7 +997,7 @@ def load_checkpoint_with_text_encoder_conversion(ckpt_path, device="cpu"):
 
 
 # TODO dtype指定の動作が怪しいので確認する text_encoderを指定形式で作れるか未確認
-def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dtype=None, unet_use_linear_projection_in_v2=False):
+def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dtype=None, unet_use_linear_projection_in_v2=True):
     _, state_dict = load_checkpoint_with_text_encoder_conversion(ckpt_path, device)
 
     # Convert the UNet2DConditionModel model.
@@ -861,7 +1006,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
 
     unet = UNet2DConditionModel(**unet_config).to(device)
     info = unet.load_state_dict(converted_unet_checkpoint)
-    print("loading u-net:", info)
+    logger.info(f"loading u-net: {info}")
 
     # Convert the VAE model.
     vae_config = create_vae_diffusers_config()
@@ -869,7 +1014,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
 
     vae = AutoencoderKL(**vae_config).to(device)
     info = vae.load_state_dict(converted_vae_checkpoint)
-    print("loading vae:", info)
+    logger.info(f"loading vae: {info}")
 
     # convert text_model
     if v2:
@@ -900,14 +1045,47 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
     else:
         converted_text_encoder_checkpoint = convert_ldm_clip_checkpoint_v1(state_dict)
 
-        logging.set_verbosity_error()  # don't show annoying warning
-        text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
-        logging.set_verbosity_warning()
-
+        # logging.set_verbosity_error()  # don't show annoying warning
+        # text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+        # logging.set_verbosity_warning()
+        # logger.info(f"config: {text_model.config}")
+        cfg = CLIPTextConfig(
+            vocab_size=49408,
+            hidden_size=768,
+            intermediate_size=3072,
+            num_hidden_layers=12,
+            num_attention_heads=12,
+            max_position_embeddings=77,
+            hidden_act="quick_gelu",
+            layer_norm_eps=1e-05,
+            dropout=0.0,
+            attention_dropout=0.0,
+            initializer_range=0.02,
+            initializer_factor=1.0,
+            pad_token_id=1,
+            bos_token_id=0,
+            eos_token_id=2,
+            model_type="clip_text_model",
+            projection_dim=768,
+            torch_dtype="float32",
+        )
+        text_model = CLIPTextModel._from_config(cfg)
         info = text_model.load_state_dict(converted_text_encoder_checkpoint)
-    print("loading text encoder:", info)
+    logger.info(f"loading text encoder: {info}")
 
     return text_model, vae, unet
+
+
+def get_model_version_str_for_sd1_sd2(v2, v_parameterization):
+    # only for reference
+    version_str = "sd"
+    if v2:
+        version_str += "_v2"
+    else:
+        version_str += "_v1"
+    if v_parameterization:
+        version_str += "_v"
+    return version_str
 
 
 def convert_text_encoder_state_dict_to_sd_v2(checkpoint, make_dummy_weights=False):
@@ -968,7 +1146,7 @@ def convert_text_encoder_state_dict_to_sd_v2(checkpoint, make_dummy_weights=Fals
 
     # 最後の層などを捏造するか
     if make_dummy_weights:
-        print("make dummy weights for resblock.23, text_projection and logit scale.")
+        logger.info("make dummy weights for resblock.23, text_projection and logit scale.")
         keys = list(new_sd.keys())
         for key in keys:
             if key.startswith("transformer.resblocks.22."):
@@ -981,7 +1159,9 @@ def convert_text_encoder_state_dict_to_sd_v2(checkpoint, make_dummy_weights=Fals
     return new_sd
 
 
-def save_stable_diffusion_checkpoint(v2, output_file, text_encoder, unet, ckpt_path, epochs, steps, save_dtype=None, vae=None):
+def save_stable_diffusion_checkpoint(
+    v2, output_file, text_encoder, unet, ckpt_path, epochs, steps, metadata, save_dtype=None, vae=None
+):
     if ckpt_path is not None:
         # epoch/stepを参照する。またVAEがメモリ上にないときなど、もう一度VAEを含めて読み込む
         checkpoint, state_dict = load_checkpoint_with_text_encoder_conversion(ckpt_path)
@@ -1043,7 +1223,7 @@ def save_stable_diffusion_checkpoint(v2, output_file, text_encoder, unet, ckpt_p
 
     if is_safetensors(output_file):
         # TODO Tensor以外のdictの値を削除したほうがいいか
-        save_file(state_dict, output_file)
+        save_file(state_dict, output_file, metadata)
     else:
         torch.save(new_ckpt, output_file)
 
@@ -1063,8 +1243,13 @@ def save_diffusers_checkpoint(v2, output_dir, text_encoder, unet, pretrained_mod
     if vae is None:
         vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
 
+    # original U-Net cannot be saved, so we need to convert it to the Diffusers version
+    # TODO this consumes a lot of memory
+    diffusers_unet = diffusers.UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+    diffusers_unet.load_state_dict(unet.state_dict())
+
     pipeline = StableDiffusionPipeline(
-        unet=unet,
+        unet=diffusers_unet,
         text_encoder=text_encoder,
         vae=vae,
         scheduler=scheduler,
@@ -1080,14 +1265,14 @@ VAE_PREFIX = "first_stage_model."
 
 
 def load_vae(vae_id, dtype):
-    print(f"load VAE: {vae_id}")
+    logger.info(f"load VAE: {vae_id}")
     if os.path.isdir(vae_id) or not os.path.isfile(vae_id):
         # Diffusers local/remote
         try:
             vae = AutoencoderKL.from_pretrained(vae_id, subfolder=None, torch_dtype=dtype)
         except EnvironmentError as e:
-            print(f"exception occurs in loading vae: {e}")
-            print("retry with subfolder='vae'")
+            logger.error(f"exception occurs in loading vae: {e}")
+            logger.error("retry with subfolder='vae'")
             vae = AutoencoderKL.from_pretrained(vae_id, subfolder="vae", torch_dtype=dtype)
         return vae
 
@@ -1128,19 +1313,19 @@ def load_vae(vae_id, dtype):
 
 def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64):
     max_width, max_height = max_reso
-    max_area = (max_width // divisible) * (max_height // divisible)
+    max_area = max_width * max_height
 
     resos = set()
 
-    size = int(math.sqrt(max_area)) * divisible
-    resos.add((size, size))
+    width = int(math.sqrt(max_area) // divisible) * divisible
+    resos.add((width, width))
 
-    size = min_size
-    while size <= max_size:
-        width = size
-        height = min(max_size, (max_area // (width // divisible)) * divisible)
-        resos.add((width, height))
-        resos.add((height, width))
+    width = min_size
+    while width <= max_size:
+        height = min(max_size, int((max_area // width) // divisible) * divisible)
+        if height >= min_size:
+            resos.add((width, height))
+            resos.add((height, width))
 
         # # make additional resos
         # if width >= height and width - divisible >= min_size:
@@ -1150,7 +1335,7 @@ def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64)
         #   resos.add((width, height - divisible))
         #   resos.add((height - divisible, width))
 
-        size += divisible
+        width += divisible
 
     resos = list(resos)
     resos.sort()
@@ -1159,13 +1344,13 @@ def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64)
 
 if __name__ == "__main__":
     resos = make_bucket_resolutions((512, 768))
-    print(len(resos))
-    print(resos)
+    logger.info(f"{len(resos)}")
+    logger.info(f"{resos}")
     aspect_ratios = [w / h for w, h in resos]
-    print(aspect_ratios)
+    logger.info(f"{aspect_ratios}")
 
     ars = set()
     for ar in aspect_ratios:
         if ar in ars:
-            print("error! duplicate ar:", ar)
+            logger.error(f"error! duplicate ar: {ar}")
         ars.add(ar)

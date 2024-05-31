@@ -1,5 +1,3 @@
-For non-Japanese speakers: this README is provided only in Japanese in the current state. Sorry for inconvenience. We will provide English version in the near future.
-
 `--dataset_config` で渡すことができる設定ファイルに関する説明です。
 
 ## 概要
@@ -138,9 +136,29 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 | `num_repeats` | `10` | o | o | o |
 | `random_crop` | `false` | o | o | o |
 | `shuffle_caption` | `true` | o | o | o |
+| `caption_prefix` | `“masterpiece, best quality, ”` | o | o | o |
+| `caption_suffix` | `“, from side”` | o | o | o |
+| `caption_separator` | （通常は設定しません） | o | o | o |
+| `keep_tokens_separator` | `“|||”` | o | o | o |
+| `secondary_separator` | `“;;;”` | o | o | o |
+| `enable_wildcard` | `true` | o | o | o |
 
 * `num_repeats`
     * サブセットの画像の繰り返し回数を指定します。fine tuning における `--dataset_repeats` に相当しますが、`num_repeats` はどの学習方法でも指定可能です。
+* `caption_prefix`, `caption_suffix`
+    * キャプションの前、後に付与する文字列を指定します。シャッフルはこれらの文字列を含めた状態で行われます。`keep_tokens` を指定する場合には注意してください。
+
+* `caption_separator`
+    * タグを区切る文字列を指定します。デフォルトは `,` です。このオプションは通常は設定する必要はありません。
+
+* `keep_tokens_separator`
+    *  キャプションで固定したい部分を区切る文字列を指定します。たとえば `aaa, bbb ||| ccc, ddd, eee, fff ||| ggg, hhh` のように指定すると、`aaa, bbb` と `ggg, hhh` の部分はシャッフル、drop されず残ります。間のカンマは不要です。結果としてプロンプトは `aaa, bbb, eee, ccc, fff, ggg, hhh` や `aaa, bbb, fff, ccc, eee, ggg, hhh` などになります。
+
+* `secondary_separator`
+    * 追加の区切り文字を指定します。この区切り文字で区切られた部分は一つのタグとして扱われ、シャッフル、drop されます。その後、`caption_separator` に置き換えられます。たとえば `aaa;;;bbb;;;ccc` のように指定すると、`aaa,bbb,ccc` に置き換えられるか、まとめて drop されます。
+
+* `enable_wildcard`
+    * ワイルドカード記法および複数行キャプションを有効にします。ワイルドカード記法、複数行キャプションについては後述します。
 
 ### DreamBooth 方式専用のオプション
 
@@ -155,6 +173,7 @@ DreamBooth 方式のサブセットの設定に関わるオプションです。
 | `image_dir` | `‘C:\hoge’` | - | - | o（必須） |
 | `caption_extension` | `".txt"` | o | o | o |
 | `class_tokens` | `“sks girl”` | - | - | o |
+| `cache_info` | `false` | o | o | o | 
 | `is_reg` | `false` | - | - | o |
 
 まず注意点として、 `image_dir` には画像ファイルが直下に置かれているパスを指定する必要があります。従来の DreamBooth の手法ではサブディレクトリに画像を置く必要がありましたが、そちらとは仕様に互換性がありません。また、`5_cat` のようなフォルダ名にしても、画像の繰り返し回数とクラス名は反映されません。これらを個別に設定したい場合、`num_repeats` と `class_tokens` で明示的に指定する必要があることに注意してください。
@@ -165,6 +184,9 @@ DreamBooth 方式のサブセットの設定に関わるオプションです。
 * `class_tokens`
     * クラストークンを設定します。
     * 画像に対応する caption ファイルが存在しない場合にのみ学習時に利用されます。利用するかどうかの判定は画像ごとに行います。`class_tokens` を指定しなかった場合に caption ファイルも見つからなかった場合にはエラーになります。
+* `cache_info`
+    * 画像サイズ、キャプションをキャッシュするかどうかを指定します。指定しなかった場合は `false` になります。キャッシュは `image_dir` に `metadata_cache.json` というファイル名で保存されます。
+    * キャッシュを行うと、二回目以降のデータセット読み込みが高速化されます。数千枚以上の画像を扱う場合には有効です。
 * `is_reg`
     * サブセットの画像が正規化用かどうかを指定します。指定しなかった場合は `false` として、つまり正規化画像ではないとして扱います。
 
@@ -276,4 +298,89 @@ resolution = 768
 * `voluptuous.error.MultipleInvalid: expected int for dictionary value @ ...`: 指定する値の形式が不正というエラーです。値の形式が間違っている可能性が高いです。`int` の部分は対象となるオプションによって変わります。この README に載っているオプションの「設定例」が役立つかもしれません。
 * `voluptuous.error.MultipleInvalid: extra keys not allowed @ ...`: 対応していないオプション名が存在している場合に発生するエラーです。オプション名を間違って記述しているか、誤って紛れ込んでいる可能性が高いです。
 
+## その他
 
+### 複数行キャプション
+
+`enable_wildcard = true` を設定することで、複数行キャプションも同時に有効になります。キャプションファイルが複数の行からなる場合、ランダムに一つの行が選ばれてキャプションとして利用されます。
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
+a girl with a microphone standing on a stage
+detailed digital art of a girl with a microphone on a stage
+```
+
+ワイルドカード記法と組み合わせることも可能です。
+
+メタデータファイルでも同様に複数行キャプションを指定することができます。メタデータの .json 内には、`\n` を使って改行を表現してください。キャプションファイルが複数行からなる場合、`merge_captions_to_metadata.py` を使うと、この形式でメタデータファイルが作成されます。
+
+メタデータのタグ (`tags`) は、キャプションの各行に追加されます。
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": "a cartoon of a frog with the word frog on it\ntest multiline caption1\ntest multiline caption2",
+        "tags": "open mouth, simple background, standing, no humans, animal, black background, frog, animal costume, animal focus"
+    },
+    ...
+}
+```
+
+この場合、実際のキャプションは `a cartoon of a frog with the word frog on it, open mouth, simple background ...` または `test multiline caption1, open mouth, simple background ...`、 `test multiline caption2, open mouth, simple background ...` 等になります。
+
+### 設定ファイルの記述例：追加の区切り文字、ワイルドカード記法、`keep_tokens_separator` 等
+
+```toml
+[general]
+flip_aug = true
+color_aug = false
+resolution = [1024, 1024]
+
+[[datasets]]
+batch_size = 6
+enable_bucket = true
+bucket_no_upscale = true
+caption_extension = ".txt"
+keep_tokens_separator= "|||"
+shuffle_caption = true
+caption_tag_dropout_rate = 0.1
+secondary_separator = ";;;" # subset 側に書くこともできます / can be written in the subset side
+enable_wildcard = true # 同上 / same as above
+
+  [[datasets.subsets]]
+  image_dir = "/path/to/image_dir"
+  num_repeats = 1
+
+  # ||| の前後はカンマは不要です（自動的に追加されます） / No comma is required before and after ||| (it is added automatically)
+  caption_prefix = "1girl, hatsune miku, vocaloid |||" 
+  
+  # ||| の後はシャッフル、drop されず残ります / After |||, it is not shuffled or dropped and remains
+  # 単純に文字列として連結されるので、カンマなどは自分で入れる必要があります / It is simply concatenated as a string, so you need to put commas yourself
+  caption_suffix = ", anime screencap ||| masterpiece, rating: general"
+```
+
+### キャプション記述例、secondary_separator 記法：`secondary_separator = ";;;"` の場合
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, sky;;;cloud;;;day, outdoors
+```
+`sky;;;cloud;;;day` の部分はシャッフル、drop されず `sky,cloud,day` に置換されます。シャッフル、drop が有効な場合、まとめて（一つのタグとして）処理されます。つまり `vocaloid, 1girl, upper body, sky,cloud,day, outdoors, hatsune miku` （シャッフル）や `vocaloid, 1girl, outdoors, looking at viewer, upper body, hatsune miku` （drop されたケース）などになります。
+
+### キャプション記述例、ワイルドカード記法： `enable_wildcard = true` の場合
+
+```txt
+1girl, hatsune miku, vocaloid, upper body, looking at viewer, {simple|white} background
+```
+ランダムに `simple` または `white` が選ばれ、`simple background` または `white background` になります。
+
+```txt
+1girl, hatsune miku, vocaloid, {{retro style}}
+```
+タグ文字列に `{` や `}` そのものを含めたい場合は `{{` や `}}` のように二つ重ねてください（この例では実際に学習に用いられるキャプションは `{retro style}` になります）。
+
+### キャプション記述例、`keep_tokens_separator` 記法： `keep_tokens_separator = "|||"` の場合
+
+```txt
+1girl, hatsune miku, vocaloid ||| stage, microphone, white shirt, smile ||| best quality, rating: general
+```
+`1girl, hatsune miku, vocaloid, microphone, stage, white shirt, best quality, rating: general` や `1girl, hatsune miku, vocaloid, white shirt, smile, stage, microphone, best quality, rating: general` などになります。
