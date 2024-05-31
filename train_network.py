@@ -897,6 +897,10 @@ class NetworkTrainer:
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
                 current_step.value = global_step
+                if initial_step > 0:
+                    initial_step -= 1
+                    continue
+
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
 
