@@ -663,6 +663,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 for _ in range(num_epochs):
                     self.current_epoch += 1
                     self.shuffle_buckets()
+                # self.current_epoch seem to be set to 0 again in the next epoch. it may be caused by skipped_dataloader?
             else:
                 logger.warning("epoch is not incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
                 self.current_epoch = epoch
@@ -5560,6 +5561,8 @@ class LossRecorder:
         if epoch == 0:
             self.loss_list.append(loss)
         else:
+            while len(self.loss_list) <= step:
+                self.loss_list.append(0.0)
             self.loss_total -= self.loss_list[step]
             self.loss_list[step] = loss
         self.loss_total += loss
