@@ -2,6 +2,7 @@
 # Instruction:  https://github.com/marketplace/actions/typos-action#getting-started
 
 [default.extend-identifiers]
+ddPn08="ddPn08"
 
 [default.extend-words]
 NIN="NIN"
@@ -27,6 +28,7 @@ rik="rik"
 koo="koo"
 yos="yos"
 wn="wn"
+hime="hime"
 
 
 [files]
