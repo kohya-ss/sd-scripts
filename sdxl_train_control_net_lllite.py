@@ -289,6 +289,9 @@ def train(args):
     # acceleratorがなんかよろしくやってくれるらしい
     unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
 
+    if isinstance(unet, DDP):
+        unet._set_static_graph() # avoid error for multiple use of the parameter
+
     if args.gradient_checkpointing:
         unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
     else:
