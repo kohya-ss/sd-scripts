@@ -11,6 +11,7 @@ from tqdm import tqdm
 from transformers import CLIPTextModel
 
 import torch
+from library import model_util
 from library.device_utils import init_ipex, get_preferred_device
 init_ipex()
 
@@ -511,7 +512,7 @@ if __name__ == "__main__":
 
     # load LoRA weights
     logger.info(f"load LoRA weights from {args.lora_weights}")
-    if os.path.splitext(args.lora_weights)[1] == ".safetensors":
+    if model_util.is_safetensors(args.lora_weights):
         from safetensors.torch import load_file
 
         lora_sd = load_file(args.lora_weights)

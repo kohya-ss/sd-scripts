@@ -222,7 +222,7 @@ def train(args):
     if args.controlnet_model_name_or_path:
         filename = args.controlnet_model_name_or_path
         if os.path.isfile(filename):
-            if os.path.splitext(filename)[1] == ".safetensors":
+            if model_util.is_safetensors(filename):
                 state_dict = load_file(filename)
             else:
                 state_dict = torch.load(filename)
@@ -389,7 +389,7 @@ def train(args):
                 v = v.detach().clone().to("cpu").to(save_dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(ckpt_file)[1] == ".safetensors":
+        if model_util.is_safetensors(ckpt_file):
             from safetensors.torch import save_file
 
             save_file(state_dict, ckpt_file)

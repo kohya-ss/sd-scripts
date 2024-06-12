@@ -5,7 +5,7 @@ import os
 import re
 from typing import Optional, List, Type
 import torch
-from library import sdxl_original_unet
+from library import sdxl_original_unet, model_util
 from library.utils import setup_logging
 
 setup_logging()
@@ -328,7 +328,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
 
             save_file(state_dict, file, metadata)
@@ -351,7 +351,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
             info = self.load_state_dict(state_dict, False)
             return info
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)

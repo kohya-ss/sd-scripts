@@ -7,7 +7,7 @@ import torch
 from library.device_utils import init_ipex
 init_ipex()
 
-from library import sdxl_model_util, sdxl_train_util, train_util
+from library import model_util, sdxl_model_util, sdxl_train_util, train_util
 
 import train_textual_inversion
 
@@ -95,7 +95,7 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
                 v = v.detach().clone().to("cpu").to(save_dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
 
             save_file(state_dict, file, metadata)
@@ -103,7 +103,7 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
             torch.save(state_dict, file)
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             data = load_file(file)

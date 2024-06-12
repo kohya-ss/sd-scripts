@@ -11,6 +11,7 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+from library import model_util
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -807,7 +808,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     is_sdxl = unet is not None and issubclass(unet.__class__, SdxlUNet2DConditionModel)
 
     if weights_sd is None:
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file, safe_open
 
             weights_sd = load_file(file)
@@ -1062,7 +1063,7 @@ class LoRANetwork(torch.nn.Module):
             lora.enabled = is_enabled
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
@@ -1257,7 +1258,7 @@ class LoRANetwork(torch.nn.Module):
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
             from library import train_util
 
