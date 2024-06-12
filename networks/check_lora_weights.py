@@ -3,13 +3,14 @@ import os
 import torch
 from safetensors.torch import load_file
 from library.utils import setup_logging
+from library import model_util
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
 
 def main(file):
     logger.info(f"loading: {file}")
-    if os.path.splitext(file)[1] == ".safetensors":
+    if model_util.is_safetensors(file):
         sd = load_file(file)
     else:
         sd = torch.load(file, map_location="cpu")

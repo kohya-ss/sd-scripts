@@ -17,10 +17,14 @@ from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
 import torch
 from torch import nn
+from library import model_util
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 class DyLoRAModule(torch.nn.Module):
     """
@@ -195,7 +199,7 @@ def create_network(
             conv_alpha = 1.0
         else:
             conv_alpha = float(conv_alpha)
-            
+
     if unit is not None:
         unit = int(unit)
     else:
@@ -211,13 +215,23 @@ def create_network(
         unit=unit,
         varbose=True,
     )
+
+    loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
+    loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
+    loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
+    loraplus_lr_ratio = float(loraplus_lr_ratio) if loraplus_lr_ratio is not None else None
+    loraplus_unet_lr_ratio = float(loraplus_unet_lr_ratio) if loraplus_unet_lr_ratio is not None else None
+    loraplus_text_encoder_lr_ratio = float(loraplus_text_encoder_lr_ratio) if loraplus_text_encoder_lr_ratio is not None else None
+    if loraplus_lr_ratio is not None or loraplus_unet_lr_ratio is not None or loraplus_text_encoder_lr_ratio is not None:
+        network.set_loraplus_lr_ratio(loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio)
+
     return network
 
 
 # Create network from weights for inference, weights are not loaded here (because can be merged)
 def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weights_sd=None, for_inference=False, **kwargs):
     if weights_sd is None:
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file, safe_open
 
             weights_sd = load_file(file)
@@ -280,6 +294,10 @@ class DyLoRANetwork(torch.nn.Module):
         self.alpha = alpha
         self.apply_to_conv = apply_to_conv
 
+        self.loraplus_lr_ratio = None
+        self.loraplus_unet_lr_ratio = None
+        self.loraplus_text_encoder_lr_ratio = None
+
         if modules_dim is not None:
             logger.info("create LoRA network from weights")
         else:
@@ -320,9 +338,9 @@ class DyLoRANetwork(torch.nn.Module):
                             lora = module_class(lora_name, child_module, self.multiplier, dim, alpha, unit)
                             loras.append(lora)
             return loras
-        
+
         text_encoders = text_encoder if type(text_encoder) == list else [text_encoder]
-        
+
         self.text_encoder_loras = []
         for i, text_encoder in enumerate(text_encoders):
             if len(text_encoders) > 1:
@@ -331,7 +349,7 @@ class DyLoRANetwork(torch.nn.Module):
             else:
                 index = None
                 logger.info("create LoRA for Text Encoder")
-            
+
             text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
             self.text_encoder_loras.extend(text_encoder_loras)
 
@@ -346,13 +364,21 @@ class DyLoRANetwork(torch.nn.Module):
         self.unet_loras = create_modules(True, unet, target_modules)
         logger.info(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
 
+    def set_loraplus_lr_ratio(self, loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio):
+        self.loraplus_lr_ratio = loraplus_lr_ratio
+        self.loraplus_unet_lr_ratio = loraplus_unet_lr_ratio
+        self.loraplus_text_encoder_lr_ratio = loraplus_text_encoder_lr_ratio
+
+        logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
+        logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
+
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
         for lora in self.text_encoder_loras + self.unet_loras:
             lora.multiplier = self.multiplier
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
@@ -406,27 +432,53 @@ class DyLoRANetwork(torch.nn.Module):
         logger.info(f"weights are merged")
     """
 
+    # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
         self.requires_grad_(True)
         all_params = []
 
-        def enumerate_params(loras):
-            params = []
+        def assemble_params(loras, lr, ratio):
+            param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
-                params.extend(lora.parameters())
+                for name, param in lora.named_parameters():
+                    if ratio is not None and "lora_B" in name:
+                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
+                    else:
+                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+
+            params = []
+            for key in param_groups.keys():
+                param_data = {"params": param_groups[key].values()}
+
+                if len(param_data["params"]) == 0:
+                    continue
+
+                if lr is not None:
+                    if key == "plus":
+                        param_data["lr"] = lr * ratio
+                    else:
+                        param_data["lr"] = lr
+
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    continue
+
+                params.append(param_data)
+
             return params
 
         if self.text_encoder_loras:
-            param_data = {"params": enumerate_params(self.text_encoder_loras)}
-            if text_encoder_lr is not None:
-                param_data["lr"] = text_encoder_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.text_encoder_loras,
+                text_encoder_lr if text_encoder_lr is not None else default_lr,
+                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
+            )
+            all_params.extend(params)
 
         if self.unet_loras:
-            param_data = {"params": enumerate_params(self.unet_loras)}
-            if unet_lr is not None:
-                param_data["lr"] = unet_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.unet_loras, default_lr if unet_lr is None else unet_lr, self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio
+            )
+            all_params.extend(params)
 
         return all_params
 
@@ -455,7 +507,7 @@ class DyLoRANetwork(torch.nn.Module):
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
             from library import train_util
 

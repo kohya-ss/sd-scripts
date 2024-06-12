@@ -5,10 +5,12 @@ import os
 import re
 from typing import Optional, List, Type
 import torch
-from library import sdxl_original_unet
+from library import sdxl_original_unet, model_util
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 # input_blocksに適用するかどうか / if True, input_blocks are not applied
@@ -103,19 +105,15 @@ class LLLiteLinear(ORIGINAL_LINEAR):
         add_lllite_modules(self, in_dim, depth, cond_emb_dim, mlp_dim)
 
         self.cond_image = None
-        self.cond_emb = None
 
     def set_cond_image(self, cond_image):
         self.cond_image = cond_image
-        self.cond_emb = None
 
     def forward(self, x):
         if not self.enabled:
             return super().forward(x)
 
-        if self.cond_emb is None:
-            self.cond_emb = self.lllite_conditioning1(self.cond_image)
-        cx = self.cond_emb
+        cx = self.lllite_conditioning1(self.cond_image)  # make forward and backward compatible
 
         # reshape / b,c,h,w -> b,h*w,c
         n, c, h, w = cx.shape
@@ -159,9 +157,7 @@ class LLLiteConv2d(ORIGINAL_CONV2D):
         if not self.enabled:
             return super().forward(x)
 
-        if self.cond_emb is None:
-            self.cond_emb = self.lllite_conditioning1(self.cond_image)
-        cx = self.cond_emb
+        cx = self.lllite_conditioning1(self.cond_image)
 
         cx = torch.cat([cx, self.down(x)], dim=1)
         cx = self.mid(cx)
@@ -332,7 +328,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
 
             save_file(state_dict, file, metadata)
@@ -355,7 +351,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
             info = self.load_state_dict(state_dict, False)
             return info
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)

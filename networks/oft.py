@@ -8,6 +8,7 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+from library import model_util
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -171,7 +172,7 @@ def create_network(
 # Create network from weights for inference, weights are not loaded here (because can be merged)
 def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weights_sd=None, for_inference=False, **kwargs):
     if weights_sd is None:
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file, safe_open
 
             weights_sd = load_file(file)
@@ -296,7 +297,7 @@ class OFTNetwork(torch.nn.Module):
             oft.multiplier = self.multiplier
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
@@ -380,7 +381,7 @@ class OFTNetwork(torch.nn.Module):
                 v = v.detach().clone().to("cpu").to(dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
             from library import train_util
 

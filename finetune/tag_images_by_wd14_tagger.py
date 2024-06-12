@@ -112,7 +112,6 @@ def main(args):
 
     # モデルを読み込む
     if args.onnx:
-        import torch
         import onnx
         import onnxruntime as ort
 

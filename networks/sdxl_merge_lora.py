@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def load_state_dict(file_name, dtype):
-    if os.path.splitext(file_name)[1] == ".safetensors":
+    if model_util.is_safetensors(file_name):
         sd = load_file(file_name)
         metadata = train_util.load_metadata_from_safetensors(file_name)
     else:
@@ -34,7 +34,7 @@ def save_to_file(file_name, model, state_dict, dtype, metadata):
             if type(state_dict[key]) == torch.Tensor:
                 state_dict[key] = state_dict[key].to(dtype)
 
-    if os.path.splitext(file_name)[1] == ".safetensors":
+    if model_util.is_safetensors(file_name):
         save_file(model, file_name, metadata=metadata)
     else:
         torch.save(model, file_name)

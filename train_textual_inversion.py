@@ -136,7 +136,7 @@ class TextualInversionTrainer:
                 v = v.detach().clone().to("cpu").to(save_dtype)
                 state_dict[key] = v
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import save_file
 
             save_file(state_dict, file, metadata)
@@ -144,7 +144,7 @@ class TextualInversionTrainer:
             torch.save(state_dict, file)  # can be loaded in Web UI
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             data = load_file(file)
@@ -510,7 +510,7 @@ class TextualInversionTrainer:
             if args.log_tracker_config is not None:
                 init_kwargs = toml.load(args.log_tracker_config)
             accelerator.init_trackers(
-                "textual_inversion" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs
+                "textual_inversion" if args.log_tracker_name is None else args.log_tracker_name, config=train_util.get_sanitized_config_or_none(args), init_kwargs=init_kwargs
             )
 
         # function for saving/removing
@@ -589,7 +589,7 @@ class TextualInversionTrainer:
                         target = noise
 
                     loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
-                    if args.masked_loss:
+                    if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
 
