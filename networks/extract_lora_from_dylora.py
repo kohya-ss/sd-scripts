@@ -26,14 +26,6 @@ def load_state_dict(file_name):
 
     return sd, metadata
 
-
-def save_to_file(file_name, model, metadata):
-    if model_util.is_safetensors(file_name):
-        save_file(model, file_name, metadata)
-    else:
-        torch.save(model, file_name)
-
-
 def split_lora_model(lora_sd, unit):
     max_rank = 0
 
@@ -98,7 +90,7 @@ def split(args):
         model_file_name = filename + f"-{new_rank:04d}{ext}"
 
         logger.info(f"saving model to: {model_file_name}")
-        save_to_file(model_file_name, state_dict, new_metadata)
+        model_util.safe_save_file(model_file_name, state_dict, new_metadata)
 
 
 def setup_parser() -> argparse.ArgumentParser:

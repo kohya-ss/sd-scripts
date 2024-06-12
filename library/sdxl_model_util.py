@@ -475,29 +475,6 @@ def convert_text_encoder_2_state_dict_to_sdxl(checkpoint, logit_scale):
 
     return new_sd
 
-def save_converted_file(state_dict, output_file, metadata, epochs, steps, ckpt_info):
-    try:
-        if model_util.is_safetensors(output_file):
-            save_file(state_dict, output_file, metadata)
-        else:
-            new_ckpt = {"state_dict": state_dict}
-
-            new_ckpt["epoch"] = epochs
-            new_ckpt["global_step"] = steps
-
-            # epoch and global_step are sometimes not int
-            if ckpt_info is not None:
-                new_ckpt["epoch"] += ckpt_info[0]
-                new_ckpt["global_step"] += ckpt_info[1]
-
-            torch.save(new_ckpt, output_file)
-    except Exception as e:
-        print(e)
-        continue_prompt = input("Retry saving model? (y/n): ")
-        if continue_prompt.lower() != 'n':
-            save_converted_file(state_dict, output_file, metadata, epochs, steps, ckpt_info)
-        else:
-            raise
 
 def save_stable_diffusion_checkpoint(
     output_file,
@@ -536,7 +513,13 @@ def save_stable_diffusion_checkpoint(
 
     # Put together new checkpoint
     key_count = len(state_dict.keys())
-    save_converted_file(state_dict, output_file, metadata, epochs, steps, ckpt_info)
+
+    # epoch and global_step are sometimes not int
+    if ckpt_info is not None:
+        epochs += ckpt_info[0]
+        steps += ckpt_info[1]
+
+    model_util.save_wrapped_model(state_dict, output_file, metadata, epochs, steps)
 
     return key_count
 

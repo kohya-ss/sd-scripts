@@ -383,18 +383,7 @@ def train(args):
 
         state_dict = model_util.convert_controlnet_state_dict_to_sd(model.state_dict())
 
-        if save_dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(save_dtype)
-                state_dict[key] = v
-
-        if model_util.is_safetensors(ckpt_file):
-            from safetensors.torch import save_file
-
-            save_file(state_dict, ckpt_file)
-        else:
-            torch.save(state_dict, ckpt_file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, save_dtype), ckpt_file)
 
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)

@@ -357,18 +357,7 @@ class ControlNetLLLite(torch.nn.Module):
 
         state_dict = self.state_dict()
 
-        if dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
-                state_dict[key] = v
-
-        if model_util.is_safetensors(file):
-            from safetensors.torch import save_file
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, dtype), file, metadata)
 
 
 if __name__ == "__main__":

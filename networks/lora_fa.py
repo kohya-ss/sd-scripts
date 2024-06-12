@@ -1100,26 +1100,7 @@ class LoRANetwork(torch.nn.Module):
 
         state_dict = self.state_dict()
 
-        if dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
-                state_dict[key] = v
-
-        if model_util.is_safetensors(file):
-            from safetensors.torch import save_file
-            from library import train_util
-
-            # Precalculate model hashes to save time on indexing
-            if metadata is None:
-                metadata = {}
-            model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
-            metadata["sshs_model_hash"] = model_hash
-            metadata["sshs_legacy_hash"] = legacy_hash
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.save_lora(state_dict, file, dtype, metadata)
 
     # mask is a tensor with values from 0 to 1
     def set_region(self, sub_prompt_index, is_last_network, mask):

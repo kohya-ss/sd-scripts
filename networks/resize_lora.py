@@ -39,18 +39,6 @@ def load_state_dict(file_name, dtype):
     return sd, metadata
 
 
-def save_to_file(file_name, state_dict, dtype, metadata):
-    if dtype is not None:
-        for key in list(state_dict.keys()):
-            if type(state_dict[key]) == torch.Tensor:
-                state_dict[key] = state_dict[key].to(dtype)
-
-    if model_util.is_safetensors(file_name):
-        save_file(state_dict, file_name, metadata)
-    else:
-        torch.save(state_dict, file_name)
-
-
 # Indexing functions
 
 
@@ -354,7 +342,7 @@ def resize(args):
     metadata["sshs_legacy_hash"] = legacy_hash
 
     logger.info(f"saving model to: {args.save_to}")
-    save_to_file(args.save_to, state_dict, save_dtype, metadata)
+    model_util.safe_save_file(model_util.tensor_set_save_dtype(state_dict, save_dtype), args.save_to, metadata)
 
 
 def setup_parser() -> argparse.ArgumentParser:

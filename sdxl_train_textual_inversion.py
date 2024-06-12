@@ -89,18 +89,7 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
     def save_weights(self, file, updated_embs, save_dtype, metadata):
         state_dict = {"clip_l": updated_embs[0], "clip_g": updated_embs[1]}
 
-        if save_dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(save_dtype)
-                state_dict[key] = v
-
-        if model_util.is_safetensors(file):
-            from safetensors.torch import save_file
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, save_dtype), file, metadata)
 
     def load_weights(self, file):
         if model_util.is_safetensors(file):

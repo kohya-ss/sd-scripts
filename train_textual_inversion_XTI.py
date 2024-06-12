@@ -636,12 +636,7 @@ def save_weights(file, updated_embs, save_dtype):
     #         v = v.detach().clone().to("cpu").to(save_dtype)
     #         state_dict[key] = v
 
-    if model_util.is_safetensors(file):
-        from safetensors.torch import save_file
-
-        save_file(state_dict, file)
-    else:
-        torch.save(state_dict, file)  # can be loaded in Web UI
+    model_util.safe_save_file(state_dict, file)
 
 
 def load_weights(file):
