@@ -1,7 +1,6 @@
 
 
 from tqdm import tqdm
-from library import model_util
 import library.train_util as train_util
 import argparse
 from transformers import CLIPTokenizer
@@ -10,7 +9,6 @@ import torch
 from library.device_utils import init_ipex, get_preferred_device
 init_ipex()
 
-import library.model_util as model_util
 import lora
 from library.utils import setup_logging
 setup_logging()

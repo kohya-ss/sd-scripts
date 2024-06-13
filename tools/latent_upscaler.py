@@ -12,7 +12,6 @@ import numpy as np
 
 import torch
 from library.device_utils import init_ipex, get_preferred_device
-from library import model_util
 init_ipex()
 
 from torch import nn
@@ -250,7 +249,7 @@ def create_upscaler(**kwargs):
     model = Upscaler()
 
     logger.info(f"Loading weights from {weights}...")
-    if model_util.is_safetensors(weights):
+    if os.path.splitext(weights)[1] == ".safetensors":
         from safetensors.torch import load_file
 
         sd = load_file(weights)
