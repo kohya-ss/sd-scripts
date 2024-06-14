@@ -1035,7 +1035,7 @@ class BaseDataset(torch.utils.data.Dataset):
         logger.info("caching text encoder outputs.")
         image_infos = list(self.image_data.values())
 
-        logger.info("checking cache existence...")
+        logger.info("checking cache validity...")
         image_infos_to_cache = []
         for info in tqdm(image_infos):
             # subset = self.image_to_subset[info.image_key]
@@ -1046,7 +1046,9 @@ class BaseDataset(torch.utils.data.Dataset):
                 if not is_main_process:  # store to info only
                     continue
 
-                if os.path.exists(te_out_npz):
+                is_cache_valid = is_disk_cached_text_encoder_output_valid(te_out_npz)
+
+                if is_cache_valid:
                     continue
 
             image_infos_to_cache.append(info)
@@ -2136,6 +2138,23 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
             return False
 
     return True
+
+
+def is_disk_cached_text_encoder_output_valid(npz_path: str):
+
+    if not os.path.exists(npz_path):
+        logger.debug(f'is_disk_cached_text_encoder_output_valid file not found: {npz_path}')
+        return False
+
+    try:
+        hidden_state1, hidden_state2, pool2 = load_text_encoder_outputs_from_disk(npz_path)
+        if hidden_state1 is None or hidden_state2 is None or pool2 is None:
+            logger.debug(f'is_disk_cached_text_encoder_output_valid None value found: hidden_state1 {hidden_state1}, hidden_state2 {hidden_state2}, pool2 {pool2}')
+            return False
+        return True
+    except Exception as e:
+        logger.debug(f"is_disk_cached_text_encoder_output_valid failed to load text encoder outputs from {npz_path}. {e}")
+        return False
 
 
 # 戻り値は、latents_tensor, (original_size width, original_size height), (crop left, crop top)
