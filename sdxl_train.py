@@ -610,6 +610,9 @@ def train(args):
             if args.fused_optimizer_groups:
                 optimizer_hooked_count = {i: 0 for i in range(len(optimizers))}  # reset counter for each step
 
+            if args.optimizer_accumulation_steps > 0:
+                optimizer.optimizer.optimizer_accumulation = (step + 1) % args.optimizer_accumulation_steps != 0
+
             with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
                     latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
@@ -744,10 +747,17 @@ def train(args):
                     optimizer.zero_grad(set_to_none=True)
                 else:
                     # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
-                    lr_scheduler.step()
-                    if args.fused_optimizer_groups:
-                        for i in range(1, len(optimizers)):
-                            lr_schedulers[i].step()
+                    if args.optimizer_accumulation_steps > 0:
+                        if (not optimizer.optimizer.optimizer_accumulation):
+                            lr_scheduler.step()
+                            if args.fused_optimizer_groups:
+                                for i in range(1, len(optimizers)):
+                                    lr_schedulers[i].step()
+                    else:
+                        lr_scheduler.step()
+                        if args.fused_optimizer_groups:
+                            for i in range(1, len(optimizers)):
+                                lr_schedulers[i].step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
