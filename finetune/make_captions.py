@@ -118,6 +118,22 @@ def main(args):
                 if args.debug:
                     logger.info(f'{image_path} {caption}')
 
+    def filter_image_paths(image_paths, extension=".caption"):
+        """
+        Filter out image paths that already have a .caption file with the same name
+        """
+        filtered_paths = []
+        for image_path in image_paths:
+            caption_path = os.path.splitext(image_path)[0] + extension
+            if not os.path.exists(caption_path):
+                filtered_paths.append(image_path)
+        return filtered_paths
+
+    # すでにキャプションがある画像を除外
+    if args.ignore_existing:
+        logger.info("ignoring images that already have a caption file")
+        image_paths = filter_image_paths(image_paths, args.caption_extension)
+
     # 読み込みの高速化のためにDataLoaderを使うオプション
     if args.max_data_loader_n_workers is not None:
         dataset = ImageLoadingTransformDataset(image_paths)
@@ -194,7 +210,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", default=42, type=int, help="seed for reproducibility / 再現性を確保するための乱数seed")
     parser.add_argument("--debug", action="store_true", help="debug mode")
     parser.add_argument("--recursive", action="store_true", help="search for images in subfolders recursively / サブフォルダを再帰的に検索する")
-
+    parser.add_argument("--ignore_existing", action="store_true", help="ignore images that already have a caption file / すでにキャプションファイルがある画像を無視する")
     return parser
 
 
