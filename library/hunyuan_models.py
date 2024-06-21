@@ -30,6 +30,10 @@ except:
     memory_efficient_attention = None
 
 
+VAE_SCALE_FACTOR = 0.13025
+MODEL_VERSION_HUNYUAN_V1_1 = "HunyuanDiT-v1.1"
+
+
 class MT5Embedder(nn.Module):
     def __init__(
         self,

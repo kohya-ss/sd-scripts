@@ -8,11 +8,23 @@ import torch.utils
 from diffusers import AutoencoderKL, LMSDiscreteScheduler
 from transformers import (
     AutoTokenizer,
+    T5Tokenizer,
     BertModel,
     BertTokenizer,
 )
 
+from library.device_utils import init_ipex, clean_memory_on_device
 from .hunyuan_models import MT5Embedder, HunYuanDiT, BertModel, DiT_g_2
+from .utils import setup_logging
+
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
+
+BASE_PATH = "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers"
+TOKENIZER1_PATH = "tokenizer"
+TOKENIZER2_PATH = "tokenizer_2"
 
 
 def clip_get_input_ids(caption, tokenizer, tokenizer_max_length=225):
@@ -193,6 +205,19 @@ def get_cond(
     )
 
 
+def load_tokenizers():
+    tokenizer = AutoTokenizer.from_pretrained(
+        BASE_PATH,
+        subfolder=TOKENIZER1_PATH,
+    )
+    tokenizer.eos_token_id = tokenizer.sep_token_id
+    tokenizer2 = T5Tokenizer(
+        BASE_PATH,
+        subfolder=TOKENIZER2_PATH,
+    )
+    return tokenizer, tokenizer2
+
+
 def load_scheduler_sigmas():
     scheduler: LMSDiscreteScheduler = LMSDiscreteScheduler.from_pretrained(
         "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers",
@@ -236,6 +261,56 @@ def load_model(model_path: str, dtype=torch.float16, device="cuda"):
         mt5_embedder,
         vae,
     )
+
+
+def match_mixed_precision(args, weight_dtype):
+    if args.full_fp16:
+        assert (
+            weight_dtype == torch.float16
+        ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
+        return weight_dtype
+    elif args.full_bf16:
+        assert (
+            weight_dtype == torch.bfloat16
+        ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+        return weight_dtype
+    else:
+        return None
+
+
+def load_target_model(args, accelerator, model_version: str, weight_dtype):
+    model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16
+    for pi in range(accelerator.state.num_processes):
+        if pi == accelerator.state.local_process_index:
+            logger.info(
+                f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}"
+            )
+
+            (
+                denoiser,
+                patch_size,
+                head_dim,
+                clip_tokenizer,
+                clip_encoder,
+                mt5_embedder,
+                vae,
+            ) = load_model(
+                args.pretrained_model_name_or_path,
+                model_dtype,
+                accelerator.device if args.lowram else "cpu",
+            )
+
+            # work on low-ram device
+            if args.lowram:
+                clip_encoder.to(accelerator.device)
+                mt5_embedder.to(accelerator.device)
+                denoiser.to(accelerator.device)
+                vae.to(accelerator.device)
+
+            clean_memory_on_device(accelerator.device)
+        accelerator.wait_for_everyone()
+
+    return False, clip_encoder, mt5_embedder, vae, denoiser, None, None
 
 
 def _to_tuple(x):
