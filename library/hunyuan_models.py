@@ -96,6 +96,22 @@ class MT5Embedder(nn.Module):
 
         return text_encoder_embs, text_tokens_and_mask["attention_mask"].to(self.device)
 
+    def get_input_ids(self, caption):
+        return self.tokenizer(
+            caption,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        ).input_ids
+
+    def get_hidden_states(self, input_ids, layer_index=-1):
+        mask = (input_ids != 0).long()
+        outputs = self.model(
+            input_ids=input_ids, attention_mask=mask, output_hidden_states=True
+        )
+        return outputs["hidden_states"][layer_index]
+
 
 def reshape_for_broadcast(
     freqs_cis: Union[torch.Tensor, Tuple[torch.Tensor]],
@@ -263,9 +279,13 @@ def attention(q, k, v, head_dim, dropout_p=0, mask=None, scale=None, mode="xform
     # scores = ATTN_FUNCTION[mode](q, k.to(q), v.to(q), mask, scale=scale)
     if mode == "torch":
         assert scale is None
-        scores = F.scaled_dot_product_attention(q, k.to(q), v.to(q), mask, dropout_p)  # , scale=scale)
+        scores = F.scaled_dot_product_attention(
+            q, k.to(q), v.to(q), mask, dropout_p
+        )  # , scale=scale)
     elif mode == "xformers":
-        scores = memory_efficient_attention(q, k.to(q), v.to(q), mask, dropout_p, scale=scale)
+        scores = memory_efficient_attention(
+            q, k.to(q), v.to(q), mask, dropout_p, scale=scale
+        )
     else:
         scores = vanilla_attention(q, k.to(q), v.to(q), mask, dropout_p, scale=scale)
 
@@ -685,7 +705,11 @@ class HunYuanDiTBlock(nn.Module):
             hidden_size, elementwise_affine=use_ele_affine, eps=1e-6
         )
         self.attn1 = SelfAttention(
-            hidden_size, num_heads=num_heads, qkv_bias=True, qk_norm=qk_norm, attn_mode=attn_mode
+            hidden_size,
+            num_heads=num_heads,
+            qkv_bias=True,
+            qk_norm=qk_norm,
+            attn_mode=attn_mode,
         )
 
         # ========================= FFN =========================
@@ -713,7 +737,8 @@ class HunYuanDiTBlock(nn.Module):
             text_states_dim,
             num_heads=num_heads,
             qkv_bias=True,
-            qk_norm=qk_norm,attn_mode=attn_mode
+            qk_norm=qk_norm,
+            attn_mode=attn_mode,
         )
         self.norm3 = norm_layer(hidden_size, elementwise_affine=True, eps=1e-6)
 
@@ -835,7 +860,7 @@ class HunYuanDiT(nn.Module):
         num_heads=16,
         mlp_ratio=4.0,
         log_fn=print,
-        attn_mode="xformers"
+        attn_mode="xformers",
     ):
         super().__init__()
         self.log_fn = log_fn
@@ -906,7 +931,7 @@ class HunYuanDiT(nn.Module):
                     qk_norm=qk_norm,
                     norm_type=self.norm,
                     skip=layer > depth // 2,
-                    attn_mode=attn_mode
+                    attn_mode=attn_mode,
                 )
                 for layer in range(depth)
             ]
