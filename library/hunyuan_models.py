@@ -224,7 +224,7 @@ MEMORY_LAYOUTS = {
     ),
     "xformers": (
         lambda x, head_dim: x,
-        lambda x: x.reshape(x.shape[0], x.shape[1], -1),
+        lambda x: x,
         lambda x: (1, 1, x, 1),
     ),
     "math": (
