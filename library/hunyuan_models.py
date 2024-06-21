@@ -110,7 +110,7 @@ class MT5Embedder(nn.Module):
         outputs = self.model(
             input_ids=input_ids, attention_mask=mask, output_hidden_states=True
         )
-        return outputs["hidden_states"][layer_index]
+        return outputs["hidden_states"][layer_index], mask
 
 
 def reshape_for_broadcast(
