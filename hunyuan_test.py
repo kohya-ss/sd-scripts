@@ -12,25 +12,15 @@ from library.hunyuan_utils import *
 
 
 PROMPT = """
-Anime-style illustration of a young girl with long black hair, red eyes, and small red horns, 
-wearing a traditional white kimono with delicate blue floral patterns and a red obi sash. 
-She's standing in shallow, reflective water at night, waving with one hand. 
-Her hair is adorned with red and white flowers. 
-In the background, a large red torii gate stands prominently, silhouetted against a misty blue night sky. 
-Multiple glowing paper lanterns float on the water, creating a warm, magical atmosphere. 
-A ethereal blue waterfall cascades in the distance, surrounded by shadowy trees. 
-The scene is illuminated by a soft, mystical light, 
-highlighting the water's surface and creating a dreamy, fantastical mood. 
-The color palette focuses on deep blues, vibrant reds, and soft whites. 
-Highly detailed in anime art style with vibrant colors and smooth linework.
+Very beautiful Steampunk lady, long silver hair, steampunk outfit and weapon, hyperrealism, photorealistic, 8k, unreal engine
 """
 NEG_PROMPT = "错误的眼睛，糟糕的人脸，毁容，糟糕的艺术，变形，多余的肢体，模糊的颜色，模糊，重复，病态，残缺"
 CLIP_TOKENS = 75*1 + 2
 ATTN_MODE = "xformers"
-STEPS = 32
-CFG_SCALE = 4
+STEPS = 16
+CFG_SCALE = 7
 DEVICE = "cuda"
-DTYPE = torch.bfloat16
+DTYPE = torch.float16
 
 
 if __name__ == "__main__":
@@ -40,8 +30,10 @@ if __name__ == "__main__":
         denoiser, patch_size, head_dim, clip_tokenizer, clip_encoder, mt5_embedder, vae = (
             load_model("./model", dtype=DTYPE, device=DEVICE)
         )
-        denoiser.enable_gradient_checkpointing()
+        # denoiser.enable_gradient_checkpointing()
         denoiser.set_attn_mode(ATTN_MODE)
+        denoiser.disable_fp32_layer_norm()
+        denoiser.disable_fp32_silu
         vae.requires_grad_(False)
 
         with torch.autocast("cuda"):

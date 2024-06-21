@@ -359,8 +359,8 @@ class SelfAttention(nn.Module):
         qkv = self.Wqkv(x)
         qkv = qkv.view(b, s, 3, self.num_heads, self.head_dim)  # [b, s, 3, h, d]
         q, k, v = qkv.unbind(dim=2)  # [b, s, h, d]
-        q = self.q_norm(q).half()  # [b, s, h, d]
-        k = self.k_norm(k).half()
+        q = self.q_norm(q).to(q)  # [b, s, h, d]
+        k = self.k_norm(k).to(q)
 
         # Apply RoPE if needed
         if freqs_cis_img is not None:
@@ -373,7 +373,7 @@ class SelfAttention(nn.Module):
         # qkv = torch.stack([q, k, v], dim=2)  # [b, s, 3, h, d]
         # context = self.inner_attn(qkv)
         context = attention(q, k, v, self.head_dim, self.attn_drop, mode=self.attn_mode)
-        out = self.out_proj(context.view(b, s, d))
+        out = self.out_proj(context.reshape(b, s, d))
         out = self.proj_drop(out)
 
         out_tuple = (out,)
@@ -455,8 +455,8 @@ class CrossAttention(nn.Module):
             b, s2, 2, self.num_heads, self.head_dim
         )  # [b, s2, 2, h, d]
         k, v = kv.unbind(dim=2)  # [b, s2, h, d]
-        q = self.q_norm(q).half()  # [b, s1, h, d]
-        k = self.k_norm(k).half()  # [b, s2, h, d]
+        q = self.q_norm(q).to(q)  # [b, s1, h, d]
+        k = self.k_norm(k).to(k)  # [b, s2, h, d]
 
         # Apply RoPE if needed
         if freqs_cis_img is not None:
@@ -466,7 +466,7 @@ class CrossAttention(nn.Module):
         # kv = torch.stack([k, v], dim=2)  # [b, s1, 2, h, d]
         # context = self.inner_attn(q, kv)  # [b, s1, h, d]
         context = attention(q, k, v, self.head_dim, self.attn_drop, mode=self.attn_mode)
-        context = context.view(b, s1, -1)  # [b, s1, D]
+        context = context.reshape(b, s1, -1)  # [b, s1, D]
 
         out = self.out_proj(context)
         out = self.proj_drop(out)
@@ -553,9 +553,8 @@ def timestep_embedding(t, dim, max_period=10000, repeat_only=False):
     if not repeat_only:
         half = dim // 2
         freqs = torch.exp(
-            -math.log(max_period)
+            (-math.log(max_period) / half)
             * torch.arange(start=0, end=half, dtype=torch.float32)
-            / half
         ).to(
             device=t.device
         )  # size: [dim/2], 一个指数衰减的曲线
@@ -566,7 +565,7 @@ def timestep_embedding(t, dim, max_period=10000, repeat_only=False):
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
     else:
-        embedding = repeat(t, "b -> b d", d=dim)
+        embedding = t.unsqueeze(-1).repeat(1, dim)
     return embedding
 
 
@@ -660,20 +659,28 @@ def modulate(x, shift, scale):
 
 
 class FP32_Layernorm(nn.LayerNorm):
+    enable_fp32 = True
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        origin_dtype = inputs.dtype
-        return F.layer_norm(
-            inputs.float(),
-            self.normalized_shape,
-            self.weight.float(),
-            self.bias.float(),
-            self.eps,
-        ).to(origin_dtype)
+        if self.enable_fp32:
+            return F.layer_norm(
+                inputs.float(),
+                self.normalized_shape,
+                self.weight.float(),
+                self.bias.float(),
+                self.eps,
+            ).to(inputs.dtype)
+        else:
+            return F.layer_norm(
+                inputs, self.normalized_shape, self.weight, self.bias, self.eps
+            )
 
 
 class FP32_SiLU(nn.SiLU):
+    enable_fp32 = True
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.silu(inputs.float(), inplace=False).to(inputs.dtype)
+        if self.enable_fp32:
+            return torch.nn.functional.silu(inputs.float(), inplace=False).to(inputs.dtype)
+        return torch.nn.functional.silu(inputs, inplace=False).to(inputs.dtype)
 
 
 class HunYuanDiTBlock(nn.Module):
@@ -959,6 +966,18 @@ class HunYuanDiT(nn.Module):
     def set_attn_mode(self, attn_mode):
         for block in self.blocks:
             block.set_attn_mode(attn_mode)
+
+    def enable_fp32_layer_norm(self):
+        FP32_Layernorm.enable_fp32 = True
+
+    def disable_fp32_layer_norm(self):
+        FP32_Layernorm.enable_fp32 = False
+
+    def enable_fp32_silu(self):
+        FP32_SiLU.enable_fp32 = True
+
+    def disable_fp32_silu(self):
+        FP32_SiLU.enable_fp32 = False
 
     def forward(
         self,
