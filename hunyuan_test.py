@@ -50,7 +50,7 @@ if __name__ == "__main__":
                 mt5_embedder,
                 clip_tokenizer,
                 clip_encoder,
-                # Should be same as original implemention with max_length_clip=77
+                # Should be same as original implementation with max_length_clip=77
                 # Support 75*n + 2
                 max_length_clip=CLIP_TOKENS
             )
