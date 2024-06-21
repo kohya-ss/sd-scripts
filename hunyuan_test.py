@@ -25,15 +25,13 @@ DTYPE = torch.float16
 
 if __name__ == "__main__":
     seed_everything(0)
-    with torch.inference_mode(True):
+    with torch.inference_mode(True), torch.no_grad():
         alphas, sigmas = load_scheduler_sigmas()
         denoiser, patch_size, head_dim, clip_tokenizer, clip_encoder, mt5_embedder, vae = (
             load_model("./model", dtype=DTYPE, device=DEVICE)
         )
-        # denoiser.enable_gradient_checkpointing()
+        denoiser.eval()
         denoiser.set_attn_mode(ATTN_MODE)
-        denoiser.disable_fp32_layer_norm()
-        denoiser.disable_fp32_silu
         vae.requires_grad_(False)
 
         with torch.autocast("cuda"):
@@ -53,12 +51,16 @@ if __name__ == "__main__":
                 clip_encoder,
                 max_length_clip=CLIP_TOKENS
             )
+            clip_h = torch.concat([clip_h, neg_clip_h], dim=0)
+            clip_m = torch.concat([clip_m, neg_clip_m], dim=0)
+            mt5_h = torch.concat([mt5_h, neg_mt5_h], dim=0)
+            mt5_m = torch.concat([mt5_m, neg_mt5_m], dim=0)
             torch.cuda.empty_cache()
 
-        style = torch.as_tensor([0], device=DEVICE)
+        style = torch.as_tensor([0]*2, device=DEVICE)
         # src hw, dst hw, 0, 0
         size_cond = [1024, 1024, 1024, 1024, 0, 0]
-        image_meta_size = torch.as_tensor([size_cond], device=DEVICE)
+        image_meta_size = torch.as_tensor([size_cond]*2, device=DEVICE)
         freqs_cis_img = calc_rope(1024, 1024, patch_size, head_dim)
 
         denoiser_wrapper = DiscreteVDDPMDenoiser(
@@ -72,12 +74,12 @@ if __name__ == "__main__":
             cond, uncond = denoiser_wrapper(
                 x.repeat(2, 1, 1, 1),
                 sigma.repeat(2),
-                encoder_hidden_states=torch.concat([clip_h, neg_clip_h], dim=0),
-                text_embedding_mask=torch.concat([clip_m, neg_clip_m], dim=0),
-                encoder_hidden_states_t5=torch.concat([mt5_h, neg_mt5_h], dim=0),
-                text_embedding_mask_t5=torch.concat([mt5_m, neg_mt5_m], dim=0),
-                image_meta_size=torch.concat([image_meta_size, image_meta_size], dim=0),
-                style=torch.concat([style, style], dim=0),
+                encoder_hidden_states=clip_h,
+                text_embedding_mask=clip_m,
+                encoder_hidden_states_t5=mt5_h,
+                text_embedding_mask_t5=mt5_m,
+                image_meta_size=image_meta_size,
+                style=style,
                 cos_cis_img=freqs_cis_img[0],
                 sin_cis_img=freqs_cis_img[1],
             ).chunk(2, dim=0)
