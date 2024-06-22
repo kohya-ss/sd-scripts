@@ -103,8 +103,6 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         ):
             input_ids1 = batch["input_ids"]
             input_ids2 = batch["input_ids2"]
-            print("input_ids1", input_ids1.shape)
-            print("input_ids2", input_ids2.shape)
             with torch.enable_grad():
                 input_ids1 = input_ids1.to(accelerator.device)
                 input_ids2 = input_ids2.to(accelerator.device)
@@ -121,8 +119,6 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
                         accelerator=accelerator,
                     )
                 )
-                print("encoder_hidden_states1", encoder_hidden_states1.shape)
-                print("encoder_hidden_states2", encoder_hidden_states2.shape)
         else:
             raise NotImplementedError
         return encoder_hidden_states1, mask1, encoder_hidden_states2, mask2
