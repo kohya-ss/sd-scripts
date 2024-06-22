@@ -44,7 +44,6 @@ class MT5Embedder(nn.Module):
         max_length=128,
     ):
         super().__init__()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.torch_dtype = torch_dtype or torch.bfloat16
         self.max_length = max_length
         if model_kwargs is None:
@@ -52,7 +51,6 @@ class MT5Embedder(nn.Module):
                 # "low_cpu_mem_usage": True,
                 "torch_dtype": self.torch_dtype,
             }
-        model_kwargs["device_map"] = {"shared": self.device, "encoder": self.device}
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
         if use_tokenizer_only:
             return
@@ -61,6 +59,53 @@ class MT5Embedder(nn.Module):
             .eval()
             .to(self.torch_dtype)
         )
+        self.register_buffer("device", torch.tensor(0.0), persistent=False)
+
+    def get_token_embedding(self):
+        return self.model.shared
+
+    def gradient_checkpointing_enable(self):
+        for block in self.model.encoder.block:
+            block.org_forward = block.forward
+
+            def mt5_block_forward(
+                hidden_states,
+                attention_mask=None,
+                position_bias=None,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                encoder_decoder_position_bias=None,
+                layer_head_mask=None,
+                cross_attn_layer_head_mask=None,
+                past_key_value=None,
+                use_cache=False,
+                output_attentions=False,
+                return_dict=True,
+            ):
+                return checkpoint.checkpoint(
+                    block.org_forward,
+                    hidden_states,
+                    attention_mask,
+                    position_bias,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    encoder_decoder_position_bias,
+                    layer_head_mask,
+                    cross_attn_layer_head_mask,
+                    past_key_value,
+                    use_cache,
+                    output_attentions,
+                    return_dict,
+                    use_reentrant=False,
+                )
+
+            block.forward = mt5_block_forward
+
+    def gradient_checkpointing_disable(self):
+        for block in self.model.encoder.block:
+            if hasattr(block, "org_forward"):
+                block.forward = block.org_forward
+                delattr(block, "org_forward")
 
     def get_tokens_and_mask(self, texts):
         text_tokens_and_mask = self.tokenizer(
@@ -110,6 +155,8 @@ class MT5Embedder(nn.Module):
         ).input_ids
 
     def get_hidden_states(self, input_ids, layer_index=-1):
+        if input_ids.dim() == 3:
+            input_ids = input_ids.view(input_ids.size(0), -1)
         mask = (input_ids != 0).long()
         outputs = self.model(
             input_ids=input_ids, attention_mask=mask, output_hidden_states=True
@@ -660,6 +707,7 @@ def modulate(x, shift, scale):
 
 class FP32_Layernorm(nn.LayerNorm):
     enable_fp32 = True
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if self.enable_fp32:
             return F.layer_norm(
@@ -677,9 +725,12 @@ class FP32_Layernorm(nn.LayerNorm):
 
 class FP32_SiLU(nn.SiLU):
     enable_fp32 = True
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if self.enable_fp32:
-            return torch.nn.functional.silu(inputs.float(), inplace=False).to(inputs.dtype)
+            return torch.nn.functional.silu(inputs.float(), inplace=False).to(
+                inputs.dtype
+            )
         return torch.nn.functional.silu(inputs, inplace=False).to(inputs.dtype)
 
 
@@ -793,11 +844,19 @@ class HunYuanDiTBlock(nn.Module):
 
         return x
 
-    def forward(self, *args, **kwargs):
+    def forward(self, x, c=None, text_states=None, freq_cis_img=None, skip=None):
         if self.gradient_checkpointing and self.training:
-            return checkpoint.checkpoint(self._forward, *args, **kwargs)
+            return checkpoint.checkpoint(
+                self._forward,
+                x,
+                c,
+                text_states,
+                freq_cis_img,
+                skip,
+                use_reentrant=False,
+            )
         else:
-            return self._forward(*args, **kwargs)
+            return self._forward(x, c, text_states, freq_cis_img, skip)
 
 
 class FinalLayer(nn.Module):
@@ -966,6 +1025,14 @@ class HunYuanDiT(nn.Module):
     def set_attn_mode(self, attn_mode):
         for block in self.blocks:
             block.set_attn_mode(attn_mode)
+
+    def set_use_memory_efficient_attention(self, xformers, mem_eff):
+        if xformers:
+            self.set_attn_mode("xformers")
+        elif mem_eff:
+            self.set_attn_mode("torch")
+        else:
+            self.set_attn_mode("vanilla")
 
     def enable_fp32_layer_norm(self):
         FP32_Layernorm.enable_fp32 = True

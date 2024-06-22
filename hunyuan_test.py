@@ -15,9 +15,9 @@ PROMPT = """
 Very beautiful Steampunk lady, long silver hair, steampunk outfit and weapon, hyperrealism, photorealistic, 8k, unreal engine
 """
 NEG_PROMPT = "错误的眼睛，糟糕的人脸，毁容，糟糕的艺术，变形，多余的肢体，模糊的颜色，模糊，重复，病态，残缺"
-CLIP_TOKENS = 75*1 + 2
+CLIP_TOKENS = 75 * 1 + 2
 ATTN_MODE = "xformers"
-STEPS = 16
+STEPS = 50
 CFG_SCALE = 7
 DEVICE = "cuda"
 DTYPE = torch.float16
@@ -27,10 +27,18 @@ if __name__ == "__main__":
     seed_everything(0)
     with torch.inference_mode(True), torch.no_grad():
         alphas, sigmas = load_scheduler_sigmas()
-        denoiser, patch_size, head_dim, clip_tokenizer, clip_encoder, mt5_embedder, vae = (
-            load_model("./model", dtype=DTYPE, device=DEVICE)
-        )
+        (
+            denoiser,
+            patch_size,
+            head_dim,
+            clip_tokenizer,
+            clip_encoder,
+            mt5_embedder,
+            vae,
+        ) = load_model("./model", dtype=DTYPE, device=DEVICE)
         denoiser.eval()
+        denoiser.disable_fp32_silu()
+        denoiser.disable_fp32_layer_norm()
         denoiser.set_attn_mode(ATTN_MODE)
         vae.requires_grad_(False)
 
@@ -42,14 +50,14 @@ if __name__ == "__main__":
                 clip_encoder,
                 # Should be same as original implementation with max_length_clip=77
                 # Support 75*n + 2
-                max_length_clip=CLIP_TOKENS
+                max_length_clip=CLIP_TOKENS,
             )
             neg_clip_h, neg_clip_m, neg_mt5_h, neg_mt5_m = get_cond(
                 NEG_PROMPT,
                 mt5_embedder,
                 clip_tokenizer,
                 clip_encoder,
-                max_length_clip=CLIP_TOKENS
+                max_length_clip=CLIP_TOKENS,
             )
             clip_h = torch.concat([clip_h, neg_clip_h], dim=0)
             clip_m = torch.concat([clip_m, neg_clip_m], dim=0)
@@ -57,10 +65,10 @@ if __name__ == "__main__":
             mt5_m = torch.concat([mt5_m, neg_mt5_m], dim=0)
             torch.cuda.empty_cache()
 
-        style = torch.as_tensor([0]*2, device=DEVICE)
+        style = torch.as_tensor([0] * 2, device=DEVICE)
         # src hw, dst hw, 0, 0
         size_cond = [1024, 1024, 1024, 1024, 0, 0]
-        image_meta_size = torch.as_tensor([size_cond]*2, device=DEVICE)
+        image_meta_size = torch.as_tensor([size_cond] * 2, device=DEVICE)
         freqs_cis_img = calc_rope(1024, 1024, patch_size, head_dim)
 
         denoiser_wrapper = DiscreteVDDPMDenoiser(

@@ -40,7 +40,7 @@ init_ipex()
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 from torchvision import transforms
-from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
+from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection, T5Tokenizer
 import transformers
 from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 from diffusers import (
@@ -68,6 +68,7 @@ import cv2
 import safetensors.torch
 from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
 import library.model_util as model_util
+import library.hunyuan_utils as hunyuan_utils
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
 import library.deepspeed_utils as deepspeed_utils
@@ -811,6 +812,20 @@ class BaseDataset(torch.utils.data.Dataset):
     def get_input_ids(self, caption, tokenizer=None):
         if tokenizer is None:
             tokenizer = self.tokenizers[0]
+
+        # HunYuan DiT
+        if not isinstance(tokenizer, CLIPTokenizer):
+            if isinstance(tokenizer, T5Tokenizer):
+                result = tokenizer(
+                    caption,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=256,
+                    return_tensors="pt",
+                ).input_ids
+            else:
+                result = hunyuan_utils.clip_get_input_ids(caption, tokenizer, self.tokenizer_max_length)
+            return result
 
         input_ids = tokenizer(
             caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"

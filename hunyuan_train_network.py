@@ -29,7 +29,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
 
     def assert_extra_args(self, args, train_dataset_group):
         super().assert_extra_args(args, train_dataset_group)
-        sdxl_train_util.verify_sdxl_training_args(args)
+        # sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.cache_text_encoder_outputs:
             assert (
@@ -70,7 +70,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         )
 
     def load_tokenizer(self, args):
-        tokenizer = hunyuan_utils.load_tokenizers(args)
+        tokenizer = hunyuan_utils.load_tokenizers()
         return tokenizer
 
     def is_text_encoder_outputs_cached(self, args):
@@ -103,6 +103,8 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         ):
             input_ids1 = batch["input_ids"]
             input_ids2 = batch["input_ids2"]
+            print("input_ids1", input_ids1.shape)
+            print("input_ids2", input_ids2.shape)
             with torch.enable_grad():
                 input_ids1 = input_ids1.to(accelerator.device)
                 input_ids2 = input_ids2.to(accelerator.device)
@@ -119,6 +121,8 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
                         accelerator=accelerator,
                     )
                 )
+                print("encoder_hidden_states1", encoder_hidden_states1.shape)
+                print("encoder_hidden_states2", encoder_hidden_states2.shape)
         else:
             raise NotImplementedError
         return encoder_hidden_states1, mask1, encoder_hidden_states2, mask2
@@ -139,17 +143,22 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         )  # TODO check why noisy_latents is not weight_dtype
 
         # get size embeddings
-        orig_size = batch["original_sizes_hw"]
-        crop_size = batch["crop_top_lefts"]
-        target_size = batch["target_sizes_hw"]
+        orig_size = batch["original_sizes_hw"]  # B, 2
+        crop_size = batch["crop_top_lefts"]  # B, 2
+        target_size = batch["target_sizes_hw"]  # B, 2
         B, C, H, W = noisy_latents.shape
-        
-        # TODO implement correct meta_size info
+
         style = torch.as_tensor([0] * B, device=accelerator.device)
-        # src hw, dst hw, 0, 0
-        size_cond = [1024, 1024, 1024, 1024, 0, 0]
-        image_meta_size = torch.as_tensor([size_cond], device=accelerator.device)
-        freqs_cis_img = hunyuan_utils.calc_rope(H*8, W*8, 2, 88)
+        image_meta_size = torch.concat(
+            [
+                orig_size,
+                target_size,
+                # Not following SDXL but following HunYuan's Implementation
+                # TODO examine if this is correct
+                torch.zeros_like(target_size),
+            ]
+        )
+        freqs_cis_img = hunyuan_utils.calc_rope(H * 8, W * 8, 2, 88)
 
         # concat embeddings
         encoder_hidden_states1, mask1, encoder_hidden_states2, mask2 = text_conds
@@ -160,12 +169,13 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
             text_embedding_mask=mask1,
             encoder_hidden_states_t5=encoder_hidden_states2,
             text_embedding_mask_t5=mask2,
-            image_meta_size=None,
+            image_meta_size=image_meta_size,
             style=style,
             cos_cis_img=freqs_cis_img[0],
             sin_cis_img=freqs_cis_img[1],
         )
-        return noise_pred
+        # TODO Handle learned sigma correctly
+        return noise_pred.chunk(2, dim=1)[0]
 
     def sample_images(
         self,
@@ -179,7 +189,23 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         text_encoder,
         unet,
     ):
-        raise NotImplementedError
+        steps = global_step
+        if steps == 0:
+            if not args.sample_at_first:
+                return
+        else:
+            if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
+                return
+            if args.sample_every_n_epochs is not None:
+                # sample_every_n_steps は無視する
+                if epoch is None or epoch % args.sample_every_n_epochs != 0:
+                    return
+            else:
+                if (
+                    steps % args.sample_every_n_steps != 0 or epoch is not None
+                ):  # steps is not divisible or end of epoch
+                    return
+        logger.warning("Sampling images not supported yet.")
 
 
 def setup_parser() -> argparse.ArgumentParser:

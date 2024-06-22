@@ -157,10 +157,12 @@ def hunyuan_get_hidden_states(
     )
     input_ids1 = input_ids1.to(device)
     input_ids2 = input_ids2.to(device)
+    if input_ids1.dim() == 2:
+        input_ids1 = input_ids1.unsqueeze(0)
     clip_hidden_states, clip_mask = clip_get_hidden_states(
-        input_ids1.unsqueeze(0).to(device),
+        input_ids1.to(device),
         tokenizer1,
-        clip_encoder,
+        text_encoder1,
         max_token_length=max_token_length + 2,
     )
     mt5_hidden_states, mt5_mask = text_encoder2.get_hidden_states(input_ids2)
@@ -211,11 +213,11 @@ def load_tokenizers():
         subfolder=TOKENIZER1_PATH,
     )
     tokenizer.eos_token_id = tokenizer.sep_token_id
-    tokenizer2 = T5Tokenizer(
+    tokenizer2 = T5Tokenizer.from_pretrained(
         BASE_PATH,
         subfolder=TOKENIZER2_PATH,
     )
-    return tokenizer, tokenizer2
+    return [tokenizer, tokenizer2]
 
 
 def load_scheduler_sigmas():
@@ -244,7 +246,6 @@ def load_model(model_path: str, dtype=torch.float16, device="cuda"):
         .to(device)
         .to(dtype)
     )
-    mt5_embedder.device = device
 
     vae = (
         AutoencoderKL.from_pretrained(os.path.join(model_path, "vae"))

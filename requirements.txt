@@ -32,6 +32,10 @@ imagesize==1.4.1
 # for cuda 12.1(default 11.8)
 # onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 
+# for HunYuanDiT
+sentencepiece==0.2.0
+timm==1.0.7
+
 # this is for onnx: 
 # protobuf==3.20.3
 # open clip for SDXL
