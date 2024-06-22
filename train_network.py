@@ -477,7 +477,15 @@ class NetworkTrainer:
 
                 # set top parameter requires_grad = True for gradient checkpointing works
                 if train_text_encoder:
-                    t_enc.text_model.embeddings.requires_grad_(True)
+                    if hasattr(t_enc, "text_model"):
+                        t_enc.text_model.embeddings.requires_grad_(True)
+                    elif hasattr(t_enc, "embeddings"):
+                        # HunYuan Bert(CLIP)
+                        t_enc.embeddings.requires_grad_(True)
+                    elif hasattr(t_enc, "get_token_embedding"):
+                        # Others (mT5 or other encoder, will have custom method to get the correct embedding)
+                        t_enc.get_token_embedding().requires_grad_(True)
+
 
         else:
             unet.eval()

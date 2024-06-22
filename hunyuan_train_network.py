@@ -1,3 +1,7 @@
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import argparse
 
 import torch
@@ -103,6 +107,8 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         ):
             input_ids1 = batch["input_ids"]
             input_ids2 = batch["input_ids2"]
+            logger.debug("input_ids1", input_ids1.shape)
+            logger.debug("input_ids2", input_ids2.shape)
             with torch.enable_grad():
                 input_ids1 = input_ids1.to(accelerator.device)
                 input_ids2 = input_ids2.to(accelerator.device)
@@ -119,6 +125,8 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
                         accelerator=accelerator,
                     )
                 )
+                logger.debug("encoder_hidden_states1", encoder_hidden_states1.shape)
+                logger.debug("encoder_hidden_states2", encoder_hidden_states2.shape)
         else:
             raise NotImplementedError
         return encoder_hidden_states1, mask1, encoder_hidden_states2, mask2
