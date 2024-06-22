@@ -56,7 +56,6 @@ class MT5Embedder(nn.Module):
             return
         self.model = (
             MT5EncoderModel.from_pretrained(model_dir, **model_kwargs)
-            .eval()
             .to(self.torch_dtype)
         )
         self.register_buffer("device", torch.tensor(0.0), persistent=False)
@@ -68,38 +67,55 @@ class MT5Embedder(nn.Module):
         for block in self.model.encoder.block:
             block.org_forward = block.forward
 
-            def mt5_block_forward(
-                hidden_states,
-                attention_mask=None,
-                position_bias=None,
-                encoder_hidden_states=None,
-                encoder_attention_mask=None,
-                encoder_decoder_position_bias=None,
-                layer_head_mask=None,
-                cross_attn_layer_head_mask=None,
-                past_key_value=None,
-                use_cache=False,
-                output_attentions=False,
-                return_dict=True,
-            ):
-                return checkpoint.checkpoint(
-                    block.org_forward,
+            def wrapper(block):
+                def mt5_block_forward(
                     hidden_states,
-                    attention_mask,
-                    position_bias,
-                    encoder_hidden_states,
-                    encoder_attention_mask,
-                    encoder_decoder_position_bias,
-                    layer_head_mask,
-                    cross_attn_layer_head_mask,
-                    past_key_value,
-                    use_cache,
-                    output_attentions,
-                    return_dict,
-                    use_reentrant=False,
-                )
+                    attention_mask=None,
+                    position_bias=None,
+                    encoder_hidden_states=None,
+                    encoder_attention_mask=None,
+                    encoder_decoder_position_bias=None,
+                    layer_head_mask=None,
+                    cross_attn_layer_head_mask=None,
+                    past_key_value=None,
+                    use_cache=False,
+                    output_attentions=False,
+                    return_dict=True,
+                ):
+                    if not block.training:
+                        return block.org_forward(
+                            hidden_states,
+                            attention_mask,
+                            position_bias,
+                            encoder_hidden_states,
+                            encoder_attention_mask,
+                            encoder_decoder_position_bias,
+                            layer_head_mask,
+                            cross_attn_layer_head_mask,
+                            past_key_value,
+                            use_cache,
+                            output_attentions,
+                            return_dict,
+                        )
+                    return checkpoint.checkpoint(
+                        block.org_forward,
+                        hidden_states,
+                        attention_mask,
+                        position_bias,
+                        encoder_hidden_states,
+                        encoder_attention_mask,
+                        encoder_decoder_position_bias,
+                        layer_head_mask,
+                        cross_attn_layer_head_mask,
+                        past_key_value,
+                        use_cache,
+                        output_attentions,
+                        return_dict,
+                        use_reentrant=False,
+                    )
+                return mt5_block_forward
 
-            block.forward = mt5_block_forward
+            block.forward = wrapper(block)
 
     def gradient_checkpointing_disable(self):
         for block in self.model.encoder.block:
@@ -133,9 +149,9 @@ class MT5Embedder(nn.Module):
         )
 
         outputs = self.model(
-            input_ids=text_tokens_and_mask["input_ids"].to(self.device),
+            input_ids=text_tokens_and_mask["input_ids"].to(self.device.device),
             attention_mask=(
-                text_tokens_and_mask["attention_mask"].to(self.device)
+                text_tokens_and_mask["attention_mask"].to(self.device.device)
                 if attention_mask
                 else None
             ),

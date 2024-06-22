@@ -486,7 +486,6 @@ class NetworkTrainer:
                         # Others (mT5 or other encoder, will have custom method to get the correct embedding)
                         t_enc.get_token_embedding().requires_grad_(True)
 
-
         else:
             unet.eval()
             for t_enc in text_encoders:

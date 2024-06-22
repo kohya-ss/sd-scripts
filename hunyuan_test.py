@@ -17,7 +17,7 @@ Very beautiful Steampunk lady, long silver hair, steampunk outfit and weapon, hy
 NEG_PROMPT = "错误的眼睛，糟糕的人脸，毁容，糟糕的艺术，变形，多余的肢体，模糊的颜色，模糊，重复，病态，残缺"
 CLIP_TOKENS = 75 * 1 + 2
 ATTN_MODE = "xformers"
-STEPS = 50
+STEPS = 16
 CFG_SCALE = 7
 DEVICE = "cuda"
 DTYPE = torch.float16
@@ -41,6 +41,7 @@ if __name__ == "__main__":
         denoiser.disable_fp32_layer_norm()
         denoiser.set_attn_mode(ATTN_MODE)
         vae.requires_grad_(False)
+        mt5_embedder.to(torch.float16)
 
         with torch.autocast("cuda"):
             clip_h, clip_m, mt5_h, mt5_m = get_cond(
