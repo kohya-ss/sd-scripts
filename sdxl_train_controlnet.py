@@ -324,11 +324,14 @@ def train(args):
     )
 
     if args.fused_backward_pass:
+        # use fused optimizer for backward pass: other optimizers will be supported in the future
         import library.adafactor_fused
+
         library.adafactor_fused.patch_adafactor_fused(optimizer)
         for param_group in optimizer.param_groups:
             for parameter in param_group["params"]:
                 if parameter.requires_grad:
+
                     def __grad_hook(tensor: torch.Tensor, param_group=param_group):
                         if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                             accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
@@ -619,9 +622,11 @@ def train(args):
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+                    lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+                else:
+                    # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
+                    lr_scheduler.step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

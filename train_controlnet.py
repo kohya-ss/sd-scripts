@@ -512,9 +512,11 @@ def train(args):
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+                    lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+                else:
+                    # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
+                    lr_scheduler.step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
