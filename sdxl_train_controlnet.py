@@ -266,7 +266,7 @@ def train(args):
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
-    trainable_params = list(unet.prepare_params())
+    trainable_params = list(controlnet.parameters())
     logger.info(f"trainable params count: {len(trainable_params)}")
     logger.info(
         f"number of trainable parameters: {sum(p.numel() for p in trainable_params if p.requires_grad)}"

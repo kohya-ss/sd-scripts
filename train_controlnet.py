@@ -302,6 +302,20 @@ def train(args):
         controlnet, optimizer, train_dataloader, lr_scheduler
     )
 
+    if args.fused_backward_pass:
+        import library.adafactor_fused
+        library.adafactor_fused.patch_adafactor_fused(optimizer)
+        for param_group in optimizer.param_groups:
+            for parameter in param_group["params"]:
+                if parameter.requires_grad:
+                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                        optimizer.step_param(tensor, param_group)
+                        tensor.grad = None
+
+                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
     unet.to(accelerator.device)
@@ -492,11 +506,13 @@ def train(args):
                 loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
                 accelerator.backward(loss)
-                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                    params_to_clip = controlnet.parameters()
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                if not args.fused_backward_pass:
+                    if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                        params_to_clip = controlnet.parameters()
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                optimizer.step()
+                    optimizer.step()
+
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
