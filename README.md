@@ -1,5 +1,30 @@
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
+## SD3 training
+
+SD3 training is done with `sd3_train.py`. 
+
+`optimizer_type = "adafactor"` is recommended for 24GB VRAM GPUs. `cache_text_encoder_outputs_to_disk` and `cache_latents_to_disk` are necessary currently. 
+
+`clip_l`, `clip_g` and `t5xxl` can be specified if the checkpoint does not include them.  
+
+t5xxl doesn't seem to work with `fp16`, so use`bf16` or `fp32`. 
+
+There are `t5xxl_device` and `t5xxl_dtype` options for `t5xxl` device and dtype. 
+
+```toml
+learning_rate = 1e-5 # seems to be too high
+optimizer_type = "adafactor"
+optimizer_args = [ "scale_parameter=False", "relative_step=False", "warmup_init=False" ]
+cache_text_encoder_outputs = true
+cache_text_encoder_outputs_to_disk = true
+vae_batch_size = 1
+cache_latents = true
+cache_latents_to_disk = true
+```
+
+--- 
+
 [__Change History__](#change-history) is moved to the bottom of the page. 
 更新履歴は[ページ末尾](#change-history)に移しました。
 

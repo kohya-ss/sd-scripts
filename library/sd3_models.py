@@ -1,11 +1,13 @@
-# some modules/classes are copied and modified from https://github.com/mcmonkey4eva/sd3-ref 
+# some modules/classes are copied and modified from https://github.com/mcmonkey4eva/sd3-ref
 # the original code is licensed under the MIT License
 
 # and some module/classes are contributed from KohakuBlueleaf. Thanks for the contribution!
 
+from ast import Tuple
 from functools import partial
 import math
-from typing import Dict, Optional
+from types import SimpleNamespace
+from typing import Dict, List, Optional, Union
 import einops
 import numpy as np
 import torch
@@ -106,6 +108,8 @@ class SD3Tokenizer:
         self.clip_l = SDTokenizer(tokenizer=clip_tokenizer)
         self.clip_g = SDXLClipGTokenizer(clip_tokenizer)
         self.t5xxl = T5XXLTokenizer() if t5xxl else None
+        # t5xxl has 99999999 max length, clip has 77
+        self.model_max_length = self.clip_l.max_length  # 77
 
     def tokenize_with_weights(self, text: str):
         return (
@@ -870,6 +874,10 @@ class MMDiT(nn.Module):
         self.final_layer = UnPatch(self.hidden_size, patch_size, self.out_channels)
         # self.initialize_weights()
 
+    @property
+    def model_type(self):
+        return "m"  # only support medium
+
     def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
         for block in self.joint_blocks:
@@ -1013,6 +1021,10 @@ def create_mmdit_sd3_medium_configs(attn_mode: str):
 # endregion
 
 # region VAE
+# TODO support xformers
+
+VAE_SCALE_FACTOR = 1.5305
+VAE_SHIFT_FACTOR = 0.0609
 
 
 def Normalize(in_channels, num_groups=32, dtype=torch.float32, device=None):
@@ -1222,6 +1234,14 @@ class SDVAE(torch.nn.Module):
         self.encoder = VAEEncoder(dtype=dtype, device=device)
         self.decoder = VAEDecoder(dtype=dtype, device=device)
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
     @torch.autocast("cuda", dtype=torch.float16)
     def decode(self, latent):
         return self.decoder(latent)
@@ -1233,6 +1253,43 @@ class SDVAE(torch.nn.Module):
         logvar = torch.clamp(logvar, -30.0, 20.0)
         std = torch.exp(0.5 * logvar)
         return mean + std * torch.randn_like(mean)
+
+    @staticmethod
+    def process_in(latent):
+        return (latent - VAE_SHIFT_FACTOR) * VAE_SCALE_FACTOR
+
+    @staticmethod
+    def process_out(latent):
+        return (latent / VAE_SCALE_FACTOR) + VAE_SHIFT_FACTOR
+
+
+class VAEOutput:
+    def __init__(self, latent):
+        self.latent = latent
+
+    @property
+    def latent_dist(self):
+        return self
+
+    def sample(self):
+        return self.latent
+
+
+class VAEWrapper:
+    def __init__(self, vae):
+        self.vae = vae
+
+    @property
+    def device(self):
+        return self.vae.device
+
+    @property
+    def dtype(self):
+        return self.vae.dtype
+
+    # latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+    def encode(self, image):
+        return VAEOutput(self.vae.encode(image))
 
 
 # endregion
@@ -1370,15 +1427,39 @@ class CLIPTextModel(torch.nn.Module):
 
 
 class ClipTokenWeightEncoder:
-    def encode_token_weights(self, token_weight_pairs):
-        tokens = list(map(lambda a: a[0], token_weight_pairs[0]))
-        out, pooled = self([tokens])
-        if pooled is not None:
-            first_pooled = pooled[0:1].cpu()
+    # def encode_token_weights(self, token_weight_pairs):
+    #     tokens = list(map(lambda a: a[0], token_weight_pairs[0]))
+    #     out, pooled = self([tokens])
+    #     if pooled is not None:
+    #         first_pooled = pooled[0:1]
+    #     else:
+    #         first_pooled = pooled
+    #     output = [out[0:1]]
+    #     return torch.cat(output, dim=-2), first_pooled
+
+    # fix to support batched inputs
+    # : Union[List[Tuple[torch.Tensor, torch.Tensor]], List[List[Tuple[torch.Tensor, torch.Tensor]]]]
+    def encode_token_weights(self, list_of_token_weight_pairs):
+        has_batch = isinstance(list_of_token_weight_pairs[0][0], list)
+
+        if has_batch:
+            list_of_tokens = []
+            for pairs in list_of_token_weight_pairs:
+                tokens = [a[0] for a in pairs[0]]  # I'm not sure why this is [0]
+                list_of_tokens.append(tokens)
         else:
-            first_pooled = pooled
-        output = [out[0:1]]
-        return torch.cat(output, dim=-2).cpu(), first_pooled
+            list_of_tokens = [[a[0] for a in list_of_token_weight_pairs[0]]]
+
+        out, pooled = self(list_of_tokens)
+        if has_batch:
+            return out, pooled
+        else:
+            if pooled is not None:
+                first_pooled = pooled[0:1]
+            else:
+                first_pooled = pooled
+            output = [out[0:1]]
+            return torch.cat(output, dim=-2), first_pooled
 
 
 class SDClipModel(torch.nn.Module, ClipTokenWeightEncoder):
@@ -1694,6 +1775,7 @@ class T5Stack(torch.nn.Module):
         x = self.embed_tokens(input_ids)
         past_bias = None
         for i, l in enumerate(self.block):
+            # uncomment to debug layerwise output: fp16 may cause issues
             # print(i, x.mean(), x.std())
             x, past_bias = l(x, past_bias)
             if i == intermediate_output:

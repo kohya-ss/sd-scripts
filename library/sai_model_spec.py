@@ -6,8 +6,10 @@ import os
 from typing import List, Optional, Tuple, Union
 import safetensors
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
 
 r"""
@@ -55,11 +57,14 @@ ARCH_SD_V1 = "stable-diffusion-v1"
 ARCH_SD_V2_512 = "stable-diffusion-v2-512"
 ARCH_SD_V2_768_V = "stable-diffusion-v2-768-v"
 ARCH_SD_XL_V1_BASE = "stable-diffusion-xl-v1-base"
+ARCH_SD3_M = "stable-diffusion-3-medium"
+ARCH_SD3_UNKNOWN = "stable-diffusion-3"
 
 ADAPTER_LORA = "lora"
 ADAPTER_TEXTUAL_INVERSION = "textual-inversion"
 
 IMPL_STABILITY_AI = "https://github.com/Stability-AI/generative-models"
+IMPL_COMFY_UI = "https://github.com/comfyanonymous/ComfyUI"
 IMPL_DIFFUSERS = "diffusers"
 
 PRED_TYPE_EPSILON = "epsilon"
@@ -113,7 +118,11 @@ def build_metadata(
     merged_from: Optional[str] = None,
     timesteps: Optional[Tuple[int, int]] = None,
     clip_skip: Optional[int] = None,
+    sd3: str = None,
 ):
+    """
+    sd3: only supports "m"
+    """
     # if state_dict is None, hash is not calculated
 
     metadata = {}
@@ -126,6 +135,11 @@ def build_metadata(
 
     if sdxl:
         arch = ARCH_SD_XL_V1_BASE
+    elif sd3 is not None:
+        if sd3 == "m":
+            arch = ARCH_SD3_M
+        else:
+            arch = ARCH_SD3_UNKNOWN
     elif v2:
         if v_parameterization:
             arch = ARCH_SD_V2_768_V
@@ -142,7 +156,7 @@ def build_metadata(
     metadata["modelspec.architecture"] = arch
 
     if not lora and not textual_inversion and is_stable_diffusion_ckpt is None:
-        is_stable_diffusion_ckpt = True # default is stable diffusion ckpt if not lora and not textual_inversion
+        is_stable_diffusion_ckpt = True  # default is stable diffusion ckpt if not lora and not textual_inversion
 
     if (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
         # Stable Diffusion ckpt, TI, SDXL LoRA
@@ -236,7 +250,7 @@ def build_metadata(
     # assert all([v is not None for v in metadata.values()]), metadata
     if not all([v is not None for v in metadata.values()]):
         logger.error(f"Internal error: some metadata values are None: {metadata}")
-    
+
     return metadata
 
 
@@ -250,7 +264,7 @@ def get_title(metadata: dict) -> Optional[str]:
 def load_metadata_from_safetensors(model: str) -> dict:
     if not model.endswith(".safetensors"):
         return {}
-    
+
     with safetensors.safe_open(model, framework="pt") as f:
         metadata = f.metadata()
     if metadata is None:
