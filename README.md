@@ -265,6 +265,12 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) frodo821 氏に感謝します
 
 - `gen_imgs.py` のプロンプトオプションに、保存時のファイル名を指定する `--f` オプションを追加しました。また同スクリプトで Diffusers ベースのキーを持つ LoRA の重みに対応しました。
 
+### Jun 23, 2024 / 2024-06-23: 
+
+- Fixed `cache_latents.py` and `cache_text_encoder_outputs.py` not working. (Will be included in the next release.)
+
+- `cache_latents.py` および `cache_text_encoder_outputs.py` が動作しなくなっていたのを修正しました。（次回リリースに含まれます。）
+
 ### Apr 7, 2024 / 2024-04-07: v0.8.7
 
 - The default value of `huber_schedule` in Scheduled Huber Loss is changed from `exponential` to `snr`, which is expected to give better results.
