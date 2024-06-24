@@ -628,7 +628,7 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-
+            example_tuple = (latents, batch["captions"])
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -644,6 +644,7 @@ def train(args):
                     [tokenizer1, tokenizer2],
                     [text_encoder1, text_encoder2],
                     unet,
+                    example_tuple,
                 )
 
                 # 指定ステップごとにモデルを保存
@@ -726,6 +727,7 @@ def train(args):
             [tokenizer1, tokenizer2],
             [text_encoder1, text_encoder2],
             unet,
+            example_tuple,
         )
 
     is_main_process = accelerator.is_main_process
