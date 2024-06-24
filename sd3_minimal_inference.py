@@ -64,7 +64,8 @@ def do_sample(
     device: str,
 ):
     if initial_latent is None:
-        latent = torch.ones(1, 16, height // 8, width // 8, device=device) * 0.0609
+        # latent = torch.ones(1, 16, height // 8, width // 8, device=device) * 0.0609
+        latent = torch.zeros(1, 16, height // 8, width // 8, device=device)
     else:
         latent = initial_latent
 
