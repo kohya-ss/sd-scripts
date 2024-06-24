@@ -252,6 +252,7 @@ def train(args):
         accelerator.wait_for_everyone()
 
     if args.gradient_checkpointing:
+        unet.enable_gradient_checkpointing()
         controlnet.enable_gradient_checkpointing()
 
     # 学習に必要なクラスを準備する
