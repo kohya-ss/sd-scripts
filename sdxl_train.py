@@ -482,21 +482,35 @@ def train(args):
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     if args.fused_backward_pass:
-        # use fused optimizer for backward pass: other optimizers will be supported in the future
-        import library.adafactor_fused
+        if args.optimizer_type.lower() == "adafactor":
+            # use fused optimizer for backward pass: other optimizers will be supported in the future
+            import library.adafactor_fused
 
-        library.adafactor_fused.patch_adafactor_fused(optimizer)
-        for param_group in optimizer.param_groups:
-            for parameter in param_group["params"]:
-                if parameter.requires_grad:
+            library.adafactor_fused.patch_adafactor_fused(optimizer)
+            for param_group in optimizer.param_groups:
+                for parameter in param_group["params"]:
+                    if parameter.requires_grad:
 
-                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
+                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, param_group)
+                            tensor.grad = None
 
-                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                        parameter.register_post_accumulate_grad_hook(__grad_hook)
+        
+        if args.optimizer_type.lower() in ["lion", "adan", "adamw","ranger","stableadamw"]:
+            try:
+                import optimi
+                if train_unet:
+                    optimi.prepare_for_gradient_release(unet,optimizer.optimizer)
+                if train_text_encoder1:
+                    optimi.prepare_for_gradient_release(text_encoder1,optimizer.optimizer)
+                if train_text_encoder2:
+                    optimi.prepare_for_gradient_release(text_encoder2,optimizer.optimizer)
+
+            except ImportError:
+                raise ImportError("Please install optimi to use fused_backward_pass with Lion, Adan, AdamW, Ranger or StableAdamW")
 
     elif args.fused_optimizer_groups:
         # prepare for additional optimizers and lr schedulers

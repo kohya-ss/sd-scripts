@@ -4017,7 +4017,7 @@ def get_optimizer(args, trainable_params):
 
     if args.fused_backward_pass:
         assert (
-            optimizer_type == "Adafactor".lower()
+            optimizer_type in ["Adafactor".lower(),"lion", "adan", "adamw","ranger","stableadamw"]
         ), "fused_backward_pass currently only works with optimizer_type Adafactor / fused_backward_passは現在optimizer_type Adafactorでのみ機能します"
         assert (
             args.gradient_accumulation_steps == 1
@@ -4052,6 +4052,8 @@ def get_optimizer(args, trainable_params):
             import optimi
             logger.info(f"use optimi Lion optimizer | {optimizer_kwargs}")
             optimizer_class = optimi.Lion
+            if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+                optimizer_kwargs["gradient_release"] = True
         except:
             try:
                 import lion_pytorch
@@ -4157,6 +4159,8 @@ def get_optimizer(args, trainable_params):
             import optimi
         except ImportError:
             raise ImportError("No optimi / optimi がインストールされていないようです")
+        if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+            optimizer_kwargs["gradient_release"] = True
         optimizer_class = optimi.Adan
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
@@ -4168,6 +4172,8 @@ def get_optimizer(args, trainable_params):
             import optimi
         except ImportError:
             raise ImportError("No optimi / optimi がインストールされていないようです")
+        if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+            optimizer_kwargs["gradient_release"] = True
         optimizer_class = optimi.Ranger
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
@@ -4307,6 +4313,8 @@ def get_optimizer(args, trainable_params):
             import optimi
             optimizer_class = optimi.AdamW
             logger.info(f"use optimi AdamW optimizer | {optimizer_kwargs}")
+            if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+                optimizer_kwargs["gradient_release"] = True
         except:
             optimizer_class = torch.optim.AdamW
             logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
