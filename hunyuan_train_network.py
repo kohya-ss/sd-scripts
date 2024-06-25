@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 import argparse
 
 import torch
+from diffusers import DDPMScheduler
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -76,6 +77,16 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
     def load_tokenizer(self, args):
         tokenizer = hunyuan_utils.load_tokenizers()
         return tokenizer
+
+    def load_noise_scheduler(self):
+        return DDPMScheduler(
+            beta_start=0.00085, 
+            beta_end=0.03, 
+            beta_schedule="scaled_linear", 
+            num_train_timesteps=1000, 
+            clip_sample=False,
+            steps_offset=1
+        )
 
     def is_text_encoder_outputs_cached(self, args):
         return args.cache_text_encoder_outputs
