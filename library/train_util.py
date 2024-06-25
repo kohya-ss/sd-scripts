@@ -5205,12 +5205,12 @@ def sample_images_common(
         with torch.no_grad():
             idx = 0
             for prompt_dict in prompts:
-                if prompt_dict.get("prompt") == '__caption__' and example_tuple:
+                if '__caption__' in prompt_dict.get("prompt") and example_tuple:
                     while example_tuple[1][idx] == '':
                         idx = (idx + 1) % len(example_tuple[1])
                         if idx == 0:
                             break
-                    prompt_dict["prompt"] = example_tuple[1][idx] 
+                    prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', 'example_tuple[1][idx]') 
                     prompt_dict["height"] = example_tuple[0].shape[2] * 8
                     prompt_dict["width"] = example_tuple[0].shape[3] * 8
                     prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
@@ -5249,9 +5249,10 @@ def draw_text_on_image(text, max_width, text_color="black"):
     from PIL import ImageDraw, ImageFont, Image
     import textwrap
 
-    font = ImageFont.truetype("arial.ttf", 20)
+    font = ImageFont.load_default()
     space_width = font.getbbox(' ')[2]
-
+    font_size = 20
+    
     def wrap_text(text, font, max_width):
         words = text.split(' ')
         lines = []
@@ -5276,9 +5277,10 @@ def draw_text_on_image(text, max_width, text_color="black"):
         bbox = text_draw.textbbox((0, 0), line, font=font)
         height = bbox[3] - bbox[1]
         text_draw.text((10, y_text), line, font=font, fill=text_color)
-        y_text += height
+        y_text += font_size
 
     return text_image
+
 
 def sample_image_inference(
     accelerator: Accelerator,
