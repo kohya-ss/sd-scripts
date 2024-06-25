@@ -2434,16 +2434,20 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
     return train_dataset_group
 
 
-def load_image(image_path, alpha=False):
-    image = Image.open(image_path)
-    if alpha:
-        if not image.mode == "RGBA":
-            image = image.convert("RGBA")
-    else:
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
-    img = np.array(image, np.uint8)
-    return img
+def load_image(image_path, alpha=False):    
+    try:
+        with Image.open(image_path) as image:
+            if alpha:
+                if not image.mode == "RGBA":
+                    image = image.convert("RGBA")
+            else:
+                if not image.mode == "RGB":
+                    image = image.convert("RGB")
+            img = np.array(image, np.uint8)
+            return img
+    except (IOError, OSError) as e:
+        logger.error(f"Error loading file: {image_path}")
+        raise e
 
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
