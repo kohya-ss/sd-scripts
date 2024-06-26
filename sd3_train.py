@@ -254,6 +254,7 @@ def train(args):
                 (None, None, None),
                 args.cache_text_encoder_outputs_to_disk,
                 accelerator.is_main_process,
+                args.text_encoder_batch_size,
             )
         accelerator.wait_for_everyone()
 

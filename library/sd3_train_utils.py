@@ -174,6 +174,13 @@ def add_sd3_training_arguments(parser: argparse.ArgumentParser):
         help="cache text encoder outputs to disk / text encoderの出力をディスクにキャッシュする",
     )
     parser.add_argument(
+        "--text_encoder_batch_size",
+        type=int,
+        default=None,
+        help="text encoder batch size (default: None, use dataset's batch size)"
+        + " / text encoderのバッチサイズ（デフォルト: None, データセットのバッチサイズを使用）",
+    )
+    parser.add_argument(
         "--disable_mmap_load_safetensors",
         action="store_true",
         help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
