@@ -171,29 +171,29 @@ batch_size = 4                              # 批次大小
 
 与class+identifier形式相同。然而，尽管可以为正则化图像添加字幕，但通常不需要这样做。
 
-## step 2. 設定ファイルの記述
+## 步骤2. 配置文件的描述
 
-テキストファイルを作成し、拡張子を `.toml` にします。たとえば以下のように記述します。
+创建一个文本文件，并将其扩展名设为`.toml`。例如，可以像下面这样描述：
 
 ```toml
 [general]
-enable_bucket = true                        # Aspect Ratio Bucketingを使うか否か
+enable_bucket = true                        # 是否使用 Aspect Ratio Bucketing
 
 [[datasets]]
-resolution = 512                            # 学習解像度
-batch_size = 4                              # バッチサイズ
+resolution = 512                            # 学习分辨率
+batch_size = 4                              # 批量大小
 
   [[datasets.subsets]]
-  image_dir = 'C:\hoge'                     # 学習用画像を入れたフォルダを指定
-  caption_extension = '.caption'            # キャプションファイルの拡張子　.txt を使う場合には書き換える
-  num_repeats = 10                          # 学習用画像の繰り返し回数
+  image_dir = 'C:\hoge'                     # 指定包含训练图像的文件夹
+  caption_extension = '.caption'            # 标题文件的扩展名 如果使用 .txt 需要修改
+  num_repeats = 10                          # 训练图像的重复次数
 
-  # 以下は正則化画像を用いる場合のみ記述する。用いない場合は削除する
+  # 以下仅在使用正则化图像时描述。如果不使用则删除
   [[datasets.subsets]]
   is_reg = true
-  image_dir = 'C:\reg'                      # 正則化画像を入れたフォルダを指定
-  class_tokens = 'girl'                     # class を指定
-  num_repeats = 1                           # 正則化画像の繰り返し回数、基本的には1でよい
+  image_dir = 'C:\reg'                      # 指定包含正则化图像的文件夹
+  class_tokens = 'girl'                     # 指定类别
+  num_repeats = 1                           # 正则化图像的重复次数，基本上1次即可
 ```
 
 ## 第二步. 编写配置文件
