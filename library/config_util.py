@@ -86,11 +86,13 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     class_tokens: Optional[str] = None
     caption_extension: str = ".caption"
     cache_info: bool = False
+    alpha_mask: bool = False
 
 
 @dataclass
 class FineTuningSubsetParams(BaseSubsetParams):
     metadata_file: Optional[str] = None
+    alpha_mask: bool = False
 
 
 @dataclass
@@ -191,6 +193,7 @@ class ConfigSanitizer:
         "keep_tokens": int,
         "keep_tokens_separator": str,
         "secondary_separator": str,
+        "caption_separator": str,
         "enable_wildcard": bool,
         "token_warmup_min": int,
         "token_warmup_step": Any(float, int),
@@ -212,11 +215,13 @@ class ConfigSanitizer:
     DB_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
         "is_reg": bool,
+        "alpha_mask": bool,
     }
     # FT means FineTuning
     FT_SUBSET_DISTINCT_SCHEMA = {
         Required("metadata_file"): str,
         "image_dir": str,
+        "alpha_mask": bool,
     }
     CN_SUBSET_ASCENDABLE_SCHEMA = {
         "caption_extension": str,
@@ -523,6 +528,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           shuffle_caption: {subset.shuffle_caption}
           keep_tokens: {subset.keep_tokens}
           keep_tokens_separator: {subset.keep_tokens_separator}
+          caption_separator: {subset.caption_separator}
           secondary_separator: {subset.secondary_separator}
           enable_wildcard: {subset.enable_wildcard}
           caption_dropout_rate: {subset.caption_dropout_rate}
@@ -536,6 +542,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
           random_crop: {subset.random_crop}
           token_warmup_min: {subset.token_warmup_min},
           token_warmup_step: {subset.token_warmup_step},
+          alpha_mask: {subset.alpha_mask},
       """
                 ),
                 "  ",
