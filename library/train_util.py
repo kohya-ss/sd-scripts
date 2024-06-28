@@ -31,6 +31,7 @@ from io import BytesIO
 import toml
 
 from tqdm import tqdm
+from scipy.optimize import linear_sum_assignment
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
@@ -3383,6 +3384,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=0.1,
         help="The huber loss parameter. Only used if one of the huber loss modes (huber or smooth l1) is selected with loss_type. default is 0.1 / Huber損失のパラメータ。loss_typeがhuberまたはsmooth l1の場合に有効。デフォルトは0.1",
     )
+    parser.add_argument(
+        "--immiscible_noise",
+        action="store_true",
+        help="Use Immiscible Noise algorithm to project training images only to nearby noise (from arxiv.org/abs/2406.12303) "
+        + "/ Immiscible Noise ノイズアルゴリズを使用して、トレーニング画像を近くのノイズにのみ投影します（arxiv.org/abs/2406.12303 より）",
+    )
 
     parser.add_argument(
         "--lowram",
@@ -5071,6 +5078,34 @@ def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler,
     return timesteps, huber_c
 
 
+def immiscible_diffusion(args, noise_scheduler, x_b, n_rand_b, timesteps):
+    # "Immiscible Diffusion: Accelerating Diffusion Training with Noise Assignment" (2024) Li et al. arxiv.org/abs/2406.12303
+    def calculate_distance_matrix(images, noises):
+        batch_size, inner_dim, height, width = images.shape
+        images_flat = images.view(batch_size, -1).to(torch.float32)
+        noises_flat = noises.view(batch_size, -1).to(torch.float32)
+        dist_matrix = torch.cdist(images_flat, noises_flat, p=2) # only works with float32
+        return dist_matrix 
+
+    batch_size, channel_dim, height, width = x_b.shape
+    dist_matrix = calculate_distance_matrix(x_b, n_rand_b) # batch_size, 1, height, width
+    assign_row, assign_col = linear_sum_assignment(dist_matrix.cpu().numpy())
+    assign_matrix = torch.zeros((batch_size, batch_size), dtype=x_b.dtype, device=x_b.device)
+    assign_matrix[assign_row, assign_col] = 1
+    
+    alpha_t = noise_scheduler.alphas.to(timesteps.device)
+    alpha_t = alpha_t[timesteps]
+    alpha_t = alpha_t.view(batch_size, 1, 1, 1)
+    sqrt_alpha_t = torch.sqrt(alpha_t)
+    sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
+
+    nrand_b_assigned = torch.matmul(assign_matrix, n_rand_b.view(batch_size, -1))
+    nrand_b_assigned = nrand_b_assigned.view(batch_size, channel_dim, height, width)
+    x_t_b = sqrt_alpha_t * x_b + sqrt_one_minus_alpha_t * nrand_b_assigned
+
+    return x_t_b
+
+
 def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
@@ -5091,6 +5126,9 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
     timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
+
+    if args.immiscible_noise:
+        latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
