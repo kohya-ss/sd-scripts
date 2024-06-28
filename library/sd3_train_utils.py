@@ -120,8 +120,12 @@ def save_sd3_model_on_train_end(
     vae: sd3_models.SDVAE,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
+        if isinstance(mmdit, torch.nn.parallel.DistributedDataParallel):
+            model_type = mmdit.module.model_type
+        else:
+            model_type = mmdit.model_type
         sai_metadata = train_util.get_sai_model_spec(
-            None, args, False, False, False, is_stable_diffusion_ckpt=True, sd3=mmdit.model_type
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, sd3=model_type
         )
         save_models(ckpt_file, mmdit, vae, clip_l, clip_g, t5xxl, sai_metadata, save_dtype)
 
@@ -145,8 +149,12 @@ def save_sd3_model_on_epoch_end_or_stepwise(
     vae: sd3_models.SDVAE,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
+        if isinstance(mmdit, torch.nn.parallel.DistributedDataParallel):
+            model_type = mmdit.module.model_type
+        else:
+            model_type = mmdit.model_type
         sai_metadata = train_util.get_sai_model_spec(
-            None, args, False, False, False, is_stable_diffusion_ckpt=True, sd3=mmdit.model_type
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, sd3=model_type
         )
         save_models(ckpt_file, mmdit, vae, clip_l, clip_g, t5xxl, sai_metadata, save_dtype)
 
