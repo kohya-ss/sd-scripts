@@ -37,7 +37,7 @@ from torchvision import transforms
 from transformers import CLIPTokenizer
 import transformers
 import diffusers
-from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
+from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 from diffusers import (
     StableDiffusionPipeline,
     DDPMScheduler,
@@ -2083,6 +2083,12 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         help="Number of steps for the warmup in the lr scheduler (default is 0) / 学習率のスケジューラをウォームアップするステップ数（デフォルト0）",
     )
     parser.add_argument(
+        "--lr_decay_steps",
+        type=int,
+        default=0,
+        help="Number of steps for the decay in the lr scheduler (default is 0) ",
+    )
+    parser.add_argument(
         "--lr_scheduler_num_cycles",
         type=int,
         default=1,
@@ -2093,6 +2099,18 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         type=float,
         default=1,
         help="Polynomial power for polynomial scheduler / polynomialスケジューラでのpolynomial power",
+    )
+    parser.add_argument(
+        "--lr_scheduler_timescale",
+        type=int,
+        default=None,
+        help="Inverse sqrt timescale for inverse sqrt scheduler,defaults to `num_warmup_steps`",
+    )
+    parser.add_argument(
+        "--lr_scheduler_min_lr_ratio",
+        type=float,
+        default=None,
+        help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler and warmup decay scheduler",
     )
 
 
@@ -2921,8 +2939,12 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     name = args.lr_scheduler
     num_warmup_steps: Optional[int] = args.lr_warmup_steps
     num_training_steps = args.max_train_steps * num_processes * args.gradient_accumulation_steps
+    num_decay_steps: Optional[int] = args.lr_decay_steps
+    num_stable_steps = num_training_steps - num_warmup_steps - num_decay_steps
     num_cycles = args.lr_scheduler_num_cycles
     power = args.lr_scheduler_power
+    timescale = args.lr_scheduler_timescale
+    min_lr_ratio = args.lr_scheduler_min_lr_ratio
 
     lr_scheduler_kwargs = {}  # get custom lr_scheduler kwargs
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
@@ -2982,6 +3004,9 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     if name == SchedulerType.CONSTANT_WITH_WARMUP:
         return schedule_func(optimizer, num_warmup_steps=num_warmup_steps)
 
+    if name == SchedulerType.INVERSE_SQRT:
+        return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, timescale=timescale)
+
     # All other schedulers require `num_training_steps`
     if num_training_steps is None:
         raise ValueError(f"{name} requires `num_training_steps`, please provide that argument.")
@@ -2993,6 +3018,22 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
 
     if name == SchedulerType.POLYNOMIAL:
         return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, power=power)
+
+    if name == SchedulerType.COSINE_WITH_MIN_LR:
+        return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, min_lr_rate=min_lr_ratio)
+
+    # All other schedulers require `num_decay_steps`
+    if num_decay_steps is None:
+        raise ValueError(f"{name} requires `num_decay_steps`, please provide that argument.")
+    if name == SchedulerType.WARMUP_STABLE_DECAY:
+        return schedule_func(
+            optimizer, 
+            num_warmup_steps=num_warmup_steps, 
+            num_stable_steps=num_stable_steps, 
+            num_decay_steps=num_decay_steps, 
+            num_cycles=num_cycles, 
+            min_lr_ratio=min_lr_ratio if min_lr_ratio is not None else 0.0
+        )
 
     return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)
 
