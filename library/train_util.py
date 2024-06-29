@@ -3061,6 +3061,12 @@ def add_sd_models_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="directory for caching Tokenizer (for offline training) / Tokenizerをキャッシュするディレクトリ（ネット接続なしでの学習のため）",
     )
+    parser.add_argument(
+        "--num_last_layers_to_freeze",
+        type=int,
+        default=None,
+        help="num_last_layers_to_freeze",
+    )
 
 
 def add_optimizer_arguments(parser: argparse.ArgumentParser):
@@ -5597,6 +5603,20 @@ def sample_image_inference(
     except:  # wandb 無効時
         pass
 
+
+def freeze_blocks_lr(model, num_last_layers_to_freeze, base_lr, block_name="x_block"):
+    bottom_layers = list(model.children())[-num_last_layers_to_freeze:]
+
+    params_to_optimize = []
+
+    for layer in reversed(bottom_layers):
+        for name, param in layer.named_parameters():
+            if block_name in name:
+                params_to_optimize.append({"params": [param], "lr": 0.0})
+            else:
+                params_to_optimize.append({"params": [param], "lr": base_lr})
+
+    return params_to_optimize
 
 # endregion
 

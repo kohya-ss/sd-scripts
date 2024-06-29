@@ -60,7 +60,6 @@ def train(args):
     assert (
         not args.weighted_captions
     ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
-
     # assert (
     #     not args.train_text_encoder or not args.cache_text_encoder_outputs
     # ), "cache_text_encoder_outputs is not supported when training text encoder / text encoderを学習するときはcache_text_encoder_outputsはサポートされていません"
@@ -283,7 +282,8 @@ def train(args):
     # if train_unet:
     training_models.append(mmdit)
     # if block_lrs is None:
-    params_to_optimize.append({"params": list(mmdit.parameters()), "lr": args.learning_rate})
+    params_to_optimize = train_util.freeze_blocks_lr(mmdit, args.num_last_layers_to_freeze,args.args.learning_rate)
+    # params_to_optimize.append({"params": list(mmdit.parameters()), "lr": args.learning_rate})
     # else:
     #     params_to_optimize.extend(get_block_params_to_optimize(mmdit, block_lrs))
 
