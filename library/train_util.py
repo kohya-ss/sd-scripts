@@ -3062,10 +3062,10 @@ def add_sd_models_arguments(parser: argparse.ArgumentParser):
         help="directory for caching Tokenizer (for offline training) / Tokenizerをキャッシュするディレクトリ（ネット接続なしでの学習のため）",
     )
     parser.add_argument(
-        "--num_last_layers_to_freeze",
+        "--num_last_block_to_freeze",
         type=int,
         default=None,
-        help="num_last_layers_to_freeze",
+        help="num_last_block_to_freeze",
     )
 
 
@@ -5604,19 +5604,20 @@ def sample_image_inference(
         pass
 
 
-def freeze_blocks_lr(model, num_last_layers_to_freeze, base_lr, block_name="x_block"):
-    params_to_optimize = []
-    frozen_params_count = 0
+def freeze_blocks(model, num_last_block_to_freeze, block_name="x_block"):
 
-    for module in reversed(model.children()):
-        for name, param in module.named_parameters():
-            if block_name in name and frozen_params_count < num_last_layers_to_freeze:
-                params_to_optimize.append({"params": [param], "lr": 0.0})
-                frozen_params_count += 1
-            else:
-                params_to_optimize.append({"params": [param], "lr": base_lr})
+    filtered_blocks = [(name, param) for name, param in model.named_parameters() if block_name in name]
+    print(f"filtered_blocks: {len(filtered_blocks)}")
 
-    return params_to_optimize
+    num_blocks_to_freeze = min(len(filtered_blocks), num_last_block_to_freeze)
+
+    print(f"freeze_blocks: {num_blocks_to_freeze}")
+    
+    start_freezing_from = max(0, len(filtered_blocks) - num_blocks_to_freeze)
+
+    for i in range(start_freezing_from, len(filtered_blocks)):
+        _, param = filtered_blocks[i]
+        param.requires_grad = False
 
 # endregion
 
