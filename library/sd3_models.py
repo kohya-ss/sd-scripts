@@ -891,6 +891,14 @@ class MMDiT(nn.Module):
     def model_type(self):
         return "m"  # only support medium
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
     def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
         for block in self.joint_blocks:
