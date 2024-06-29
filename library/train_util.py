@@ -5605,14 +5605,14 @@ def sample_image_inference(
 
 
 def freeze_blocks_lr(model, num_last_layers_to_freeze, base_lr, block_name="x_block"):
-    bottom_layers = list(model.children())[-num_last_layers_to_freeze:]
-
     params_to_optimize = []
+    frozen_params_count = 0
 
-    for layer in reversed(bottom_layers):
-        for name, param in layer.named_parameters():
-            if block_name in name:
+    for module in reversed(model.children()):
+        for name, param in module.named_parameters():
+            if block_name in name and frozen_params_count < num_last_layers_to_freeze:
                 params_to_optimize.append({"params": [param], "lr": 0.0})
+                frozen_params_count += 1
             else:
                 params_to_optimize.append({"params": [param], "lr": base_lr})
 
