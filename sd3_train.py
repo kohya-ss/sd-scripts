@@ -182,7 +182,7 @@ def train(args):
             raise ValueError(f"unexpected t5xxl_dtype: {args.t5xxl_dtype}")
     t5xxl_device = accelerator.device if args.t5xxl_device is None else args.t5xxl_device
 
-    clip_dtype = weight_dtype # if not args.train_text_encoder else None
+    clip_dtype = weight_dtype  # if not args.train_text_encoder else None
 
     # モデルを読み込む
     attn_mode = "xformers" if args.xformers else "torch"
@@ -193,7 +193,7 @@ def train(args):
 
     # models are usually loaded on CPU and moved to GPU later. This is to avoid OOM on GPU0.
     mmdit, clip_l, clip_g, t5xxl, vae = sd3_train_utils.load_target_model(
-        args, accelerator, attn_mode, None, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
+        args, accelerator, attn_mode, weight_dtype, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
     )
     assert clip_l is not None, "clip_l is required / clip_lは必須です"
     assert clip_g is not None, "clip_g is required / clip_gは必須です"
@@ -769,10 +769,10 @@ def train(args):
                             epoch,
                             num_train_epochs,
                             global_step,
-                            clip_l if args.save_clip else None,
-                            clip_g if args.save_clip else None,
-                            t5xxl if args.save_t5xxl else None,
-                            mmdit,
+                            accelerator.unwrap_model(clip_l) if args.save_clip else None,
+                            accelerator.unwrap_model(clip_g) if args.save_clip else None,
+                            accelerator.unwrap_model(t5xxl) if args.save_t5xxl else None,
+                            accelerator.unwrap_model(mmdit),
                             vae,
                         )
 
@@ -807,10 +807,10 @@ def train(args):
                     epoch,
                     num_train_epochs,
                     global_step,
-                    clip_l if args.save_clip else None,
-                    clip_g if args.save_clip else None,
-                    t5xxl if args.save_t5xxl else None,
-                    mmdit,
+                    accelerator.unwrap_model(clip_l) if args.save_clip else None,
+                    accelerator.unwrap_model(clip_g) if args.save_clip else None,
+                    accelerator.unwrap_model(t5xxl) if args.save_t5xxl else None,
+                    accelerator.unwrap_model(mmdit),
                     vae,
                 )
 
