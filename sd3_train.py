@@ -182,6 +182,8 @@ def train(args):
             raise ValueError(f"unexpected t5xxl_dtype: {args.t5xxl_dtype}")
     t5xxl_device = accelerator.device if args.t5xxl_device is None else args.t5xxl_device
 
+    clip_dtype = weight_dtype # if not args.train_text_encoder else None
+
     # モデルを読み込む
     attn_mode = "xformers" if args.xformers else "torch"
 
@@ -189,8 +191,9 @@ def train(args):
         attn_mode == "torch"
     ), f"attn_mode {attn_mode} is not supported. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
 
+    # models are usually loaded on CPU and moved to GPU later. This is to avoid OOM on GPU0.
     mmdit, clip_l, clip_g, t5xxl, vae = sd3_train_utils.load_target_model(
-        args, accelerator, attn_mode, weight_dtype, t5xxl_device, t5xxl_dtype
+        args, accelerator, attn_mode, None, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
     )
     assert clip_l is not None, "clip_l is required / clip_lは必須です"
     assert clip_g is not None, "clip_g is required / clip_gは必須です"
@@ -868,8 +871,9 @@ def setup_parser() -> argparse.ArgumentParser:
     custom_train_functions.add_custom_train_arguments(parser)
     sd3_train_utils.add_sd3_training_arguments(parser)
 
-    # TE training is disabled temporarily
+    # parser.add_argument("--train_text_encoder", action="store_true", help="train text encoder / text encoderも学習する")
 
+    # TE training is disabled temporarily
     # parser.add_argument(
     #     "--learning_rate_te1",
     #     type=float,
@@ -886,7 +890,6 @@ def setup_parser() -> argparse.ArgumentParser:
     # parser.add_argument(
     #     "--diffusers_xformers", action="store_true", help="use xformers by diffusers / Diffusersでxformersを使用する"
     # )
-    # parser.add_argument("--train_text_encoder", action="store_true", help="train text encoder / text encoderも学習する")
     # parser.add_argument(
     #     "--no_half_vae",
     #     action="store_true",
