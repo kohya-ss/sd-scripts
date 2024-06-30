@@ -947,6 +947,7 @@ class HunYuanDiT(nn.Module):
         mlp_ratio=4.0,
         log_fn=print,
         attn_mode="xformers",
+        use_extra_cond=False,
     ):
         super().__init__()
         self.log_fn = log_fn
@@ -962,6 +963,7 @@ class HunYuanDiT(nn.Module):
         self.text_len = text_len
         self.text_len_t5 = text_len_t5
         self.norm = norm
+        self.use_extra_cond = use_extra_cond
 
         log_fn(f"    Use {attn_mode} attention implementation.")
         qk_norm = qk_norm  # See http://arxiv.org/abs/2302.05442 for details.
@@ -981,20 +983,24 @@ class HunYuanDiT(nn.Module):
         )
 
         # Attention pooling
+        pooler_out_dim = 1024
         self.pooler = AttentionPool(
-            self.text_len_t5, self.text_states_dim_t5, num_heads=8, output_dim=1024
+            self.text_len_t5, self.text_states_dim_t5, num_heads=8, output_dim=pooler_out_dim
         )
 
-        # Here we use a default learned embedder layer for future extension.
-        self.style_embedder = nn.Embedding(1, hidden_size)
+        # Dimension of the extra input vectors
+        self.extra_in_dim = pooler_out_dim
 
-        # Image size and crop size conditions
-        self.extra_in_dim = 256 * 6 + hidden_size
+        if self.use_extra_cond:
+            # Image source size, image target size and crop size conditions
+            self.extra_in_dim += 6 * 256
+            # Here we use a default learned embedder layer for future extension.
+            self.style_embedder = nn.Embedding(1, hidden_size)
+            self.extra_in_dim += hidden_size
 
         # Text embedding for `add`
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size)
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.extra_in_dim += 1024
         self.extra_embedder = nn.Sequential(
             nn.Linear(self.extra_in_dim, hidden_size * 4),
             FP32_SiLU(),
@@ -1092,9 +1098,9 @@ class HunYuanDiT(nn.Module):
             T5 text embedding, (B, L_t5, D)
         text_embedding_mask_t5: torch.Tensor
             T5 text embedding mask, (B, L_t5)
-        image_meta_size: torch.Tensor
+        image_meta_size: None or torch.Tensor
             (B, 6)
-        style: torch.Tensor
+        style: None or torch.Tensor
             (B)
         cos_cis_img: torch.Tensor
         sin_cis_img: torch.Tensor
@@ -1144,17 +1150,18 @@ class HunYuanDiT(nn.Module):
         # Build text tokens with pooling
         extra_vec = self.pooler(encoder_hidden_states_t5)
 
-        # Build image meta size tokens
-        image_meta_size = timestep_embedding(
-            image_meta_size.view(-1), 256
-        )  # [B * 6, 256]
-        image_meta_size = image_meta_size.to(x)
-        image_meta_size = image_meta_size.view(-1, 6 * 256)
-        extra_vec = torch.cat([extra_vec, image_meta_size], dim=1)  # [B, D + 6 * 256]
+        if self.use_extra_cond:
+            # Build image meta size tokens
+            image_meta_size = timestep_embedding(
+                image_meta_size.view(-1), 256
+            )  # [B * 6, 256]
+            image_meta_size = image_meta_size.to(x)
+            image_meta_size = image_meta_size.view(-1, 6 * 256)
+            extra_vec = torch.cat([extra_vec, image_meta_size], dim=1)  # [B, D + 6 * 256]
 
-        # Build style tokens
-        style_embedding = self.style_embedder(style)
-        extra_vec = torch.cat([extra_vec, style_embedding], dim=1)
+            # Build style tokens
+            style_embedding = self.style_embedder(style)
+            extra_vec = torch.cat([extra_vec, style_embedding], dim=1)
 
         # Concatenate all extra vectors
         c = t + self.extra_embedder(extra_vec)  # [B, D]

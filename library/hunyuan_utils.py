@@ -1,5 +1,6 @@
 import os
 from typing import Tuple, Union, Optional, Any
+import argparse
 
 import numpy as np
 import torch
@@ -13,9 +14,12 @@ from transformers import (
     BertTokenizer,
 )
 
+from library import model_util
 from library.device_utils import init_ipex, clean_memory_on_device
 from .hunyuan_models import MT5Embedder, HunYuanDiT, BertModel, DiT_g_2
 from .utils import setup_logging
+import library.train_util as train_util
+from safetensors.torch import load_file, save_file
 
 setup_logging()
 import logging
@@ -222,17 +226,22 @@ def load_tokenizers():
 
 def load_scheduler_sigmas():
     scheduler: LMSDiscreteScheduler = LMSDiscreteScheduler.from_pretrained(
-        "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers",
+        "Tencent-Hunyuan/HunyuanDiT-v1.2-Diffusers",
         subfolder="scheduler",
     )
     return scheduler.alphas_cumprod, scheduler.sigmas
 
 
-def load_model(model_path: str, dtype=torch.float16, device="cuda"):
+def load_model(model_path: str, dtype=torch.float16, device="cuda", use_extra_cond=False, dit_path=None):
     denoiser: HunYuanDiT
-    denoiser, patch_size, head_dim = DiT_g_2(input_size=(128, 128))
-    sd = torch.load(os.path.join(model_path, "denoiser/pytorch_model_module.pt"))
-    denoiser.load_state_dict(sd)
+    denoiser, patch_size, head_dim = DiT_g_2(input_size=(128, 128), use_extra_cond=use_extra_cond)
+    if dit_path is not None:
+        state_dict = torch.load(dit_path)
+        if 'state_dict' in state_dict:
+            state_dict = state_dict['state_dict']
+    else:
+        state_dict = torch.load(os.path.join(model_path, "denoiser/pytorch_model_module.pt"))
+    denoiser.load_state_dict(state_dict)
     denoiser.to(device).to(dtype)
 
     clip_tokenizer = AutoTokenizer.from_pretrained(os.path.join(model_path, "clip"))
@@ -279,7 +288,8 @@ def match_mixed_precision(args, weight_dtype):
         return None
 
 
-def load_target_model(args, accelerator, model_version: str, weight_dtype):
+def load_target_model(args, accelerator, model_version: str, weight_dtype, use_extra_cond=False):
+    _ = model_version   # unused
     model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
@@ -299,6 +309,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
                 args.pretrained_model_name_or_path,
                 model_dtype,
                 accelerator.device if args.lowram else "cpu",
+                use_extra_cond,
             )
 
             # work on low-ram device
@@ -566,6 +577,158 @@ def calc_rope(height, width, patch_size=2, head_size=64):
     sub_args = [start, stop, (th, tw)]
     rope = get_2d_rotary_pos_embed(head_size, *sub_args)
     return rope
+
+
+def add_hydit_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--use_extra_cond", action="store_true", help="Use image_meta_size and style conditions for the model"
+    )
+    parser.add_argument(
+        "--beta_end", type=float, default=0.018, help="End value of beta for DDPM training"
+    )
+
+
+def save_hydit_checkpoint(
+        output_file,
+        text_encoder1,
+        text_encoder2,
+        hydit,
+        epochs,
+        steps,
+        ckpt_info,
+        vae,
+        logit_scale,
+        metadata,
+        save_dtype=None,
+):
+    state_dict = {}
+
+    def update_state(prefix, sd):
+        for k, v in sd.items():
+            key = prefix + k
+            if save_dtype is not None:
+                v = v.detach().clone().to("cpu").to(save_dtype)
+            state_dict[key] = v
+
+    # Convert the hydit model
+    update_state('', hydit.state_dict())
+
+    # Put together new checkpoint
+    key_count = len(state_dict.keys())
+    new_ckpt = {"state_dict": state_dict}
+
+    # epoch and global_step are sometimes not int
+    if ckpt_info is not None:
+        epochs += ckpt_info[0]
+        steps += ckpt_info[1]
+
+    new_ckpt["epoch"] = epochs
+    new_ckpt["global_step"] = steps
+
+    if model_util.is_safetensors(output_file):
+        save_file(state_dict, output_file, metadata)
+    else:
+        torch.save(new_ckpt, output_file)
+
+    return key_count
+
+
+def save_hydit_model_on_train_end(
+        args: argparse.Namespace,
+        src_path: str,
+        save_stable_diffusion_format: bool,
+        use_safetensors: bool,
+        save_dtype: torch.dtype,
+        epoch: int,
+        global_step: int,
+        text_encoder1,
+        text_encoder2,
+        unet,
+        vae,
+        logit_scale,
+        ckpt_info,
+        hydit,
+):
+    def hydit_saver(ckpt_file, epoch_no, global_step):
+        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=False,
+                                                     hydit=hydit)
+        save_hydit_checkpoint(
+            ckpt_file,
+            text_encoder1,
+            text_encoder2,
+            unet,
+            epoch_no,
+            global_step,
+            ckpt_info,
+            vae,
+            logit_scale,
+            sai_metadata,
+            save_dtype,
+        )
+
+    def diffusers_saver(out_dir):
+        _ = out_dir
+        raise NotImplementedError("Diffusers saving is not supported yet for HunYuan DiT")
+
+    train_util.save_sd_model_on_train_end_common(
+        args, save_stable_diffusion_format, use_safetensors, epoch, global_step, hydit_saver, diffusers_saver
+    )
+
+
+# Save epochs and steps, integrate because the metadata includes epochs/steps and the arguments are identical.
+# on_epoch_end: If true, at the end of epoch, if false, after the steps have been completed.
+def save_hydit_model_on_epoch_end_or_stepwise(
+        args: argparse.Namespace,
+        on_epoch_end: bool,
+        accelerator,
+        src_path,
+        save_stable_diffusion_format: bool,
+        use_safetensors: bool,
+        save_dtype: torch.dtype,
+        epoch: int,
+        num_train_epochs: int,
+        global_step: int,
+        text_encoder1,
+        text_encoder2,
+        unet,
+        vae,
+        logit_scale,
+        ckpt_info,
+        hydit,
+):
+    def hydit_saver(ckpt_file, epoch_no, global_step):
+        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=False,
+                                                     hydit=hydit)
+        save_hydit_checkpoint(
+            ckpt_file,
+            text_encoder1,
+            text_encoder2,
+            unet,
+            epoch_no,
+            global_step,
+            ckpt_info,
+            vae,
+            logit_scale,
+            sai_metadata,
+            save_dtype,
+        )
+
+    def diffusers_saver(out_dir):
+        _ = out_dir
+        raise NotImplementedError("Diffusers saving is not supported yet for HunYuan DiT")
+
+    train_util.save_sd_model_on_epoch_end_or_stepwise_common(
+        args,
+        on_epoch_end,
+        accelerator,
+        save_stable_diffusion_format,
+        use_safetensors,
+        epoch,
+        num_train_epochs,
+        global_step,
+        hydit_saver,
+        diffusers_saver,
+    )
 
 
 if __name__ == "__main__":
