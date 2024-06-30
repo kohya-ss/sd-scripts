@@ -61,6 +61,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
             accelerator,
             hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1,
             weight_dtype,
+            use_extra_cond=args.use_extra_cond,
         )
 
         self.load_stable_diffusion_format = load_stable_diffusion_format
@@ -78,10 +79,10 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         tokenizer = hunyuan_utils.load_tokenizers()
         return tokenizer
 
-    def load_noise_scheduler(self):
+    def load_noise_scheduler(self, args):
         return DDPMScheduler(
             beta_start=0.00085, 
-            beta_end=0.03, 
+            beta_end=args.beta_end,
             beta_schedule="scaled_linear", 
             num_train_timesteps=1000, 
             clip_sample=False,

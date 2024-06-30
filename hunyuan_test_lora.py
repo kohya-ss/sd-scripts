@@ -25,11 +25,36 @@ CFG_SCALE = 6
 DEVICE = "cuda"
 DTYPE = torch.float16
 
+VERSION = "1.2"
+
+if VERSION == "1.1":
+    BETA_END = 0.03
+    USE_EXTRA_COND = True
+    MODEL_PATH = '/root/albertxyu/HunYuanDiT-V1.1-fp16-pruned'
+elif VERSION == "1.2":
+    BETA_END = 0.018
+    USE_EXTRA_COND = False
+    MODEL_PATH = '/root/albertxyu/HunYuanDiT-V1.2-fp16-pruned'
+else:
+    raise ValueError(f"Invalid version: {VERSION}")
+
+LORA_WEIGHT = '/apdcephfs_cq10/share_1367250/jiahaoli/0630_gui_output_v1.2/last-000001.ckpt'
+save_path = './test_lora_v1.2_epoch1_lora.png'
+
+def load_scheduler_sigmas(beta_start=0.00085, beta_end=0.018, num_train_timesteps=1000):
+    betas = torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32) ** 2
+    alphas = 1.0 - betas
+    alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+    sigmas = np.array(((1 - alphas_cumprod) / alphas_cumprod) ** 0.5)
+    sigmas = np.concatenate([sigmas[::-1], [0.0]]).astype(np.float32)
+    sigmas = torch.from_numpy(sigmas)
+    return alphas_cumprod, sigmas
 
 if __name__ == "__main__":
     seed_everything(777)
     with torch.inference_mode(True), torch.no_grad():
-        alphas, sigmas = load_scheduler_sigmas()
+        alphas, sigmas = load_scheduler_sigmas(beta_end=BETA_END)
         (
             denoiser,
             patch_size,
@@ -38,7 +63,7 @@ if __name__ == "__main__":
             clip_encoder,
             mt5_embedder,
             vae,
-        ) = load_model("/root/albertxyu/HunYuanDiT-V1.1-fp16-pruned", dtype=DTYPE, device=DEVICE)
+        ) = load_model(MODEL_PATH, dtype=DTYPE, device=DEVICE, use_extra_cond=USE_EXTRA_COND)
         # breakpoint()
         denoiser.eval()
         denoiser.disable_fp32_silu()
@@ -49,7 +74,7 @@ if __name__ == "__main__":
 
         lora_net, state_dict = create_network_from_weights(
             multiplier=1.0,
-            file="test_lora_unet_clip_0628/last-step00001600.safetensors",
+            file=LORA_WEIGHT,
             vae=vae,
             text_encoder=[clip_encoder, mt5_embedder],
             unet=denoiser,
@@ -60,8 +85,6 @@ if __name__ == "__main__":
         )
         lora_net.load_state_dict(state_dict)
         lora_net = lora_net.to(DEVICE, dtype=DTYPE)
-
-
 
         with torch.autocast("cuda"):
             clip_h, clip_m, mt5_h, mt5_m = get_cond(
@@ -135,4 +158,5 @@ if __name__ == "__main__":
                 image = (image * 255).round().astype(np.uint8)
                 image = [Image.fromarray(im) for im in image]
                 for im in image:
-                    im.save("test_1600_unet_clip.png")
+                    # im.save(f"test_1600_{VERSION}_lora.png")
+                    im.save(save_path)

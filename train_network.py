@@ -105,7 +105,7 @@ class NetworkTrainer:
         tokenizer = train_util.load_tokenizer(args)
         return tokenizer
 
-    def load_noise_scheduler(self):
+    def load_noise_scheduler(self, args):
         noise_scheduler = DDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
         )
@@ -845,7 +845,7 @@ class NetworkTrainer:
 
         global_step = 0
 
-        noise_scheduler = self.load_noise_scheduler()
+        noise_scheduler = self.load_noise_scheduler(args)
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
         if args.zero_terminal_snr:
             custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
