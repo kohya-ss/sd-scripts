@@ -5079,48 +5079,38 @@ def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler,
     return timesteps, huber_c
 
 
-def immiscible_diffusion(args, noise_scheduler, x_b, n_rand_b, timesteps):
+def immiscible_diffusion_get_noise(args, latents):
     # "Immiscible Diffusion: Accelerating Diffusion Training with Noise Assignment" (2024) Li et al. arxiv.org/abs/2406.12303
-    def calculate_distance_matrix(images, noises):
-        batch_size, inner_dim, height, width = images.shape
-        images_flat = images.view(batch_size, -1).to(torch.float32)
-        noises_flat = noises.view(batch_size, -1).to(torch.float32)
-        dist_matrix = torch.cdist(images_flat, noises_flat, p=2) # only works with float32
-        return dist_matrix 
+    # Minimize latent-noise pairs over a batch
+    from scipy.optimize import linear_sum_assignment
+    n = args.immiscible_noise # arg is an integer for how many noise tensors to generate
+    size = [n] + list(latents.shape[1:])
+    noise = torch.randn(size, dtype=latents.dtype, layout=latents.layout, device=latents.device)
+    latents_expanded = latents.half().unsqueeze(1).expand(-1, n, *latents.shape[1:])
+    noise_expanded = noise.half().unsqueeze(0).expand(latents.shape[0], *noise.shape)
+    dist = (latents_expanded - noise_expanded)**2
+    dist = dist.mean(list(range(2, dist.dim()))).cpu()
+    assign_mat = linear_sum_assignment(dist)
+    noise = noise[assign_mat[1]]
+    return noise
 
-    batch_size, channel_dim, height, width = x_b.shape
-    dist_matrix = calculate_distance_matrix(x_b, n_rand_b) # batch_size, 1, height, width
-    assign_row, assign_col = linear_sum_assignment(dist_matrix.cpu().numpy())
-    assign_matrix = torch.zeros((batch_size, batch_size), dtype=x_b.dtype, device=x_b.device)
-    assign_matrix[assign_row, assign_col] = 1
-    
+
+def immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps):
+    # "Immiscible Diffusion: Accelerating Diffusion Training with Noise Assignment" (2024) Li et al. arxiv.org/abs/2406.12303
+    batch_size, _, _, _= latents.shape
     alpha_t = noise_scheduler.alphas.to(timesteps.device)
     alpha_t = alpha_t[timesteps]
     alpha_t = alpha_t.view(batch_size, 1, 1, 1)
     sqrt_alpha_t = torch.sqrt(alpha_t)
     sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
-
-    nrand_b_assigned = torch.matmul(assign_matrix, n_rand_b.view(batch_size, -1))
-    nrand_b_assigned = nrand_b_assigned.view(batch_size, channel_dim, height, width)
-    x_t_b = sqrt_alpha_t * x_b + sqrt_one_minus_alpha_t * nrand_b_assigned
-
+    x_t_b = sqrt_alpha_t * latents + sqrt_one_minus_alpha_t * noise
     return x_t_b
 
 
 def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
     if args.immiscible_noise:
-        # Immiscible Diffusion https://arxiv.org/abs/2406.12303
-        from scipy.optimize import linear_sum_assignment
-        n = args.immiscible_noise # arg is an integer for how many noise tensors to generate
-        size = [n] + list(latents.shape[1:])
-        noise = torch.randn(size, dtype=latents.dtype, layout=latents.layout, device=latents.device)
-        # find similar latent-noise pairs
-        latents_expanded = latents.half().unsqueeze(1).expand(-1, n, *latents.shape[1:])
-        noise_expanded = noise.half().unsqueeze(0).expand(latents.shape[0], *noise.shape)
-        dist = (latents_expanded - noise_expanded)**2
-        dist = dist.mean(list(range(2, dist.dim()))).cpu()
-        noise = noise[linear_sum_assignment(dist)[1]]
+        noise = immiscible_diffusion_get_noise(args, latents)
     else:
         noise = torch.randn_like(latents, device=latents.device)
 
@@ -5142,8 +5132,8 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
 
     timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
 
-    # if args.immiscible_noise:
-    #     latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
+    if args.immiscible_noise:
+        latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
