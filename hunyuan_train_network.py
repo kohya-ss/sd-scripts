@@ -59,7 +59,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         ) = hunyuan_utils.load_target_model(
             args,
             accelerator,
-            hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1,
+            hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1 if args.use_extra_cond else hunyuan_models.MODEL_VERSION_HUNYUAN_V1_2,
             weight_dtype,
             use_extra_cond=args.use_extra_cond,
         )
@@ -69,7 +69,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         self.ckpt_info = ckpt_info
 
         return (
-            hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1,
+            hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1 if args.use_extra_cond else hunyuan_models.MODEL_VERSION_HUNYUAN_V1_2,
             [text_encoder1, text_encoder2],
             vae,
             unet,
@@ -157,23 +157,20 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
         noisy_latents = noisy_latents.to(
             weight_dtype
         )  # TODO check why noisy_latents is not weight_dtype
-
-        # get size embeddings
-        orig_size = batch["original_sizes_hw"]  # B, 2
-        crop_size = batch["crop_top_lefts"]  # B, 2
-        target_size = batch["target_sizes_hw"]  # B, 2
         B, C, H, W = noisy_latents.shape
 
-        style = torch.as_tensor([0] * B, device=accelerator.device)
-        image_meta_size = torch.concat(
-            [
-                orig_size,
-                target_size,
-                # Not following SDXL but following HunYuan's Implementation
-                # TODO examine if this is correct
-                torch.zeros_like(target_size),
-            ]
-        )
+        if args.use_extra_cond:
+            # get size embeddings
+            orig_size = batch["original_sizes_hw"]  # B, 2
+            crop_size = batch["crop_top_lefts"]  # B, 2
+            target_size = batch["target_sizes_hw"]  # B, 2
+
+            style = torch.as_tensor([0] * B, device=accelerator.device)
+            image_meta_size = torch.concat([orig_size, target_size, crop_size])
+        else:
+            style = None
+            image_meta_size = None
+
         freqs_cis_img = hunyuan_utils.calc_rope(H * 8, W * 8, 2, 88)
 
         # concat embeddings
@@ -227,6 +224,7 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     sdxl_train_util.add_sdxl_training_arguments(parser)
+    hunyuan_utils.add_hydit_arguments(parser)
     return parser
 
 

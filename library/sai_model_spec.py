@@ -130,9 +130,9 @@ def build_metadata(
     # metadata["modelspec.hash_sha256"] = hash
 
     if hydit:
-        if hydit == 'v1.1':
+        if hydit == 'HunyuanDiT-v1.1':
             arch = ARCH_HYDIT_V1_1
-        elif hydit == 'v1.2':
+        elif hydit == 'HunyuanDiT-v1.2':
             arch = ARCH_HYDIT_V1_2
         else:
             raise ValueError(f"Invalid hydit version: {hydit}")

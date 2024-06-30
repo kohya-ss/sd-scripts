@@ -32,6 +32,7 @@ except:
 
 VAE_SCALE_FACTOR = 0.13025
 MODEL_VERSION_HUNYUAN_V1_1 = "HunyuanDiT-v1.1"
+MODEL_VERSION_HUNYUAN_V1_2 = "HunyuanDiT-v1.2"
 
 
 class MT5Embedder(nn.Module):

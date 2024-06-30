@@ -29,8 +29,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import library.config_util as config_util
-import library.sdxl_train_util as sdxl_train_util
+from library import (
+    hunyuan_models,
+    hunyuan_utils,
+    sdxl_model_util,
+    sdxl_train_util,
+    train_util,
+    config_util,
+)
 from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
@@ -44,7 +50,6 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
     apply_masked_loss,
 )
-import library.hunyuan_utils as hunyuan_utils
 
 UNET_NUM_BLOCKS_FOR_BLOCK_LR = 23
 
@@ -158,6 +163,7 @@ def train(args):
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
     vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
+    hydit_version = hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1 if args.use_extra_cond else hunyuan_models.MODEL_VERSION_HUNYUAN_V1_2
     # Load models
     (
         load_stable_diffusion_format,
@@ -167,11 +173,7 @@ def train(args):
         hydit,
         logit_scale,
         ckpt_info,
-    ) = hunyuan_utils.load_target_model(args, accelerator, "hydit", weight_dtype, args.use_extra_cond)
-    if args.use_extra_cond:
-        hydit_version = 'v1.1'
-    else:
-        hydit_version = 'v1.2'
+    ) = hunyuan_utils.load_target_model(args, accelerator, hydit_version, weight_dtype)
 
     # verify load/save model formats
     if load_stable_diffusion_format:
@@ -733,10 +735,10 @@ def train(args):
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if args.logging_dir is not None:
                 logs = {"loss": current_loss}
-                if block_lrs is None:
-                    train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=train_hydit)
-                else:
-                    append_block_lr_to_logs(block_lrs, logs, lr_scheduler, args.optimizer_type)  # U-Net is included in block_lrs
+                # if block_lrs is None:
+                train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=train_hydit)
+                # else:
+                #     train_util.append_block_lr_to_logs(block_lrs, logs, lr_scheduler, args.optimizer_type)  # U-Net is included in block_lrs
 
                 accelerator.log(logs, step=global_step)
 

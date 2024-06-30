@@ -288,7 +288,7 @@ def match_mixed_precision(args, weight_dtype):
         return None
 
 
-def load_target_model(args, accelerator, model_version: str, weight_dtype, use_extra_cond=False):
+def load_target_model(args, accelerator, model_version: str, weight_dtype):
     _ = model_version   # unused
     model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16
     for pi in range(accelerator.state.num_processes):
@@ -309,7 +309,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype, use_e
                 args.pretrained_model_name_or_path,
                 model_dtype,
                 accelerator.device if args.lowram else "cpu",
-                use_extra_cond,
+                args.use_extra_cond,
             )
 
             # work on low-ram device
