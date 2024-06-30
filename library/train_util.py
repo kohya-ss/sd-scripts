@@ -3386,9 +3386,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     )
     parser.add_argument(
         "--immiscible_noise",
-        action="store_true",
-        help="Use Immiscible Noise algorithm to project training images only to nearby noise (from arxiv.org/abs/2406.12303) "
-        + "/ Immiscible Noise ノイズアルゴリズを使用して、トレーニング画像を近くのノイズにのみ投影します（arxiv.org/abs/2406.12303 より）",
+        type=int,
+        default=None,
+        help="Batch size to match noise to latent images. Use Immiscible Noise algorithm to project training images only to nearby noise (from arxiv.org/abs/2406.12303) "
+        + "/ ノイズを潜在画像に一致させるためのバッチ サイズ。Immiscible Noise ノイズアルゴリズを使用して、トレーニング画像を近くのノイズにのみ投影します（arxiv.org/abs/2406.12303 より）",
     )
 
     parser.add_argument(
@@ -5108,7 +5109,21 @@ def immiscible_diffusion(args, noise_scheduler, x_b, n_rand_b, timesteps):
 
 def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
-    noise = torch.randn_like(latents, device=latents.device)
+    if args.immiscible_diffusion:
+        # Immiscible Diffusion https://arxiv.org/abs/2406.12303
+        from scipy.optimize import linear_sum_assignment
+        n = args.immiscible_diffusion # arg is an integer for how many noise tensors to generate
+        size = [n] + list(latents.shape[1:])
+        noise = torch.randn(size, dtype=latents.dtype, layout=latents.layout, device=latents.device)
+        # find similar latent-noise pairs
+        latents_expanded = latents.half().unsqueeze(1).expand(-1, n, *latents.shape[1:])
+        noise_expanded = noise.half().unsqueeze(0).expand(latents.shape[0], *noise.shape)
+        dist = (latents_expanded - noise_expanded)**2
+        dist = dist.mean(list(range(2, dist.dim()))).cpu()
+        noise = noise[linear_sum_assignment(dist)[1]]
+    else:
+        noise = torch.randn_like(latents, device=latents.device)
+
     if args.noise_offset:
         if args.noise_offset_random_strength:
             noise_offset = torch.rand(1, device=latents.device) * args.noise_offset
@@ -5127,8 +5142,8 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
 
     timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
 
-    if args.immiscible_noise:
-        latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
+    # if args.immiscible_noise:
+    #     latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
