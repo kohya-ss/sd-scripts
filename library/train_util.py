@@ -5109,10 +5109,10 @@ def immiscible_diffusion(args, noise_scheduler, x_b, n_rand_b, timesteps):
 
 def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
-    if args.immiscible_diffusion:
+    if args.immiscible_noise:
         # Immiscible Diffusion https://arxiv.org/abs/2406.12303
         from scipy.optimize import linear_sum_assignment
-        n = args.immiscible_diffusion # arg is an integer for how many noise tensors to generate
+        n = args.immiscible_noise # arg is an integer for how many noise tensors to generate
         size = [n] + list(latents.shape[1:])
         noise = torch.randn(size, dtype=latents.dtype, layout=latents.layout, device=latents.device)
         # find similar latent-noise pairs
