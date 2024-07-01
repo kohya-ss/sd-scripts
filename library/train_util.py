@@ -3176,7 +3176,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         # available backends:
         # https://github.com/huggingface/accelerate/blob/d1abd59114ada8ba673e1214218cb2878c13b82d/src/accelerate/utils/dataclasses.py#L376-L388C5
         # https://pytorch.org/docs/stable/torch.compiler.html
-        choices=["eager", "aot_eager", "inductor", "aot_ts_nvfuser", "nvprims_nvfuser", "cudagraphs", "ofi", "fx2trt", "onnxrt"],
+        choices=["eager", "aot_eager", "inductor", "aot_ts_nvfuser", "nvprims_nvfuser", "cudagraphs", "ofi", "fx2trt", "onnxrt", "tensort", "ipex", "tvm"],
         help="dynamo backend type (default is inductor) / dynamoのbackendの種類（デフォルトは inductor）",
     )
     parser.add_argument("--xformers", action="store_true", help="use xformers for CrossAttention / CrossAttentionにxformersを使う")
