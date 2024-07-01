@@ -519,11 +519,11 @@ def train(args):
                 ).to(weight_dtype)
 
                 # concat embeddings
-                #vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
-                vector_embedding_dict = {
-                    "text_embeds": pool2,
-                    "time_ids": embs
-                }
+                vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
+                #vector_embedding_dict = {
+                #     "text_embeds": pool2,
+                #     "time_ids": embs
+                # }
                 text_embedding = torch.cat(
                     [encoder_hidden_states1, encoder_hidden_states2], dim=2
                 ).to(weight_dtype)
@@ -538,12 +538,17 @@ def train(args):
 
                 controlnet_image = batch["conditioning_images"].to(dtype=weight_dtype)
 
+                print("pool2 shape:", pool2.shape)
+                print("embs shape:", embs.shape)
+                print("text_embedding shape:", text_embedding.shape)
+                print("controlnet_image shape:", controlnet_image.shape)
+
                 with accelerator.autocast():
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
                         timesteps,
                         encoder_hidden_states=text_embedding,
-                        added_cond_kwargs=vector_embedding_dict,
+                        added_cond_kwargs=vector_embedding,
                         controlnet_cond=controlnet_image,
                         return_dict=False,
                     )
@@ -553,7 +558,7 @@ def train(args):
                         noisy_latents,
                         timesteps,
                         encoder_hidden_states=text_embedding,
-                        added_cond_kwargs=vector_embedding_dict,
+                        added_cond_kwargs=vector_embedding,
                         down_block_additional_residuals=[
                             sample.to(dtype=weight_dtype) for sample in down_block_res_samples
                         ],
