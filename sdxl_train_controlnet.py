@@ -161,11 +161,13 @@ def train(args):
     )
 
     # convert U-Net
-    unet_sd = unet.state_dict()
-    du_unet_sd = sdxl_model_util.convert_sdxl_unet_state_dict_to_diffusers(unet_sd)
-
-    unet = sdxl_model_util.UNet2DConditionModel(**sdxl_model_util.DIFFUSERS_SDXL_UNET_CONFIG)
-    unet.load_state_dict(du_unet_sd)
+    with torch.no_grad():
+        du_unet_sd = sdxl_model_util.convert_sdxl_unet_state_dict_to_diffusers(unet.state_dict())
+        unet.to("cpu")
+        clean_memory_on_device(accelerator.device)
+        del unet
+        unet = sdxl_model_util.UNet2DConditionModel(**sdxl_model_util.DIFFUSERS_SDXL_UNET_CONFIG)
+        unet.load_state_dict(du_unet_sd)
 
     controlnet = ControlNetModel.from_unet(unet)
 
@@ -225,7 +227,7 @@ def train(args):
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
-    trainable_params = list(controlnet.parameters())
+    trainable_params = list(filter(lambda p: p.requires_grad, controlnet.parameters()))
     logger.info(f"trainable params count: {len(trainable_params)}")
     logger.info(
         f"number of trainable parameters: {sum(p.numel() for p in trainable_params if p.requires_grad)}"
@@ -264,18 +266,18 @@ def train(args):
     )
 
     # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
-    # if args.full_fp16:
-    #     assert (
-    #         args.mixed_precision == "fp16"
-    #     ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
-    #     accelerator.print("enable full fp16 training.")
-    #     controlnet.to(weight_dtype)
-    # elif args.full_bf16:
-    #     assert (
-    #         args.mixed_precision == "bf16"
-    #     ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
-    #     accelerator.print("enable full bf16 training.")
-    #     controlnet.to(weight_dtype)
+    if args.full_fp16:
+        assert (
+            args.mixed_precision == "fp16"
+        ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
+        accelerator.print("enable full fp16 training.")
+        controlnet.to(weight_dtype)
+    elif args.full_bf16:
+        assert (
+            args.mixed_precision == "bf16"
+        ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+        accelerator.print("enable full bf16 training.")
+        controlnet.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
     controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -514,16 +516,17 @@ def train(args):
                 orig_size = batch["original_sizes_hw"]
                 crop_size = batch["crop_top_lefts"]
                 target_size = batch["target_sizes_hw"]
-                embs = sdxl_train_util.get_size_embeddings(
-                    orig_size, crop_size, target_size, accelerator.device
-                ).to(weight_dtype)
+                # embs = sdxl_train_util.get_size_embeddings(
+                #     orig_size, crop_size, target_size, accelerator.device
+                # ).to(weight_dtype)
 
+                embs = torch.cat([orig_size, crop_size, target_size], dim=-1).to(accelerator.device).to(weight_dtype)
                 # concat embeddings
-                vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
-                #vector_embedding_dict = {
-                #     "text_embeds": pool2,
-                #     "time_ids": embs
-                # }
+                #vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
+                vector_embedding_dict = {
+                    "text_embeds": pool2,
+                    "time_ids": embs
+                }
                 text_embedding = torch.cat(
                     [encoder_hidden_states1, encoder_hidden_states2], dim=2
                 ).to(weight_dtype)
@@ -538,17 +541,13 @@ def train(args):
 
                 controlnet_image = batch["conditioning_images"].to(dtype=weight_dtype)
 
-                print("pool2 shape:", pool2.shape)
-                print("embs shape:", embs.shape)
-                print("text_embedding shape:", text_embedding.shape)
-                print("controlnet_image shape:", controlnet_image.shape)
 
                 with accelerator.autocast():
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
                         timesteps,
                         encoder_hidden_states=text_embedding,
-                        added_cond_kwargs=vector_embedding,
+                        added_cond_kwargs=vector_embedding_dict,
                         controlnet_cond=controlnet_image,
                         return_dict=False,
                     )
@@ -558,12 +557,13 @@ def train(args):
                         noisy_latents,
                         timesteps,
                         encoder_hidden_states=text_embedding,
-                        added_cond_kwargs=vector_embedding,
+                        added_cond_kwargs=vector_embedding_dict,
                         down_block_additional_residuals=[
                             sample.to(dtype=weight_dtype) for sample in down_block_res_samples
                         ],
                         mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                    ).sample
+                        return_dict=False,
+                    )[0]
 
                 if args.v_parameterization:
                     # v-parameterization training
@@ -687,30 +687,19 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, False, True, True)
     train_util.add_training_arguments(parser, False)
+    train_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
+    train_util.add_sd_saving_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
     sdxl_train_util.add_sdxl_training_arguments(parser)
 
     parser.add_argument(
-        "--save_model_as",
-        type=str,
-        default="safetensors",
-        choices=[None, "ckpt", "pt", "safetensors"],
-        help="format to save the model (default is .safetensors) / モデル保存時の形式（デフォルトはsafetensors）",
-    )
-    parser.add_argument(
         "--controlnet_model_name_or_path",
         type=str,
         default=None,
         help="controlnet model name or path / controlnetのモデル名またはパス",
-    )
-    parser.add_argument(
-        "--conditioning_data_dir",
-        type=str,
-        default=None,
-        help="conditioning data directory / 条件付けデータのディレクトリ",
     )
     parser.add_argument(
         "--no_half_vae",
