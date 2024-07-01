@@ -275,16 +275,16 @@ def train(args):
     if train_hydit:
         training_models.append(hydit)
         if block_lrs is None:
-            params_to_optimize.append({"params": list(hydit.parameters()), "lr": args.learning_rate})
+            params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, hydit.parameters())), "lr": args.learning_rate})
         else:
             raise NotImplementedError("block_lr is not supported yet for HunyuanDiT")
 
     if train_text_encoder1:
         training_models.append(text_encoder1)
-        params_to_optimize.append({"params": list(text_encoder1.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
+        params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, text_encoder1.parameters())), "lr": args.learning_rate_te1 or args.learning_rate})
     if train_text_encoder2:
         training_models.append(text_encoder2)
-        params_to_optimize.append({"params": list(text_encoder2.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
+        params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, text_encoder2.parameters())), "lr": args.learning_rate_te2 or args.learning_rate})
 
     # calculate number of trainable parameters
     n_params = 0

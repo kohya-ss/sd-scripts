@@ -61,7 +61,6 @@ class HunYuanNetworkTrainer(train_network.NetworkTrainer):
             accelerator,
             hunyuan_models.MODEL_VERSION_HUNYUAN_V1_1 if args.use_extra_cond else hunyuan_models.MODEL_VERSION_HUNYUAN_V1_2,
             weight_dtype,
-            use_extra_cond=args.use_extra_cond,
         )
 
         self.load_stable_diffusion_format = load_stable_diffusion_format
