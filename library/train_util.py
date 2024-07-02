@@ -5095,18 +5095,6 @@ def immiscible_diffusion_get_noise(args, latents):
     return noise
 
 
-def immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps):
-    # "Immiscible Diffusion: Accelerating Diffusion Training with Noise Assignment" (2024) Li et al. arxiv.org/abs/2406.12303
-    batch_size, _, _, _= latents.shape
-    alpha_t = noise_scheduler.alphas.to(timesteps.device)
-    alpha_t = alpha_t[timesteps]
-    alpha_t = alpha_t.view(batch_size, 1, 1, 1)
-    sqrt_alpha_t = torch.sqrt(alpha_t)
-    sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
-    x_t_b = sqrt_alpha_t * latents + sqrt_one_minus_alpha_t * noise
-    return x_t_b
-
-
 def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     # Sample noise that we'll add to the latents
     if args.immiscible_noise:
@@ -5131,9 +5119,6 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
     timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
-
-    if args.immiscible_noise:
-        latents = immiscible_diffusion(args, noise_scheduler, latents, noise, timesteps)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
