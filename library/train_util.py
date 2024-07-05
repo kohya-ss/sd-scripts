@@ -475,8 +475,8 @@ class BaseSubset:
 
         self.custom_attributes = custom_attributes if custom_attributes is not None else {}
         self.preference = preference
-        self.preference_caption_prefix = non_preference_caption_prefix
-        self.preference_caption_suffix = non_preference_caption_suffix
+        self.preference_caption_prefix = preference_caption_prefix
+        self.preference_caption_suffix = preference_caption_suffix
         self.non_preference_caption_prefix = non_preference_caption_prefix
         self.non_preference_caption_suffix = non_preference_caption_suffix
 
