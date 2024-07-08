@@ -204,11 +204,22 @@ def train(args):
         vae.to(accelerator.device, dtype=vae_dtype)
         vae.requires_grad_(False)
         vae.eval()
-        vae_wrapper = sd3_models.VAEWrapper(vae)  # make SD/SDXL compatible
-        with torch.no_grad():
-            train_dataset_group.cache_latents(
-                vae_wrapper, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process, file_suffix="_sd3.npz"
+
+        if not args.new_caching:
+            vae_wrapper = sd3_models.VAEWrapper(vae)  # make SD/SDXL compatible
+            with torch.no_grad():
+                train_dataset_group.cache_latents(
+                    vae_wrapper,
+                    args.vae_batch_size,
+                    args.cache_latents_to_disk,
+                    accelerator.is_main_process,
+                    file_suffix="_sd3.npz",
+                )
+        else:
+            strategy = sd3_train_utils.Sd3LatensCachingStrategy(
+                vae, args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
             )
+            train_dataset_group.new_cache_latents(accelerator.is_main_process, strategy)
         vae.to("cpu")
         clean_memory_on_device(accelerator.device)
 
@@ -699,6 +710,17 @@ def train(args):
                 sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=weight_dtype)
                 noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
 
+                # debug: NaN check for all inputs
+                if torch.any(torch.isnan(noisy_model_input)):
+                    accelerator.print("NaN found in noisy_model_input, replacing with zeros")
+                    noisy_model_input = torch.nan_to_num(noisy_model_input, 0, out=noisy_model_input)
+                if torch.any(torch.isnan(context)):
+                    accelerator.print("NaN found in context, replacing with zeros")
+                    context = torch.nan_to_num(context, 0, out=context)
+                if torch.any(torch.isnan(pool)):
+                    accelerator.print("NaN found in pool, replacing with zeros")
+                    pool = torch.nan_to_num(pool, 0, out=pool)
+
                 # call model
                 with accelerator.autocast():
                     model_pred = mmdit(noisy_model_input, timesteps, context=context, y=pool)
@@ -907,6 +929,13 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
+    )
+
+    parser.add_argument("--new_caching", action="store_true", help="use new caching method / 新しいキャッシング方法を使う")
+    parser.add_argument(
+        "--skip_latents_validity_check",
+        action="store_true",
+        help="skip latents validity check / latentsの正当性チェックをスキップする",
     )
     return parser
 
