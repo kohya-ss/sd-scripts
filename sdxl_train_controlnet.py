@@ -528,7 +528,7 @@ def train(args):
                 #     orig_size, crop_size, target_size, accelerator.device
                 # ).to(weight_dtype)
 
-                embs = torch.cat([orig_size, crop_size, target_size], dim=-1).to(accelerator.device).to(weight_dtype)
+                embs = torch.cat([orig_size, crop_size, target_size]).to(accelerator.device).to(weight_dtype) #B,6
                 # concat embeddings
                 #vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
                 vector_embedding_dict = {
