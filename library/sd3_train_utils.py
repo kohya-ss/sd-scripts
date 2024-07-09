@@ -279,7 +279,7 @@ def sample_images(*args, **kwargs):
     return train_util.sample_images_common(SdxlStableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
 
 
-class Sd3LatensCachingStrategy(train_util.LatentsCachingStrategy):
+class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
     SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
 
     def __init__(self, vae: sd3_models.SDVAE, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:

@@ -217,7 +217,7 @@ def train(args):
                     file_suffix="_sd3.npz",
                 )
         else:
-            strategy = sd3_train_utils.Sd3LatensCachingStrategy(
+            strategy = sd3_train_utils.Sd3LatentsCachingStrategy(
                 vae, args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
             )
             train_dataset_group.new_cache_latents(accelerator.is_main_process, strategy)
