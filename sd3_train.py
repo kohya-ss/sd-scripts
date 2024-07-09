@@ -91,6 +91,15 @@ def train(args):
     # load tokenizer
     sd3_tokenizer = sd3_models.SD3Tokenizer()
 
+    # prepare caching strategy
+    if args.new_caching:
+        latents_caching_strategy = sd3_train_utils.Sd3LatentsCachingStrategy(
+            args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
+        )
+    else:
+        latents_caching_strategy = None
+    train_util.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
+
     # データセットを準備する
     if args.dataset_class is None:
         blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
@@ -217,10 +226,8 @@ def train(args):
                     file_suffix="_sd3.npz",
                 )
         else:
-            strategy = sd3_train_utils.Sd3LatentsCachingStrategy(
-                vae, args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
-            )
-            train_dataset_group.new_cache_latents(accelerator.is_main_process, strategy)
+            latents_caching_strategy.set_vae(vae)
+            train_dataset_group.new_cache_latents(accelerator.is_main_process, latents_caching_strategy)
         vae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
 

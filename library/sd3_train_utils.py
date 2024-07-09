@@ -1,4 +1,5 @@
 import argparse
+import glob
 import math
 import os
 from typing import List, Optional, Tuple, Union
@@ -282,12 +283,26 @@ def sample_images(*args, **kwargs):
 class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
     SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
 
-    def __init__(self, vae: sd3_models.SDVAE, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
+    def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
+        self.vae = None
+
+    def set_vae(self, vae: sd3_models.SDVAE):
         self.vae = vae
 
-    def get_latents_npz_path(self, absolute_path: str):
-        return os.path.splitext(absolute_path)[0] + self.SD3_LATENTS_NPZ_SUFFIX
+    def get_image_size_from_image_absolute_path(self, absolute_path: str) -> Tuple[Optional[int], Optional[int]]:
+        npz_file = glob.glob(os.path.splitext(absolute_path)[0] + "_*" + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX)
+        if len(npz_file) == 0:
+            return None, None
+        w, h = os.path.splitext(npz_file[0])[0].split("_")[-2].split("x")
+        return int(w), int(h)
+
+    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
+        return (
+            os.path.splitext(absolute_path)[0]
+            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
+            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
+        )
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
         if not self.cache_to_disk:
@@ -331,24 +346,24 @@ class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
         img_tensor = img_tensor.to(device=self.vae.device, dtype=self.vae.dtype)
 
         with torch.no_grad():
-            latents = self.vae.encode(img_tensor).to("cpu")
+            latents_tensors = self.vae.encode(img_tensor).to("cpu")
         if flip_aug:
             img_tensor = torch.flip(img_tensor, dims=[3])
             with torch.no_grad():
                 flipped_latents = self.vae.encode(img_tensor).to("cpu")
         else:
-            flipped_latents = [None] * len(latents)
+            flipped_latents = [None] * len(latents_tensors)
 
-        for info, latent, flipped_latent, alpha_mask in zip(image_infos, latents, flipped_latents, alpha_masks):
+        # for info, latents, flipped_latent, alpha_mask in zip(image_infos, latents_tensors, flipped_latents, alpha_masks):
+        for i in range(len(image_infos)):
+            info = image_infos[i]
+            latents = latents_tensors[i]
+            flipped_latent = flipped_latents[i]
+            alpha_mask = alpha_masks[i]
+            original_size = original_sizes[i]
+            crop_ltrb = crop_ltrbs[i]
+
             if self.cache_to_disk:
-                # save_latents_to_disk(
-                #     info.latents_npz,
-                #     latent,
-                #     info.latents_original_size,
-                #     info.latents_crop_ltrb,
-                #     flipped_latent,
-                #     alpha_mask,
-                # )
                 kwargs = {}
                 if flipped_latent is not None:
                     kwargs["latents_flipped"] = flipped_latent.float().cpu().numpy()
@@ -357,12 +372,12 @@ class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
                 np.savez(
                     info.latents_npz,
                     latents=latents.float().cpu().numpy(),
-                    original_size=np.array(original_sizes),
-                    crop_ltrb=np.array(crop_ltrbs),
+                    original_size=np.array(original_size),
+                    crop_ltrb=np.array(crop_ltrb),
                     **kwargs,
                 )
             else:
-                info.latents = latent
+                info.latents = latents
                 if flip_aug:
                     info.latents_flipped = flipped_latent
                 info.alpha_mask = alpha_mask
