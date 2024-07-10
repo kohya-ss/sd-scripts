@@ -13,12 +13,12 @@ from tqdm import tqdm
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
 
-
 init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 from library import deepspeed_utils, sd3_models, sd3_train_utils, sd3_utils
+from library.sdxl_train_util import match_mixed_precision
 
 # , sdxl_model_util
 
@@ -90,6 +90,15 @@ def train(args):
 
     # load tokenizer
     sd3_tokenizer = sd3_models.SD3Tokenizer()
+
+    # prepare caching strategy
+    if args.new_caching:
+        latents_caching_strategy = sd3_train_utils.Sd3LatentsCachingStrategy(
+            args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
+        )
+    else:
+        latents_caching_strategy = None
+    train_util.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
 
     # データセットを準備する
     if args.dataset_class is None:
@@ -189,35 +198,55 @@ def train(args):
 
     assert (
         attn_mode == "torch"
-    ), f"attn_mode {attn_mode} is not supported. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
+    ), f"attn_mode {attn_mode} is not supported yet. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
 
-    # models are usually loaded on CPU and moved to GPU later. This is to avoid OOM on GPU0.
-    mmdit, clip_l, clip_g, t5xxl, vae = sd3_train_utils.load_target_model(
-        args, accelerator, attn_mode, weight_dtype, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
+    # SD3 state dict may contain multiple models, so we need to load it and extract one by one. annoying.
+    logger.info(f"Loading SD3 models from {args.pretrained_model_name_or_path}")
+    device_to_load = accelerator.device if args.lowram else "cpu"
+    sd3_state_dict = sd3_utils.load_safetensors(
+        args.pretrained_model_name_or_path, device_to_load, args.disable_mmap_load_safetensors
     )
-    assert clip_l is not None, "clip_l is required / clip_lは必須です"
-    assert clip_g is not None, "clip_g is required / clip_gは必須です"
-    # logit_scale = logit_scale.to(accelerator.device, dtype=weight_dtype)
 
-    # 学習を準備する
+    # load VAE for caching latents
+    vae: sd3_models.SDVAE = None
     if cache_latents:
+        vae = sd3_train_utils.load_target_model("vae", args, sd3_state_dict, accelerator, attn_mode, vae_dtype, device_to_load)
         vae.to(accelerator.device, dtype=vae_dtype)
         vae.requires_grad_(False)
         vae.eval()
-        vae_wrapper = sd3_models.VAEWrapper(vae)  # make SD/SDXL compatible
-        with torch.no_grad():
-            train_dataset_group.cache_latents(
-                vae_wrapper, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process, file_suffix="_sd3.npz"
-            )
-        vae.to("cpu")
+
+        if not args.new_caching:
+            vae_wrapper = sd3_models.VAEWrapper(vae)  # make SD/SDXL compatible
+            with torch.no_grad():
+                train_dataset_group.cache_latents(
+                    vae_wrapper,
+                    args.vae_batch_size,
+                    args.cache_latents_to_disk,
+                    accelerator.is_main_process,
+                    file_suffix="_sd3.npz",
+                )
+        else:
+            latents_caching_strategy.set_vae(vae)
+            train_dataset_group.new_cache_latents(accelerator.is_main_process, latents_caching_strategy)
+        vae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
 
         accelerator.wait_for_everyone()
 
+    # load clip_l, clip_g, t5xxl for caching text encoder outputs
+    # # models are usually loaded on CPU and moved to GPU later. This is to avoid OOM on GPU0.
+    # mmdit, clip_l, clip_g, t5xxl, vae = sd3_train_utils.load_target_model(
+    #     args, accelerator, attn_mode, weight_dtype, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
+    # )
+    clip_l = sd3_train_utils.load_target_model("clip_l", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
+    clip_g = sd3_train_utils.load_target_model("clip_g", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
+    assert clip_l is not None, "clip_l is required / clip_lは必須です"
+    assert clip_g is not None, "clip_g is required / clip_gは必須です"
+
+    t5xxl = sd3_train_utils.load_target_model("t5xxl", args, sd3_state_dict, accelerator, attn_mode, t5xxl_dtype, device_to_load)
+    # logit_scale = logit_scale.to(accelerator.device, dtype=weight_dtype)
+
     # 学習を準備する：モデルを適切な状態にする
-    if args.gradient_checkpointing:
-        mmdit.enable_gradient_checkpointing()
-    train_mmdit = args.learning_rate != 0
     train_clip_l = False
     train_clip_g = False
     train_t5xxl = False
@@ -269,9 +298,26 @@ def train(args):
                 accelerator.is_main_process,
                 args.text_encoder_batch_size,
             )
+
+        # TODO we can delete text encoders after caching
         accelerator.wait_for_everyone()
 
+    # load MMDIT
+    # if full_fp16/bf16, model_dtype is casted to fp16/bf16. If not, model_dtype is None (float32).
+    # by loading with model_dtype, we can reduce memory usage.
+    model_dtype = match_mixed_precision(args, weight_dtype)  # None (default) or fp16/bf16 (full_xxxx)
+    mmdit = sd3_train_utils.load_target_model("mmdit", args, sd3_state_dict, accelerator, attn_mode, model_dtype, device_to_load)
+    if args.gradient_checkpointing:
+        mmdit.enable_gradient_checkpointing()
+
+    train_mmdit = args.learning_rate != 0
+    mmdit.requires_grad_(train_mmdit)
+    if not train_mmdit:
+        mmdit.to(accelerator.device, dtype=weight_dtype)  # because of mmdie will not be prepared
+
     if not cache_latents:
+        # load VAE here if not cached
+        vae = sd3_train_utils.load_target_model("vae", args, sd3_state_dict, accelerator, attn_mode, vae_dtype, device_to_load)
         vae.requires_grad_(False)
         vae.eval()
         vae.to(accelerator.device, dtype=vae_dtype)
@@ -702,6 +748,17 @@ def train(args):
                 sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=weight_dtype)
                 noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
 
+                # debug: NaN check for all inputs
+                if torch.any(torch.isnan(noisy_model_input)):
+                    accelerator.print("NaN found in noisy_model_input, replacing with zeros")
+                    noisy_model_input = torch.nan_to_num(noisy_model_input, 0, out=noisy_model_input)
+                if torch.any(torch.isnan(context)):
+                    accelerator.print("NaN found in context, replacing with zeros")
+                    context = torch.nan_to_num(context, 0, out=context)
+                if torch.any(torch.isnan(pool)):
+                    accelerator.print("NaN found in pool, replacing with zeros")
+                    pool = torch.nan_to_num(pool, 0, out=pool)
+
                 # call model
                 with accelerator.autocast():
                     model_pred = mmdit(noisy_model_input, timesteps, context=context, y=pool)
@@ -910,6 +967,13 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
+    )
+
+    parser.add_argument("--new_caching", action="store_true", help="use new caching method / 新しいキャッシング方法を使う")
+    parser.add_argument(
+        "--skip_latents_validity_check",
+        action="store_true",
+        help="skip latents validity check / latentsの正当性チェックをスキップする",
     )
     return parser
 

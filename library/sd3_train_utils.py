@@ -1,18 +1,17 @@
 import argparse
+import glob
 import math
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 from safetensors.torch import save_file
+from accelerate import Accelerator
 
 from library import sd3_models, sd3_utils, train_util
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
-
-from accelerate import init_empty_weights
-from tqdm import tqdm
 
 # from transformers import CLIPTokenizer
 # from library import model_util
@@ -28,50 +27,48 @@ logger = logging.getLogger(__name__)
 from .sdxl_train_util import match_mixed_precision
 
 
-def load_target_model(args, accelerator, attn_mode, weight_dtype, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype) -> Tuple[
+def load_target_model(
+    model_type: str,
+    args: argparse.Namespace,
+    state_dict: dict,
+    accelerator: Accelerator,
+    attn_mode: str,
+    model_dtype: Optional[torch.dtype],
+    device: Optional[torch.device],
+) -> Union[
     sd3_models.MMDiT,
     Optional[sd3_models.SDClipModel],
     Optional[sd3_models.SDXLClipG],
     Optional[sd3_models.T5XXLModel],
     sd3_models.SDVAE,
 ]:
-    model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16, None or fp16/bf16
+    loading_device = device if device is not None else (accelerator.device if args.lowram else "cpu")
 
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
             logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
 
-            mmdit, clip_l, clip_g, t5xxl, vae = sd3_utils.load_models(
-                args.pretrained_model_name_or_path,
-                args.clip_l,
-                args.clip_g,
-                args.t5xxl,
-                args.vae,
-                attn_mode,
-                accelerator.device if args.lowram else "cpu",
-                model_dtype,
-                args.disable_mmap_load_safetensors,
-                clip_dtype,
-                t5xxl_device,
-                t5xxl_dtype,
-                vae_dtype,
-            )
+            if model_type == "mmdit":
+                model = sd3_utils.load_mmdit(state_dict, attn_mode, model_dtype, loading_device)
+            elif model_type == "clip_l":
+                model = sd3_utils.load_clip_l(state_dict, args.clip_l, attn_mode, model_dtype, loading_device)
+            elif model_type == "clip_g":
+                model = sd3_utils.load_clip_g(state_dict, args.clip_g, attn_mode, model_dtype, loading_device)
+            elif model_type == "t5xxl":
+                model = sd3_utils.load_t5xxl(state_dict, args.t5xxl, attn_mode, model_dtype, loading_device)
+            elif model_type == "vae":
+                model = sd3_utils.load_vae(state_dict, args.vae, model_dtype, loading_device)
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
 
             # work on low-ram device: models are already loaded on accelerator.device, but we ensure they are on device
             if args.lowram:
-                if clip_l is not None:
-                    clip_l.to(accelerator.device)
-                if clip_g is not None:
-                    clip_g.to(accelerator.device)
-                if t5xxl is not None:
-                    t5xxl.to(accelerator.device)
-                vae.to(accelerator.device)
-                mmdit.to(accelerator.device)
+                model = model.to(accelerator.device)
 
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
 
-    return mmdit, clip_l, clip_g, t5xxl, vae
+    return model
 
 
 def save_models(
@@ -281,6 +278,112 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
 
 def sample_images(*args, **kwargs):
     return train_util.sample_images_common(SdxlStableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
+
+
+class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
+    SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
+
+    def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
+        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
+        self.vae = None
+
+    def set_vae(self, vae: sd3_models.SDVAE):
+        self.vae = vae
+
+    def get_image_size_from_image_absolute_path(self, absolute_path: str) -> Tuple[Optional[int], Optional[int]]:
+        npz_file = glob.glob(os.path.splitext(absolute_path)[0] + "_*" + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX)
+        if len(npz_file) == 0:
+            return None, None
+        w, h = os.path.splitext(npz_file[0])[0].split("_")[-2].split("x")
+        return int(w), int(h)
+
+    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
+        return (
+            os.path.splitext(absolute_path)[0]
+            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
+            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
+        )
+
+    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
+        if not self.cache_to_disk:
+            return False
+        if not os.path.exists(npz_path):
+            return False
+        if self.skip_disk_cache_validity_check:
+            return True
+
+        expected_latents_size = (bucket_reso[1] // 8, bucket_reso[0] // 8)  # bucket_reso is (W, H)
+
+        try:
+            npz = np.load(npz_path)
+            if npz["latents"].shape[1:3] != expected_latents_size:
+                return False
+
+            if flip_aug:
+                if "latents_flipped" not in npz:
+                    return False
+                if npz["latents_flipped"].shape[1:3] != expected_latents_size:
+                    return False
+
+            if alpha_mask:
+                if "alpha_mask" not in npz:
+                    return False
+                if npz["alpha_mask"].shape[0:2] != (bucket_reso[1], bucket_reso[0]):
+                    return False
+            else:
+                if "alpha_mask" in npz:
+                    return False
+        except Exception as e:
+            logger.error(f"Error loading file: {npz_path}")
+            raise e
+
+        return True
+
+    def cache_batch_latents(self, image_infos: List[train_util.ImageInfo], flip_aug: bool, alpha_mask: bool, random_crop: bool):
+        img_tensor, alpha_masks, original_sizes, crop_ltrbs = train_util.load_images_and_masks_for_caching(
+            image_infos, alpha_mask, random_crop
+        )
+        img_tensor = img_tensor.to(device=self.vae.device, dtype=self.vae.dtype)
+
+        with torch.no_grad():
+            latents_tensors = self.vae.encode(img_tensor).to("cpu")
+        if flip_aug:
+            img_tensor = torch.flip(img_tensor, dims=[3])
+            with torch.no_grad():
+                flipped_latents = self.vae.encode(img_tensor).to("cpu")
+        else:
+            flipped_latents = [None] * len(latents_tensors)
+
+        # for info, latents, flipped_latent, alpha_mask in zip(image_infos, latents_tensors, flipped_latents, alpha_masks):
+        for i in range(len(image_infos)):
+            info = image_infos[i]
+            latents = latents_tensors[i]
+            flipped_latent = flipped_latents[i]
+            alpha_mask = alpha_masks[i]
+            original_size = original_sizes[i]
+            crop_ltrb = crop_ltrbs[i]
+
+            if self.cache_to_disk:
+                kwargs = {}
+                if flipped_latent is not None:
+                    kwargs["latents_flipped"] = flipped_latent.float().cpu().numpy()
+                if alpha_mask is not None:
+                    kwargs["alpha_mask"] = alpha_mask.float().cpu().numpy()
+                np.savez(
+                    info.latents_npz,
+                    latents=latents.float().cpu().numpy(),
+                    original_size=np.array(original_size),
+                    crop_ltrb=np.array(crop_ltrb),
+                    **kwargs,
+                )
+            else:
+                info.latents = latents
+                if flip_aug:
+                    info.latents_flipped = flipped_latent
+                info.alpha_mask = alpha_mask
+
+        if not train_util.HIGH_VRAM:
+            clean_memory_on_device(self.vae.device)
 
 
 # region Diffusers
