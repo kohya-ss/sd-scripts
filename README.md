@@ -4,7 +4,9 @@ This repository contains training, generation and utility scripts for Stable Dif
 
 SD3 training is done with `sd3_train.py`. 
 
-__Jun 29, 2024__: Fixed mixed precision training with fp16 is not working. Fixed the model is in bf16 dtype even without `--full_bf16` option (this could worsen the training result).
+__Jul  11, 2024__: Fixed to work t5xxl with `fp16`. If you change the dtype to `fp16` for t5xxl, please remove existing latents cache files (`*_sd3.npz`). The shift in `sd3_minimum_inference.py` is fixed to 3.0. Thanks to araleza!
+
+Jun 29, 2024: Fixed mixed precision training with fp16 is not working. Fixed the model is in bf16 dtype even without `--full_bf16` option (this could worsen the training result).
 
 `fp16` and `bf16` are available for mixed precision training. We are not sure which is better.
 
@@ -12,7 +14,7 @@ __Jun 29, 2024__: Fixed mixed precision training with fp16 is not working. Fixed
 
 `clip_l`, `clip_g` and `t5xxl` can be specified if the checkpoint does not include them.  
 
-t5xxl doesn't seem to work with `fp16`, so 1) use`bf16` for mixed precision, or 2) use `bf16` or `float32` for `t5xxl_dtype`. 
+~~t5xxl doesn't seem to work with `fp16`, so 1) use`bf16` for mixed precision, or 2) use `bf16` or `float32` for `t5xxl_dtype`. ~~ t5xxl works with `fp16` now.
 
 There are `t5xxl_device` and `t5xxl_dtype` options for `t5xxl` device and dtype. 
 
