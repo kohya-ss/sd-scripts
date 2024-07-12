@@ -471,7 +471,7 @@ class AttentionLinears(nn.Module):
         num_heads: int = 8,
         qkv_bias: bool = False,
         pre_only: bool = False,
-        qk_norm: str = None,
+        qk_norm: Optional[str] = None,
     ):
         super().__init__()
         self.num_heads = num_heads

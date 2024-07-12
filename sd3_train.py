@@ -458,6 +458,28 @@ def train(args):
     #     text_encoder1.text_model.encoder.layers[-1].requires_grad_(False)
     #     text_encoder1.text_model.final_layer_norm.requires_grad_(False)
 
+    # TextEncoderの出力をキャッシュするときには、すでに出力を取得済みなのでCPUへ移動する
+    if args.cache_text_encoder_outputs:
+        # move Text Encoders for sampling images. Text Encoder doesn't work on CPU with fp16
+        clip_l.to("cpu", dtype=torch.float32)
+        clip_g.to("cpu", dtype=torch.float32)
+        if t5xxl is not None:
+            t5xxl.to("cpu", dtype=torch.float32)
+        clean_memory_on_device(accelerator.device)
+    else:
+        # make sure Text Encoders are on GPU
+        # TODO support CPU for text encoders
+        clip_l.to(accelerator.device)
+        clip_g.to(accelerator.device)
+        if t5xxl is not None:
+            t5xxl.to(accelerator.device)
+
+    # TODO cache sample prompt's embeddings to free text encoder's memory
+    if args.cache_text_encoder_outputs:
+        if not args.save_t5xxl:
+            t5xxl = None  # free memory
+    clean_memory_on_device(accelerator.device)
+
     if args.deepspeed:
         ds_model = deepspeed_utils.prepare_deepspeed_model(
             args,
@@ -481,28 +503,6 @@ def train(args):
         # if train_clip_g:
         #     text_encoder2 = accelerator.prepare(text_encoder2)
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
-
-    # TextEncoderの出力をキャッシュするときには、すでに出力を取得済みなのでCPUへ移動する
-    if args.cache_text_encoder_outputs:
-        # move Text Encoders for sampling images. Text Encoder doesn't work on CPU with fp16
-        clip_l.to("cpu", dtype=torch.float32)
-        clip_g.to("cpu", dtype=torch.float32)
-        if t5xxl is not None:
-            t5xxl.to("cpu", dtype=torch.float32)
-        clean_memory_on_device(accelerator.device)
-    else:
-        # make sure Text Encoders are on GPU
-        # TODO support CPU for text encoders
-        clip_l.to(accelerator.device)
-        clip_g.to(accelerator.device)
-        if t5xxl is not None:
-            t5xxl.to(accelerator.device)
-
-    # TODO cache sample prompt's embeddings to free text encoder's memory
-    if args.cache_text_encoder_outputs:
-        if not args.save_t5xxl:
-            t5xxl = None  # free memory
-    clean_memory_on_device(accelerator.device)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:

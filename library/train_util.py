@@ -2410,6 +2410,7 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alph
 
 
 # 戻り値は、latents_tensor, (original_size width, original_size height), (crop left, crop top)
+# TODO update to use CachingStrategy
 def load_latents_from_disk(
     npz_path,
 ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
