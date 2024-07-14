@@ -102,6 +102,7 @@ class ControlNetSubsetParams(BaseSubsetParams):
     conditioning_data_dir: str = None
     caption_extension: str = ".caption"
     cache_info: bool = False
+    preference: bool = False
 
 
 @dataclass
