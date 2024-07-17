@@ -3965,7 +3965,9 @@ def get_optimizer(args, trainable_params):
             optimizer_kwargs["momentum"] = 0.9
 
         optimizer_class = torch.optim.SGD
-        optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
+        uses_momentum = False if optimizer_kwargs["momentum"]==0 else True
+        logger.info(f"uses_momentum: {uses_momentum}")
+        optimizer = optimizer_class(trainable_params, lr=lr, nesterov=uses_momentum, **optimizer_kwargs)
 
     elif optimizer_type.startswith("DAdapt".lower()) or optimizer_type == "Prodigy".lower():
         # check lr and lr_count, and logger.info warning
