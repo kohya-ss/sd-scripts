@@ -11,7 +11,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import library.train_util as train_util
-from library.utils import setup_logging
+from library.utils import setup_logging, pil_resize
 
 setup_logging()
 import logging
@@ -42,8 +42,10 @@ def preprocess_image(image):
     pad_t = pad_y // 2
     image = np.pad(image, ((pad_t, pad_y - pad_t), (pad_l, pad_x - pad_l), (0, 0)), mode="constant", constant_values=255)
 
-    interp = cv2.INTER_AREA if size > IMAGE_SIZE else cv2.INTER_LANCZOS4
-    image = cv2.resize(image, (IMAGE_SIZE, IMAGE_SIZE), interpolation=interp)
+    if size > IMAGE_SIZE:
+        image = cv2.resize(image, (IMAGE_SIZE, IMAGE_SIZE), cv2.INTER_AREA)
+    else:
+        image = pil_resize(image, (IMAGE_SIZE, IMAGE_SIZE))
 
     image = image.astype(np.float32)
     return image

@@ -7,7 +7,9 @@ from typing import *
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
-
+import cv2
+from PIL import Image
+import numpy as np
 
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
@@ -78,7 +80,17 @@ def setup_logging(args=None, log_level=None, reset=False):
         logger = logging.getLogger(__name__)
         logger.info(msg_init)
 
+def pil_resize(image, size, interpolation=Image.LANCZOS):
 
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    # use Pillow resize
+    resized_pil = pil_image.resize(size, interpolation)
+
+    # return cv2 image
+    resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
+
+    return resized_cv2
 
 # TODO make inf_utils.py
 
