@@ -218,7 +218,7 @@ class LatentsCachingStrategy:
     def cache_batch_latents(self, model: Any, batch: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
         raise NotImplementedError
 
-    def _defualt_is_disk_cached_latents_expected(
+    def _default_is_disk_cached_latents_expected(
         self, latents_stride: int, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool
     ):
         if not self.cache_to_disk:
