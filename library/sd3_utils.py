@@ -384,6 +384,7 @@ def get_cond(
     dtype: Optional[torch.dtype] = None,
 ):
     l_tokens, g_tokens, t5_tokens = tokenizer.tokenize_with_weights(prompt)
+    print(t5_tokens)
     return get_cond_from_tokens(l_tokens, g_tokens, t5_tokens, clip_l, clip_g, t5xxl, device=device, dtype=dtype)
 
 

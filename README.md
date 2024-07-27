@@ -4,9 +4,16 @@ This repository contains training, generation and utility scripts for Stable Dif
 
 SD3 training is done with `sd3_train.py`. 
 
-__Jul  11, 2024__: Fixed to work t5xxl with `fp16`. If you change the dtype to `fp16` for t5xxl, please remove existing latents cache files (`*_sd3.npz`). The shift in `sd3_minimum_inference.py` is fixed to 3.0. Thanks to araleza!
+__Jul  27, 2024__: 
+- Latents and text encoder outputs caching mechanism is refactored significantly. 
+  - Existing cache files for SD3 need to be recreated. Please delete the previous cache files. 
+  - With this change, dataset initialization is significantly faster, especially for large datasets. 
 
-Jun 29, 2024: Fixed mixed precision training with fp16 is not working. Fixed the model is in bf16 dtype even without `--full_bf16` option (this could worsen the training result).
+- Architecture-dependent parts are extracted from the dataset (`train_util.py`). This is expected to make it easier to add future architectures.
+
+- Architecture-dependent parts including the cache mechanism for SD1/2/SDXL are also extracted. The basic operation of SD1/2/SDXL training on the sd3 branch has been confirmed, but there may be bugs. Please use the main or dev branch for SD1/2/SDXL training.
+
+---
 
 `fp16` and `bf16` are available for mixed precision training. We are not sure which is better.
 
@@ -14,7 +21,7 @@ Jun 29, 2024: Fixed mixed precision training with fp16 is not working. Fixed the
 
 `clip_l`, `clip_g` and `t5xxl` can be specified if the checkpoint does not include them.  
 
-~~t5xxl doesn't seem to work with `fp16`, so 1) use`bf16` for mixed precision, or 2) use `bf16` or `float32` for `t5xxl_dtype`. ~~ t5xxl works with `fp16` now.
+t5xxl works with `fp16` now.
 
 There are `t5xxl_device` and `t5xxl_dtype` options for `t5xxl` device and dtype. 
 
@@ -31,6 +38,14 @@ text_encoder_batch_size = 4
 cache_latents = true
 cache_latents_to_disk = true
 ```
+
+__2024/7/27:__
+
+Latents およびテキストエンコーダ出力のキャッシュの仕組みを大きくリファクタリングしました。SD3 用の既存のキャッシュファイルの再作成が必要になりますが、ご了承ください（以前のキャッシュファイルは削除してください）。これにより、特にデータセットの規模が大きい場合のデータセット初期化が大幅に高速化されます。
+
+データセット (`train_util.py`) からアーキテクチャ依存の部分を切り出しました。これにより将来的なアーキテクチャ追加が容易になると期待しています。
+
+SD1/2/SDXL のキャッシュ機構を含むアーキテクチャ依存の部分も切り出しました。sd3 ブランチの SD1/2/SDXL 学習について、基本的な動作は確認していますが、不具合があるかもしれません。SD1/2/SDXL の学習には main または dev ブランチをお使いください。
 
 --- 
 

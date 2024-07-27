@@ -17,7 +17,7 @@ init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
-from library import deepspeed_utils, sd3_models, sd3_train_utils, sd3_utils
+from library import deepspeed_utils, sd3_models, sd3_train_utils, sd3_utils, strategy_base, strategy_sd3
 from library.sdxl_train_util import match_mixed_precision
 
 # , sdxl_model_util
@@ -69,10 +69,22 @@ def train(args):
     #     not args.train_text_encoder
     # ), "training text encoder is not supported currently / text encoderの学習は現在サポートされていません"
 
-    # training without text encoder cache is not supported
-    assert (
-        args.cache_text_encoder_outputs
-    ), "training without text encoder cache is not supported currently / text encoderのキャッシュなしの学習は現在サポートされていません"
+    # # training without text encoder cache is not supported: because T5XXL must be cached
+    # assert (
+    #     args.cache_text_encoder_outputs
+    # ), "training without text encoder cache is not supported currently / text encoderのキャッシュなしの学習は現在サポートされていません"
+
+    assert not args.train_text_encoder or (args.use_t5xxl_cache_only or not args.cache_text_encoder_outputs), (
+        "when training text encoder, text encoder outputs must not be cached (except for T5XXL)"
+        + " / text encoderの学習時はtext encoderの出力はキャッシュできません（t5xxlのみキャッシュすることは可能です）"
+    )
+
+    if args.use_t5xxl_cache_only and not args.cache_text_encoder_outputs:
+        logger.warning(
+            "use_t5xxl_cache_only is enabled, so cache_text_encoder_outputs is automatically enabled."
+            + " / use_t5xxl_cache_onlyが有効なため、cache_text_encoder_outputsも自動的に有効になります"
+        )
+        args.cache_text_encoder_outputs = True
 
     # if args.block_lr:
     #     block_lrs = [float(lr) for lr in args.block_lr.split(",")]
@@ -88,17 +100,17 @@ def train(args):
     if args.seed is not None:
         set_seed(args.seed)  # 乱数系列を初期化する
 
-    # load tokenizer
-    sd3_tokenizer = sd3_models.SD3Tokenizer()
-
-    # prepare caching strategy
-    if args.new_caching:
-        latents_caching_strategy = sd3_train_utils.Sd3LatentsCachingStrategy(
+    # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
+    if args.cache_latents:
+        latents_caching_strategy = strategy_sd3.Sd3LatentsCachingStrategy(
             args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
         )
-    else:
-        latents_caching_strategy = None
-    train_util.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
+        strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
+
+    # load tokenizer and prepare tokenize strategy
+    sd3_tokenizer = sd3_models.SD3Tokenizer(t5xxl_max_length=args.t5xxl_max_token_length)
+    sd3_tokenize_strategy = strategy_sd3.Sd3TokenizeStrategy(args.t5xxl_max_token_length)
+    strategy_base.TokenizeStrategy.set_strategy(sd3_tokenize_strategy)
 
     # データセットを準備する
     if args.dataset_class is None:
@@ -153,6 +165,16 @@ def train(args):
     train_dataset_group.verify_bucket_reso_steps(8)  # TODO これでいいか確認
 
     if args.debug_dataset:
+        if args.cache_text_encoder_outputs:
+            strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(
+                strategy_sd3.Sd3TextEncoderOutputsCachingStrategy(
+                    args.cache_text_encoder_outputs_to_disk,
+                    args.text_encoder_batch_size,
+                    False,
+                    False,
+                )
+            )
+        train_dataset_group.set_current_strategies()
         train_util.debug_dataset(train_dataset_group, True)
         return
     if len(train_dataset_group) == 0:
@@ -215,19 +237,8 @@ def train(args):
         vae.requires_grad_(False)
         vae.eval()
 
-        if not args.new_caching:
-            vae_wrapper = sd3_models.VAEWrapper(vae)  # make SD/SDXL compatible
-            with torch.no_grad():
-                train_dataset_group.cache_latents(
-                    vae_wrapper,
-                    args.vae_batch_size,
-                    args.cache_latents_to_disk,
-                    accelerator.is_main_process,
-                    file_suffix="_sd3.npz",
-                )
-        else:
-            latents_caching_strategy.set_vae(vae)
-            train_dataset_group.new_cache_latents(accelerator.is_main_process, latents_caching_strategy)
+        train_dataset_group.new_cache_latents(vae, accelerator.is_main_process)
+
         vae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
 
@@ -246,60 +257,70 @@ def train(args):
     t5xxl = sd3_train_utils.load_target_model("t5xxl", args, sd3_state_dict, accelerator, attn_mode, t5xxl_dtype, device_to_load)
     # logit_scale = logit_scale.to(accelerator.device, dtype=weight_dtype)
 
+    # should be deleted after caching text encoder outputs when not training text encoder
+    # this strategy should not be used other than this process
+    text_encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy()
+    strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
+
     # 学習を準備する：モデルを適切な状態にする
     train_clip_l = False
     train_clip_g = False
     train_t5xxl = False
 
-    # if args.train_text_encoder:
-    #     # TODO each option for two text encoders?
-    #     accelerator.print("enable text encoder training")
-    #     if args.gradient_checkpointing:
-    #         text_encoder1.gradient_checkpointing_enable()
-    #         text_encoder2.gradient_checkpointing_enable()
-    #     lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
-    #     lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
-    #     train_clip_l = lr_te1 != 0
-    #     train_clip_g = lr_te2 != 0
+    if args.train_text_encoder:
+        accelerator.print("enable text encoder training")
+        if args.gradient_checkpointing:
+            clip_l.gradient_checkpointing_enable()
+            clip_g.gradient_checkpointing_enable()
+        lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
+        lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
+        train_clip_l = lr_te1 != 0
+        train_clip_g = lr_te2 != 0
 
-    #     # caching one text encoder output is not supported
-    #     if not train_clip_l:
-    #         text_encoder1.to(weight_dtype)
-    #     if not train_clip_g:
-    #         text_encoder2.to(weight_dtype)
-    #     text_encoder1.requires_grad_(train_clip_l)
-    #     text_encoder2.requires_grad_(train_clip_g)
-    #     text_encoder1.train(train_clip_l)
-    #     text_encoder2.train(train_clip_g)
-    # else:
-    clip_l.to(weight_dtype)
-    clip_g.to(weight_dtype)
-    clip_l.requires_grad_(False)
-    clip_g.requires_grad_(False)
-    clip_l.eval()
-    clip_g.eval()
+        if not train_clip_l:
+            clip_l.to(weight_dtype)
+        if not train_clip_g:
+            clip_g.to(weight_dtype)
+        clip_l.requires_grad_(train_clip_l)
+        clip_g.requires_grad_(train_clip_g)
+        clip_l.train(train_clip_l)
+        clip_g.train(train_clip_g)
+    else:
+        clip_l.to(weight_dtype)
+        clip_g.to(weight_dtype)
+        clip_l.requires_grad_(False)
+        clip_g.requires_grad_(False)
+        clip_l.eval()
+        clip_g.eval()
+
     if t5xxl is not None:
         t5xxl.to(t5xxl_dtype)
         t5xxl.requires_grad_(False)
         t5xxl.eval()
 
-    # TextEncoderの出力をキャッシュする
+    # cache text encoder outputs
     if args.cache_text_encoder_outputs:
-        # Text Encodes are eval and no grad
+        # Text Encodes are eval and no grad here
+        clip_l.to(accelerator.device)
+        clip_g.to(accelerator.device)
+        if t5xxl is not None:
+            t5xxl.to(t5xxl_device)
 
-        with torch.no_grad(), accelerator.autocast():
-            train_dataset_group.cache_text_encoder_outputs_sd3(
-                sd3_tokenizer,
-                (clip_l, clip_g, t5xxl),
-                (accelerator.device, accelerator.device, t5xxl_device),
-                None,
-                (None, None, None),
-                args.cache_text_encoder_outputs_to_disk,
-                accelerator.is_main_process,
-                args.text_encoder_batch_size,
-            )
+        text_encoder_caching_strategy = strategy_sd3.Sd3TextEncoderOutputsCachingStrategy(
+            args.cache_text_encoder_outputs_to_disk,
+            args.text_encoder_batch_size,
+            False,
+            train_clip_g or train_clip_l or args.use_t5xxl_cache_only,
+        )
+        strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 
-        # TODO we can delete text encoders after caching
+        clip_l.to(accelerator.device, dtype=weight_dtype)
+        clip_g.to(accelerator.device, dtype=weight_dtype)
+        if t5xxl is not None:
+            t5xxl.to(t5xxl_device, dtype=t5xxl_dtype)
+
+        with accelerator.autocast():
+            train_dataset_group.new_cache_text_encoder_outputs([clip_l, clip_g, t5xxl], accelerator.is_main_process)
         accelerator.wait_for_everyone()
 
     # load MMDIT
@@ -332,11 +353,11 @@ def train(args):
     #     params_to_optimize.extend(get_block_params_to_optimize(mmdit, block_lrs))
 
     # if train_clip_l:
-    #     training_models.append(text_encoder1)
-    #     params_to_optimize.append({"params": list(text_encoder1.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
+    #     training_models.append(clip_l)
+    #     params_to_optimize.append({"params": list(clip_l.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
     # if train_clip_g:
-    #     training_models.append(text_encoder2)
-    #     params_to_optimize.append({"params": list(text_encoder2.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
+    #     training_models.append(clip_g)
+    #     params_to_optimize.append({"params": list(clip_g.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
 
     # calculate number of trainable parameters
     n_params = 0
@@ -344,7 +365,7 @@ def train(args):
         for p in group["params"]:
             n_params += p.numel()
 
-    accelerator.print(f"train mmdit: {train_mmdit}")  # , text_encoder1: {train_clip_l}, text_encoder2: {train_clip_g}")
+    accelerator.print(f"train mmdit: {train_mmdit}")  # , clip_l: {train_clip_l}, clip_g: {train_clip_g}")
     accelerator.print(f"number of models: {len(training_models)}")
     accelerator.print(f"number of trainable parameters: {n_params}")
 
@@ -398,7 +419,11 @@ def train(args):
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
 
-    # dataloaderを準備する
+    # prepare dataloader
+    # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
+    # some strategies can be None
+    train_dataset_group.set_current_strategies()
+
     # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
     n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
     train_dataloader = torch.utils.data.DataLoader(
@@ -455,8 +480,8 @@ def train(args):
     # TODO check if this is necessary. SD3 uses pool for clip_l and clip_g
     # # freeze last layer and final_layer_norm in te1 since we use the output of the penultimate layer
     # if train_clip_l:
-    #     text_encoder1.text_model.encoder.layers[-1].requires_grad_(False)
-    #     text_encoder1.text_model.final_layer_norm.requires_grad_(False)
+    #     clip_l.text_model.encoder.layers[-1].requires_grad_(False)
+    #     clip_l.text_model.final_layer_norm.requires_grad_(False)
 
     # TextEncoderの出力をキャッシュするときには、すでに出力を取得済みなのでCPUへ移動する
     if args.cache_text_encoder_outputs:
@@ -484,9 +509,8 @@ def train(args):
         ds_model = deepspeed_utils.prepare_deepspeed_model(
             args,
             mmdit=mmdit,
-            # mmdie=mmdit if train_mmdit else None,
-            # text_encoder1=text_encoder1 if train_clip_l else None,
-            # text_encoder2=text_encoder2 if train_clip_g else None,
+            clip_l=clip_l if train_clip_l else None,
+            clip_g=clip_g if train_clip_g else None,
         )
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -498,10 +522,10 @@ def train(args):
         # acceleratorがなんかよろしくやってくれるらしい
         if train_mmdit:
             mmdit = accelerator.prepare(mmdit)
-        # if train_clip_l:
-        #     text_encoder1 = accelerator.prepare(text_encoder1)
-        # if train_clip_g:
-        #     text_encoder2 = accelerator.prepare(text_encoder2)
+        if train_clip_l:
+            clip_l = accelerator.prepare(clip_l)
+        if train_clip_g:
+            clip_g = accelerator.prepare(clip_g)
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -613,7 +637,7 @@ def train(args):
 
     # # For --sample_at_first
     # sd3_train_utils.sample_images(
-    #     accelerator, args, 0, global_step, accelerator.device, vae, [tokenizer1, tokenizer2], [text_encoder1, text_encoder2], mmdit
+    #     accelerator, args, 0, global_step, accelerator.device, vae, [tokenizer1, tokenizer2], [clip_l, clip_g], mmdit
     # )
 
     # following function will be moved to sd3_train_utils
@@ -666,6 +690,7 @@ def train(args):
         return weighting
 
     loss_recorder = train_util.LossRecorder()
+    epoch = 0  # avoid error when max_train_steps is 0
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1
@@ -687,37 +712,45 @@ def train(args):
                         # encode images to latents. images are [-1, 1]
                         latents = vae.encode(batch["images"].to(vae_dtype)).to(weight_dtype)
 
-                        # NaNが含まれていれば警告を表示し0に置き換える
-                        if torch.any(torch.isnan(latents)):
-                            accelerator.print("NaN found in latents, replacing with zeros")
-                            latents = torch.nan_to_num(latents, 0, out=latents)
+                    # NaNが含まれていれば警告を表示し0に置き換える
+                    if torch.any(torch.isnan(latents)):
+                        accelerator.print("NaN found in latents, replacing with zeros")
+                        latents = torch.nan_to_num(latents, 0, out=latents)
+
                 # latents = latents * sdxl_model_util.VAE_SCALE_FACTOR
                 latents = sd3_models.SDVAE.process_in(latents)
 
-                if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
-                    # not cached, get text encoder outputs
-                    # XXX This does not work yet
-                    input_ids_clip_l, input_ids_clip_g, input_ids_t5xxl = batch["input_ids"]
+                text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
+                if text_encoder_outputs_list is not None:
+                    lg_out, t5_out, lg_pooled = text_encoder_outputs_list
+                    if args.use_t5xxl_cache_only:
+                        lg_out = None
+                        lg_pooled = None
+                else:
+                    lg_out = None
+                    t5_out = None
+                    lg_pooled = None
+
+                if lg_out is None or (train_clip_l or train_clip_g):
+                    # not cached or training, so get from text encoders
+                    input_ids_clip_l, input_ids_clip_g, _ = batch["input_ids_list"]
                     with torch.set_grad_enabled(args.train_text_encoder):
                         # TODO support weighted captions
-                        # TODO support length > 75
                         input_ids_clip_l = input_ids_clip_l.to(accelerator.device)
                         input_ids_clip_g = input_ids_clip_g.to(accelerator.device)
-                        input_ids_t5xxl = input_ids_t5xxl.to(accelerator.device)
-
-                        # get text encoder outputs: outputs are concatenated
-                        context, pool = sd3_utils.get_cond_from_tokens(
-                            input_ids_clip_l, input_ids_clip_g, input_ids_t5xxl, clip_l, clip_g, t5xxl
+                        lg_out, _, lg_pooled = text_encoding_strategy.encode_tokens(
+                            sd3_tokenize_strategy, [clip_l, clip_g, None], [input_ids_clip_l, input_ids_clip_g, None]
                         )
-                else:
-                    # encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
-                    # encoder_hidden_states2 = batch["text_encoder_outputs2_list"].to(accelerator.device).to(weight_dtype)
-                    # pool2 = batch["text_encoder_pool2_list"].to(accelerator.device).to(weight_dtype)
-                    # TODO this reuses SDXL keys, it should be fixed
-                    lg_out = batch["text_encoder_outputs1_list"]
-                    t5_out = batch["text_encoder_outputs2_list"]
-                    pool = batch["text_encoder_pool2_list"]
-                    context = torch.cat([lg_out, t5_out], dim=-2)
+
+                if t5_out is None:
+                    _, _, input_ids_t5xxl = batch["input_ids_list"]
+                    with torch.no_grad():
+                        input_ids_t5xxl = input_ids_t5xxl.to(accelerator.device) if t5_out is None else None
+                        _, t5_out, _ = text_encoding_strategy.encode_tokens(
+                            sd3_tokenize_strategy, [None, None, t5xxl], [None, None, input_ids_t5xxl]
+                        )
+
+                context, lg_pooled = text_encoding_strategy.concat_encodings(lg_out, t5_out, lg_pooled)
 
                 # TODO support some features for noise implemented in get_noise_noisy_latents_and_timesteps
 
@@ -748,13 +781,13 @@ def train(args):
                 if torch.any(torch.isnan(context)):
                     accelerator.print("NaN found in context, replacing with zeros")
                     context = torch.nan_to_num(context, 0, out=context)
-                if torch.any(torch.isnan(pool)):
+                if torch.any(torch.isnan(lg_pooled)):
                     accelerator.print("NaN found in pool, replacing with zeros")
-                    pool = torch.nan_to_num(pool, 0, out=pool)
+                    lg_pooled = torch.nan_to_num(lg_pooled, 0, out=lg_pooled)
 
                 # call model
                 with accelerator.autocast():
-                    model_pred = mmdit(noisy_model_input, timesteps, context=context, y=pool)
+                    model_pred = mmdit(noisy_model_input, timesteps, context=context, y=lg_pooled)
 
                 # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
                 # Preconditioning of the model outputs.
@@ -806,7 +839,7 @@ def train(args):
                 #     accelerator.device,
                 #     vae,
                 #     [tokenizer1, tokenizer2],
-                #     [text_encoder1, text_encoder2],
+                #     [clip_l, clip_g],
                 #     mmdit,
                 # )
 
@@ -875,7 +908,7 @@ def train(args):
         #     accelerator.device,
         #     vae,
         #     [tokenizer1, tokenizer2],
-        #     [text_encoder1, text_encoder2],
+        #     [clip_l, clip_g],
         #     mmdit,
         # )
 
@@ -924,7 +957,19 @@ def setup_parser() -> argparse.ArgumentParser:
     custom_train_functions.add_custom_train_arguments(parser)
     sd3_train_utils.add_sd3_training_arguments(parser)
 
-    # parser.add_argument("--train_text_encoder", action="store_true", help="train text encoder / text encoderも学習する")
+    parser.add_argument(
+        "--train_text_encoder", action="store_true", help="train text encoder (CLIP-L and G) / text encoderも学習する"
+    )
+    # parser.add_argument("--train_t5xxl", action="store_true", help="train T5-XXL / T5-XXLも学習する")
+    parser.add_argument(
+        "--use_t5xxl_cache_only", action="store_true", help="cache T5-XXL outputs only / T5-XXLの出力のみキャッシュする"
+    )
+    parser.add_argument(
+        "--t5xxl_max_token_length",
+        type=int,
+        default=None,
+        help="maximum token length for T5-XXL. 256 if omitted / T5-XXLの最大トークン数。省略時は256",
+    )
 
     # TE training is disabled temporarily
     # parser.add_argument(
@@ -962,7 +1007,6 @@ def setup_parser() -> argparse.ArgumentParser:
         help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
     )
 
-    parser.add_argument("--new_caching", action="store_true", help="use new caching method / 新しいキャッシング方法を使う")
     parser.add_argument(
         "--skip_latents_validity_check",
         action="store_true",
