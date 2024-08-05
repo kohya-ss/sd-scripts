@@ -1,14 +1,18 @@
 import argparse
-import glob
 import math
 import os
-from typing import List, Optional, Tuple, Union
+import toml
+import json
+import time
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from safetensors.torch import save_file
-from accelerate import Accelerator
+from accelerate import Accelerator, PartialState
+from tqdm import tqdm
+from PIL import Image
 
-from library import sd3_models, sd3_utils, train_util
+from library import sd3_models, sd3_utils, strategy_base, train_util
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -276,114 +280,341 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
             )
 
 
-def sample_images(*args, **kwargs):
-    return train_util.sample_images_common(SdxlStableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
+# temporary copied from sd3_minimal_inferece.py
 
 
-class Sd3LatentsCachingStrategy(train_util.LatentsCachingStrategy):
-    SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
+def get_sigmas(sampling: sd3_utils.ModelSamplingDiscreteFlow, steps):
+    start = sampling.timestep(sampling.sigma_max)
+    end = sampling.timestep(sampling.sigma_min)
+    timesteps = torch.linspace(start, end, steps)
+    sigs = []
+    for x in range(len(timesteps)):
+        ts = timesteps[x]
+        sigs.append(sampling.sigma(ts))
+    sigs += [0.0]
+    return torch.FloatTensor(sigs)
 
-    def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
-        self.vae = None
 
-    def set_vae(self, vae: sd3_models.SDVAE):
-        self.vae = vae
+def max_denoise(model_sampling, sigmas):
+    max_sigma = float(model_sampling.sigma_max)
+    sigma = float(sigmas[0])
+    return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
 
-    def get_image_size_from_image_absolute_path(self, absolute_path: str) -> Tuple[Optional[int], Optional[int]]:
-        npz_file = glob.glob(os.path.splitext(absolute_path)[0] + "_*" + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX)
-        if len(npz_file) == 0:
-            return None, None
-        w, h = os.path.splitext(npz_file[0])[0].split("_")[-2].split("x")
-        return int(w), int(h)
 
-    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return (
-            os.path.splitext(absolute_path)[0]
-            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
-        )
+def do_sample(
+    height: int,
+    width: int,
+    seed: int,
+    cond: Tuple[torch.Tensor, torch.Tensor],
+    neg_cond: Tuple[torch.Tensor, torch.Tensor],
+    mmdit: sd3_models.MMDiT,
+    steps: int,
+    guidance_scale: float,
+    dtype: torch.dtype,
+    device: str,
+):
+    latent = torch.zeros(1, 16, height // 8, width // 8, device=device)
+    latent = latent.to(dtype).to(device)
 
-    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        if not self.cache_to_disk:
-            return False
-        if not os.path.exists(npz_path):
-            return False
-        if self.skip_disk_cache_validity_check:
-            return True
+    # noise = get_noise(seed, latent).to(device)
+    if seed is not None:
+        generator = torch.manual_seed(seed)
+    noise = (
+        torch.randn(latent.size(), dtype=torch.float32, layout=latent.layout, generator=generator, device="cpu")
+        .to(latent.dtype)
+        .to(device)
+    )
 
-        expected_latents_size = (bucket_reso[1] // 8, bucket_reso[0] // 8)  # bucket_reso is (W, H)
+    model_sampling = sd3_utils.ModelSamplingDiscreteFlow(shift=3.0)  # 3.0 is for SD3
 
-        try:
-            npz = np.load(npz_path)
-            if npz["latents"].shape[1:3] != expected_latents_size:
-                return False
+    sigmas = get_sigmas(model_sampling, steps).to(device)
 
-            if flip_aug:
-                if "latents_flipped" not in npz:
-                    return False
-                if npz["latents_flipped"].shape[1:3] != expected_latents_size:
-                    return False
+    noise_scaled = model_sampling.noise_scaling(sigmas[0], noise, latent, max_denoise(model_sampling, sigmas))
 
-            if alpha_mask:
-                if "alpha_mask" not in npz:
-                    return False
-                if npz["alpha_mask"].shape[0:2] != (bucket_reso[1], bucket_reso[0]):
-                    return False
-            else:
-                if "alpha_mask" in npz:
-                    return False
-        except Exception as e:
-            logger.error(f"Error loading file: {npz_path}")
-            raise e
+    c_crossattn = torch.cat([cond[0], neg_cond[0]]).to(device).to(dtype)
+    y = torch.cat([cond[1], neg_cond[1]]).to(device).to(dtype)
 
-        return True
+    x = noise_scaled.to(device).to(dtype)
+    # print(x.shape)
 
-    def cache_batch_latents(self, image_infos: List[train_util.ImageInfo], flip_aug: bool, alpha_mask: bool, random_crop: bool):
-        img_tensor, alpha_masks, original_sizes, crop_ltrbs = train_util.load_images_and_masks_for_caching(
-            image_infos, alpha_mask, random_crop
-        )
-        img_tensor = img_tensor.to(device=self.vae.device, dtype=self.vae.dtype)
+    with torch.no_grad():
+        for i in tqdm(range(len(sigmas) - 1)):
+            sigma_hat = sigmas[i]
+
+            timestep = model_sampling.timestep(sigma_hat).float()
+            timestep = torch.FloatTensor([timestep, timestep]).to(device)
+
+            x_c_nc = torch.cat([x, x], dim=0)
+            # print(x_c_nc.shape, timestep.shape, c_crossattn.shape, y.shape)
+
+            model_output = mmdit(x_c_nc, timestep, context=c_crossattn, y=y)
+            model_output = model_output.float()
+            batched = model_sampling.calculate_denoised(sigma_hat, model_output, x)
+
+            pos_out, neg_out = batched.chunk(2)
+            denoised = neg_out + (pos_out - neg_out) * guidance_scale
+            # print(denoised.shape)
+
+            # d = to_d(x, sigma_hat, denoised)
+            dims_to_append = x.ndim - sigma_hat.ndim
+            sigma_hat_dims = sigma_hat[(...,) + (None,) * dims_to_append]
+            # print(dims_to_append, x.shape, sigma_hat.shape, denoised.shape, sigma_hat_dims.shape)
+            """Converts a denoiser output to a Karras ODE derivative."""
+            d = (x - denoised) / sigma_hat_dims
+
+            dt = sigmas[i + 1] - sigma_hat
+
+            # Euler method
+            x = x + d * dt
+            x = x.to(dtype)
+
+    return x
+
+
+def load_prompts(prompt_file: str) -> List[Dict]:
+    # read prompts
+    if prompt_file.endswith(".txt"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+    elif prompt_file.endswith(".toml"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            data = toml.load(f)
+        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
+    elif prompt_file.endswith(".json"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            prompts = json.load(f)
+
+    # preprocess prompts
+    for i in range(len(prompts)):
+        prompt_dict = prompts[i]
+        if isinstance(prompt_dict, str):
+            from library.train_util import line_to_prompt_dict
+
+            prompt_dict = line_to_prompt_dict(prompt_dict)
+            prompts[i] = prompt_dict
+        assert isinstance(prompt_dict, dict)
+
+        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
+        prompt_dict["enum"] = i
+        prompt_dict.pop("subset", None)
+
+    return prompts
+
+
+def sample_images(
+    accelerator: Accelerator,
+    args: argparse.Namespace,
+    epoch,
+    steps,
+    mmdit,
+    vae,
+    text_encoders,
+    sample_prompts_te_outputs,
+    prompt_replacement=None,
+):
+    if steps == 0:
+        if not args.sample_at_first:
+            return
+    else:
+        if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
+            return
+        if args.sample_every_n_epochs is not None:
+            # sample_every_n_steps は無視する
+            if epoch is None or epoch % args.sample_every_n_epochs != 0:
+                return
+        else:
+            if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
+                return
+
+    logger.info("")
+    logger.info(f"generating sample images at step / サンプル画像生成 ステップ: {steps}")
+    if not os.path.isfile(args.sample_prompts):
+        logger.error(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
+        return
+
+    distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
+
+    # unwrap unet and text_encoder(s)
+    mmdit = accelerator.unwrap_model(mmdit)
+    text_encoders = [accelerator.unwrap_model(te) for te in text_encoders]
+    # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
+
+    prompts = load_prompts(args.sample_prompts)
+
+    save_dir = args.output_dir + "/sample"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # save random state to restore later
+    rng_state = torch.get_rng_state()
+    cuda_rng_state = None
+    try:
+        cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    except Exception:
+        pass
+
+    org_vae_device = vae.device  # will be on cpu
+    vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
+
+    if distributed_state.num_processes <= 1:
+        # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
+        with torch.no_grad():
+            for prompt_dict in prompts:
+                sample_image_inference(
+                    accelerator,
+                    args,
+                    mmdit,
+                    text_encoders,
+                    vae,
+                    save_dir,
+                    prompt_dict,
+                    epoch,
+                    steps,
+                    sample_prompts_te_outputs,
+                    prompt_replacement,
+                )
+    else:
+        # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
+        # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
+        per_process_prompts = []  # list of lists
+        for i in range(distributed_state.num_processes):
+            per_process_prompts.append(prompts[i :: distributed_state.num_processes])
 
         with torch.no_grad():
-            latents_tensors = self.vae.encode(img_tensor).to("cpu")
-        if flip_aug:
-            img_tensor = torch.flip(img_tensor, dims=[3])
-            with torch.no_grad():
-                flipped_latents = self.vae.encode(img_tensor).to("cpu")
-        else:
-            flipped_latents = [None] * len(latents_tensors)
+            with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
+                for prompt_dict in prompt_dict_lists[0]:
+                    sample_image_inference(
+                        accelerator,
+                        args,
+                        mmdit,
+                        text_encoders,
+                        vae,
+                        save_dir,
+                        prompt_dict,
+                        epoch,
+                        steps,
+                        sample_prompts_te_outputs,
+                        prompt_replacement,
+                    )
 
-        # for info, latents, flipped_latent, alpha_mask in zip(image_infos, latents_tensors, flipped_latents, alpha_masks):
-        for i in range(len(image_infos)):
-            info = image_infos[i]
-            latents = latents_tensors[i]
-            flipped_latent = flipped_latents[i]
-            alpha_mask = alpha_masks[i]
-            original_size = original_sizes[i]
-            crop_ltrb = crop_ltrbs[i]
+    torch.set_rng_state(rng_state)
+    if cuda_rng_state is not None:
+        torch.cuda.set_rng_state(cuda_rng_state)
 
-            if self.cache_to_disk:
-                kwargs = {}
-                if flipped_latent is not None:
-                    kwargs["latents_flipped"] = flipped_latent.float().cpu().numpy()
-                if alpha_mask is not None:
-                    kwargs["alpha_mask"] = alpha_mask.float().cpu().numpy()
-                np.savez(
-                    info.latents_npz,
-                    latents=latents.float().cpu().numpy(),
-                    original_size=np.array(original_size),
-                    crop_ltrb=np.array(crop_ltrb),
-                    **kwargs,
-                )
-            else:
-                info.latents = latents
-                if flip_aug:
-                    info.latents_flipped = flipped_latent
-                info.alpha_mask = alpha_mask
+    vae.to(org_vae_device)
 
-        if not train_util.HIGH_VRAM:
-            clean_memory_on_device(self.vae.device)
+    clean_memory_on_device(accelerator.device)
+
+
+def sample_image_inference(
+    accelerator: Accelerator,
+    args: argparse.Namespace,
+    mmdit: sd3_models.MMDiT,
+    text_encoders: List[Union[sd3_models.SDClipModel, sd3_models.SDXLClipG, sd3_models.T5XXLModel]],
+    vae: sd3_models.SDVAE,
+    save_dir,
+    prompt_dict,
+    epoch,
+    steps,
+    sample_prompts_te_outputs,
+    prompt_replacement,
+):
+    assert isinstance(prompt_dict, dict)
+    negative_prompt = prompt_dict.get("negative_prompt")
+    sample_steps = prompt_dict.get("sample_steps", 30)
+    width = prompt_dict.get("width", 512)
+    height = prompt_dict.get("height", 512)
+    scale = prompt_dict.get("scale", 7.5)
+    seed = prompt_dict.get("seed")
+    # controlnet_image = prompt_dict.get("controlnet_image")
+    prompt: str = prompt_dict.get("prompt", "")
+    # sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+
+    if prompt_replacement is not None:
+        prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
+        if negative_prompt is not None:
+            negative_prompt = negative_prompt.replace(prompt_replacement[0], prompt_replacement[1])
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+    else:
+        # True random sample image generation
+        torch.seed()
+        torch.cuda.seed()
+
+    if negative_prompt is None:
+        negative_prompt = ""
+
+    height = max(64, height - height % 8)  # round to divisible by 8
+    width = max(64, width - width % 8)  # round to divisible by 8
+    logger.info(f"prompt: {prompt}")
+    logger.info(f"negative_prompt: {negative_prompt}")
+    logger.info(f"height: {height}")
+    logger.info(f"width: {width}")
+    logger.info(f"sample_steps: {sample_steps}")
+    logger.info(f"scale: {scale}")
+    # logger.info(f"sample_sampler: {sampler_name}")
+    if seed is not None:
+        logger.info(f"seed: {seed}")
+
+    # encode prompts
+    tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
+    encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
+
+    if sample_prompts_te_outputs and prompt in sample_prompts_te_outputs:
+        te_outputs = sample_prompts_te_outputs[prompt]
+    else:
+        l_tokens, g_tokens, t5_tokens = tokenize_strategy.tokenize(prompt)
+        te_outputs = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, [l_tokens, g_tokens, t5_tokens])
+
+    lg_out, t5_out, pooled = te_outputs
+    cond = encoding_strategy.concat_encodings(lg_out, t5_out, pooled)
+
+    # encode negative prompts
+    if sample_prompts_te_outputs and negative_prompt in sample_prompts_te_outputs:
+        neg_te_outputs = sample_prompts_te_outputs[negative_prompt]
+    else:
+        l_tokens, g_tokens, t5_tokens = tokenize_strategy.tokenize(negative_prompt)
+        neg_te_outputs = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, [l_tokens, g_tokens, t5_tokens])
+
+    lg_out, t5_out, pooled = neg_te_outputs
+    neg_cond = encoding_strategy.concat_encodings(lg_out, t5_out, pooled)
+
+    # sample image
+    latents = do_sample(height, width, seed, cond, neg_cond, mmdit, sample_steps, scale, mmdit.dtype, accelerator.device)
+    latents = vae.process_out(latents.to(vae.device, dtype=vae.dtype))
+
+    # latent to image
+    with torch.no_grad():
+        image = vae.decode(latents)
+    image = image.float()
+    image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)[0]
+    decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
+    decoded_np = decoded_np.astype(np.uint8)
+
+    image = Image.fromarray(decoded_np)
+    # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
+    # but adding 'enum' to the filename should be enough
+
+    ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
+    num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
+    seed_suffix = "" if seed is None else f"_{seed}"
+    i: int = prompt_dict["enum"]
+    img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
+    image.save(os.path.join(save_dir, img_filename))
+
+    # wandb有効時のみログを送信
+    try:
+        wandb_tracker = accelerator.get_tracker("wandb")
+        try:
+            import wandb
+        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
+            raise ImportError("No wandb / wandb がインストールされていないようです")
+
+        wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
+    except:  # wandb 無効時
+        pass
 
 
 # region Diffusers

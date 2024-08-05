@@ -24,7 +24,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import sd3_models, sd3_utils
+from library import sd3_models, sd3_utils, strategy_sd3
 
 
 def get_noise(seed, latent):
@@ -64,7 +64,7 @@ def do_sample(
     device: str,
 ):
     if initial_latent is None:
-        # latent = torch.ones(1, 16, height // 8, width // 8, device=device) * 0.0609
+        # latent = torch.ones(1, 16, height // 8, width // 8, device=device) * 0.0609 # this seems to be a bug in the original code. thanks to furusu for pointing it out
         latent = torch.zeros(1, 16, height // 8, width // 8, device=device)
     else:
         latent = initial_latent
@@ -73,7 +73,7 @@ def do_sample(
 
     noise = get_noise(seed, latent).to(device)
 
-    model_sampling = sd3_utils.ModelSamplingDiscreteFlow()
+    model_sampling = sd3_utils.ModelSamplingDiscreteFlow(shift=3.0)  # 3.0 is for SD3
 
     sigmas = get_sigmas(model_sampling, steps).to(device)
     # sigmas = sigmas[int(steps * (1 - denoise)) :] # do not support i2i
@@ -145,6 +145,9 @@ if __name__ == "__main__":
     parser.add_argument("--clip_g", type=str, required=False)
     parser.add_argument("--clip_l", type=str, required=False)
     parser.add_argument("--t5xxl", type=str, required=False)
+    parser.add_argument("--t5xxl_token_length", type=int, default=77, help="t5xxl token length, default: 77")
+    parser.add_argument("--apply_lg_attn_mask", action="store_true")
+    parser.add_argument("--apply_t5_attn_mask", action="store_true")
     parser.add_argument("--prompt", type=str, default="A photo of a cat")
     # parser.add_argument("--prompt2", type=str, default=None)  # do not support different prompts for text encoders
     parser.add_argument("--negative_prompt", type=str, default="")
@@ -247,7 +250,7 @@ if __name__ == "__main__":
 
     # load tokenizers
     logger.info("Loading tokenizers...")
-    tokenizer = sd3_models.SD3Tokenizer(use_t5xxl)  # combined tokenizer
+    tokenize_strategy = strategy_sd3.Sd3TokenizeStrategy(args.t5xxl_token_length)
 
     # load models
     # logger.info("Create MMDiT from SD3 checkpoint...")
@@ -320,12 +323,19 @@ if __name__ == "__main__":
 
     # prepare embeddings
     logger.info("Encoding prompts...")
-    # embeds, pooled_embed
-    lg_out, t5_out, pooled = sd3_utils.get_cond(args.prompt, tokenizer, clip_l, clip_g, t5xxl)
-    cond = torch.cat([lg_out, t5_out], dim=-2), pooled
+    encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy()
 
-    lg_out, t5_out, pooled = sd3_utils.get_cond(args.negative_prompt, tokenizer, clip_l, clip_g, t5xxl)
-    neg_cond = torch.cat([lg_out, t5_out], dim=-2), pooled
+    tokens_and_masks = tokenize_strategy.tokenize(args.prompt)
+    lg_out, t5_out, pooled = encoding_strategy.encode_tokens(
+        tokenize_strategy, [clip_l, clip_g, t5xxl], tokens_and_masks, args.apply_lg_attn_mask, args.apply_t5_attn_mask
+    )
+    cond = encoding_strategy.concat_encodings(lg_out, t5_out, pooled)
+
+    tokens_and_masks = tokenize_strategy.tokenize(args.negative_prompt)
+    lg_out, t5_out, pooled = encoding_strategy.encode_tokens(
+        tokenize_strategy, [clip_l, clip_g, t5xxl], tokens_and_masks, args.apply_lg_attn_mask, args.apply_t5_attn_mask
+    )
+    neg_cond = encoding_strategy.concat_encodings(lg_out, t5_out, pooled)
 
     # generate image
     logger.info("Generating image...")
