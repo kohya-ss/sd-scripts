@@ -250,7 +250,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # )
 
         with accelerator.autocast():
-            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
+            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
             model_pred = unet(
                 img=packed_noisy_model_input,
                 img_ids=img_ids,

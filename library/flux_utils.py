@@ -20,7 +20,7 @@ MODEL_VERSION_FLUX_V1 = "flux1"
 
 
 def load_flow_model(name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device]) -> flux_models.Flux:
-    logger.info(f"Bulding Flux model {name}")
+    logger.info(f"Building Flux model {name}")
     with torch.device("meta"):
         model = flux_models.Flux(flux_models.configs[name].params).to(dtype)
 
