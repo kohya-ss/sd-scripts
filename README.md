@@ -1,5 +1,25 @@
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
+## FLUX.1 LoRA training (WIP)
+
+__Aug 9, 2024__:
+
+Please update PyTorch to 2.4.0. We have tested with PyTorch 2.4.0 with CUDA 12.4. We also updated `accelerate` to 0.33.0 just to be safe. 
+
+We have added a new training script for LoRA training. The script is `flux_train_network.py`. See `--help` for options. 
+
+```
+accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train_network.py --pretrained_model_name_or_path flux1-dev.sft --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors --ae ae.sft --cache_latents_to_disk --save_model_as safetensors --sdpa --persistent_data_loader_workers --max_data_loader_n_workers 2 --seed 42 --gradient_checkpointing --mixed_precision bf16 --save_precision bf16 --network_module networks.lora_flux --network_dim 4 --optimizer_type adamw8bit --learning_rate 1e-4 --network_train_unet_only --cache_text_encoder_outputs --cache_text_encoder_outputs_to_disk --fp8_base --highvram --max_train_epochs 4 --save_every_n_epochs 1 --dataset_config dataset_1024_bs2.toml --output_dir path/to/output/dir --output_name flux-lora-name
+```
+
+The inference script is also available. The script is `flux_minimal_inference.py`. See `--help` for options. 
+
+```
+python flux_minimal_inference.py --ckpt flux1-dev.sft --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors --ae ae.sft --dtype bf16 --prompt "a cat holding a sign that says hello world" --out path/to/output/dir --seed 1 --flux_dtype fp8 --offload --lora lora-flux-name.safetensors
+```
+
+Unfortnately the training result is not good. Please let us know if you have any idea to improve the training.
+
 ## SD3 training
 
 SD3 training is done with `sd3_train.py`. 
