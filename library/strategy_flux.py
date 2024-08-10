@@ -63,11 +63,11 @@ class FluxTextEncodingStrategy(TextEncodingStrategy):
             l_pooled = None
 
         if t5xxl is not None and t5_tokens is not None:
-            # t5_out is [1, max length, 4096]
+            # t5_out is [b, max length, 4096]
             t5_out, _ = t5xxl(t5_tokens.to(t5xxl.device), return_dict=False, output_hidden_states=True)
             if apply_t5_attn_mask:
                 t5_out = t5_out * t5_attn_mask.to(t5_out.device).unsqueeze(-1)
-            txt_ids = torch.zeros(1, t5_out.shape[1], 3, device=t5_out.device)
+            txt_ids = torch.zeros(t5_out.shape[0], t5_out.shape[1], 3, device=t5_out.device)
         else:
             t5_out = None
             txt_ids = None

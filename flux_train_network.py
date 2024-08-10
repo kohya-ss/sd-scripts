@@ -135,7 +135,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         pass
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
-        noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
+        noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
@@ -211,21 +211,32 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
 
-        # Sample a random timestep for each image
-        # for weighting schemes where we sample timesteps non-uniformly
-        u = compute_density_for_timestep_sampling(
-            weighting_scheme=args.weighting_scheme,
-            batch_size=bsz,
-            logit_mean=args.logit_mean,
-            logit_std=args.logit_std,
-            mode_scale=args.mode_scale,
-        )
-        indices = (u * self.noise_scheduler_copy.config.num_train_timesteps).long()
-        timesteps = self.noise_scheduler_copy.timesteps[indices].to(device=accelerator.device)
+        if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
+            # Simple random t-based noise sampling
+            if args.timestep_sampling == "sigmoid":
+                # https://github.com/XLabs-AI/x-flux/tree/main
+                t = torch.sigmoid(args.sigmoid_scale * torch.randn((bsz,), device=accelerator.device))
+            else:
+                t = torch.rand((bsz,), device=accelerator.device)
+            timesteps = t * 1000.0
+            t = t.view(-1, 1, 1, 1)
+            noisy_model_input = (1 - t) * latents + t * noise
+        else:
+            # Sample a random timestep for each image
+            # for weighting schemes where we sample timesteps non-uniformly
+            u = compute_density_for_timestep_sampling(
+                weighting_scheme=args.weighting_scheme,
+                batch_size=bsz,
+                logit_mean=args.logit_mean,
+                logit_std=args.logit_std,
+                mode_scale=args.mode_scale,
+            )
+            indices = (u * self.noise_scheduler_copy.config.num_train_timesteps).long()
+            timesteps = self.noise_scheduler_copy.timesteps[indices].to(device=accelerator.device)
 
-        # Add noise according to flow matching.
-        sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=weight_dtype)
-        noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
+            # Add noise according to flow matching.
+            sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=weight_dtype)
+            noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
 
         # pack latents and get img_ids
         packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
@@ -264,11 +275,20 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # unpack latents
         model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
 
-        model_pred = model_pred * (-sigmas) + noisy_model_input
+        if args.model_prediction_type == "raw":
+            # use model_pred as is
+            weighting = None
+        elif args.model_prediction_type == "additive":
+            # add the model_pred to the noisy_model_input
+            model_pred = model_pred + noisy_model_input
+            weighting = None
+        elif args.model_prediction_type == "sigma_scaled":
+            # apply sigma scaling
+            model_pred = model_pred * (-sigmas) + noisy_model_input
 
-        # these weighting schemes use a uniform timestep sampling
-        # and instead post-weight the loss
-        weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
+            # these weighting schemes use a uniform timestep sampling
+            # and instead post-weight the loss
+            weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
 
         # flow matching loss: this is different from SD3
         target = noise - latents
@@ -277,6 +297,21 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         return loss
+
+    def get_sai_model_spec(self, args):
+        return train_util.get_sai_model_spec(None, args, False, True, False, flux="dev")
+
+    def update_metadata(self, metadata, args):
+        metadata["ss_apply_t5_attn_mask"] = args.apply_t5_attn_mask
+        metadata["ss_weighting_scheme"] = args.weighting_scheme
+        metadata["ss_logit_mean"] = args.logit_mean
+        metadata["ss_logit_std"] = args.logit_std
+        metadata["ss_mode_scale"] = args.mode_scale
+        metadata["ss_guidance_scale"] = args.guidance_scale
+        metadata["ss_timestep_sampling"] = args.timestep_sampling
+        metadata["ss_sigmoid_scale"] = args.sigmoid_scale
+        metadata["ss_model_prediction_type"] = args.model_prediction_type
+        metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -317,6 +352,34 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.5,
         help="the FLUX.1 dev variant is a guidance distilled model",
+    )
+
+    parser.add_argument(
+        "--timestep_sampling",
+        choices=["sigma", "uniform", "sigmoid"],
+        default="sigma",
+        help="Method to sample timesteps: sigma-based, uniform random, or sigmoid of random normal. / タイムステップをサンプリングする方法：sigma、random uniform、またはrandom normalのsigmoid。",
+    )
+    parser.add_argument(
+        "--sigmoid_scale",
+        type=float,
+        default=1.0,
+        help='Scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). / sigmoidタイムステップサンプリングの倍率（timestep-samplingが"sigmoid"の場合のみ有効）。',
+    )
+    parser.add_argument(
+        "--model_prediction_type",
+        choices=["raw", "additive", "sigma_scaled"],
+        default="sigma_scaled",
+        help="How to interpret and process the model prediction: "
+        "raw (use as is), additive (add to noisy input), sigma_scaled (apply sigma scaling)."
+        " / モデル予測の解釈と処理方法："
+        "raw（そのまま使用）、additive（ノイズ入力に加算）、sigma_scaled（シグマスケーリングを適用）。",
+    )
+    parser.add_argument(
+        "--discrete_flow_shift",
+        type=float,
+        default=3.0,
+        help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
     return parser
 
