@@ -67,14 +67,16 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return latents_caching_strategy
 
     def get_text_encoding_strategy(self, args):
-        return strategy_flux.FluxTextEncodingStrategy()
+        return strategy_flux.FluxTextEncodingStrategy(apply_t5_attn_mask=args.apply_t5_attn_mask)
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         return text_encoders  # + [accelerator.unwrap_model(text_encoders[-1])]
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
-            return strategy_flux.FluxTextEncoderOutputsCachingStrategy(args.cache_text_encoder_outputs_to_disk, None, False)
+            return strategy_flux.FluxTextEncoderOutputsCachingStrategy(
+                args.cache_text_encoder_outputs_to_disk, None, False, apply_t5_attn_mask=args.apply_t5_attn_mask
+            )
         else:
             return None
 

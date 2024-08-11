@@ -4,6 +4,8 @@ This repository contains training, generation and utility scripts for Stable Dif
 
 This feature is experimental. The options and the training script may change in the future. Please let us know if you have any idea to improve the training.
 
+Aug 11, 2024: Fix `--apply_t5_attn_mask` option to work. Please remove and re-generate the latents cache file if you have used the option before.
+
 Aug 10, 2024:  LoRA key prefix is changed to `lora_unet` from `lora_flex` to make it compatible with ComfyUI.
 
 Please update PyTorch to 2.4.0. We have tested with PyTorch 2.4.0 with CUDA 12.4. We also updated `accelerate` to 0.33.0 just to be safe. 
