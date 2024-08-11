@@ -25,7 +25,11 @@ We have added some new options (Aug 10, 2024): `--time_sampling`, `--sigmoid_sca
 
 `--loss_type` may be useful for FLUX.1 training. The default is `l2`.
 
-In our experiments, `--timestep_sampling sigma --model_prediction_type raw --discrete_flow_shift 1.0` with `--loss_type l2` seems to work better than the default (SD3) settings. The multiplier of LoRA should be adjusted. Other settings may work better, so please try different settings.
+In our experiments, `--timestep_sampling sigma --model_prediction_type raw --discrete_flow_shift 1.0` with `--loss_type l2` seems to work better than the default (SD3) settings. The multiplier of LoRA should be adjusted. 
+
+additional note (Aug 11): A quick check shows that the settings in [AI Toolkit by Ostris](https://github.com/ostris/ai-toolkit) seems to be equivalent to `--timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0` (with the default `l2` loss_type).
+
+Other settings may work better, so please try different settings.
 
 We also not sure how many epochs are needed for convergence, and how the learning rate should be adjusted.
 
