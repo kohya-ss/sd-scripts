@@ -39,6 +39,8 @@ The trained LoRA model can be used with ComfyUI.
 
 The inference script is also available. The script is `flux_minimal_inference.py`. See `--help` for options. 
 
+Aug 12: `--interactive` option is now working.
+
 ```
 python flux_minimal_inference.py --ckpt flux1-dev.sft --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors --ae ae.sft --dtype bf16 --prompt "a cat holding a sign that says hello world" --out path/to/output/dir --seed 1 --flux_dtype fp8 --offload --lora lora-flux-name.safetensors;1.0
 ```
