@@ -59,6 +59,8 @@ ARCH_SD_V2_768_V = "stable-diffusion-v2-768-v"
 ARCH_SD_XL_V1_BASE = "stable-diffusion-xl-v1-base"
 ARCH_SD3_M = "stable-diffusion-3-medium"
 ARCH_SD3_UNKNOWN = "stable-diffusion-3"
+ARCH_FLUX_1_DEV = "flux-1-dev"
+ARCH_FLUX_1_UNKNOWN = "flux-1"
 
 ADAPTER_LORA = "lora"
 ADAPTER_TEXTUAL_INVERSION = "textual-inversion"
@@ -66,6 +68,7 @@ ADAPTER_TEXTUAL_INVERSION = "textual-inversion"
 IMPL_STABILITY_AI = "https://github.com/Stability-AI/generative-models"
 IMPL_COMFY_UI = "https://github.com/comfyanonymous/ComfyUI"
 IMPL_DIFFUSERS = "diffusers"
+IMPL_FLUX = "https://github.com/black-forest-labs/flux"
 
 PRED_TYPE_EPSILON = "epsilon"
 PRED_TYPE_V = "v"
@@ -118,10 +121,11 @@ def build_metadata(
     merged_from: Optional[str] = None,
     timesteps: Optional[Tuple[int, int]] = None,
     clip_skip: Optional[int] = None,
-    sd3: str = None,
+    sd3: Optional[str] = None,
+    flux: Optional[str] = None,
 ):
     """
-    sd3: only supports "m"
+    sd3: only supports "m", flux: only supports "dev"
     """
     # if state_dict is None, hash is not calculated
 
@@ -140,6 +144,11 @@ def build_metadata(
             arch = ARCH_SD3_M
         else:
             arch = ARCH_SD3_UNKNOWN
+    elif flux is not None:
+        if flux == "dev":
+            arch = ARCH_FLUX_1_DEV
+        else:
+            arch = ARCH_FLUX_1_UNKNOWN
     elif v2:
         if v_parameterization:
             arch = ARCH_SD_V2_768_V
@@ -158,7 +167,10 @@ def build_metadata(
     if not lora and not textual_inversion and is_stable_diffusion_ckpt is None:
         is_stable_diffusion_ckpt = True  # default is stable diffusion ckpt if not lora and not textual_inversion
 
-    if (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
+    if flux is not None:
+        # Flux
+        impl = IMPL_FLUX
+    elif (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
         # Stable Diffusion ckpt, TI, SDXL LoRA
         impl = IMPL_STABILITY_AI
     else:
@@ -216,7 +228,7 @@ def build_metadata(
             reso = (reso[0], reso[0])
     else:
         # resolution is defined in dataset, so use default
-        if sdxl or sd3 is not None:
+        if sdxl or sd3 is not None or flux is not None:
             reso = 1024
         elif v2 and v_parameterization:
             reso = 768
@@ -227,7 +239,9 @@ def build_metadata(
 
     metadata["modelspec.resolution"] = f"{reso[0]}x{reso[1]}"
 
-    if v_parameterization:
+    if flux is not None:
+        del metadata["modelspec.prediction_type"]
+    elif v_parameterization:
         metadata["modelspec.prediction_type"] = PRED_TYPE_V
     else:
         metadata["modelspec.prediction_type"] = PRED_TYPE_EPSILON
