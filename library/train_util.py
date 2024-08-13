@@ -4266,11 +4266,19 @@ def get_optimizer(args, trainable_params, model=None):
     elif optimizer_type == "AdamMini".lower():
         logger.info(f"use AdamMini optimizer | {optimizer_kwargs}")
         try:
-            import pytorch_optimizer
-            optimizer_class = pytorch_optimizer.AdamMini
+            import adam_mini
+            optimizer_class = adam_mini.Adam_mini
         except ImportError:
             raise ImportError("No adam-mini / adam-mini がインストールされていないようです")
-        optimizer = optimizer_class(model, lr=lr, **optimizer_kwargs)
+        
+        # trainable_params → named_parameters
+        named_params = [(f"{model}.{name}", param) for name, param in model.named_parameters() if param in trainable_params]
+
+        optimizer = optimizer_class(named_params, lr=lr, **optimizer_kwargs)
+        optimizer.embd_names.add("to_out")
+        optimizer.wqk_names.add("to_q")
+        optimizer.wqk_names.add('to_k')
+        optimizer.wqk_names.add('to_v')
 
     if optimizer is None:
         # 任意のoptimizerを使う
