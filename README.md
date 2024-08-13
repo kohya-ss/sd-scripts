@@ -4,11 +4,21 @@ This repository contains training, generation and utility scripts for Stable Dif
 
 This feature is experimental. The options and the training script may change in the future. Please let us know if you have any idea to improve the training.
 
+__Please update PyTorch to 2.4.0. We have tested with PyTorch 2.4.0 with CUDA 12.4. We also updated `accelerate` to 0.33.0 just to be safe. `requirements.txt` is also updated, so please update the requirements.__
+
+Aug 13, 2024:  
+
+__Experimental__  A network argument `train_blocks` is added to `lora_flux`. This is to select the target blocks of LoRA from FLUX double blocks and single blocks. Specify like `--network_args "train_blocks=single"`. `all` trains both double blocks and single blocks, `double` trains only double blocks, and `single` trains only single blocks. The default (omission) is `all`.
+
+This argument is available even if `--split_mode` is not specified.
+
+__Experimental__  `--split_mode` option is added to `flux_train_network.py`. This splits FLUX into double blocks and single blocks for training. By enabling gradients only for the single blocks part, memory usage is reduced. When this option is specified, you need to specify `"train_blocks=single"` in the network arguments.
+
+This option enables training with 12GB VRAM GPUs, but the training speed is 2-3 times slower than the default. 
+
 Aug 11, 2024: Fix `--apply_t5_attn_mask` option to work. Please remove and re-generate the latents cache file if you have used the option before.
 
 Aug 10, 2024:  LoRA key prefix is changed to `lora_unet` from `lora_flex` to make it compatible with ComfyUI.
-
-__Please update PyTorch to 2.4.0. We have tested with PyTorch 2.4.0 with CUDA 12.4. We also updated `accelerate` to 0.33.0 just to be safe. `requirements.txt` is also updated, so please update the requirements.__
 
 We have added a new training script for LoRA training. The script is `flux_train_network.py`. See `--help` for options. Sample command is below, settings are based on [AI Toolkit by Ostris](https://github.com/ostris/ai-toolkit). It will work with 24GB VRAM GPUs.
 
@@ -19,7 +29,13 @@ accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_t
 The training can be done with 16GB VRAM GPUs with Adafactor optimizer. Please use settings like below:
 
 ```
---optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False"`
+--optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False"
+```
+
+The training can be done with 12GB VRAM GPUs with Adafactor optimizer, `--split_mode` and `train_blocks=single` options. Please use settings like below:
+
+```
+--optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --split_mode --network_args "train_blocks=single" 
 ```
 
 LoRAs for Text Encoders are not tested yet.

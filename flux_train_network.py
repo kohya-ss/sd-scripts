@@ -37,10 +37,16 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             args.network_train_unet_only or not args.cache_text_encoder_outputs
         ), "network for Text Encoder cannot be trained with caching Text Encoder outputs / Text Encoderの出力をキャッシュしながらText Encoderのネットワークを学習することはできません"
 
-        train_dataset_group.verify_bucket_reso_steps(32)
+        train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
+        name = "schnell" if "schnell" in args.pretrained_model_name_or_path else "dev"  # TODO change this to a more robust way
+        # if we load to cpu, flux.to(fp8) takes a long time
+        model = flux_utils.load_flow_model(name, args.pretrained_model_name_or_path, weight_dtype, "cpu")
+
+        if args.split_mode:
+            model = self.prepare_split_model(model, weight_dtype, accelerator)
 
         clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu")
         clip_l.eval()
@@ -49,12 +55,46 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu")
         t5xxl.eval()
 
-        name = "schnell" if "schnell" in args.pretrained_model_name_or_path else "dev"  # TODO change this to a more robust way
-        # if we load to cpu, flux.to(fp8) takes a long time
-        model = flux_utils.load_flow_model(name, args.pretrained_model_name_or_path, weight_dtype, "cpu")
         ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu")
 
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
+
+    def prepare_split_model(self, model, weight_dtype, accelerator):
+        from accelerate import init_empty_weights
+
+        logger.info("prepare split model")
+        with init_empty_weights():
+            flux_upper = flux_models.FluxUpper(model.params)
+            flux_lower = flux_models.FluxLower(model.params)
+        sd = model.state_dict()
+
+        # lower (trainable)
+        logger.info("load state dict for lower")
+        flux_lower.load_state_dict(sd, strict=False, assign=True)
+        flux_lower.to(dtype=weight_dtype)
+
+        # upper (frozen)
+        logger.info("load state dict for upper")
+        flux_upper.load_state_dict(sd, strict=False, assign=True)
+
+        logger.info("prepare upper model")
+        target_dtype = torch.float8_e4m3fn if args.fp8_base else weight_dtype
+        flux_upper.to(accelerator.device, dtype=target_dtype)
+        flux_upper.eval()
+
+        if args.fp8_base:
+            # this is required to run on fp8
+            flux_upper = accelerator.prepare(flux_upper)
+
+        flux_upper.to("cpu")
+
+        self.flux_upper = flux_upper
+        del model  # we don't need model anymore
+        clean_memory_on_device(accelerator.device)
+
+        logger.info("split model prepared")
+
+        return flux_lower
 
     def get_tokenize_strategy(self, args):
         return strategy_flux.FluxTokenizeStrategy(args.max_token_length, args.tokenizer_cache_dir)
@@ -262,17 +302,51 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         #     f"model_input: {noisy_model_input.shape}, img_ids: {img_ids.shape}, t5_out: {t5_out.shape}, txt_ids: {txt_ids.shape}, l_pooled: {l_pooled.shape}, timesteps: {timesteps.shape}, guidance_vec: {guidance_vec.shape}"
         # )
 
-        with accelerator.autocast():
-            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
-            model_pred = unet(
-                img=packed_noisy_model_input,
-                img_ids=img_ids,
-                txt=t5_out,
-                txt_ids=txt_ids,
-                y=l_pooled,
-                timesteps=timesteps / 1000,
-                guidance=guidance_vec,
-            )
+        if not args.split_mode:
+            # normal forward
+            with accelerator.autocast():
+                # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
+                model_pred = unet(
+                    img=packed_noisy_model_input,
+                    img_ids=img_ids,
+                    txt=t5_out,
+                    txt_ids=txt_ids,
+                    y=l_pooled,
+                    timesteps=timesteps / 1000,
+                    guidance=guidance_vec,
+                )
+        else:
+            # split forward to reduce memory usage
+            assert network.train_blocks == "single", "train_blocks must be single for split mode"
+            with accelerator.autocast():
+                # move flux lower to cpu, and then move flux upper to gpu
+                unet.to("cpu")
+                clean_memory_on_device(accelerator.device)
+                self.flux_upper.to(accelerator.device)
+
+                # upper model does not require grad
+                with torch.no_grad():
+                    intermediate_img, intermediate_txt, vec, pe = self.flux_upper(
+                        img=packed_noisy_model_input,
+                        img_ids=img_ids,
+                        txt=t5_out,
+                        txt_ids=txt_ids,
+                        y=l_pooled,
+                        timesteps=timesteps / 1000,
+                        guidance=guidance_vec,
+                    )
+
+                # move flux upper back to cpu, and then move flux lower to gpu
+                self.flux_upper.to("cpu")
+                clean_memory_on_device(accelerator.device)
+                unet.to(accelerator.device)
+
+                # lower model requires grad
+                intermediate_img.requires_grad_(True)
+                intermediate_txt.requires_grad_(True)
+                vec.requires_grad_(True)
+                pe.requires_grad_(True)
+                model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe)
 
         # unpack latents
         model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
@@ -330,6 +404,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "--cache_text_encoder_outputs_to_disk",
         action="store_true",
         help="cache text encoder outputs to disk / text encoderの出力をディスクにキャッシュする",
+    )
+    parser.add_argument(
+        "--split_mode",
+        action="store_true",
+        help="[EXPERIMENTAL] use split mode for Flux model, network arg `train_blocks=single` is required"
+        + "/[実験的] Fluxモデルの分割モードを使用する。ネットワーク引数`train_blocks=single`が必要",
     )
 
     # copy from Diffusers
