@@ -10,7 +10,7 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from library import flux_models, flux_utils, sd3_train_utils, sd3_utils, sdxl_model_util, sdxl_train_util, strategy_flux, train_util
+from library import flux_models, flux_train_utils, flux_utils, sd3_train_utils, strategy_base, strategy_flux, train_util
 import train_network
 from library.utils import setup_logging
 
@@ -27,6 +27,12 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def assert_extra_args(self, args, train_dataset_group):
         super().assert_extra_args(args, train_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
+
+        if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
+            logger.warning(
+                "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled / cache_text_encoder_outputs_to_diskが有効になっているため、cache_text_encoder_outputsも有効になります"
+            )
+            args.cache_text_encoder_outputs = True
 
         if args.cache_text_encoder_outputs:
             assert (
@@ -139,8 +145,31 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             text_encoders[1].to(accelerator.device, dtype=weight_dtype)
             with accelerator.autocast():
                 dataset.new_cache_text_encoder_outputs(text_encoders, accelerator.is_main_process)
+
+            # cache sample prompts
+            self.sample_prompts_te_outputs = None
+            if args.sample_prompts is not None:
+                logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
+
+                tokenize_strategy: strategy_flux.FluxTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
+                text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
+
+                prompts = sd3_train_utils.load_prompts(args.sample_prompts)
+                sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
+                with accelerator.autocast(), torch.no_grad():
+                    for prompt_dict in prompts:
+                        for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
+                            if p not in sample_prompts_te_outputs:
+                                logger.info(f"cache Text Encoder outputs for prompt: {p}")
+                                tokens_and_masks = tokenize_strategy.tokenize(p)
+                                sample_prompts_te_outputs[p] = text_encoding_strategy.encode_tokens(
+                                    tokenize_strategy, text_encoders, tokens_and_masks, args.apply_t5_attn_mask
+                                )
+                self.sample_prompts_te_outputs = sample_prompts_te_outputs
+
             accelerator.wait_for_everyone()
 
+            # move back to cpu
             logger.info("move text encoders back to cpu")
             text_encoders[0].to("cpu")  # , dtype=torch.float32)  # Text Encoder doesn't work with fp16 on CPU
             text_encoders[1].to("cpu")  # , dtype=torch.float32)
@@ -172,9 +201,36 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     #     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
     #     return noise_pred
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
-        # logger.warning("Sampling images is not supported for Flux model")
-        pass
+    def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux):
+        if not args.split_mode:
+            flux_train_utils.sample_images(
+                accelerator, args, epoch, global_step, flux, ae, text_encoder, self.sample_prompts_te_outputs
+            )
+            return
+
+        class FluxUpperLowerWrapper(torch.nn.Module):
+            def __init__(self, flux_upper: flux_models.FluxUpper, flux_lower: flux_models.FluxLower, device: torch.device):
+                super().__init__()
+                self.flux_upper = flux_upper
+                self.flux_lower = flux_lower
+                self.target_device = device
+
+            def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance=None):
+                self.flux_lower.to("cpu")
+                clean_memory_on_device(self.target_device)
+                self.flux_upper.to(self.target_device)
+                img, txt, vec, pe = self.flux_upper(img, img_ids, txt, txt_ids, timesteps, y, guidance)
+                self.flux_upper.to("cpu")
+                clean_memory_on_device(self.target_device)
+                self.flux_lower.to(self.target_device)
+                return self.flux_lower(img, txt, vec, pe)
+
+        wrapper = FluxUpperLowerWrapper(self.flux_upper, flux, accelerator.device)
+        clean_memory_on_device(accelerator.device)
+        flux_train_utils.sample_images(
+            accelerator, args, epoch, global_step, wrapper, ae, text_encoder, self.sample_prompts_te_outputs
+        )
+        clean_memory_on_device(accelerator.device)
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
@@ -388,6 +444,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
         metadata["ss_model_prediction_type"] = args.model_prediction_type
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
+
+    def is_text_encoder_not_needed_for_training(self, args):
+        return args.cache_text_encoder_outputs
 
 
 def setup_parser() -> argparse.ArgumentParser:
