@@ -238,8 +238,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return noise_scheduler
 
     def encode_images_to_latents(self, args, accelerator, vae, images):
-        return vae.encode(images).latent_dist.sample()
-
+        return vae.encode(images)
+    
     def shift_scale_latents(self, args, latents):
         return latents
 
