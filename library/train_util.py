@@ -3160,7 +3160,7 @@ SS_METADATA_MINIMUM_KEYS = [
 
 
 def build_minimum_network_metadata(
-    v2: Optional[bool],
+    v2: Optional[str],
     base_model: Optional[str],
     network_module: str,
     network_dim: str,
