@@ -582,7 +582,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
     有关详细信息，请自行研究。
 
-    要使用任何调度程序，请像使用任何优化器一样使用“--scheduler_args”指定可选参数。
+    要使用任何调度程序，请像使用任何优化器一样使用“--lr_scheduler_args”指定可选参数。
 ### 关于指定优化器
 
 使用 --optimizer_args 选项指定优化器选项参数。可以以key=value的格式指定多个值。此外，您可以指定多个值，以逗号分隔。例如，要指定 AdamW 优化器的参数，``--optimizer_args weight_decay=0.01 betas=.9,.999``。
