@@ -4559,8 +4559,15 @@ def get_optimizer(args, trainable_params, model=None):
         except ImportError:
             raise ImportError("No adam-mini / adam-mini がインストールされていないようです")
 
-        optimizer = optimizer_class(model.named_parameters(), lr=lr, **optimizer_kwargs)
-        optimizer.embd_names.add("embed")
+        named_params = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
+
+        optimizer_kwargs["dim"] = 722
+        optimizer_kwargs["n_heads"] = 19
+
+        optimizer = optimizer_class(named_params, lr=lr, **optimizer_kwargs)
+        optimizer.embd_names.add("layer.weight")
+        optimizer.embd_names.add("final_layer.linear.weight")
+        optimizer.embd_names.add("final_layer.adaLN_modulation.1.weight")
         optimizer.wqk_names.add("attn")
         optimizer.wqk_names.add('mlp')
 

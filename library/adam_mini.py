@@ -81,15 +81,15 @@ class Adam_mini(torch.optim.Optimizer):
                 state["weight_decay"] = 0.0
             else:
                 state["weight_decay"] = weight_decay
-            if "embed" in param_name or "wte" in param_name or "embd" in param_name:
+            if "embed" in param_name or "wte" in param_name or "embd" in param_name or "layer.weight" in param_name:
                 count_embd += 1
-            if "lm_head.weight" in param_name or "output.weight" in param_name:
+            if "lm_head.weight" in param_name or "output.weight" in param_name or "final_layer.linear.weight" in param_name or "final_layer.adaLN_modulation.1.weight" in param_name:
                 count_output += 1
-            if "q_proj.weight" in param_name or "wq.weight" in param_name or "attn_qkv.lora_down" in param_name or "attn_proj.lora_down" in param_name:
+            if "q_proj.weight" in param_name or "wq.weight" in param_name or "attn_qkv.lora_down" in param_name or "attn_proj.lora_down" in param_name or "attn.qkv.weight" in param_name:
                 count_wq += 1
                 assert (self.dim * self.dim) % self.n_heads == 0, f"{self.dim} {self.n_heads}"
                 state["head_numel"] = self.dim * self.dim // self.n_heads
-            if "k_proj.weight" in param_name or "wk.weight" in param_name or "attn_qkv.lora_up" in param_name or "attn_proj.lora_up" in param_name or "mlp" in param_name:
+            if "k_proj.weight" in param_name or "wk.weight" in param_name or "attn_qkv.lora_up" in param_name or "attn_proj.lora_up" in param_name or "mlp" in param_name or "attn.proj.weight" in param_name:
                 count_wk += 1
                 assert (self.dim * self.dim) % self.n_heads == 0, f"{self.dim} {self.n_heads}"
                 state["head_numel"] = self.dim * self.dim // self.n_heads
