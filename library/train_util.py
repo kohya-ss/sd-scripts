@@ -2629,7 +2629,7 @@ class MinimalDataset(BaseDataset):
         raise NotImplementedError
 
 
-def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
+def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
     module = ".".join(args.dataset_class.split(".")[:-1])
     dataset_class = args.dataset_class.split(".")[-1]
     module = importlib.import_module(module)
