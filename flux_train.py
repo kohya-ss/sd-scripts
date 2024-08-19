@@ -760,6 +760,12 @@ def setup_parser() -> argparse.ArgumentParser:
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument(
+        "--mem_eff_save",
+        action="store_true",
+        help="[EXPERIMENTAL] use memory efficient custom model saving method / メモリ効率の良い独自のモデル保存方法を使う",
+    )
+
+    parser.add_argument(
         "--fused_optimizer_groups",
         type=int,
         default=None,
