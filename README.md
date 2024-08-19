@@ -105,24 +105,24 @@ Sample command for FLUX.1 fine-tuning is below. This will work with 24GB VRAM GP
 ```
 accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train.py   
 --pretrained_model_name_or_path flux1-dev.sft  --clip_l clip_l.safetensors --t5xxl t5xxl_fp16.safetensors --ae ae_dev.sft 
---mixed_precision bf16 --save_model_as safetensors --sdpa --persistent_data_loader_workers --max_data_loader_n_workers 2 
+--save_model_as safetensors --sdpa --persistent_data_loader_workers --max_data_loader_n_workers 2 
 --seed 42 --gradient_checkpointing --mixed_precision bf16 --save_precision bf16 
---dataset_config dataset_1024_bs1.toml  --output_dir path/to/output/dir --output_name test-bf16 
+--dataset_config dataset_1024_bs1.toml  --output_dir path/to/output/dir --output_name output-name 
 --learning_rate 5e-5 --max_train_epochs 4  --sdpa --highvram --cache_text_encoder_outputs_to_disk --cache_latents_to_disk --save_every_n_epochs 1 
 --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" 
 --timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0 
---blockwise_fused_optimizer  --double_blocks_to_swap 6 --cpu_offload_checkpointing
+--blockwise_fused_optimizers  --double_blocks_to_swap 6 --cpu_offload_checkpointing
 ```
 
 (Combine the command into one line.)
 
 Sample image generation during training is not tested yet.
 
-Options are almost the same as LoRA training. The difference is `--blockwise_fused_optimizer`, `--double_blocks_to_swap` and `--cpu_offload_checkpointing`.  `--single_blocks_to_swap` is also available.
+Options are almost the same as LoRA training. The difference is `--blockwise_fused_optimizers`, `--double_blocks_to_swap` and `--cpu_offload_checkpointing`.  `--single_blocks_to_swap` is also available.
 
-`--blockwise_fused_optimizer` enables the fusing of the optimizer for each block. This is similar to `--fused_backward_pass`. Any optimizer can be used, but Adafactor is recommended for memory efficiency. `--fused_optimizer_groups` is deprecated due to the addition of this option for FLUX.1 training.
+`--blockwise_fused_optimizers` enables the fusing of the optimizer for each block. This is similar to `--fused_backward_pass`. Any optimizer can be used, but Adafactor is recommended for memory efficiency. `--fused_optimizer_groups` is deprecated due to the addition of this option for FLUX.1 training.
 
-`--double_blocks_to_swap` and `--single_blocks_to_swap` are the number of double blocks and single blocks to swap. The default is None (no swap). These options must be combined with `--blockwise_fused_optimizer`. 
+`--double_blocks_to_swap` and `--single_blocks_to_swap` are the number of double blocks and single blocks to swap. The default is None (no swap). These options must be combined with `--blockwise_fused_optimizers`. 
 
 `--cpu_offload_checkpointing` is to offload the gradient checkpointing to CPU. This reduces about 2GB of VRAM usage.
 
