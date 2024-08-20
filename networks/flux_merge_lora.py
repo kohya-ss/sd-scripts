@@ -7,14 +7,15 @@ import torch
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
-import lora_flux as lora_flux
-from library import sai_model_spec, train_util
 from library.utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+import lora_flux as lora_flux
+from library import sai_model_spec, train_util
 
 
 def load_state_dict(file_name, dtype):
@@ -43,13 +44,11 @@ def save_to_file(file_name, state_dict, dtype, metadata):
     save_file(state_dict, file_name, metadata=metadata)
 
 
-def merge_to_flux_model(
-    loading_device, working_device, flux_model, models, ratios, merge_dtype, save_dtype
-):
+def merge_to_flux_model(loading_device, working_device, flux_model, models, ratios, merge_dtype, save_dtype):
     logger.info(f"loading keys from FLUX.1 model: {flux_model}")
     flux_state_dict = load_file(flux_model, device=loading_device)
 
-    def create_key_map(n_double_layers, n_single_layers, hidden_size):
+    def create_key_map(n_double_layers, n_single_layers):
         key_map = {}
         for index in range(n_double_layers):
             prefix_from = f"transformer_blocks.{index}"
@@ -60,18 +59,12 @@ def merge_to_flux_model(
                 qkv_img = f"{prefix_to}.img_attn.qkv.{end}"
                 qkv_txt = f"{prefix_to}.txt_attn.qkv.{end}"
 
-                key_map[f"{k}to_q.{end}"] = (qkv_img, (0, 0, hidden_size))
-                key_map[f"{k}to_k.{end}"] = (qkv_img, (0, hidden_size, hidden_size))
-                key_map[f"{k}to_v.{end}"] = (qkv_img, (0, hidden_size * 2, hidden_size))
-                key_map[f"{k}add_q_proj.{end}"] = (qkv_txt, (0, 0, hidden_size))
-                key_map[f"{k}add_k_proj.{end}"] = (
-                    qkv_txt,
-                    (0, hidden_size, hidden_size),
-                )
-                key_map[f"{k}add_v_proj.{end}"] = (
-                    qkv_txt,
-                    (0, hidden_size * 2, hidden_size),
-                )
+                key_map[f"{k}to_q.{end}"] = qkv_img
+                key_map[f"{k}to_k.{end}"] = qkv_img
+                key_map[f"{k}to_v.{end}"] = qkv_img
+                key_map[f"{k}add_q_proj.{end}"] = qkv_txt
+                key_map[f"{k}add_k_proj.{end}"] = qkv_txt
+                key_map[f"{k}add_v_proj.{end}"] = qkv_txt
 
             block_map = {
                 "attn.to_out.0.weight": "img_attn.proj.weight",
@@ -106,13 +99,10 @@ def merge_to_flux_model(
             for end in ("weight", "bias"):
                 k = f"{prefix_from}.attn."
                 qkv = f"{prefix_to}.linear1.{end}"
-                key_map[f"{k}to_q.{end}"] = (qkv, (0, 0, hidden_size))
-                key_map[f"{k}to_k.{end}"] = (qkv, (0, hidden_size, hidden_size))
-                key_map[f"{k}to_v.{end}"] = (qkv, (0, hidden_size * 2, hidden_size))
-                key_map[f"{prefix_from}.proj_mlp.{end}"] = (
-                    qkv,
-                    (0, hidden_size * 3, hidden_size * 4),
-                )
+                key_map[f"{k}to_q.{end}"] = qkv
+                key_map[f"{k}to_k.{end}"] = qkv
+                key_map[f"{k}to_v.{end}"] = qkv
+                key_map[f"{prefix_from}.proj_mlp.{end}"] = qkv
 
             block_map = {
                 "norm.linear.weight": "modulation.lin.weight",
@@ -126,11 +116,14 @@ def merge_to_flux_model(
             for k, v in block_map.items():
                 key_map[f"{prefix_from}.{k}"] = f"{prefix_to}.{v}"
 
+        # add as-is keys
+        values = list([(v if isinstance(v, str) else v[0]) for v in set(key_map.values())])
+        values.sort()
+        key_map.update({v: v for v in values})
+
         return key_map
 
-    key_map = create_key_map(
-        18, 1, 2048
-    )  # Assuming 18 double layers, 1 single layer, and hidden size of 2048
+    key_map = create_key_map(18, 38)  # 18 double layers, 38 single layers
 
     def find_matching_key(flux_dict, lora_key):
         lora_key = lora_key.replace("diffusion_model.", "")
@@ -159,7 +152,6 @@ def merge_to_flux_model(
             "attn.add_k_proj": "txt_attn.qkv",
             "attn.add_v_proj": "txt_attn.qkv",
         }
-
         single_block_map = {
             "norm.linear": "modulation.lin",
             "proj_out": "linear2",
@@ -168,18 +160,22 @@ def merge_to_flux_model(
             "attn.to_q": "linear1",
             "attn.to_k": "linear1",
             "attn.to_v": "linear1",
+            "proj_mlp": "linear1",
         }
 
+        # same key exists in both single_block_map and double_block_map, so we must care about single/double
+        # print("lora_key before double_block_map", lora_key)
         for old, new in double_block_map.items():
-            lora_key = lora_key.replace(old, new)
-
+            if "double" in lora_key:
+                lora_key = lora_key.replace(old, new)
+        # print("lora_key before single_block_map", lora_key)
         for old, new in single_block_map.items():
-            lora_key = lora_key.replace(old, new)
+            if "single" in lora_key:
+                lora_key = lora_key.replace(old, new)
+        # print("lora_key after mapping", lora_key)
 
         if lora_key in key_map:
             flux_key = key_map[lora_key]
-            if isinstance(flux_key, tuple):
-                flux_key = flux_key[0]
             logger.info(f"Found matching key: {flux_key}")
             return flux_key
 
@@ -198,16 +194,11 @@ def merge_to_flux_model(
         lora_sd, _ = load_state_dict(model, merge_dtype)
 
         logger.info("merging...")
-        for key in tqdm(lora_sd.keys()):
+        for key in lora_sd.keys():
             if "lora_down" in key or "lora_A" in key:
-                lora_name = key[
-                    : key.rfind(".lora_down" if "lora_down" in key else ".lora_A")
-                ]
+                lora_name = key[: key.rfind(".lora_down" if "lora_down" in key else ".lora_A")]
                 up_key = key.replace("lora_down", "lora_up").replace("lora_A", "lora_B")
-                alpha_key = (
-                    key[: key.index("lora_down" if "lora_down" in key else "lora_A")]
-                    + "alpha"
-                )
+                alpha_key = key[: key.index("lora_down" if "lora_down" in key else "lora_A")] + "alpha"
 
                 logger.info(f"Processing LoRA key: {lora_name}")
                 flux_key = find_matching_key(flux_state_dict, lora_name)
@@ -231,20 +222,35 @@ def merge_to_flux_model(
                 up_weight = up_weight.to(working_device, merge_dtype)
                 down_weight = down_weight.to(working_device, merge_dtype)
 
+                # print(up_weight.size(), down_weight.size(), weight.size())
+
                 if lora_name.startswith("transformer."):
-                    if "qkv" in flux_key:
-                        hidden_size = weight.size(-1) // 3
+                    if "qkv" in flux_key or "linear1" in flux_key:  # combined qkv or qkv+mlp
                         update = ratio * (up_weight @ down_weight) * scale
+                        # print(update.shape)
 
                         if "img_attn" in flux_key or "txt_attn" in flux_key:
-                            q, k, v = torch.chunk(weight, 3, dim=-1)
+                            q, k, v = torch.chunk(weight, 3, dim=0)
                             if "to_q" in lora_name or "add_q_proj" in lora_name:
                                 q += update.reshape(q.shape)
                             elif "to_k" in lora_name or "add_k_proj" in lora_name:
                                 k += update.reshape(k.shape)
                             elif "to_v" in lora_name or "add_v_proj" in lora_name:
                                 v += update.reshape(v.shape)
-                            weight = torch.cat([q, k, v], dim=-1)
+                            weight = torch.cat([q, k, v], dim=0)
+                        elif "linear1" in flux_key:
+                            q, k, v = torch.chunk(weight[: int(update.shape[-1] * 3)], 3, dim=0)
+                            mlp = weight[int(update.shape[-1] * 3) :]
+                            # print(q.shape, k.shape, v.shape, mlp.shape)
+                            if "to_q" in lora_name:
+                                q += update.reshape(q.shape)
+                            elif "to_k" in lora_name:
+                                k += update.reshape(k.shape)
+                            elif "to_v" in lora_name:
+                                v += update.reshape(v.shape)
+                            elif "proj_mlp" in lora_name:
+                                mlp += update.reshape(mlp.shape)
+                            weight = torch.cat([q, k, v, mlp], dim=0)
                     else:
                         if len(weight.size()) == 2:
                             weight = weight + ratio * (up_weight @ down_weight) * scale
@@ -252,18 +258,11 @@ def merge_to_flux_model(
                             weight = (
                                 weight
                                 + ratio
-                                * (
-                                    up_weight.squeeze(3).squeeze(2)
-                                    @ down_weight.squeeze(3).squeeze(2)
-                                )
-                                .unsqueeze(2)
-                                .unsqueeze(3)
+                                * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
                                 * scale
                             )
                         else:
-                            conved = torch.nn.functional.conv2d(
-                                down_weight.permute(1, 0, 2, 3), up_weight
-                            ).permute(1, 0, 2, 3)
+                            conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
                             weight = weight + ratio * conved * scale
                 else:
                     if len(weight.size()) == 2:
@@ -272,18 +271,11 @@ def merge_to_flux_model(
                         weight = (
                             weight
                             + ratio
-                            * (
-                                up_weight.squeeze(3).squeeze(2)
-                                @ down_weight.squeeze(3).squeeze(2)
-                            )
-                            .unsqueeze(2)
-                            .unsqueeze(3)
+                            * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
                             * scale
                         )
                     else:
-                        conved = torch.nn.functional.conv2d(
-                            down_weight.permute(1, 0, 2, 3), up_weight
-                        ).permute(1, 0, 2, 3)
+                        conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
                         weight = weight + ratio * conved * scale
 
                 flux_state_dict[flux_key] = weight.to(loading_device, save_dtype)
@@ -308,9 +300,7 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
 
         if lora_metadata is not None:
             if base_model is None:
-                base_model = lora_metadata.get(
-                    train_util.SS_METADATA_KEY_BASE_MODEL_VERSION, None
-                )
+                base_model = lora_metadata.get(train_util.SS_METADATA_KEY_BASE_MODEL_VERSION, None)
 
         # get alpha and dim
         alphas = {}  # alpha for current model
@@ -336,9 +326,7 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
                 if lora_module_name not in base_alphas:
                     base_alphas[lora_module_name] = alpha
 
-        logger.info(
-            f"dim: {list(set(dims.values()))}, alpha: {list(set(alphas.values()))}"
-        )
+        logger.info(f"dim: {list(set(dims.values()))}, alpha: {list(set(alphas.values()))}")
 
         # merge
         logger.info("merging...")
@@ -359,19 +347,14 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
             alpha = alphas[lora_module_name]
 
             scale = math.sqrt(alpha / base_alpha) * ratio
-            scale = (
-                abs(scale) if "lora_up" in key else scale
-            )  # マイナスの重みに対応する。
+            scale = abs(scale) if "lora_up" in key else scale  # マイナスの重みに対応する。
 
             if key in merged_sd:
                 assert (
-                    merged_sd[key].size() == lora_sd[key].size()
-                    or concat_dim is not None
+                    merged_sd[key].size() == lora_sd[key].size() or concat_dim is not None
                 ), "weights shape mismatch, different dims? / 重みのサイズが合いません。dimが異なる可能性があります。"
                 if concat_dim is not None:
-                    merged_sd[key] = torch.cat(
-                        [merged_sd[key], lora_sd[key] * scale], dim=concat_dim
-                    )
+                    merged_sd[key] = torch.cat([merged_sd[key], lora_sd[key] * scale], dim=concat_dim)
                 else:
                     merged_sd[key] = merged_sd[key] + lora_sd[key] * scale
             else:
@@ -390,9 +373,7 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
             merged_sd[key_up] = merged_sd[key_up][:, perm]
 
     logger.info("merged model")
-    logger.info(
-        f"dim: {list(set(base_dims.values()))}, alpha: {list(set(base_alphas.values()))}"
-    )
+    logger.info(f"dim: {list(set(base_dims.values()))}, alpha: {list(set(base_alphas.values()))}")
 
     # check all dims are same
     dims_list = list(set(base_dims.values()))
@@ -411,16 +392,14 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
     # build minimum metadata
     dims = f"{dims_list[0]}" if all_same_dims else "Dynamic"
     alphas = f"{alphas_list[0]}" if all_same_alphas else "Dynamic"
-    metadata = train_util.build_minimum_network_metadata(
-        str(False), base_model, "networks.lora", dims, alphas, None
-    )
+    metadata = train_util.build_minimum_network_metadata(str(False), base_model, "networks.lora", dims, alphas, None)
 
     return merged_sd, metadata
 
 
 def merge(args):
-    assert (
-        len(args.models) == len(args.ratios)
+    assert len(args.models) == len(
+        args.ratios
     ), "number of models must be equal to number of ratios / モデルの数と重みの数は合わせてください"
 
     def str_to_dtype(p):
@@ -456,9 +435,7 @@ def merge(args):
         if args.no_metadata:
             sai_metadata = None
         else:
-            merged_from = sai_model_spec.build_merged_from(
-                [args.flux_model] + args.models
-            )
+            merged_from = sai_model_spec.build_merged_from([args.flux_model] + args.models)
             title = os.path.splitext(os.path.basename(args.save_to))[0]
             sai_metadata = sai_model_spec.build_metadata(
                 None,
@@ -477,15 +454,11 @@ def merge(args):
         save_to_file(args.save_to, state_dict, save_dtype, sai_metadata)
 
     else:
-        state_dict, metadata = merge_lora_models(
-            args.models, args.ratios, merge_dtype, args.concat, args.shuffle
-        )
+        state_dict, metadata = merge_lora_models(args.models, args.ratios, merge_dtype, args.concat, args.shuffle)
 
         logger.info("calculating hashes and creating metadata...")
 
-        model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(
-            state_dict, metadata
-        )
+        model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
         metadata["sshs_model_hash"] = model_hash
         metadata["sshs_legacy_hash"] = legacy_hash
 
