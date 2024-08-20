@@ -9,6 +9,23 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
+Aug 20, 2024 (update 3):
+__Experimental__  The multi-resolution training is now supported with caching latents to disk.
+
+The cache files now hold latents for multiple resolutions. Since the latents are appended to the current cache file, it is recommended to delete the cache file in advance (if not, the old latents is kept in .npz file).
+
+See [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training) for details.
+
+Aug 20, 2024 (update 2):
+`flux_merge_lora.py` now supports LoRA from AI-toolkit (Diffusers based keys). Specify `--diffusers` option to merge LoRA with Diffusers based keys. Thanks to exveria1015!
+
+Aug 20, 2024:
+FLUX.1 supports multi-resolution inference, so training at multiple resolutions may be possible and the results may be improved (like 1024x1024, 768x768 and 512x512 ... you can use any resolution).
+
+The script seems to support multi-resolution even in the current version, ~~if `--cache_latents_to_disk` is not specified~~ -> `--cache_latents_to_disk` is now supported for multi-resolution training. Please try if you are interested. See [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training) for details.
+
+We will support multi-resolution caching to disk in the near future.
+
 Aug 19, 2024:
 In `flux_train.py`, the memory consumption during model saving is reduced when `--save_precision` is set to the same value as `--mixed_precision` (about 22GB). Please set the same value unless there is a reason.
 
@@ -159,6 +176,51 @@ In the case of LoRA models are trained with `bf16`, we are not sure which is bet
 
 The script can merge multiple LoRA models. If you want to merge multiple LoRA models, specify `--concat` option to work the merged LoRA model properly.
 
+### FLUX.1 Multi-resolution training
+
+You can define multiple resolutions in the dataset configuration file.
+
+The dataset configuration file is like below. You can define multiple resolutions with different batch sizes. The resolutions are defined in the `[[datasets]]` section. The `[[datasets.subsets]]` section is for the dataset directory. Please specify the same directory for each resolution.
+
+```
+[general]
+# define common settings here
+flip_aug = true
+color_aug = false
+keep_tokens_separator= "|||"
+shuffle_caption = false
+caption_tag_dropout_rate = 0
+caption_extension = ".txt"
+
+[[datasets]]
+# define the first resolution here
+batch_size = 2
+enable_bucket = true
+resolution = [1024, 1024]
+
+  [[datasets.subsets]]
+  image_dir = "path/to/image/dir"
+  num_repeats = 1
+
+[[datasets]]
+# define the second resolution here
+batch_size = 3
+enable_bucket = true
+resolution = [768, 768]
+
+  [[datasets.subsets]]
+  image_dir = "path/to/image/dir"
+  num_repeats = 1
+
+[[datasets]]
+# define the third resolution here
+batch_size = 4
+enable_bucket = true
+resolution = [512, 512]
+
+  [[datasets.subsets]]
+  image_dir = "path/to/image/dir"
+  num_repeats = 1
 ```
 
 ## SD3 training
