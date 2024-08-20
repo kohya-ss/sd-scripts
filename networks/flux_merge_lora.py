@@ -113,7 +113,7 @@ def merge_to_flux_model(loading_device, working_device, flux_model, models, rati
                 del up_weight
                 del down_weight
                 del weight
-        
+
         if len(lora_sd) > 0:
             logger.warning(f"Unused keys in LoRA model: {list(lora_sd.keys())}")
 
@@ -587,12 +587,7 @@ def setup_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="LoRA models to merge: safetensors file / マージするLoRAモデル、safetensorsファイル",
     )
-    parser.add_argument(
-        "--ratios",
-        type=float,
-        nargs="*",
-        help="ratios for each model / それぞれのLoRAモデルの比率",
-    )
+    parser.add_argument("--ratios", type=float, nargs="*", help="ratios for each model / それぞれのLoRAモデルの比率")
     parser.add_argument(
         "--no_metadata",
         action="store_true",
