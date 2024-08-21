@@ -1078,6 +1078,7 @@ class Flux(nn.Module):
                 if moving:
                     self.single_blocks[to_cpu_block_index].to("cpu")  # , non_blocking=True)
                     # print(f"Moved single block {to_cpu_block_index} to cpu.")
+                    to_cpu_block_index += 1
 
         img = img[:, txt.shape[1] :, ...]
 
