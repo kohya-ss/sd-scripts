@@ -708,9 +708,10 @@ class DoubleStreamBlock(nn.Module):
         # make attention mask if not None
         attn_mask = None
         if txt_attention_mask is not None:
-            attn_mask = txt_attention_mask  # b, seq_len
+            # F.scaled_dot_product_attention expects attn_mask to be bool for binary mask
+            attn_mask = txt_attention_mask.to(torch.bool)  # b, seq_len
             attn_mask = torch.cat(
-                (attn_mask, torch.ones(attn_mask.shape[0], img.shape[1]).to(attn_mask.device)), dim=1
+                (attn_mask, torch.ones(attn_mask.shape[0], img.shape[1], device=attn_mask.device, dtype=torch.bool)), dim=1
             )  # b, seq_len + img_len
 
             # broadcast attn_mask to all heads

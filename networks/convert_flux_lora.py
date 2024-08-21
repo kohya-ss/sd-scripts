@@ -248,7 +248,7 @@ def convert_to_ai_toolkit(sds_sd, ait_sd, sds_key, ait_key):
     rank = down_weight.shape[0]
     alpha = sds_sd.pop(sds_key + ".alpha").item()  # alpha is scalar
     scale = alpha / rank  # LoRA is scaled by 'alpha / rank' in forward pass, so we need to scale it back here
-    print(f"rank: {rank}, alpha: {alpha}, scale: {scale}")
+    # print(f"rank: {rank}, alpha: {alpha}, scale: {scale}")
 
     # calculate scale_down and scale_up to keep the same value. if scale is 4, scale_down is 2 and scale_up is 2
     scale_down = scale
