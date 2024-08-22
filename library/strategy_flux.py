@@ -137,7 +137,7 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         t5_attn_mask = data["t5_attn_mask"]
 
         if self.apply_t5_attn_mask:
-            t5_out = self.mask_t5_attn(t5_out, t5_attn_mask)
+            t5_out = self.mask_t5_attn(t5_out, t5_attn_mask) # FIXME do not mask here!!!
 
         return [l_pooled, t5_out, txt_ids, t5_attn_mask]
 
@@ -149,7 +149,7 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
 
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
-            # attn_mask is not applied when caching to disk: it is applied when loading from disk
+            # attn_mask is not applied when caching to disk: it is applied when loading from disk FIXME apply mask when loading
             l_pooled, t5_out, txt_ids, _ = flux_text_encoding_strategy.encode_tokens(
                 tokenize_strategy, models, tokens_and_masks, not self.cache_to_disk
             )
