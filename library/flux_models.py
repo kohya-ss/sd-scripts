@@ -440,10 +440,10 @@ configs = {
 # region math
 
 
-def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
+def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor, attn_mask: Optional[Tensor] = None) -> Tensor:
     q, k = apply_rope(q, k, pe)
 
-    x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
     x = rearrange(x, "B H L D -> B L (H D)")
 
     return x
@@ -607,11 +607,7 @@ class SelfAttention(nn.Module):
         self.norm = QKNorm(head_dim)
         self.proj = nn.Linear(dim, dim)
 
-    #     self.gradient_checkpointing = False
-
-    # def enable_gradient_checkpointing(self):
-    #     self.gradient_checkpointing = True
-
+    # this is not called from DoubleStreamBlock/SingleStreamBlock because they uses attention function directly
     def forward(self, x: Tensor, pe: Tensor) -> Tensor:
         qkv = self.qkv(x)
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
@@ -619,12 +615,6 @@ class SelfAttention(nn.Module):
         x = attention(q, k, v, pe=pe)
         x = self.proj(x)
         return x
-
-    # def forward(self, *args, **kwargs):
-    #     if self.training and self.gradient_checkpointing:
-    #         return checkpoint(self._forward, *args, use_reentrant=False, **kwargs)
-    #     else:
-    #         return self._forward(*args, **kwargs)
 
 
 @dataclass
@@ -690,7 +680,9 @@ class DoubleStreamBlock(nn.Module):
         self.gradient_checkpointing = False
         self.cpu_offload_checkpointing = False
 
-    def _forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
+    def _forward(
+        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None
+    ) -> tuple[Tensor, Tensor]:
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
 
@@ -713,7 +705,19 @@ class DoubleStreamBlock(nn.Module):
         k = torch.cat((txt_k, img_k), dim=2)
         v = torch.cat((txt_v, img_v), dim=2)
 
-        attn = attention(q, k, v, pe=pe)
+        # make attention mask if not None
+        attn_mask = None
+        if txt_attention_mask is not None:
+            # F.scaled_dot_product_attention expects attn_mask to be bool for binary mask
+            attn_mask = txt_attention_mask.to(torch.bool)  # b, seq_len
+            attn_mask = torch.cat(
+                (attn_mask, torch.ones(attn_mask.shape[0], img.shape[1], device=attn_mask.device, dtype=torch.bool)), dim=1
+            )  # b, seq_len + img_len
+
+            # broadcast attn_mask to all heads
+            attn_mask = attn_mask[:, None, None, :].expand(-1, q.shape[1], q.shape[2], -1)
+
+        attn = attention(q, k, v, pe=pe, attn_mask=attn_mask)
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
         # calculate the img blocks
@@ -725,10 +729,12 @@ class DoubleStreamBlock(nn.Module):
         txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
         return img, txt
 
-    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(
+        self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None
+    ) -> tuple[Tensor, Tensor]:
         if self.training and self.gradient_checkpointing:
             if not self.cpu_offload_checkpointing:
-                return checkpoint(self._forward, img, txt, vec, pe, use_reentrant=False)
+                return checkpoint(self._forward, img, txt, vec, pe, txt_attention_mask, use_reentrant=False)
             # cpu offload checkpointing
 
             def create_custom_forward(func):
@@ -739,10 +745,12 @@ class DoubleStreamBlock(nn.Module):
 
                 return custom_forward
 
-            return torch.utils.checkpoint.checkpoint(create_custom_forward(self._forward), img, txt, vec, pe)
+            return torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self._forward), img, txt, vec, pe, txt_attention_mask, use_reentrant=False
+            )
 
         else:
-            return self._forward(img, txt, vec, pe)
+            return self._forward(img, txt, vec, pe, txt_attention_mask)
 
     # def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor):
     #     if self.training and self.gradient_checkpointing:
@@ -830,7 +838,7 @@ class SingleStreamBlock(nn.Module):
 
                 return custom_forward
 
-            return torch.utils.checkpoint.checkpoint(create_custom_forward(self._forward), x, vec, pe)
+            return torch.utils.checkpoint.checkpoint(create_custom_forward(self._forward), x, vec, pe, use_reentrant=False)
         else:
             return self._forward(x, vec, pe)
 
@@ -992,6 +1000,7 @@ class Flux(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         guidance: Tensor | None = None,
+        txt_attention_mask: Tensor | None = None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
@@ -1011,7 +1020,7 @@ class Flux(nn.Module):
 
         if not self.double_blocks_to_swap:
             for block in self.double_blocks:
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
         else:
             # make sure first n blocks are on cuda, and last n blocks are on cpu at beginning
             for block_idx in range(self.double_blocks_to_swap):
@@ -1033,7 +1042,7 @@ class Flux(nn.Module):
                     block.to(self.device)  # move to cuda
                     # print(f"Moved double block {block_idx} to cuda.")
 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
 
                 if moving:
                     self.double_blocks[to_cpu_block_index].to("cpu")  # , non_blocking=True)
@@ -1071,6 +1080,7 @@ class Flux(nn.Module):
                 if moving:
                     self.single_blocks[to_cpu_block_index].to("cpu")  # , non_blocking=True)
                     # print(f"Moved single block {to_cpu_block_index} to cpu.")
+                    to_cpu_block_index += 1
 
         img = img[:, txt.shape[1] :, ...]
 
@@ -1164,6 +1174,7 @@ class FluxUpper(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         guidance: Tensor | None = None,
+        txt_attention_mask: Tensor | None = None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
@@ -1182,7 +1193,7 @@ class FluxUpper(nn.Module):
         pe = self.pe_embedder(ids)
 
         for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
 
         return img, txt, vec, pe
 

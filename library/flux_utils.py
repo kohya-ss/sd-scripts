@@ -9,7 +9,7 @@ from transformers import CLIPTextModel, CLIPConfig, T5EncoderModel, T5Config
 
 from library import flux_models
 
-from library.utils import setup_logging
+from library.utils import setup_logging, MemoryEfficientSafeOpen
 
 setup_logging()
 import logging
@@ -19,32 +19,54 @@ logger = logging.getLogger(__name__)
 MODEL_VERSION_FLUX_V1 = "flux1"
 
 
-def load_flow_model(name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device]) -> flux_models.Flux:
+# temporary copy from sd3_utils TODO refactor
+def load_safetensors(path: str, device: Union[str, torch.device], disable_mmap: bool = False, dtype: torch.dtype = torch.float32):
+    if disable_mmap:
+        # return safetensors.torch.load(open(path, "rb").read())
+        # use experimental loader
+        logger.info(f"Loading without mmap (experimental)")
+        state_dict = {}
+        with MemoryEfficientSafeOpen(path) as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key).to(device, dtype=dtype)
+        return state_dict
+    else:
+        try:
+            return load_file(path, device=device)
+        except:
+            return load_file(path)  # prevent device invalid Error
+
+
+def load_flow_model(
+    name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+) -> flux_models.Flux:
     logger.info(f"Building Flux model {name}")
     with torch.device("meta"):
         model = flux_models.Flux(flux_models.configs[name].params).to(dtype)
 
     # load_sft doesn't support torch.device
     logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_file(ckpt_path, device=str(device))
+    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = model.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded Flux: {info}")
     return model
 
 
-def load_ae(name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device]) -> flux_models.AutoEncoder:
+def load_ae(
+    name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+) -> flux_models.AutoEncoder:
     logger.info("Building AutoEncoder")
     with torch.device("meta"):
         ae = flux_models.AutoEncoder(flux_models.configs[name].ae_params).to(dtype)
 
     logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_file(ckpt_path, device=str(device))
+    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = ae.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded AE: {info}")
     return ae
 
 
-def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device]) -> CLIPTextModel:
+def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False) -> CLIPTextModel:
     logger.info("Building CLIP")
     CLIPL_CONFIG = {
         "_name_or_path": "clip-vit-large-patch14/",
@@ -139,13 +161,13 @@ def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.dev
         clip = CLIPTextModel._from_config(config)
 
     logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_file(ckpt_path, device=str(device))
+    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = clip.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded CLIP: {info}")
     return clip
 
 
-def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device]) -> T5EncoderModel:
+def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False) -> T5EncoderModel:
     T5_CONFIG_JSON = """
 {
   "architectures": [
@@ -185,7 +207,7 @@ def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.devi
         t5xxl = T5EncoderModel._from_config(config)
 
     logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_file(ckpt_path, device=str(device))
+    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = t5xxl.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded T5xxl: {info}")
     return t5xxl

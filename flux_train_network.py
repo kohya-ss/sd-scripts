@@ -57,19 +57,21 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         name = self.get_flux_model_name(args)
 
         # if we load to cpu, flux.to(fp8) takes a long time
-        model = flux_utils.load_flow_model(name, args.pretrained_model_name_or_path, weight_dtype, "cpu")
+        model = flux_utils.load_flow_model(
+            name, args.pretrained_model_name_or_path, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
+        )
 
         if args.split_mode:
             model = self.prepare_split_model(model, weight_dtype, accelerator)
 
-        clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu")
+        clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
         clip_l.eval()
 
         # loading t5xxl to cpu takes a long time, so we should load to gpu in future
-        t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu")
+        t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
         t5xxl.eval()
 
-        ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu")
+        ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
 
@@ -233,11 +235,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 self.flux_lower = flux_lower
                 self.target_device = device
 
-            def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance=None):
+            def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance=None, txt_attention_mask=None):
                 self.flux_lower.to("cpu")
                 clean_memory_on_device(self.target_device)
                 self.flux_upper.to(self.target_device)
-                img, txt, vec, pe = self.flux_upper(img, img_ids, txt, txt_ids, timesteps, y, guidance)
+                img, txt, vec, pe = self.flux_upper(img, img_ids, txt, txt_ids, timesteps, y, guidance, txt_attention_mask)
                 self.flux_upper.to("cpu")
                 clean_memory_on_device(self.target_device)
                 self.flux_lower.to(self.target_device)
@@ -300,10 +302,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             guidance_vec.requires_grad_(True)
 
         # Predict the noise residual
-        l_pooled, t5_out, txt_ids = text_encoder_conds
-        # print(
-        #     f"model_input: {noisy_model_input.shape}, img_ids: {img_ids.shape}, t5_out: {t5_out.shape}, txt_ids: {txt_ids.shape}, l_pooled: {l_pooled.shape}, timesteps: {timesteps.shape}, guidance_vec: {guidance_vec.shape}"
-        # )
+        l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
+        if not args.apply_t5_attn_mask:
+            t5_attn_mask = None
 
         if not args.split_mode:
             # normal forward
@@ -317,6 +318,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     y=l_pooled,
                     timesteps=timesteps / 1000,
                     guidance=guidance_vec,
+                    txt_attention_mask=t5_attn_mask,
                 )
         else:
             # split forward to reduce memory usage
@@ -337,6 +339,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                         y=l_pooled,
                         timesteps=timesteps / 1000,
                         guidance=guidance_vec,
+                        txt_attention_mask=t5_attn_mask,
                     )
 
                 # move flux upper back to cpu, and then move flux lower to gpu

@@ -174,7 +174,7 @@ def train(args):
     # load VAE for caching latents
     ae = None
     if cache_latents:
-        ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu")
+        ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu", args.disable_mmap_load_safetensors)
         ae.to(accelerator.device, dtype=weight_dtype)
         ae.requires_grad_(False)
         ae.eval()
@@ -199,8 +199,8 @@ def train(args):
     strategy_base.TokenizeStrategy.set_strategy(flux_tokenize_strategy)
 
     # load clip_l, t5xxl for caching text encoder outputs
-    clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu")
-    t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu")
+    clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", args.disable_mmap_load_safetensors)
+    t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu", args.disable_mmap_load_safetensors)
     clip_l.eval()
     t5xxl.eval()
     clip_l.requires_grad_(False)
@@ -228,7 +228,6 @@ def train(args):
         if args.sample_prompts is not None:
             logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
 
-            tokenize_strategy: strategy_flux.FluxTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
             text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
             prompts = load_prompts(args.sample_prompts)
@@ -238,9 +237,9 @@ def train(args):
                     for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
                         if p not in sample_prompts_te_outputs:
                             logger.info(f"cache Text Encoder outputs for prompt: {p}")
-                            tokens_and_masks = tokenize_strategy.tokenize(p)
+                            tokens_and_masks = flux_tokenize_strategy.tokenize(p)
                             sample_prompts_te_outputs[p] = text_encoding_strategy.encode_tokens(
-                                tokenize_strategy, [clip_l, t5xxl], tokens_and_masks, args.apply_t5_attn_mask
+                                flux_tokenize_strategy, [clip_l, t5xxl], tokens_and_masks, args.apply_t5_attn_mask
                             )
 
         accelerator.wait_for_everyone()
@@ -251,7 +250,9 @@ def train(args):
         clean_memory_on_device(accelerator.device)
 
     # load FLUX
-    flux = flux_utils.load_flow_model(name, args.pretrained_model_name_or_path, weight_dtype, "cpu")
+    flux = flux_utils.load_flow_model(
+        name, args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors
+    )
 
     if args.gradient_checkpointing:
         flux.enable_gradient_checkpointing(args.cpu_offload_checkpointing)
@@ -277,7 +278,10 @@ def train(args):
     training_models = []
     params_to_optimize = []
     training_models.append(flux)
-    params_to_optimize.append({"params": list(flux.parameters()), "lr": args.learning_rate})
+    name_and_params = list(flux.named_parameters())
+    # single param group for now
+    params_to_optimize.append({"params": [p for _, p in name_and_params], "lr": args.learning_rate})
+    param_names = [[n for n, _ in name_and_params]]
 
     # calculate number of trainable parameters
     n_params = 0
@@ -416,7 +420,7 @@ def train(args):
         # if we doesn't swap blocks, we can move the model to device
         flux = accelerator.prepare(flux, device_placement=[not is_swapping_blocks])
         if is_swapping_blocks:
-            flux.move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
+            accelerator.unwrap_model(flux).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -433,17 +437,89 @@ def train(args):
         import library.adafactor_fused
 
         library.adafactor_fused.patch_adafactor_fused(optimizer)
-        for param_group in optimizer.param_groups:
-            for parameter in param_group["params"]:
+
+        double_blocks_to_swap = args.double_blocks_to_swap
+        single_blocks_to_swap = args.single_blocks_to_swap
+        num_double_blocks = 19  # len(flux.double_blocks)
+        num_single_blocks = 38  # len(flux.single_blocks)
+        handled_double_block_indices = set()
+        handled_single_block_indices = set()
+
+        for param_group, param_name_group in zip(optimizer.param_groups, param_names):
+            for parameter, param_name in zip(param_group["params"], param_name_group):
                 if parameter.requires_grad:
+                    grad_hook = None
 
-                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
+                    if double_blocks_to_swap:
+                        if param_name.startswith("double_blocks"):
+                            block_idx = int(param_name.split(".")[1])
+                            if (
+                                block_idx not in handled_double_block_indices
+                                and block_idx >= (num_double_blocks - double_blocks_to_swap) - 1
+                                and block_idx < num_double_blocks - 1
+                            ):
+                                # swap next (already backpropagated) block
+                                handled_double_block_indices.add(block_idx)
+                                block_idx_cpu = block_idx + 1
+                                block_idx_cuda = double_blocks_to_swap - (num_double_blocks - block_idx_cpu)
 
-                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                                # create swap hook
+                                def create_double_swap_grad_hook(bidx, bidx_cuda):
+                                    def __grad_hook(tensor: torch.Tensor):
+                                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                                        optimizer.step_param(tensor, param_group)
+                                        tensor.grad = None
+
+                                        # swap blocks if necessary
+                                        flux.double_blocks[bidx].to("cpu")
+                                        flux.double_blocks[bidx_cuda].to(accelerator.device)
+                                        # print(f"Move double block {bidx} to cpu and {bidx_cuda} to device")
+
+                                    return __grad_hook
+
+                                grad_hook = create_double_swap_grad_hook(block_idx_cpu, block_idx_cuda)
+                    if single_blocks_to_swap:
+                        if param_name.startswith("single_blocks"):
+                            block_idx = int(param_name.split(".")[1])
+                            if (
+                                block_idx not in handled_single_block_indices
+                                and block_idx >= (num_single_blocks - single_blocks_to_swap) - 1
+                                and block_idx < num_single_blocks - 1
+                            ):
+                                handled_single_block_indices.add(block_idx)
+                                block_idx_cpu = block_idx + 1
+                                block_idx_cuda = single_blocks_to_swap - (num_single_blocks - block_idx_cpu)
+                                # print(param_name, block_idx_cpu, block_idx_cuda)
+
+                                # create swap hook
+                                def create_single_swap_grad_hook(bidx, bidx_cuda):
+                                    def __grad_hook(tensor: torch.Tensor):
+                                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                                        optimizer.step_param(tensor, param_group)
+                                        tensor.grad = None
+
+                                        # swap blocks if necessary
+                                        flux.single_blocks[bidx].to("cpu")
+                                        flux.single_blocks[bidx_cuda].to(accelerator.device)
+                                        # print(f"Move single block {bidx} to cpu and {bidx_cuda} to device")
+
+                                    return __grad_hook
+
+                                grad_hook = create_single_swap_grad_hook(block_idx_cpu, block_idx_cuda)
+
+                    if grad_hook is None:
+
+                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, param_group)
+                            tensor.grad = None
+
+                        grad_hook = __grad_hook
+
+                    parameter.register_post_accumulate_grad_hook(grad_hook)
 
     elif args.blockwise_fused_optimizers:
         # prepare for additional optimizers and lr schedulers
@@ -462,8 +538,8 @@ def train(args):
 
         double_blocks_to_swap = args.double_blocks_to_swap
         single_blocks_to_swap = args.single_blocks_to_swap
-        num_double_blocks = len(flux.double_blocks)
-        num_single_blocks = len(flux.single_blocks)
+        num_double_blocks = 19  # len(flux.double_blocks)
+        num_single_blocks = 38  # len(flux.single_blocks)
 
         for opt_idx, optimizer in enumerate(optimizers):
             for param_group in optimizer.param_groups:
@@ -543,7 +619,7 @@ def train(args):
         )
 
     if is_swapping_blocks:
-        flux.prepare_block_swap_before_forward()
+        accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
 
     # For --sample_at_first
     flux_train_utils.sample_images(accelerator, args, 0, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs)
@@ -585,7 +661,7 @@ def train(args):
                     with torch.no_grad():
                         input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
                         text_encoder_conds = text_encoding_strategy.encode_tokens(
-                            tokenize_strategy, [clip_l, t5xxl], input_ids, args.apply_t5_attn_mask
+                            flux_tokenize_strategy, [clip_l, t5xxl], input_ids, args.apply_t5_attn_mask
                         )
                         if args.full_fp16:
                             text_encoder_conds = [c.to(weight_dtype) for c in text_encoder_conds]
@@ -610,7 +686,10 @@ def train(args):
                 guidance_vec = torch.full((bsz,), args.guidance_scale, device=accelerator.device)
 
                 # call model
-                l_pooled, t5_out, txt_ids = text_encoder_conds
+                l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
+                if not args.apply_t5_attn_mask:
+                    t5_attn_mask = None
+
                 with accelerator.autocast():
                     # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                     model_pred = flux(
@@ -621,6 +700,7 @@ def train(args):
                         y=l_pooled,
                         timesteps=timesteps / 1000,
                         guidance=guidance_vec,
+                        txt_attention_mask=t5_attn_mask,
                     )
 
                 # unpack latents

@@ -190,9 +190,10 @@ def sample_image_inference(
         te_outputs = sample_prompts_te_outputs[prompt]
     else:
         tokens_and_masks = tokenize_strategy.tokenize(prompt)
+        # strategy has apply_t5_attn_mask option
         te_outputs = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
 
-    l_pooled, t5_out, txt_ids = te_outputs
+    l_pooled, t5_out, txt_ids, t5_attn_mask = te_outputs
 
     # sample image
     weight_dtype = ae.dtype  # TOFO give dtype as argument
@@ -208,9 +209,10 @@ def sample_image_inference(
     )
     timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)  # FLUX.1 dev -> shift=True
     img_ids = flux_utils.prepare_img_ids(1, packed_latent_height, packed_latent_width).to(accelerator.device, weight_dtype)
+    t5_attn_mask = t5_attn_mask.to(accelerator.device) if args.apply_t5_attn_mask else None
 
     with accelerator.autocast(), torch.no_grad():
-        x = denoise(flux, noise, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=scale)
+        x = denoise(flux, noise, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=scale, t5_attn_mask=t5_attn_mask)
 
     x = x.float()
     x = flux_utils.unpack_latents(x, packed_latent_height, packed_latent_width)
@@ -289,12 +291,22 @@ def denoise(
     vec: torch.Tensor,
     timesteps: list[float],
     guidance: float = 4.0,
+    t5_attn_mask: Optional[torch.Tensor] = None,
 ):
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for t_curr, t_prev in zip(tqdm(timesteps[:-1]), timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        pred = model(img=img, img_ids=img_ids, txt=txt, txt_ids=txt_ids, y=vec, timesteps=t_vec, guidance=guidance_vec)
+        pred = model(
+            img=img,
+            img_ids=img_ids,
+            txt=txt,
+            txt_ids=txt_ids,
+            y=vec,
+            timesteps=t_vec,
+            guidance=guidance_vec,
+            txt_attention_mask=t5_attn_mask,
+        )
 
         img = img + (t_prev - t_curr) * pred
 
@@ -498,7 +510,7 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--apply_t5_attn_mask",
         action="store_true",
-        help="apply attention mask (zero embs) to T5-XXL / T5-XXLにアテンションマスク（ゼロ埋め）を適用する",
+        help="apply attention mask to T5-XXL encode and FLUX double blocks / T5-XXLエンコードとFLUXダブルブロックにアテンションマスクを適用する",
     )
     parser.add_argument(
         "--cache_text_encoder_outputs", action="store_true", help="cache text encoder outputs / text encoderの出力をキャッシュする"

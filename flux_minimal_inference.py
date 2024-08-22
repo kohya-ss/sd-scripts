@@ -70,12 +70,22 @@ def denoise(
     vec: torch.Tensor,
     timesteps: list[float],
     guidance: float = 4.0,
+    t5_attn_mask: Optional[torch.Tensor] = None,
 ):
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for t_curr, t_prev in zip(tqdm(timesteps[:-1]), timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        pred = model(img=img, img_ids=img_ids, txt=txt, txt_ids=txt_ids, y=vec, timesteps=t_vec, guidance=guidance_vec)
+        pred = model(
+            img=img,
+            img_ids=img_ids,
+            txt=txt,
+            txt_ids=txt_ids,
+            y=vec,
+            timesteps=t_vec,
+            guidance=guidance_vec,
+            txt_attention_mask=t5_attn_mask,
+        )
 
         img = img + (t_prev - t_curr) * pred
 
@@ -92,6 +102,7 @@ def do_sample(
     txt_ids: torch.Tensor,
     num_steps: int,
     guidance: float,
+    t5_attn_mask: Optional[torch.Tensor],
     is_schnell: bool,
     device: torch.device,
     flux_dtype: torch.dtype,
@@ -101,10 +112,14 @@ def do_sample(
     # denoise initial noise
     if accelerator:
         with accelerator.autocast(), torch.no_grad():
-            x = denoise(model, img, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=guidance)
+            x = denoise(
+                model, img, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=guidance, t5_attn_mask=t5_attn_mask
+            )
     else:
         with torch.autocast(device_type=device.type, dtype=flux_dtype), torch.no_grad():
-            x = denoise(model, img, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=guidance)
+            x = denoise(
+                model, img, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=guidance, t5_attn_mask=t5_attn_mask
+            )
 
     return x
 
@@ -156,14 +171,14 @@ def generate_image(
             clip_l.to(clip_l_dtype)
             t5xxl.to(t5xxl_dtype)
             with accelerator.autocast():
-                _, t5_out, txt_ids = encoding_strategy.encode_tokens(
+                _, t5_out, txt_ids, t5_attn_mask = encoding_strategy.encode_tokens(
                     tokenize_strategy, [clip_l, t5xxl], tokens_and_masks, args.apply_t5_attn_mask
                 )
         else:
             with torch.autocast(device_type=device.type, dtype=clip_l_dtype):
-                l_pooled, _, _ = encoding_strategy.encode_tokens(tokenize_strategy, [clip_l, None], tokens_and_masks)
+                l_pooled, _, _, _ = encoding_strategy.encode_tokens(tokenize_strategy, [clip_l, None], tokens_and_masks)
             with torch.autocast(device_type=device.type, dtype=t5xxl_dtype):
-                _, t5_out, txt_ids = encoding_strategy.encode_tokens(
+                _, t5_out, txt_ids, t5_attn_mask = encoding_strategy.encode_tokens(
                     tokenize_strategy, [None, t5xxl], tokens_and_masks, args.apply_t5_attn_mask
                 )
 
@@ -186,7 +201,11 @@ def generate_image(
         steps = 4 if is_schnell else 50
 
     img_ids = img_ids.to(device)
-    x = do_sample(accelerator, model, noise, img_ids, l_pooled, t5_out, txt_ids, steps, guidance, is_schnell, device, flux_dtype)
+    t5_attn_mask = t5_attn_mask.to(device) if args.apply_t5_attn_mask else None
+
+    x = do_sample(
+        accelerator, model, noise, img_ids, l_pooled, t5_out, txt_ids, steps, guidance, t5_attn_mask, is_schnell, device, flux_dtype
+    )
     if args.offload:
         model = model.cpu()
     # del model
