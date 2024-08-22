@@ -68,10 +68,10 @@ def svd(
         logger.info("Using memory efficient safe_open")
         open_fn = lambda fn: MemoryEfficientSafeOpen(fn)
 
-    with open_fn(model_org) as fo:
+    with open_fn(model_org) as f_org:
         # filter keys
         keys = []
-        for key in fo.keys():
+        for key in f_org.keys():
             if not ("single_block" in key or "double_block" in key):
                 continue
             if ".bias" in key:
@@ -80,11 +80,11 @@ def svd(
                 continue
             keys.append(key)
 
-        with open_fn(model_tuned) as ft:
+        with open_fn(model_tuned) as f_tuned:
             for key in tqdm(keys):
                 # get tensors and calculate difference
-                value_o = fo.get_tensor(key)
-                value_t = ft.get_tensor(key)
+                value_o = f_org.get_tensor(key)
+                value_t = f_tuned.get_tensor(key)
                 mat = value_t.to(calc_dtype) - value_o.to(calc_dtype)
                 del value_o, value_t
 
@@ -114,7 +114,7 @@ def svd(
                 U = U.to(store_device, dtype=save_dtype).contiguous()
                 Vh = Vh.to(store_device, dtype=save_dtype).contiguous()
 
-                print(f"key: {key}, U: {U.size()}, Vh: {Vh.size()}")
+                # print(f"key: {key}, U: {U.size()}, Vh: {Vh.size()}")
                 lora_weights[key] = (U, Vh)
                 del mat, U, S, Vh
 
