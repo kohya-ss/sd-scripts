@@ -108,14 +108,10 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
         self.suffix = (
             SdSdxlLatentsCachingStrategy.SD_LATENTS_NPZ_SUFFIX if sd else SdSdxlLatentsCachingStrategy.SDXL_LATENTS_NPZ_SUFFIX
         )
-
-    def get_image_size_from_disk_cache_path(self, absolute_path: str) -> Tuple[Optional[int], Optional[int]]:
-        # does not include old npz
-        npz_file = glob.glob(os.path.splitext(absolute_path)[0] + "_*" + self.suffix)
-        if len(npz_file) == 0:
-            return None, None
-        w, h = os.path.splitext(npz_file[0])[0].split("_")[-2].split("x")
-        return int(w), int(h)
+    
+    @property
+    def cache_suffix(self) -> str:
+        return self.suffix
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
         # support old .npz
