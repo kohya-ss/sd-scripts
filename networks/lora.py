@@ -815,7 +815,8 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
             weights_sd = torch.load(file, map_location="cpu")
 
     # if keys are Diffusers based, convert to SAI based
-    convert_diffusers_to_sai_if_needed(weights_sd)
+    if is_sdxl:
+        convert_diffusers_to_sai_if_needed(weights_sd)
 
     # get dim/alpha mapping
     modules_dim = {}
@@ -840,7 +841,13 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     module_class = LoRAInfModule if for_inference else LoRAModule
 
     network = LoRANetwork(
-        text_encoder, unet, multiplier=multiplier, modules_dim=modules_dim, modules_alpha=modules_alpha, module_class=module_class
+        text_encoder,
+        unet,
+        multiplier=multiplier,
+        modules_dim=modules_dim,
+        modules_alpha=modules_alpha,
+        module_class=module_class,
+        is_sdxl=is_sdxl,
     )
 
     # block lr
