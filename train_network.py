@@ -192,7 +192,8 @@ class NetworkTrainer:
             for x in noisy_latents:
                 x.requires_grad_(True)
             for t in text_encoder_conds:
-                t.requires_grad_(True)
+                if t.is_floating_point():
+                    t.requires_grad_(True)
 
         # Predict the noise residual
         with accelerator.autocast():

@@ -297,7 +297,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
             for t in text_encoder_conds:
-                t.requires_grad_(True)
+                if t.is_floating_point():
+                    t.requires_grad_(True)
             img_ids.requires_grad_(True)
             guidance_vec.requires_grad_(True)
 
