@@ -604,7 +604,7 @@ class LoRANetwork(torch.nn.Module):
         return info
 
     def load_state_dict(self, state_dict, strict=True):
-        # override to convert original weight to splitted qkv weight
+        # override to convert original weight to split qkv
         if not self.split_qkv:
             return super().load_state_dict(state_dict, strict)
 
