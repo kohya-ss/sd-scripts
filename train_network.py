@@ -13,6 +13,7 @@ import toml
 from tqdm import tqdm
 
 import torch
+import transformers
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -544,14 +545,25 @@ class NetworkTrainer:
 
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
             if t_enc.device.type != "cpu":
+                old_te_weight_dtype = te_weight_dtype
+                if args.fp8_base and isinstance(t_enc, transformers.T5EncoderModel):
+                    te_weight_dtype = torch.float8_e5m2
                 t_enc.to(dtype=te_weight_dtype)
-                if hasattr(t_enc, "text_model") and hasattr(t_enc.text_model, "embeddings"):
-                    # nn.Embedding not support FP8
-                    t_enc.text_model.embeddings.to(
-                        dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
-                elif hasattr(t_enc, "encoder") and hasattr(t_enc.encoder, "embeddings"):
-                    t_enc.encoder.embeddings.to(
-                        dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                te_weight_dtype = old_te_weight_dtype
+                del old_te_weight_dtype
+                # nn.Embedding not support FP8
+                if isinstance(t_enc, transformers.CLIPTextModel):
+                    if hasattr(t_enc.text_model, "embeddings"):
+                        t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                elif isinstance(t_enc, transformers.T5EncoderModel):
+                    if hasattr(t_enc, "shared"):
+                        t_enc.shared.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                    if hasattr(t_enc, "encoder"):
+                        if hasattr(t_enc.encoder, "embed_tokens"):
+                            t_enc.encoder.embed_tokens.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                        if hasattr(t_enc.encoder.block[0].layer[0].SelfAttention,"relative_attention_bias"):
+                            t_enc.encoder.block[0].layer[0].SelfAttention.relative_attention_bias.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
         if args.deepspeed:
@@ -1019,7 +1031,7 @@ class NetworkTrainer:
         # log device and dtype for each model
         logger.info(f"unet dtype: {unet_weight_dtype}, device: {unet.device}")
         for t_enc in text_encoders:
-            logger.info(f"text_encoder dtype: {te_weight_dtype}, device: {t_enc.device}")
+            logger.info(f"text_encoder dtype: {'torch.float8_e5m2' if t_enc.device.type != 'cpu' and args.fp8_base and isinstance(t_enc, transformers.T5EncoderModel) else te_weight_dtype}, device: {t_enc.device}")
 
         clean_memory_on_device(accelerator.device)
 
