@@ -243,7 +243,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 self.flux_upper.to("cpu")
                 clean_memory_on_device(self.target_device)
                 self.flux_lower.to(self.target_device)
-                return self.flux_lower(img, txt, vec, pe)
+                return self.flux_lower(img, txt, vec, pe, txt_attention_mask)
 
         wrapper = FluxUpperLowerWrapper(self.flux_upper, flux, accelerator.device)
         clean_memory_on_device(accelerator.device)
@@ -352,7 +352,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 intermediate_txt.requires_grad_(True)
                 vec.requires_grad_(True)
                 pe.requires_grad_(True)
-                model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe)
+                model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
 
         # unpack latents
         model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
