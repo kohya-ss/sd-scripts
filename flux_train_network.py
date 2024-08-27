@@ -40,9 +40,13 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 train_dataset_group.is_text_encoder_output_cacheable()
             ), "when caching Text Encoder output, either caption_dropout_rate, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used / Text Encoderの出力をキャッシュするときはcaption_dropout_rate, shuffle_caption, token_warmup_step, caption_tag_dropout_rateは使えません"
 
-        assert (
-            args.network_train_unet_only or not args.cache_text_encoder_outputs
-        ), "network for Text Encoder cannot be trained with caching Text Encoder outputs / Text Encoderの出力をキャッシュしながらText Encoderのネットワークを学習することはできません"
+        # assert (
+        #     args.network_train_unet_only or not args.cache_text_encoder_outputs
+        # ), "network for Text Encoder cannot be trained with caching Text Encoder outputs / Text Encoderの出力をキャッシュしながらText Encoderのネットワークを学習することはできません"
+        if not args.network_train_unet_only:
+            logger.info(
+                "network for CLIP-L only will be trained. T5XXL will not be trained / CLIP-Lのネットワークのみが学習されます。T5XXLは学習されません"
+            )
 
         if args.max_token_length is not None:
             logger.warning("max_token_length is not used in Flux training / max_token_lengthはFluxのトレーニングでは使用されません")
@@ -137,12 +141,25 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return strategy_flux.FluxTextEncodingStrategy(apply_t5_attn_mask=args.apply_t5_attn_mask)
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
-        return text_encoders  # + [accelerator.unwrap_model(text_encoders[-1])]
+        if args.cache_text_encoder_outputs:
+            if self.is_train_text_encoder(args):
+                return text_encoders[0:1]  # only CLIP-L is needed for encoding because T5XXL is cached
+            else:
+                return text_encoders  # ignored
+        else:
+            return text_encoders  # both CLIP-L and T5XXL are needed for encoding
+
+    def get_text_encoders_train_flags(self, args, text_encoders):
+        return [True, False] if self.is_train_text_encoder(args) else [False, False]
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
             return strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-                args.cache_text_encoder_outputs_to_disk, None, False, apply_t5_attn_mask=args.apply_t5_attn_mask
+                args.cache_text_encoder_outputs_to_disk,
+                None,
+                False,
+                is_partial=self.is_train_text_encoder(args),
+                apply_t5_attn_mask=args.apply_t5_attn_mask,
             )
         else:
             return None
@@ -190,9 +207,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             accelerator.wait_for_everyone()
 
             # move back to cpu
-            logger.info("move text encoders back to cpu")
-            text_encoders[0].to("cpu")  # , dtype=torch.float32)  # Text Encoder doesn't work with fp16 on CPU
-            text_encoders[1].to("cpu")  # , dtype=torch.float32)
+            if not self.is_train_text_encoder(args):
+                logger.info("move CLIP-L back to cpu")
+                text_encoders[0].to("cpu")
+            logger.info("move t5XXL back to cpu")
+            text_encoders[1].to("cpu")
             clean_memory_on_device(accelerator.device)
 
             if not args.lowram:
@@ -297,7 +316,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
             for t in text_encoder_conds:
-                t.requires_grad_(True)
+                if t.dtype.is_floating_point:
+                    t.requires_grad_(True)
             img_ids.requires_grad_(True)
             guidance_vec.requires_grad_(True)
 
@@ -384,7 +404,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
 
     def is_text_encoder_not_needed_for_training(self, args):
-        return args.cache_text_encoder_outputs
+        return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
 
 
 def setup_parser() -> argparse.ArgumentParser:
