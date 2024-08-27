@@ -12,7 +12,7 @@ The command to install PyTorch is as follows:
 Aug 27, 2024 (update 2):
 In FLUX.1 LoRA training, when `--fp8_base` is specified, the FLUX.1 model file with fp8 (`float8_e4m3fn` type) can be loaded directly. Also, in `flux_minimal_inference.py`, it is possible to load it by specifying `fp8 (float8_e4m3fn)` in `--flux_dtype`.
 
-In `flux_merge_lora.py`, you can now specify the precision at save time with `fp8` (see `--help` for details). Also, if you do not specify the merge model, only the model type conversion will be performed.
+In `flux_merge_lora.py`, you can now specify `fp8` for the save precision (see `--help` for details). Also, if you do not specify the merge model, only the dtype conversion will be performed.
 
 Aug 27, 2024:
 
