@@ -29,6 +29,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         super().assert_extra_args(args, train_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
+        if args.fp8_base_unet:
+            args.fp8_base = True  # if fp8_base_unet is enabled, fp8_base is also enabled for FLUX.1
+
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning(
                 "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled / cache_text_encoder_outputs_to_diskが有効になっているため、cache_text_encoder_outputsも有効になります"
@@ -61,9 +64,20 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         name = self.get_flux_model_name(args)
 
         # if we load to cpu, flux.to(fp8) takes a long time
+        if args.fp8_base:
+            loading_dtype = None  # as is
+        else:
+            loading_dtype = weight_dtype
+
         model = flux_utils.load_flow_model(
-            name, args.pretrained_model_name_or_path, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
+            name, args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
         )
+        if args.fp8_base:
+            # check dtype of model
+            if model.dtype == torch.float8_e4m3fnuz or model.dtype == torch.float8_e5m2 or model.dtype == torch.float8_e5m2fnuz:
+                raise ValueError(f"Unsupported fp8 model dtype: {model.dtype}")
+            elif model.dtype == torch.float8_e4m3fn:
+                logger.info("Loaded fp8 FLUX model")
 
         if args.split_mode:
             model = self.prepare_split_model(model, weight_dtype, accelerator)

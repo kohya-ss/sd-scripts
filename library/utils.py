@@ -82,6 +82,66 @@ def setup_logging(args=None, log_level=None, reset=False):
         logger.info(msg_init)
 
 
+def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) -> torch.dtype:
+    """
+    Convert a string to a torch.dtype
+
+    Args:
+        s: string representation of the dtype
+        default_dtype: default dtype to return if s is None
+
+    Returns:
+        torch.dtype: the corresponding torch.dtype
+
+    Raises:
+        ValueError: if the dtype is not supported
+
+    Examples:
+        >>> str_to_dtype("float32")
+        torch.float32
+        >>> str_to_dtype("fp32")
+        torch.float32
+        >>> str_to_dtype("float16")
+        torch.float16
+        >>> str_to_dtype("fp16")
+        torch.float16
+        >>> str_to_dtype("bfloat16")
+        torch.bfloat16
+        >>> str_to_dtype("bf16")
+        torch.bfloat16
+        >>> str_to_dtype("fp8")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fn")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fnuz")
+        torch.float8_e4m3fnuz
+        >>> str_to_dtype("fp8_e5m2")
+        torch.float8_e5m2
+        >>> str_to_dtype("fp8_e5m2fnuz")
+        torch.float8_e5m2fnuz
+    """
+    if s is None:
+        return default_dtype
+    if s in ["bf16", "bfloat16"]:
+        return torch.bfloat16
+    elif s in ["fp16", "float16"]:
+        return torch.float16
+    elif s in ["fp32", "float32", "float"]:
+        return torch.float32
+    elif s in ["fp8_e4m3fn", "e4m3fn", "float8_e4m3fn"]:
+        return torch.float8_e4m3fn
+    elif s in ["fp8_e4m3fnuz", "e4m3fnuz", "float8_e4m3fnuz"]:
+        return torch.float8_e4m3fnuz
+    elif s in ["fp8_e5m2", "e5m2", "float8_e5m2"]:
+        return torch.float8_e5m2
+    elif s in ["fp8_e5m2fnuz", "e5m2fnuz", "float8_e5m2fnuz"]:
+        return torch.float8_e5m2fnuz
+    elif s in ["fp8", "float8"]:
+        return torch.float8_e4m3fn  # default fp8
+    else:
+        raise ValueError(f"Unsupported dtype: {s}")
+
+
 def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
     """
     memory efficient save file
@@ -198,7 +258,7 @@ class MemoryEfficientSafeOpen:
         if tensor_bytes is None:
             byte_tensor = torch.empty(0, dtype=torch.uint8)
         else:
-            tensor_bytes = bytearray(tensor_bytes) # make it writable
+            tensor_bytes = bytearray(tensor_bytes)  # make it writable
             byte_tensor = torch.frombuffer(tensor_bytes, dtype=torch.uint8)
 
         # process float8 types
