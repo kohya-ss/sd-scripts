@@ -10,7 +10,6 @@ import einops
 import numpy as np
 
 import torch
-from safetensors.torch import safe_open, load_file
 from tqdm import tqdm
 from PIL import Image
 import accelerate
@@ -21,7 +20,7 @@ from library.device_utils import init_ipex, get_preferred_device
 init_ipex()
 
 
-from library.utils import setup_logging
+from library.utils import setup_logging, str_to_dtype
 
 setup_logging()
 import logging
@@ -288,28 +287,6 @@ if __name__ == "__main__":
     name = "schnell" if "schnell" in args.ckpt_path else "dev"  # TODO change this to a more robust way
     is_schnell = name == "schnell"
 
-    def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) -> torch.dtype:
-        if s is None:
-            return default_dtype
-        if s in ["bf16", "bfloat16"]:
-            return torch.bfloat16
-        elif s in ["fp16", "float16"]:
-            return torch.float16
-        elif s in ["fp32", "float32"]:
-            return torch.float32
-        elif s in ["fp8_e4m3fn", "e4m3fn", "float8_e4m3fn"]:
-            return torch.float8_e4m3fn
-        elif s in ["fp8_e4m3fnuz", "e4m3fnuz", "float8_e4m3fnuz"]:
-            return torch.float8_e4m3fnuz
-        elif s in ["fp8_e5m2", "e5m2", "float8_e5m2"]:
-            return torch.float8_e5m2
-        elif s in ["fp8_e5m2fnuz", "e5m2fnuz", "float8_e5m2fnuz"]:
-            return torch.float8_e5m2fnuz
-        elif s in ["fp8", "float8"]:
-            return torch.float8_e4m3fn  # default fp8
-        else:
-            raise ValueError(f"Unsupported dtype: {s}")
-
     def is_fp8(dt):
         return dt in [torch.float8_e4m3fn, torch.float8_e4m3fnuz, torch.float8_e5m2, torch.float8_e5m2fnuz]
 
@@ -348,7 +325,7 @@ if __name__ == "__main__":
     encoding_strategy = strategy_flux.FluxTextEncodingStrategy()
 
     # DiT
-    model = flux_utils.load_flow_model(name, args.ckpt_path, flux_dtype, loading_device)
+    model = flux_utils.load_flow_model(name, args.ckpt_path, None, loading_device)
     model.eval()
     logger.info(f"Casting model to {flux_dtype}")
     model.to(flux_dtype)  # make sure model is dtype

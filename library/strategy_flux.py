@@ -60,7 +60,7 @@ class FluxTextEncodingStrategy(TextEncodingStrategy):
         if apply_t5_attn_mask is None:
             apply_t5_attn_mask = self.apply_t5_attn_mask
 
-        clip_l, t5xxl = models
+        clip_l, t5xxl = models if len(models) == 2 else (models[0], None)
         l_tokens, t5_tokens = tokens[:2]
         t5_attn_mask = tokens[2] if len(tokens) > 2 else None
 
@@ -81,6 +81,7 @@ class FluxTextEncodingStrategy(TextEncodingStrategy):
         else:
             t5_out = None
             txt_ids = None
+            t5_attn_mask = None  # caption may be dropped/shuffled, so t5_attn_mask should not be used to make sure the mask is same as the cached one
 
         return [l_pooled, t5_out, txt_ids, t5_attn_mask]  # returns t5_attn_mask for attention mask in transformer
 
