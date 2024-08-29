@@ -73,7 +73,7 @@ class NetworkTrainer:
 
         lrs = lr_scheduler.get_last_lr()
         for i, lr in enumerate(lrs):
-            if lr_descriptions is not None:
+            if lr_descriptions is not None and i < len(lr_descriptions):
                 lr_desc = lr_descriptions[i]
             else:
                 idx = i - (0 if args.network_train_unet_only else -1)
@@ -476,7 +476,7 @@ class NetworkTrainer:
         #             v = len(v)
         #         accelerator.print(f"trainable_params: {k} = {v}")
 
-        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
+        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params, network)
 
         # prepare dataloader
         # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
