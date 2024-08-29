@@ -1081,12 +1081,12 @@ class NetworkTrainer:
                         # print(f"set multiplier: {multipliers}")
                         accelerator.unwrap_model(network).set_multiplier(multipliers)
 
+                    text_encoder_conds = []
                     text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
                     if text_encoder_outputs_list is not None:
                         text_encoder_conds = text_encoder_outputs_list  # List of text encoder outputs
                     if (
-                        text_encoder_conds is None
-                        or len(text_encoder_conds) == 0
+                        len(text_encoder_conds) == 0
                         or text_encoder_conds[0] is None
                         or train_text_encoder
                     ):
