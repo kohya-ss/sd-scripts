@@ -10,7 +10,7 @@ bitsandbytes==0.43.3
 prodigyopt==1.0
 lion-pytorch==0.0.6
 tensorboard
-safetensors==0.4.2
+safetensors==0.4.4
 # gradio==3.16.2
 altair==4.2.2
 easygui==0.98.3

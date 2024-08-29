@@ -9,6 +9,13 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
+### Recent Updates
+
+Aug 29, 2024: 
+Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `requirements.txt` is updated.
+
+### Contents
+
 - [FLUX.1 LoRA training](#flux1-lora-training)
   - [Key Options for FLUX.1 LoRA training](#key-options-for-flux1-lora-training)
   - [Inference for FLUX.1 LoRA model](#inference-for-flux1-lora-model)
