@@ -1,6 +1,6 @@
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
-## FLUX.1 LoRA training (WIP)
+## FLUX.1 training (WIP)
 
 This feature is experimental. The options and the training script may change in the future. Please let us know if you have any idea to improve the training.
 
@@ -9,127 +9,31 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
-Aug 27, 2024 (update 2):
-In FLUX.1 LoRA training, when `--fp8_base` is specified, the FLUX.1 model file with fp8 (`float8_e4m3fn` type) can be loaded directly. Also, in `flux_minimal_inference.py`, it is possible to load it by specifying `fp8 (float8_e4m3fn)` in `--flux_dtype`.
+### Recent Updates
 
-In `flux_merge_lora.py`, you can now specify `fp8` for the save precision (see `--help` for details). Also, if you do not specify the merge model, only the dtype conversion will be performed.
+Aug 29, 2024: 
+Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `requirements.txt` is updated.
 
-Aug 27, 2024:
+### Contents
 
-- FLUX.1 LoRA training now supports CLIP-L LoRA. Please remove `--network_train_unet_only`. T5XXL is not trained. The output of T5XXL is still cached, so `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is still required. The trained LoRA can be used with ComfyUI.
-  - `flux_extract_lora.py` and `convert_flux_lora.py` do not support CLIP-L LoRA.
-- `--sigmoid_scale` is now effective even when `--timestep_sampling shift` is specified. Normally, leave it at 1.0. Larger values make the value before shift closer to a uniform distribution.
-
-- __Experimental__ `--fp8_base_unet` option is added to `flux_train_network.py`. Flux can be trained with fp8, and CLIP-L can be trained with bf16/fp16. When specifying this option, the `--fp8_base` option is automatically enabled. 
-
-Aug 25, 2024:
-Added `shift` option to `--timestep_sampling` in FLUX.1 fine-tuning and LoRA training. Shifts timesteps according to the value of `--discrete_flow_shift` (shifts the value of sigmoid of normal distribution random number). It may be good to start with a value of 3.1582 (=e^1.15) for `--discrete_flow_shift`.
-Sample command: `--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0`
-
-Aug 24, 2024 (update 2):
-
-__Experimental__ Added an option to split the projection layers of q/k/v/txt in the attention and apply LoRA to each of them in FLUX.1 LoRA training. Specify `"split_qkv=True"` in network_args like `--network_args "split_qkv=True"` (`train_blocks` is also available). 
-
-The number of parameters may increase slightly, so the expressiveness may increase, but the training time may be longer. No detailed verification has been done.
-
-This implementation is experimental, so it may be deprecated or changed in the future.
-
-The .safetensors file of the trained model is compatible with the normal LoRA model of sd-scripts, so it should be usable in inference environments such as ComfyUI as it is. Also, converting it to AI-toolkit (Diffusers) format with `convert_flux_lora.py` will reduce the size. It should be no problem to convert it if you use it in the inference environment.
-
-Technical details: In the implementation of Black Forest Labs' model, the projection layers of q/k/v (and txt in single blocks) are concatenated into one. If LoRA is added there as it is, the LoRA module is only one, and the dimension is large. In contrast, in the implementation of Diffusers, the projection layers of q/k/v/txt are separated. Therefore, the LoRA module is applied to q/k/v/txt separately, and the dimension is smaller. This option is for training LoRA similar to the latter.
-
-The compatibility of the saved model (state dict) is ensured by concatenating the weights of multiple LoRAs. However, since there are zero weights in some parts, the model size will be large.
-
-Aug 24, 2024:
-Fixed an issue where the attention mask was not applied in single blocks when `--apply_t5_attn_mask` was specified.
-
-Aug 22, 2024 (update 2):
-Fixed a bug that the embedding was zero-padded when `--apply_t5_attn_mask` option was applied. Also, the cache file for text encoder outputs now records whether the mask is applied or not. Please note that the cache file will be recreated when switching the `--apply_t5_attn_mask` option.
-
-Added a script to extract LoRA from the difference between the two models of FLUX.1. Use `networks/flux_extract_lora.py`. See `--help` for details. Normally, more than 50GB of memory is required, but specifying the `--mem_eff_safe_open` option significantly reduces memory usage. However, this option is a custom implementation, so unexpected problems may occur. Please always check if the model is loaded correctly.
-
-Aug 22, 2024:
-Fixed a bug in multi-GPU training. It should work with fine-tuning and LoRA training. `--double_blocks_to_swap` and `--single_blocks_to_swap` cannot be used in multi-GPU training. 
-
-`--disable_mmap_load_safetensors` option now works in `flux_train.py`. It speeds up model loading during training in WSL2. It is also effective in reducing memory usage when loading models during multi-GPU training. Please always check if the model is loaded correctly, as it uses a custom implementation of safetensors loading.
-
-
-Aug 21, 2024 (update 3):
-- There is a bug that `--full_bf16` option is enabled even if it is not specified in `flux_train.py`. The bug will be fixed sooner. __Please specify the `--full_bf16` option explicitly, especially when training with 24GB VRAM.__
-- Stochastic rounding is now implemented when `--fused_backward_pass` is specified. The implementation is 
-based on the code provided by 2kpr. Thank you so much! 
-    - With this change, `--fused_backward_pass` is recommended over `--blockwise_fused_optimizers` when `--full_bf16` is specified. 
-    - Please note that `--fused_backward_pass` is only supported with Adafactor.
-- The sample command in [FLUX.1 fine-tuning](#flux1-fine-tuning) is updated to reflect these changes.
-- Fixed `--single_blocks_to_swap` is not working in `flux_train.py`. 
-
-Aug 21, 2024 (update 2):
-Fixed an error in applying mask in Attention. The attention mask was float, but it should be bool. 
-
-Added a script `convert_flux_lora.py` to convert LoRA between sd-scripts format (BFL-based) and AI-toolkit format (Diffusers-based). See `--help` for details. BFL-based LoRA has a large module, so converting it to Diffusers format may reduce temporary memory usage in the inference environment. Note that re-conversion will increase the size of LoRA.
-
-
-Aug 21, 2024:
-The specification of `--apply_t5_attn_mask` has been changed. Previously, the T5 output was zero-padded, but now, two steps are taken: "1. Apply mask when encoding T5" and "2. Apply mask in the attention of Double Block". Fine tuning, LoRA training, and inference in `flux_mini_inference.py` have been changed.
-
-Aug 20, 2024 (update 3):
-__Experimental__  The multi-resolution training is now supported with caching latents to disk.
-
-The cache files now hold latents for multiple resolutions. Since the latents are appended to the current cache file, it is recommended to delete the cache file in advance (if not, the old latents is kept in .npz file).
-
-See [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training) for details.
-
-Aug 20, 2024 (update 2):
-`flux_merge_lora.py` now supports LoRA from AI-toolkit (Diffusers based keys). Specify `--diffusers` option to merge LoRA with Diffusers based keys. Thanks to exveria1015!
-
-Aug 20, 2024:
-FLUX.1 supports multi-resolution inference, so training at multiple resolutions may be possible and the results may be improved (like 1024x1024, 768x768 and 512x512 ... you can use any resolution).
-
-The script seems to support multi-resolution even in the current version, ~~if `--cache_latents_to_disk` is not specified~~ -> `--cache_latents_to_disk` is now supported for multi-resolution training. Please try if you are interested. See [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training) for details.
-
-We will support multi-resolution caching to disk in the near future.
-
-Aug 19, 2024:
-In `flux_train.py`, the memory consumption during model saving is reduced when `--save_precision` is set to the same value as `--mixed_precision` (about 22GB). Please set the same value unless there is a reason.
-
-An experimental option `--mem_eff_save` is also added. When specified, it can further reduce memory consumption (about 22GB), but since it is a custom implementation, unexpected problems may occur. We do not recommend using it unless you are familiar with the code.
-
-Aug 18, 2024:
-Memory-efficient training based on 2kpr's implementation is implemented in `flux_train.py`. Thanks to 2kpr! See [FLUX.1 fine-tuning](#flux1-fine-tuning) for details.
-
-Aug 17, 2024:
-Added a script `flux_train.py` to train FLUX.1. The script is experimental and not an optimized version. It needs >28GB VRAM for training. 
-
-Aug 16, 2024: 
-
-Added a script `networks/flux_merge_lora.py` to merge LoRA into FLUX.1 checkpoint. See [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint) for details.
-
-FLUX.1 schnell model based training is now supported (but not tested). If the name of the model file contains `schnell`, the model is treated as a schnell model. 
-
-Added `--t5xxl_max_token_length` option to specify the maximum token length of T5XXL. The default is 512 in dev and 256 in schnell.
-
-Previously, when `--max_token_length` was specified, that value was used, and 512 was used when omitted (default). Therefore, there is no impact if `--max_token_length` was not specified. If `--max_token_length` was specified, please specify `--t5xxl_max_token_length` instead. `--max_token_length` is ignored during FLUX.1 training.
-
-Aug 14, 2024: Sample image generation during training is now supported. Specify options such as `--sample_prompts` and `--sample_every_n_epochs`. It will be very slow when `--split_mode` is specified.
-
-Aug 13, 2024:  
-
-__Experimental__  A network argument `train_blocks` is added to `lora_flux`. This is to select the target blocks of LoRA from FLUX double blocks and single blocks. Specify like `--network_args "train_blocks=single"`. `all` trains both double blocks and single blocks, `double` trains only double blocks, and `single` trains only single blocks. The default (omission) is `all`.
-
-This argument is available even if `--split_mode` is not specified.
-
-__Experimental__  `--split_mode` option is added to `flux_train_network.py`. This splits FLUX into double blocks and single blocks for training. By enabling gradients only for the single blocks part, memory usage is reduced. When this option is specified, you need to specify `"train_blocks=single"` in the network arguments.
-
-This option enables training with 12GB VRAM GPUs, but the training speed is 2-3 times slower than the default. 
-
-Aug 11, 2024: Fix `--apply_t5_attn_mask` option to work. Please remove and re-generate the latents cache file if you have used the option before.
-
-Aug 10, 2024:  LoRA key prefix is changed to `lora_unet` from `lora_flex` to make it compatible with ComfyUI.
-
+- [FLUX.1 LoRA training](#flux1-lora-training)
+  - [Key Options for FLUX.1 LoRA training](#key-options-for-flux1-lora-training)
+  - [Inference for FLUX.1 LoRA model](#inference-for-flux1-lora-model)
+  - [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training)
+- [FLUX.1 fine-tuning](#flux1-fine-tuning)
+  - [Key Features for FLUX.1 fine-tuning](#key-features-for-flux1-fine-tuning)
+- [Extract LoRA from FLUX.1 Models](#extract-lora-from-flux1-models)
+- [Convert FLUX LoRA](#convert-flux-lora)
+- [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint)
+- [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training)
 
 ### FLUX.1 LoRA training
 
-We have added a new training script for LoRA training. The script is `flux_train_network.py`. See `--help` for options. Sample command is below, settings are based on [AI Toolkit by Ostris](https://github.com/ostris/ai-toolkit). It will work with 24GB VRAM GPUs. 
+We have added a new training script for LoRA training. The script is `flux_train_network.py`. See `--help` for options. 
+
+FLUX.1 model, CLIP-L, and T5XXL models are recommended to be in bf16/fp16 format. If you specify `--fp8_base`, you can use fp8 models for FLUX.1. The fp8 model is only compatible with `float8_e4m3fn` format.
+
+Sample command is below. It will work with 24GB VRAM GPUs. 
 
 ```
 accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train_network.py 
@@ -137,45 +41,109 @@ accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_t
 --ae ae.sft --cache_latents_to_disk --save_model_as safetensors --sdpa --persistent_data_loader_workers 
 --max_data_loader_n_workers 2 --seed 42 --gradient_checkpointing --mixed_precision bf16 --save_precision bf16 
 --network_module networks.lora_flux --network_dim 4 --optimizer_type adamw8bit --learning_rate 1e-4 
---network_train_unet_only --cache_text_encoder_outputs --cache_text_encoder_outputs_to_disk --fp8_base 
+--cache_text_encoder_outputs --cache_text_encoder_outputs_to_disk --fp8_base 
 --highvram --max_train_epochs 4 --save_every_n_epochs 1 --dataset_config dataset_1024_bs2.toml 
---output_dir path/to/output/dir --output_name flux-lora-name --timestep_sampling sigmoid 
---model_prediction_type raw --guidance_scale 1.0 --loss_type l2
+--output_dir path/to/output/dir --output_name flux-lora-name 
+--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0 
 ```
 (The command is multi-line for readability. Please combine it into one line.)
 
 The training can be done with 16GB VRAM GPUs with Adafactor optimizer. Please use settings like below:
 
 ```
---optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False"
+--optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
 ```
 
 The training can be done with 12GB VRAM GPUs with Adafactor optimizer, `--split_mode` and `train_blocks=single` options. Please use settings like below:
 
 ```
---optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --split_mode --network_args "train_blocks=single" 
+--optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --split_mode --network_args "train_blocks=single" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
 ```
-
-LoRAs for Text Encoders are not tested yet.
-
-We have added some new options (Aug 10, 2024): `--time_sampling`, `--sigmoid_scale`, `--model_prediction_type` and `--discrete_flow_shift`. The options are as follows:
-
-- `--timestep_sampling` is the method to sample timesteps (0-1): `sigma` (sigma-based, same as SD3), `uniform` (uniform random), or `sigmoid` (sigmoid of random normal, same as x-flux).
-- `--sigmoid_scale` is the scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). The default is 1.0. Larger values will make the sampling more uniform.
-- `--model_prediction_type` is how to interpret and process the model prediction: `raw` (use as is, same as x-flux), `additive` (add to noisy input), `sigma_scaled` (apply sigma scaling, same as SD3).
-- `--discrete_flow_shift` is the discrete flow shift for the Euler Discrete Scheduler, default is 3.0 (same as SD3).
-
-`--loss_type` may be useful for FLUX.1 training. The default is `l2`.
-
-In our experiments, `--timestep_sampling sigma --model_prediction_type raw --discrete_flow_shift 1.0` with `--loss_type l2` seems to work better than the default (SD3) settings. The multiplier of LoRA should be adjusted. 
-
-additional note (Aug 11): A quick check shows that the settings in [AI Toolkit by Ostris](https://github.com/ostris/ai-toolkit) seems to be equivalent to `--timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0` (with the default `l2` loss_type). This seems to be a good starting point. Thanks to Ostris for the great work!
-
-Other settings may work better, so please try different settings.
 
 We also not sure how many epochs are needed for convergence, and how the learning rate should be adjusted.
 
 The trained LoRA model can be used with ComfyUI. 
+
+#### Key Options for FLUX.1 LoRA training
+
+There are many unknown points in FLUX.1 training, so some settings can be specified by arguments. Here are the arguments. The arguments and sample settings are still experimental and may change in the future. Feedback on the settings is welcome.
+
+- `--timestep_sampling` is the method to sample timesteps (0-1):
+  - `sigma`: sigma-based, same as SD3
+  - `uniform`: uniform random
+  - `sigmoid`: sigmoid of random normal, same as x-flux, AI-toolkit etc.
+  - `shift`: shifts the value of sigmoid of normal distribution random number
+- `--sigmoid_scale` is the scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). The default is 1.0. Larger values will make the sampling more uniform.
+  - This option is effective even when`--timestep_sampling shift` is specified.
+  - Normally, leave it at 1.0. Larger values make the value before shift closer to a uniform distribution.
+- `--model_prediction_type` is how to interpret and process the model prediction:
+  - `raw`: use as is, same as x-flux
+  - `additive`: add to noisy input
+  - `sigma_scaled`: apply sigma scaling, same as SD3
+- `--discrete_flow_shift` is the discrete flow shift for the Euler Discrete Scheduler, default is 3.0 (same as SD3).
+
+The existing `--loss_type` option may be useful for FLUX.1 training. The default is `l2`.
+
+~~In our experiments, `--timestep_sampling sigma --model_prediction_type raw --discrete_flow_shift 1.0` with `--loss_type l2` seems to work better than the default (SD3) settings. The multiplier of LoRA should be adjusted.~~
+
+In our experiments, `--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0` (with the default `l2` loss_type) seems to work better. 
+
+The settings in [AI Toolkit by Ostris](https://github.com/ostris/ai-toolkit) seems to be equivalent to `--timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0` (with the default `l2` loss_type). 
+
+Other settings may work better, so please try different settings.
+
+Other options are described below.
+
+#### Distribution of timesteps
+
+`--timestep_sampling` and `--sigmoid_scale`, `--discrete_flow_shift` adjust the distribution of timesteps. The distribution is shown in the figures below.
+
+The effect of `--discrete_flow_shift` with `--timestep_sampling shift` (when `--sigmoid_scale` is not specified, the default is 1.0):
+![Figure_2](https://github.com/user-attachments/assets/d9de42f9-f17d-40da-b88d-d964402569c6)
+
+The difference between `--timestep_sampling sigmoid` and `--timestep_sampling uniform` (when `--timestep_sampling sigmoid` or `uniform` is specified, `--discrete_flow_shift` is ignored):
+![Figure_3](https://github.com/user-attachments/assets/27029009-1f5d-4dc0-bb24-13d02ac4fdad)
+
+The effect of `--timestep_sampling sigmoid` and `--sigmoid_scale` (when `--timestep_sampling sigmoid` is specified, `--discrete_flow_shift` is ignored):
+![Figure_4](https://github.com/user-attachments/assets/08a2267c-e47e-48b7-826e-f9a080787cdc)
+
+#### Key Features for FLUX.1 LoRA training
+
+1. CLIP-L LoRA Support:
+   - FLUX.1 LoRA training now supports CLIP-L LoRA.
+   - Remove `--network_train_unet_only` from your command.
+   - T5XXL is not trained. Its output is still cached, so `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is still required.
+   - The trained LoRA can be used with ComfyUI.
+   - Note: `flux_extract_lora.py` and `convert_flux_lora.py` do not support CLIP-L LoRA.
+
+2. Experimental FP8/FP16 mixed training:
+   - `--fp8_base_unet` enables training with fp8 for FLUX and bf16/fp16 for CLIP-L.
+   - FLUX can be trained with fp8, and CLIP-L can be trained with bf16/fp16.
+   - When specifying this option, the `--fp8_base` option is automatically enabled.
+
+3. Split Q/K/V Projection Layers (Experimental):
+   - Added an option to split the projection layers of q/k/v/txt in the attention and apply LoRA to each of them.
+   - Specify `"split_qkv=True"` in network_args like `--network_args "split_qkv=True"` (`train_blocks` is also available).
+   - May increase expressiveness but also training time.
+   - The trained model is compatible with normal LoRA models in sd-scripts and can be used in environments like ComfyUI.
+   - Converting to AI-toolkit (Diffusers) format with `convert_flux_lora.py` will reduce the size.
+   
+4. T5 Attention Mask Application:
+   - T5 attention mask is applied when `--apply_t5_attn_mask` is specified.
+   - Now applies mask when encoding T5 and in the attention of Double and Single Blocks
+   - Affects fine-tuning, LoRA training, and inference in `flux_minimal_inference.py`.
+
+5. Multi-resolution Training Support:
+   - FLUX.1 now supports multi-resolution training, even with caching latents to disk.
+
+
+Technical details of Q/K/V split: 
+
+In the implementation of Black Forest Labs' model, the projection layers of q/k/v (and txt in single blocks) are concatenated into one. If LoRA is added there as it is, the LoRA module is only one, and the dimension is large. In contrast, in the implementation of Diffusers, the projection layers of q/k/v/txt are separated. Therefore, the LoRA module is applied to q/k/v/txt separately, and the dimension is smaller. This option is for training LoRA similar to the latter.
+
+The compatibility of the saved model (state dict) is ensured by concatenating the weights of multiple LoRAs. However, since there are zero weights in some parts, the model size will be large.
+
+### Inference for FLUX.1 with LoRA model
 
 The inference script is also available. The script is `flux_minimal_inference.py`. See `--help` for options. 
 
@@ -184,6 +152,8 @@ python flux_minimal_inference.py --ckpt flux1-dev.sft --clip_l sd3/clip_l.safete
 ```
 
 ### FLUX.1 fine-tuning
+
+The memory-efficient training with block swap is based on 2kpr's implementation. Thanks to 2kpr!
 
 Sample command for FLUX.1 fine-tuning is below. This will work with 24GB VRAM GPUs, and 64GB main memory is recommended. 
 
@@ -195,15 +165,13 @@ accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_t
 --dataset_config dataset_1024_bs1.toml  --output_dir path/to/output/dir --output_name output-name 
 --learning_rate 5e-5 --max_train_epochs 4  --sdpa --highvram --cache_text_encoder_outputs_to_disk --cache_latents_to_disk --save_every_n_epochs 1 
 --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" 
---timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0 
+--lr_scheduler constant_with_warmup --max_grad_norm 0.0 
+--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0 
 --fused_backward_pass  --double_blocks_to_swap 6 --cpu_offload_checkpointing --full_bf16 
 ```
+(The command is multi-line for readability. Please combine it into one line.)
 
-(Combine the command into one line.)
-
-Sample image generation during training is not tested yet.
-
-Options are almost the same as LoRA training. The difference is `--blockwise_fused_optimizers`, `--double_blocks_to_swap` and `--cpu_offload_checkpointing`.  `--single_blocks_to_swap` is also available.
+Options are almost the same as LoRA training. The difference is `--full_bf16`, `--blockwise_fused_optimizers`, `--double_blocks_to_swap` and `--cpu_offload_checkpointing`.  `--single_blocks_to_swap` is also available.
 
 `--full_bf16` enables the training with bf16 (weights and gradients). 
 
@@ -222,6 +190,53 @@ The increasing the number of blocks to swap may reduce the memory usage, but the
 Swap 6 double blocks and use cpu offload checkpointing may be a good starting point. Please try different settings according to VRAM usage and training speed.
 
 The learning rate and the number of epochs are not optimized yet. Please adjust them according to the training results.
+
+#### Key Features for FLUX.1 fine-tuning
+
+1. Sample Image Generation:
+   - Sample image generation during training is now supported.
+   - The prompts are cached and used for generation if `--cache_latents` is specified. So changing the prompts during training will not affect the generated images.
+   - Specify options such as `--sample_prompts` and `--sample_every_n_epochs`.
+   - Note: It will be very slow when `--split_mode` is specified.
+
+2. Experimental Memory-Efficient Saving:
+   - `--mem_eff_save` option can further reduce memory consumption during model saving (about 22GB).
+   - This is a custom implementation and may cause unexpected issues. Use with caution.
+
+3. T5XXL Token Length Control:
+   - Added `--t5xxl_max_token_length` option to specify the maximum token length of T5XXL.
+   - Default is 512 in dev and 256 in schnell models.
+
+4. Multi-GPU Training Support:
+   - Note: `--double_blocks_to_swap` and `--single_blocks_to_swap` cannot be used in multi-GPU training.
+
+5. Disable mmap Load for Safetensors:
+   - `--disable_mmap_load_safetensors` option now works in `flux_train.py`.
+   - Speeds up model loading during training in WSL2.
+   - Effective in reducing memory usage when loading models during multi-GPU training.
+
+
+### Extract LoRA from FLUX.1 Models
+
+Script: `networks/flux_extract_lora.py`
+
+Extracts LoRA from the difference between two FLUX.1 models.
+
+Offers memory-efficient option with `--mem_eff_safe_open`.
+
+CLIP-L LoRA is not supported.
+
+### Convert FLUX LoRA
+
+Script: `convert_flux_lora.py`
+
+Converts LoRA between sd-scripts format (BFL-based) and AI-toolkit format (Diffusers-based).
+
+If you use LoRA in the inference environment, converting it to AI-toolkit format may reduce temporary memory usage.
+
+Note that re-conversion will increase the size of LoRA.
+
+CLIP-L LoRA is not supported.
 
 ### Merge LoRA to FLUX.1 checkpoint
 
