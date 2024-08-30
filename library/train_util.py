@@ -5748,19 +5748,13 @@ def sample_image_inference(
     # send images to wandb if enabled
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
-        try:
-            import wandb
-        except ImportError:  # will never be executed / 事前に一度確認するのでここはエラー出ないはず
-            raise ImportError("No wandb / wandb がインストールされていないようです")
 
         # not to commit images to avoid inconsistency between training and logging steps
         wandb_tracker.log(
-            {
-                f"sample_{i}": wandb.Image(
-                    image,
-                    caption=prompt # positive prompt as a caption
-                )
-            }, 
+            {f"sample_{i}": wandb.Image(
+                image,
+                caption=prompt # positive prompt as a caption
+            )}, 
             commit=False
         )
 

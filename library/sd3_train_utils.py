@@ -604,17 +604,18 @@ def sample_image_inference(
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
     image.save(os.path.join(save_dir, img_filename))
 
-    # wandb有効時のみログを送信
-    try:
+    # send images to wandb if enabled
+    if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
-        try:
-            import wandb
-        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-            raise ImportError("No wandb / wandb がインストールされていないようです")
 
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image)}, commit=False)
-    except:  # wandb 無効時
-        pass
+        # not to commit images to avoid inconsistency between training and logging steps
+        wandb_tracker.log(
+            {f"sample_{i}": wandb.Image(
+                image,
+                caption=prompt # positive prompt as a caption
+            )}, 
+            commit=False
+        )
 
 
 # region Diffusers
