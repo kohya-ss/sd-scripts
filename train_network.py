@@ -1018,6 +1018,9 @@ class NetworkTrainer:
 
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        if len(accelerator.trackers) > 0:
+            # log empty object to commit the sample images to wandb
+            accelerator.log({}, step=0)
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
@@ -1200,7 +1203,7 @@ class NetworkTrainer:
                 if args.scale_weight_norms:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
-                if args.logging_dir is not None:
+                if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
                         args, current_loss, avr_loss, lr_scheduler, lr_descriptions, keys_scaled, mean_norm, maximum_norm
                     )
@@ -1209,7 +1212,7 @@ class NetworkTrainer:
                 if global_step >= args.max_train_steps:
                     break
 
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = {"loss/epoch": loss_recorder.moving_average}
                 accelerator.log(logs, step=epoch + 1)
 

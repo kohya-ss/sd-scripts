@@ -541,14 +541,14 @@ def train(args):
             logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
