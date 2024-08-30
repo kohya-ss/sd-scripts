@@ -5746,7 +5746,7 @@ def sample_image_inference(
     image.save(os.path.join(save_dir, img_filename))
 
     # send images to wandb if enabled
-    if "wandb" in accelerator.trackers:
+    if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
         try:
             import wandb
