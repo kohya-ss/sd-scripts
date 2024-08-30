@@ -5754,7 +5754,15 @@ def sample_image_inference(
             raise ImportError("No wandb / wandb がインストールされていないようです")
 
         # not to commit images to avoid inconsistency between training and logging steps
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image)}, commit=False)
+        wandb_tracker.log(
+            {
+                f"sample_{i}": wandb.Image(
+                    image,
+                    caption=prompt # positive prompt as a caption
+                )
+            }, 
+            commit=False
+        )
 
 
 # endregion
