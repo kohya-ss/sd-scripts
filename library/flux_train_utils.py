@@ -245,6 +245,7 @@ def sample_image_inference(
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
 
+        import wandb
         # not to commit images to avoid inconsistency between training and logging steps
         wandb_tracker.log(
             {f"sample_{i}": wandb.Image(
