@@ -309,6 +309,9 @@ resolution = [512, 512]
 
 SD3 training is done with `sd3_train.py`. 
 
+__Sep 1, 2024__:
+- `--num_last_block_to_freeze` is added to `sd3_train.py`. This option is to freeze the last n blocks of the MMDiT. See [#1417](https://github.com/kohya-ss/sd-scripts/pull/1417) for details. Thanks to sdbds!
+
 __Jul  27, 2024__: 
 - Latents and text encoder outputs caching mechanism is refactored significantly. 
   - Existing cache files for SD3 need to be recreated. Please delete the previous cache files. 
