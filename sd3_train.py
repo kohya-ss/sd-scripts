@@ -368,12 +368,19 @@ def train(args):
         vae.eval()
         vae.to(accelerator.device, dtype=vae_dtype)
 
+    mmdit.requires_grad_(train_mmdit)
+    if not train_mmdit:
+        mmdit.to(accelerator.device, dtype=weight_dtype)  # because of unet is not prepared
+
+    if args.num_last_block_to_freeze:
+        train_util.freeze_blocks(mmdit,num_last_block_to_freeze=args.num_last_block_to_freeze)
+
     training_models = []
     params_to_optimize = []
     # if train_unet:
     training_models.append(mmdit)
     # if block_lrs is None:
-    params_to_optimize.append({"params": list(mmdit.parameters()), "lr": args.learning_rate})
+    params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, mmdit.parameters())), "lr": args.learning_rate})
     # else:
     #     params_to_optimize.extend(get_block_params_to_optimize(mmdit, block_lrs))
 
