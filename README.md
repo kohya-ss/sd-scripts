@@ -11,6 +11,10 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 1, 2024:
+- `--timestamp_sampling` has `flux_shift` option. Thanks to sdbds!
+  - This is the same shift as FLUX.1 dev inference, adjusting the timestep sampling depending on the resolution. `--discrete_flow_shift` is ignored when `flux_shift` is specified. It is not verified which is better, `shift` or `flux_shift`.
+
 Aug 29, 2024: 
 Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `requirements.txt` is updated.
 
@@ -73,6 +77,7 @@ There are many unknown points in FLUX.1 training, so some settings can be specif
   - `uniform`: uniform random
   - `sigmoid`: sigmoid of random normal, same as x-flux, AI-toolkit etc.
   - `shift`: shifts the value of sigmoid of normal distribution random number
+  - `flux_shift`: shifts the value of sigmoid of normal distribution random number, depending on the resolution (same as FLUX.1 dev inference). `--discrete_flow_shift` is ignored when `flux_shift` is specified.
 - `--sigmoid_scale` is the scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). The default is 1.0. Larger values will make the sampling more uniform.
   - This option is effective even when`--timestep_sampling shift` is specified.
   - Normally, leave it at 1.0. Larger values make the value before shift closer to a uniform distribution.
