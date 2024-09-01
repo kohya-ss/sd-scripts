@@ -4412,7 +4412,7 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             num_training_steps=num_training_steps, 
             num_cycles=num_cycles / 2,
             min_lr_rate=min_lr_ratio, 
-            **lr_scheduler_kwargs
+            **lr_scheduler_kwargs,
         )
 
     # All other schedulers require `num_decay_steps`
@@ -4426,7 +4426,7 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             num_decay_steps=num_decay_steps, 
             num_cycles=num_cycles / 2, 
             min_lr_ratio=min_lr_ratio if min_lr_ratio is not None else 0.0,
-            **lr_scheduler_kwargs
+            **lr_scheduler_kwargs,
         )
 
     return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, num_decay_steps=num_decay_steps, **lr_scheduler_kwargs)
