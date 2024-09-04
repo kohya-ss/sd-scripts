@@ -392,7 +392,7 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
             modules_dim[lora_name] = dim
             # logger.info(lora_name, value.size(), dim)
 
-        if train_t5xxl is None:
+        if train_t5xxl is None or train_t5xxl is False:
             train_t5xxl = "lora_te3" in lora_name
 
     if train_t5xxl is None:
