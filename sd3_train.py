@@ -368,12 +368,32 @@ def train(args):
         vae.eval()
         vae.to(accelerator.device, dtype=vae_dtype)
 
+    mmdit.requires_grad_(train_mmdit)
+    if not train_mmdit:
+        mmdit.to(accelerator.device, dtype=weight_dtype)  # because of unet is not prepared
+
+    if args.num_last_block_to_freeze:
+        # freeze last n blocks of MM-DIT
+        block_name = "x_block"
+        filtered_blocks = [(name, param) for name, param in mmdit.named_parameters() if block_name in name]
+        accelerator.print(f"filtered_blocks: {len(filtered_blocks)}")
+
+        num_blocks_to_freeze = min(len(filtered_blocks), args.num_last_block_to_freeze)
+
+        accelerator.print(f"freeze_blocks: {num_blocks_to_freeze}")
+
+        start_freezing_from = max(0, len(filtered_blocks) - num_blocks_to_freeze)
+
+        for i in range(start_freezing_from, len(filtered_blocks)):
+            _, param = filtered_blocks[i]
+            param.requires_grad = False
+
     training_models = []
     params_to_optimize = []
     # if train_unet:
     training_models.append(mmdit)
     # if block_lrs is None:
-    params_to_optimize.append({"params": list(mmdit.parameters()), "lr": args.learning_rate})
+    params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, mmdit.parameters())), "lr": args.learning_rate})
     # else:
     #     params_to_optimize.extend(get_block_params_to_optimize(mmdit, block_lrs))
 
@@ -1026,11 +1046,16 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
     )
-
     parser.add_argument(
         "--skip_latents_validity_check",
         action="store_true",
         help="skip latents validity check / latentsの正当性チェックをスキップする",
+    )
+    parser.add_argument(
+        "--num_last_block_to_freeze",
+        type=int,
+        default=None,
+        help="freeze last n blocks of MM-DIT / MM-DITの最後のnブロックを凍結する",
     )
     return parser
 

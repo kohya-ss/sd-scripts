@@ -330,6 +330,11 @@ def create_network(
     if split_qkv is not None:
         split_qkv = True if split_qkv == "True" else False
 
+    # train T5XXL
+    train_t5xxl = kwargs.get("train_t5xxl", False)
+    if train_t5xxl is not None:
+        train_t5xxl = True if train_t5xxl == "True" else False
+
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
         text_encoders,
@@ -344,6 +349,7 @@ def create_network(
         conv_alpha=conv_alpha,
         train_blocks=train_blocks,
         split_qkv=split_qkv,
+        train_t5xxl=train_t5xxl,
         varbose=True,
     )
 
@@ -370,9 +376,10 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
         else:
             weights_sd = torch.load(file, map_location="cpu")
 
-    # get dim/alpha mapping
+    # get dim/alpha mapping, and train t5xxl
     modules_dim = {}
     modules_alpha = {}
+    train_t5xxl = None
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -384,6 +391,12 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
             dim = value.size()[0]
             modules_dim[lora_name] = dim
             # logger.info(lora_name, value.size(), dim)
+
+        if train_t5xxl is None or train_t5xxl is False:
+            train_t5xxl = "lora_te3" in lora_name
+
+    if train_t5xxl is None:
+        train_t5xxl = False
 
     # # split qkv
     # double_qkv_rank = None
@@ -413,6 +426,7 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
         modules_alpha=modules_alpha,
         module_class=module_class,
         split_qkv=split_qkv,
+        train_t5xxl=train_t5xxl,
     )
     return network, weights_sd
 
@@ -421,10 +435,10 @@ class LoRANetwork(torch.nn.Module):
     # FLUX_TARGET_REPLACE_MODULE = ["DoubleStreamBlock", "SingleStreamBlock"]
     FLUX_TARGET_REPLACE_MODULE_DOUBLE = ["DoubleStreamBlock"]
     FLUX_TARGET_REPLACE_MODULE_SINGLE = ["SingleStreamBlock"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP", "T5Attention", "T5DenseGatedActDense"]
     LORA_PREFIX_FLUX = "lora_unet"  # make ComfyUI compatible
     LORA_PREFIX_TEXT_ENCODER_CLIP = "lora_te1"
-    LORA_PREFIX_TEXT_ENCODER_T5 = "lora_te2"
+    LORA_PREFIX_TEXT_ENCODER_T5 = "lora_te3"  # make ComfyUI compatible
 
     def __init__(
         self,
@@ -443,6 +457,7 @@ class LoRANetwork(torch.nn.Module):
         modules_alpha: Optional[Dict[str, int]] = None,
         train_blocks: Optional[str] = None,
         split_qkv: bool = False,
+        train_t5xxl: bool = False,
         varbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
@@ -457,6 +472,7 @@ class LoRANetwork(torch.nn.Module):
         self.module_dropout = module_dropout
         self.train_blocks = train_blocks if train_blocks is not None else "all"
         self.split_qkv = split_qkv
+        self.train_t5xxl = train_t5xxl
 
         self.loraplus_lr_ratio = None
         self.loraplus_unet_lr_ratio = None
@@ -469,12 +485,16 @@ class LoRANetwork(torch.nn.Module):
             logger.info(
                 f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}"
             )
-            if self.conv_lora_dim is not None:
-                logger.info(
-                    f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
-                )
+            # if self.conv_lora_dim is not None:
+            #     logger.info(
+            #         f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
+            #     )
         if self.split_qkv:
             logger.info(f"split qkv for LoRA")
+        if self.train_blocks is not None:
+            logger.info(f"train {self.train_blocks} blocks only")
+        if train_t5xxl:
+            logger.info(f"train T5XXL as well")
 
         # create module instances
         def create_modules(
@@ -550,12 +570,15 @@ class LoRANetwork(torch.nn.Module):
         skipped_te = []
         for i, text_encoder in enumerate(text_encoders):
             index = i
+            if not train_t5xxl and index > 0:  # 0: CLIP, 1: T5XXL, so we skip T5XXL if train_t5xxl is False
+                break
+
             logger.info(f"create LoRA for Text Encoder {index+1}:")
 
             text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            logger.info(f"create LoRA for Text Encoder {index+1}: {len(text_encoder_loras)} modules.")
             self.text_encoder_loras.extend(text_encoder_loras)
             skipped_te += skipped
-        logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
 
         # create LoRA for U-Net
         if self.train_blocks == "all":

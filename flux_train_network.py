@@ -43,13 +43,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 train_dataset_group.is_text_encoder_output_cacheable()
             ), "when caching Text Encoder output, either caption_dropout_rate, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used / Text Encoderの出力をキャッシュするときはcaption_dropout_rate, shuffle_caption, token_warmup_step, caption_tag_dropout_rateは使えません"
 
-        # assert (
-        #     args.network_train_unet_only or not args.cache_text_encoder_outputs
-        # ), "network for Text Encoder cannot be trained with caching Text Encoder outputs / Text Encoderの出力をキャッシュしながらText Encoderのネットワークを学習することはできません"
-        if not args.network_train_unet_only:
-            logger.info(
-                "network for CLIP-L only will be trained. T5XXL will not be trained / CLIP-Lのネットワークのみが学習されます。T5XXLは学習されません"
-            )
+        # prepare CLIP-L/T5XXL training flags
+        self.train_clip_l = not args.network_train_unet_only
+        self.train_t5xxl = False  # default is False even if args.network_train_unet_only is False
 
         if args.max_token_length is not None:
             logger.warning("max_token_length is not used in Flux training / max_token_lengthはFluxのトレーニングでは使用されません")
@@ -63,12 +59,10 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # currently offload to cpu for some models
         name = self.get_flux_model_name(args)
 
-        # if we load to cpu, flux.to(fp8) takes a long time
-        if args.fp8_base:
-            loading_dtype = None  # as is
-        else:
-            loading_dtype = weight_dtype
+        # if the file is fp8 and we are using fp8_base, we can load it as is (fp8)
+        loading_dtype = None if args.fp8_base else weight_dtype
 
+        # if we load to cpu, flux.to(fp8) takes a long time, so we should load to gpu in future
         model = flux_utils.load_flow_model(
             name, args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
         )
@@ -85,9 +79,21 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
         clip_l.eval()
 
+        # if the file is fp8 and we are using fp8_base (not unet), we can load it as is (fp8)
+        if args.fp8_base and not args.fp8_base_unet:
+            loading_dtype = None  # as is
+        else:
+            loading_dtype = weight_dtype
+
         # loading t5xxl to cpu takes a long time, so we should load to gpu in future
-        t5xxl = flux_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
+        t5xxl = flux_utils.load_t5xxl(args.t5xxl, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
         t5xxl.eval()
+        if args.fp8_base and not args.fp8_base_unet:
+            # check dtype of model
+            if t5xxl.dtype == torch.float8_e4m3fnuz or t5xxl.dtype == torch.float8_e5m2 or t5xxl.dtype == torch.float8_e5m2fnuz:
+                raise ValueError(f"Unsupported fp8 model dtype: {t5xxl.dtype}")
+            elif t5xxl.dtype == torch.float8_e4m3fn:
+                logger.info("Loaded fp8 T5XXL model")
 
         ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
@@ -154,25 +160,35 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def get_text_encoding_strategy(self, args):
         return strategy_flux.FluxTextEncodingStrategy(apply_t5_attn_mask=args.apply_t5_attn_mask)
 
+    def post_process_network(self, args, accelerator, network, text_encoders, unet):
+        # check t5xxl is trained or not
+        self.train_t5xxl = network.train_t5xxl
+
+        if self.train_t5xxl and args.cache_text_encoder_outputs:
+            raise ValueError(
+                "T5XXL is trained, so cache_text_encoder_outputs cannot be used / T5XXL学習時はcache_text_encoder_outputsは使用できません"
+            )
+
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         if args.cache_text_encoder_outputs:
-            if self.is_train_text_encoder(args):
+            if self.train_clip_l and not self.train_t5xxl:
                 return text_encoders[0:1]  # only CLIP-L is needed for encoding because T5XXL is cached
             else:
-                return text_encoders  # ignored
+                return None  # no text encoders are needed for encoding because both are cached
         else:
             return text_encoders  # both CLIP-L and T5XXL are needed for encoding
 
     def get_text_encoders_train_flags(self, args, text_encoders):
-        return [True, False] if self.is_train_text_encoder(args) else [False, False]
+        return [self.train_clip_l, self.train_t5xxl]
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
+            # if the text encoders is trained, we need tokenization, so is_partial is True
             return strategy_flux.FluxTextEncoderOutputsCachingStrategy(
                 args.cache_text_encoder_outputs_to_disk,
                 None,
                 False,
-                is_partial=self.is_train_text_encoder(args),
+                is_partial=self.train_clip_l or self.train_t5xxl,
                 apply_t5_attn_mask=args.apply_t5_attn_mask,
             )
         else:
@@ -193,8 +209,16 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
             # When TE is not be trained, it will not be prepared so we need to use explicit autocast
             logger.info("move text encoders to gpu")
-            text_encoders[0].to(accelerator.device, dtype=weight_dtype)
-            text_encoders[1].to(accelerator.device, dtype=weight_dtype)
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)  # always not fp8
+            text_encoders[1].to(accelerator.device)
+
+            if text_encoders[1].dtype == torch.float8_e4m3fn:
+                # if we load fp8 weights, the model is already fp8, so we use it as is
+                self.prepare_text_encoder_fp8(1, text_encoders[1], text_encoders[1].dtype, weight_dtype)
+            else:
+                # otherwise, we need to convert it to target dtype
+                text_encoders[1].to(weight_dtype)
+
             with accelerator.autocast():
                 dataset.new_cache_text_encoder_outputs(text_encoders, accelerator.is_main_process)
 
@@ -235,7 +259,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
             text_encoders[0].to(accelerator.device, dtype=weight_dtype)
-            text_encoders[1].to(accelerator.device, dtype=weight_dtype)
+            text_encoders[1].to(accelerator.device)
 
     # def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):
     #     noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
@@ -255,9 +279,12 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     #     return noise_pred
 
     def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux):
+        text_encoders = text_encoder  # for compatibility
+        text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
+
         if not args.split_mode:
             flux_train_utils.sample_images(
-                accelerator, args, epoch, global_step, flux, ae, text_encoder, self.sample_prompts_te_outputs
+                accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
             )
             return
 
@@ -281,7 +308,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         wrapper = FluxUpperLowerWrapper(self.flux_upper, flux, accelerator.device)
         clean_memory_on_device(accelerator.device)
         flux_train_utils.sample_images(
-            accelerator, args, epoch, global_step, wrapper, ae, text_encoder, self.sample_prompts_te_outputs
+            accelerator, args, epoch, global_step, wrapper, ae, text_encoders, self.sample_prompts_te_outputs
         )
         clean_memory_on_device(accelerator.device)
 
@@ -420,6 +447,47 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
+
+    def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
+        if index == 0:  # CLIP-L
+            return super().prepare_text_encoder_grad_ckpt_workaround(index, text_encoder)
+        else:  # T5XXL
+            text_encoder.encoder.embed_tokens.requires_grad_(True)
+
+    def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
+        if index == 0:  # CLIP-L
+            logger.info(f"prepare CLIP-L for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}")
+            text_encoder.to(te_weight_dtype)  # fp8
+            text_encoder.text_model.embeddings.to(dtype=weight_dtype)
+        else:  # T5XXL
+
+            def prepare_fp8(text_encoder, target_dtype):
+                def forward_hook(module):
+                    def forward(hidden_states):
+                        hidden_gelu = module.act(module.wi_0(hidden_states))
+                        hidden_linear = module.wi_1(hidden_states)
+                        hidden_states = hidden_gelu * hidden_linear
+                        hidden_states = module.dropout(hidden_states)
+
+                        hidden_states = module.wo(hidden_states)
+                        return hidden_states
+
+                    return forward
+
+                for module in text_encoder.modules():
+                    if module.__class__.__name__ in ["T5LayerNorm", "Embedding"]:
+                        # print("set", module.__class__.__name__, "to", target_dtype)
+                        module.to(target_dtype)
+                    if module.__class__.__name__ in ["T5DenseGatedActDense"]:
+                        # print("set", module.__class__.__name__, "hooks")
+                        module.forward = forward_hook(module)
+
+            if flux_utils.get_t5xxl_actual_dtype(text_encoder) == torch.float8_e4m3fn and text_encoder.dtype == weight_dtype:
+                logger.info(f"T5XXL already prepared for fp8")
+            else:
+                logger.info(f"prepare T5XXL for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}, add hooks")
+                text_encoder.to(te_weight_dtype)  # fp8
+                prepare_fp8(text_encoder, weight_dtype)
 
 
 def setup_parser() -> argparse.ArgumentParser:
