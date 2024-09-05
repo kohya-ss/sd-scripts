@@ -11,7 +11,12 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 5, 2024 (update 1):
+
+Added `--cpu_offload_checkpointing` option to LoRA training script. Offloads gradient checkpointing to CPU. This reduces up to 1GB of VRAM usage but slows down the training by about 15%. Cannot be used with `--split_mode`.
+
 Sep 5, 2024:
+
 The LoRA merge script now supports CLIP-L and T5XXL LoRA. Please specify `--clip_l` and `--t5xxl`. `--clip_l_save_to` and `--t5xxl_save_to` specify the save destination for CLIP-L and T5XXL. See [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint) for details.
 
 Sep 4, 2024:
@@ -71,6 +76,8 @@ The training can be done with 12GB VRAM GPUs with Adafactor optimizer, `--split_
 ```
 --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --split_mode --network_args "train_blocks=single" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
 ```
+
+`--cpu_offload_checkpointing` offloads gradient checkpointing to CPU. This reduces up to 1GB of VRAM usage but slows down the training by about 15%. Cannot be used with `--split_mode`.
 
 We also not sure how many epochs are needed for convergence, and how the learning rate should be adjusted.
 

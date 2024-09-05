@@ -50,6 +50,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.max_token_length is not None:
             logger.warning("max_token_length is not used in Flux training / max_token_lengthはFluxのトレーニングでは使用されません")
 
+        assert not args.split_mode or not args.cpu_offload_checkpointing, (
+            "split_mode and cpu_offload_checkpointing cannot be used together"
+            " / split_modeとcpu_offload_checkpointingは同時に使用できません"
+        )
+
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def get_flux_model_name(self, args):

@@ -261,7 +261,7 @@ def train(args):
     )
 
     if args.gradient_checkpointing:
-        flux.enable_gradient_checkpointing(args.cpu_offload_checkpointing)
+        flux.enable_gradient_checkpointing(cpu_offload=args.cpu_offload_checkpointing)
 
     flux.requires_grad_(True)
 
