@@ -1,5 +1,8 @@
 import argparse
+import itertools
+import json
 import os
+import re
 import time
 import torch
 from safetensors.torch import load_file, save_file
@@ -13,6 +16,126 @@ import logging
 logger = logging.getLogger(__name__)
 
 CLAMP_QUANTILE = 0.99
+
+# copied from hako-mikan/sd-webui-lora-block-weight/scripts/lora_block_weight.py
+BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
+BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
+BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
+BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
+BLOCKNUMS = [12,17,20,26]
+BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26]
+
+BLOCKS=["encoder",  # BASE
+"diffusion_model_input_blocks_0_",  # IN00
+"diffusion_model_input_blocks_1_",  # IN01
+"diffusion_model_input_blocks_2_",  # IN02
+"diffusion_model_input_blocks_3_",  # IN03
+"diffusion_model_input_blocks_4_",  # IN04
+"diffusion_model_input_blocks_5_",  # IN05
+"diffusion_model_input_blocks_6_",  # IN06
+"diffusion_model_input_blocks_7_",  # IN07
+"diffusion_model_input_blocks_8_",  # IN08
+"diffusion_model_input_blocks_9_",  # IN09
+"diffusion_model_input_blocks_10_",  # IN10
+"diffusion_model_input_blocks_11_",  # IN11
+"diffusion_model_middle_block_",  # M00
+"diffusion_model_output_blocks_0_",  # OUT00
+"diffusion_model_output_blocks_1_",  # OUT01
+"diffusion_model_output_blocks_2_",  # OUT02
+"diffusion_model_output_blocks_3_",  # OUT03
+"diffusion_model_output_blocks_4_",  # OUT04
+"diffusion_model_output_blocks_5_",  # OUT05
+"diffusion_model_output_blocks_6_",  # OUT06
+"diffusion_model_output_blocks_7_",  # OUT07
+"diffusion_model_output_blocks_8_",  # OUT08
+"diffusion_model_output_blocks_9_",  # OUT09
+"diffusion_model_output_blocks_10_",  # OUT10
+"diffusion_model_output_blocks_11_",  # OUT11
+"embedders",
+"transformer_resblocks"]
+
+
+def convert_diffusers_name_to_compvis(key, is_sd2):
+    "copied from AUTOMATIC1111/stable-diffusion-webui/extensions-builtin/Lora/networks.py"
+
+    # put original globals here
+    re_digits = re.compile(r"\d+")
+    re_x_proj = re.compile(r"(.*)_([qkv]_proj)$")
+    re_compiled = {}
+
+    suffix_conversion = {
+        "attentions": {},
+        "resnets": {
+            "conv1": "in_layers_2",
+            "conv2": "out_layers_3",
+            "time_emb_proj": "emb_layers_1",
+            "conv_shortcut": "skip_connection",
+        }
+    }  # end of original globals
+
+    def match(match_list, regex_text):
+        regex = re_compiled.get(regex_text)
+        if regex is None:
+            regex = re.compile(regex_text)
+            re_compiled[regex_text] = regex
+
+        r = re.match(regex, key)
+        if not r:
+            return False
+
+        match_list.clear()
+        match_list.extend([int(x) if re.match(re_digits, x) else x for x in r.groups()])
+        return True
+
+    m = []
+
+    if match(m, r"lora_unet_conv_in(.*)"):
+        return f'diffusion_model_input_blocks_0_0{m[0]}'
+
+    if match(m, r"lora_unet_conv_out(.*)"):
+        return f'diffusion_model_out_2{m[0]}'
+
+    if match(m, r"lora_unet_time_embedding_linear_(\d+)(.*)"):
+        return f"diffusion_model_time_embed_{m[0] * 2 - 2}{m[1]}"
+
+    if match(m, r"lora_unet_down_blocks_(\d+)_(attentions|resnets)_(\d+)_(.+)"):
+        suffix = suffix_conversion.get(m[1], {}).get(m[3], m[3])
+        return f"diffusion_model_input_blocks_{1 + m[0] * 3 + m[2]}_{1 if m[1] == 'attentions' else 0}_{suffix}"
+
+    if match(m, r"lora_unet_mid_block_(attentions|resnets)_(\d+)_(.+)"):
+        suffix = suffix_conversion.get(m[0], {}).get(m[2], m[2])
+        return f"diffusion_model_middle_block_{1 if m[0] == 'attentions' else m[1] * 2}_{suffix}"
+
+    if match(m, r"lora_unet_up_blocks_(\d+)_(attentions|resnets)_(\d+)_(.+)"):
+        suffix = suffix_conversion.get(m[1], {}).get(m[3], m[3])
+        return f"diffusion_model_output_blocks_{m[0] * 3 + m[2]}_{1 if m[1] == 'attentions' else 0}_{suffix}"
+
+    if match(m, r"lora_unet_down_blocks_(\d+)_downsamplers_0_conv"):
+        return f"diffusion_model_input_blocks_{3 + m[0] * 3}_0_op"
+
+    if match(m, r"lora_unet_up_blocks_(\d+)_upsamplers_0_conv"):
+        return f"diffusion_model_output_blocks_{2 + m[0] * 3}_{2 if m[0]>0 else 1}_conv"
+
+    if match(m, r"lora_te_text_model_encoder_layers_(\d+)_(.+)"):
+        if is_sd2:
+            if 'mlp_fc1' in m[1]:
+                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc1', 'mlp_c_fc')}"
+            elif 'mlp_fc2' in m[1]:
+                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc2', 'mlp_c_proj')}"
+            else:
+                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('self_attn', 'attn')}"
+
+        return f"transformer_text_model_encoder_layers_{m[0]}_{m[1]}"
+
+    if match(m, r"lora_te2_text_model_encoder_layers_(\d+)_(.+)"):
+        if 'mlp_fc1' in m[1]:
+            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc1', 'mlp_c_fc')}"
+        elif 'mlp_fc2' in m[1]:
+            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc2', 'mlp_c_proj')}"
+        else:
+            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('self_attn', 'attn')}"
+
+    return key
 
 
 def load_state_dict(file_name, dtype):
@@ -42,12 +165,28 @@ def save_to_file(file_name, state_dict, dtype, metadata):
         torch.save(state_dict, file_name)
 
 
-def merge_lora_models(models, ratios, new_rank, new_conv_rank, device, merge_dtype):
+def merge_lora_models(is_sd2, models, ratios, lbws, new_rank, new_conv_rank, device, merge_dtype):
     logger.info(f"new rank: {new_rank}, new conv rank: {new_conv_rank}")
     merged_sd = {}
     v2 = None
     base_model = None
-    for model, ratio in zip(models, ratios):
+
+    if lbws:
+        try:
+            # lbsは"[1,1,1,1,1,1,1,1,1,1,1,1]"のような文字列で与えられることを期待している
+            lbws = [json.loads(lbw) for lbw in lbws]
+        except Exception:
+            raise ValueError(f"format of lbws are must be json / 層別適用率はJSON形式で書いてください")
+        assert all(isinstance(lbw, list) for lbw in lbws), f"lbws are must be list / 層別適用率はリストにしてください"
+        assert len(set(len(lbw) for lbw in lbws)) == 1, "all lbws should have the same length  / 層別適用率は同じ長さにしてください"
+        assert all(len(lbw) in BLOCKNUMS for lbw in lbws), f"length of lbw are must be in {BLOCKNUMS} / 層別適用率の長さは{BLOCKNUMS}のいずれかにしてください"
+        assert all(all(isinstance(weight, (int, float)) for weight in lbw) for lbw in lbws), f"values of lbs are must be numbers / 層別適用率の値はすべて数値にしてください"
+
+        BLOCKID = BLOCKIDS[BLOCKNUMS.index(len(lbws[0]))]
+        conditions = [blockid in BLOCKID for blockid in BLOCKID26]
+        BLOCKS_ = [block for block, condition in zip(BLOCKS, conditions) if condition]
+
+    for model, ratio, lbw in itertools.zip_longest(models, ratios, lbws):
         logger.info(f"loading: {model}")
         lora_sd, lora_metadata = load_state_dict(model, merge_dtype)
 
@@ -62,6 +201,17 @@ def merge_lora_models(models, ratios, new_rank, new_conv_rank, device, merge_dty
         for key in tqdm(list(lora_sd.keys())):
             if "lora_down" not in key:
                 continue
+
+            if lbw:
+                # keyをlora_unet_down_blocks_0_のようなdiffusers形式から、
+                # diffusion_model_input_blocks_0_のようなcompvis形式に変換する
+                compvis_key = convert_diffusers_name_to_compvis(key, is_sd2)
+
+                block_in_key = [block in compvis_key for block in BLOCKS_]
+                is_lbw_target = any(block_in_key)
+                if is_lbw_target:
+                    index = [i for i, in_key in enumerate(block_in_key) if in_key][0]
+                    lbw_weight = lbw[index]
 
             lora_module_name = key[: key.rfind(".lora_down")]
 
@@ -92,6 +242,9 @@ def merge_lora_models(models, ratios, new_rank, new_conv_rank, device, merge_dty
 
             # W <- W + U * D
             scale = alpha / network_dim
+            if lbw:
+                if is_lbw_target:
+                    scale *= lbw_weight  # keyがlbwの対象であれば、lbwの重みを掛ける
 
             if device:  # and isinstance(scale, torch.Tensor):
                 scale = scale.to(device)
@@ -170,6 +323,10 @@ def merge_lora_models(models, ratios, new_rank, new_conv_rank, device, merge_dty
 
 def merge(args):
     assert len(args.models) == len(args.ratios), f"number of models must be equal to number of ratios / モデルの数と重みの数は合わせてください"
+    if args.lbws:
+        assert len(args.models) == len(args.lbws), f"number of models must be equal to number of ratios / モデルの数と層別適用率の数は合わせてください"
+    else:
+        args.lbws = []  # zip_longestで扱えるようにlbws未使用時には空のリストにしておく
 
     def str_to_dtype(p):
         if p == "float":
@@ -187,7 +344,7 @@ def merge(args):
 
     new_conv_rank = args.new_conv_rank if args.new_conv_rank is not None else args.new_rank
     state_dict, metadata, v2, base_model = merge_lora_models(
-        args.models, args.ratios, args.new_rank, new_conv_rank, args.device, merge_dtype
+        args.sd2, args.models, args.ratios, args.lbws, args.new_rank, new_conv_rank, args.device, merge_dtype
     )
 
     logger.info(f"calculating hashes and creating metadata...")
@@ -234,9 +391,13 @@ def setup_parser() -> argparse.ArgumentParser:
         "--save_to", type=str, default=None, help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors"
     )
     parser.add_argument(
+        "--sd2", action="store_true", help="set if LoRA models are for SD2 / マージするLoRAモデルがSD2用なら指定します"
+    )
+    parser.add_argument(
         "--models", type=str, nargs="*", help="LoRA models to merge: ckpt or safetensors file / マージするLoRAモデル、ckptまたはsafetensors"
     )
     parser.add_argument("--ratios", type=float, nargs="*", help="ratios for each model / それぞれのLoRAモデルの比率")
+    parser.add_argument("--lbws", type=str, nargs="*", help="lbw for each model / それぞれのLoRAモデルの層別適用率")
     parser.add_argument("--new_rank", type=int, default=4, help="Specify rank of output LoRA / 出力するLoRAのrank (dim)")
     parser.add_argument(
         "--new_conv_rank",
