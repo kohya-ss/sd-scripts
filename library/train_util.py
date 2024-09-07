@@ -2094,7 +2094,7 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img=pil_resize(cond_img,(int(target_size_hw[1]), int(target_size_hw[0])))
+                    cond_img = pil_resize(cond_img, (int(target_size_hw[1]), int(target_size_hw[0])))
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -2432,7 +2432,7 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
     return train_dataset_group
 
 
-def load_image(image_path, alpha=False):    
+def load_image(image_path, alpha=False):
     try:
         with Image.open(image_path) as image:
             if alpha:
