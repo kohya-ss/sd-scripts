@@ -3046,6 +3046,12 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         help="Combines backward pass and optimizer step to reduce VRAM usage. Only available in SDXL"
         + " / バックワードパスとオプティマイザステップを組み合わせてVRAMの使用量を削減します。SDXLでのみ有効",
     )
+    parser.add_argument(
+        "--optimizer_accumulation_steps",
+        type=int,
+        default=0,
+        help="Number of updates steps to accumulate before performing a backward/update pass / 学習時に逆伝播をする前に勾配を合計するステップ数",
+    )
 
 
 def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: bool):
@@ -4016,7 +4022,7 @@ def get_optimizer(args, trainable_params):
 
     if args.fused_backward_pass:
         assert (
-            optimizer_type == "Adafactor".lower()
+            optimizer_type in ["Adafactor".lower(),"lion", "adan", "adamw","ranger","stableadamw"]
         ), "fused_backward_pass currently only works with optimizer_type Adafactor / fused_backward_passは現在optimizer_type Adafactorでのみ機能します"
         assert (
             args.gradient_accumulation_steps == 1
@@ -4048,11 +4054,18 @@ def get_optimizer(args, trainable_params):
 
     if optimizer_type == "Lion".lower():
         try:
-            import lion_pytorch
-        except ImportError:
-            raise ImportError("No lion_pytorch / lion_pytorch がインストールされていないようです")
-        logger.info(f"use Lion optimizer | {optimizer_kwargs}")
-        optimizer_class = lion_pytorch.Lion
+            import optimi
+            logger.info(f"use optimi Lion optimizer | {optimizer_kwargs}")
+            optimizer_class = optimi.Lion
+            if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+                optimizer_kwargs["gradient_release"] = True
+        except:
+            try:
+                import lion_pytorch
+                logger.info(f"use Lion optimizer | {optimizer_kwargs}")
+                optimizer_class = lion_pytorch.Lion
+            except ImportError:
+                raise ImportError("No lion_pytorch / lion_pytorch がインストールされていないようです")
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.endswith("8bit".lower()):
@@ -4142,6 +4155,32 @@ def get_optimizer(args, trainable_params):
 
         optimizer_class = torch.optim.SGD
         optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
+
+    elif optimizer_type == "Adan".lower():
+        logger.info(f"use Adan optimizer | {optimizer_kwargs}")
+        # optimi
+        # check optimi is installed
+        try:
+            import optimi
+        except ImportError:
+            raise ImportError("No optimi / optimi がインストールされていないようです")
+        if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+            optimizer_kwargs["gradient_release"] = True
+        optimizer_class = optimi.Adan
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type == "Ranger".lower():
+        logger.info(f"use RAdam optimizer | {optimizer_kwargs}")
+        # optimi
+        # check optimi is installed
+        try:
+            import optimi
+        except ImportError:
+            raise ImportError("No optimi / optimi がインストールされていないようです")
+        if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+            optimizer_kwargs["gradient_release"] = True
+        optimizer_class = optimi.Ranger
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.startswith("DAdapt".lower()) or optimizer_type == "Prodigy".lower():
         # check lr and lr_count, and logger.info warning
@@ -4259,9 +4298,31 @@ def get_optimizer(args, trainable_params):
         optimizer_class = transformers.optimization.Adafactor
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type == "StableAdamW".lower():
+        logger.info(f"use StableAdamW optimizer | {optimizer_kwargs}")
+        # optimi
+        # check optimi is installed
+        try:
+            import optimi
+        except ImportError:
+            raise ImportError("No optimi / optimi がインストールされていないようです")
+        if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+            optimizer_kwargs["gradient_release"] = True
+        optimizer_class = optimi.StableAdamW
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
     elif optimizer_type == "AdamW".lower():
-        logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
-        optimizer_class = torch.optim.AdamW
+        # optimi
+        # check optimi is installed
+        try:
+            import optimi
+            optimizer_class = optimi.AdamW
+            logger.info(f"use optimi AdamW optimizer | {optimizer_kwargs}")
+            if args.fused_backward_pass and "gradient_release" not in optimizer_kwargs:
+                optimizer_kwargs["gradient_release"] = True
+        except:
+            optimizer_class = torch.optim.AdamW
+            logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     if optimizer is None:

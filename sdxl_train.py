@@ -502,21 +502,35 @@ def train(args):
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     if args.fused_backward_pass:
-        # use fused optimizer for backward pass: other optimizers will be supported in the future
-        import library.adafactor_fused
+        if args.optimizer_type.lower() == "adafactor":
+            # use fused optimizer for backward pass: other optimizers will be supported in the future
+            import library.adafactor_fused
 
-        library.adafactor_fused.patch_adafactor_fused(optimizer)
-        for param_group in optimizer.param_groups:
-            for parameter in param_group["params"]:
-                if parameter.requires_grad:
+            library.adafactor_fused.patch_adafactor_fused(optimizer)
+            for param_group in optimizer.param_groups:
+                for parameter in param_group["params"]:
+                    if parameter.requires_grad:
 
-                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
+                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, param_group)
+                            tensor.grad = None
 
-                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                        parameter.register_post_accumulate_grad_hook(__grad_hook)
+        
+        if args.optimizer_type.lower() in ["lion", "adan", "adamw","ranger","stableadamw"]:
+            try:
+                import optimi
+                if train_unet:
+                    optimi.prepare_for_gradient_release(unet,optimizer.optimizer)
+                if train_text_encoder1:
+                    optimi.prepare_for_gradient_release(text_encoder1,optimizer.optimizer)
+                if train_text_encoder2:
+                    optimi.prepare_for_gradient_release(text_encoder2,optimizer.optimizer)
+
+            except ImportError:
+                raise ImportError("Please install optimi to use fused_backward_pass with Lion, Adan, AdamW, Ranger or StableAdamW")
 
     elif args.fused_optimizer_groups:
         # prepare for additional optimizers and lr schedulers
@@ -613,6 +627,9 @@ def train(args):
 
             if args.fused_optimizer_groups:
                 optimizer_hooked_count = {i: 0 for i in range(len(optimizers))}  # reset counter for each step
+
+            if args.optimizer_accumulation_steps > 0:
+                optimizer.optimizer.optimizer_accumulation = (step + 1) % args.optimizer_accumulation_steps != 0
 
             with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
@@ -752,10 +769,17 @@ def train(args):
                     optimizer.zero_grad(set_to_none=True)
                 else:
                     # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
-                    lr_scheduler.step()
-                    if args.fused_optimizer_groups:
-                        for i in range(1, len(optimizers)):
-                            lr_schedulers[i].step()
+                    if args.optimizer_accumulation_steps > 0:
+                        if (not optimizer.optimizer.optimizer_accumulation):
+                            lr_scheduler.step()
+                            if args.fused_optimizer_groups:
+                                for i in range(1, len(optimizers)):
+                                    lr_schedulers[i].step()
+                    else:
+                        lr_scheduler.step()
+                        if args.fused_optimizer_groups:
+                            for i in range(1, len(optimizers)):
+                                lr_schedulers[i].step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
