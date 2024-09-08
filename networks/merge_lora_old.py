@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def load_state_dict(file_name, dtype):
-  if os.path.splitext(file_name)[1] == '.safetensors':
+  if model_util.is_safetensors(file_name):
     sd = load_file(file_name)
   else:
     sd = torch.load(file_name, map_location='cpu')
@@ -20,18 +20,6 @@ def load_state_dict(file_name, dtype):
     if type(sd[key]) == torch.Tensor:
       sd[key] = sd[key].to(dtype)
   return sd
-
-
-def save_to_file(file_name, model, state_dict, dtype):
-  if dtype is not None:
-    for key in list(state_dict.keys()):
-      if type(state_dict[key]) == torch.Tensor:
-        state_dict[key] = state_dict[key].to(dtype)
-
-  if os.path.splitext(file_name)[1] == '.safetensors':
-    save_file(model, file_name)
-  else:
-    torch.save(model, file_name)
 
 
 def merge_to_sd_model(text_encoder, unet, models, ratios, merge_dtype):
@@ -160,7 +148,7 @@ def merge(args):
 
     logger.info(f"")
     logger.info(f"saving model to: {args.save_to}")
-    save_to_file(args.save_to, state_dict, state_dict, save_dtype)
+    model_util.safe_save_file(model_util.tensor_set_save_dtype(state_dict), args.save_to, save_dtype)
 
 
 def setup_parser() -> argparse.ArgumentParser:

@@ -130,21 +130,10 @@ class TextualInversionTrainer:
     def save_weights(self, file, updated_embs, save_dtype, metadata):
         state_dict = {"emb_params": updated_embs[0]}
 
-        if save_dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(save_dtype)
-                state_dict[key] = v
-
-        if os.path.splitext(file)[1] == ".safetensors":
-            from safetensors.torch import save_file
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)  # can be loaded in Web UI
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, save_dtype), file, metadata)
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             data = load_file(file)

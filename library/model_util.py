@@ -6,6 +6,7 @@ import os
 
 import torch
 from library.device_utils import init_ipex
+from library.train_util import precalculate_safetensors_hashes
 init_ipex()
 
 import diffusers
@@ -1158,6 +1159,69 @@ def convert_text_encoder_state_dict_to_sd_v2(checkpoint, make_dummy_weights=Fals
 
     return new_sd
 
+def safe_save_file(state_dict, output_file, metadata):
+    try:
+        if is_safetensors(output_file):
+            save_file(state_dict, output_file, metadata)
+        else:
+            torch.save(state_dict, output_file)
+    except Exception as e:
+        print(e)
+        continue_prompt = input("Retry saving model? (y/n): ")
+        if continue_prompt.lower() != 'n':
+            safe_save_file(state_dict, output_file, metadata)
+        else:
+            raise
+
+def cpu_set_save_dtype(state_dict, save_dtype):
+    if save_dtype is not None:
+        for key in list(state_dict.keys()):
+            v = state_dict[key]
+            v = v.detach().clone().to("cpu").to(save_dtype)
+            state_dict[key] = v
+    return state_dict
+
+def tensor_set_save_dtype(state_dict, save_dtype):
+    if save_dtype is not None:
+        for key in list(state_dict.keys()):
+            if type(state_dict[key]) == torch.Tensor:
+                state_dict[key] = state_dict[key].to(save_dtype)
+    return state_dict
+
+def save_lora(state_dict, file, save_dtype, metadata):
+    cpu_set_save_dtype(state_dict, save_dtype)
+
+    if is_safetensors(file):
+        # Precalculate model hashes to save time on indexing
+        if metadata is None:
+            metadata = {}
+        model_hash, legacy_hash = precalculate_safetensors_hashes(state_dict, metadata)
+        metadata["sshs_model_hash"] = model_hash
+        metadata["sshs_legacy_hash"] = legacy_hash
+
+        save_file(state_dict, file, metadata)
+    else:
+        torch.save(state_dict, file)
+
+def save_wrapped_model(state_dict, output_file, metadata, epochs, steps):
+    try:
+        if is_safetensors(output_file):
+            # TODO Tensor以外のdictの値を削除したほうがいいか
+            save_file(state_dict, output_file, metadata)
+        else:
+            new_ckpt = {"state_dict": state_dict}
+
+            new_ckpt["epoch"] = epochs
+            new_ckpt["global_step"] = steps
+
+            torch.save(new_ckpt, output_file)
+    except Exception as e:
+        print(e)
+        continue_prompt = input("Retry saving model? (y/n): ")
+        if continue_prompt.lower() != 'n':
+            save_wrapped_model(state_dict, output_file, metadata, epochs, steps)
+        else:
+            raise
 
 def save_stable_diffusion_checkpoint(
     v2, output_file, text_encoder, unet, ckpt_path, epochs, steps, metadata, save_dtype=None, vae=None
@@ -1207,7 +1271,6 @@ def save_stable_diffusion_checkpoint(
 
     # Put together new checkpoint
     key_count = len(state_dict.keys())
-    new_ckpt = {"state_dict": state_dict}
 
     # epoch and global_step are sometimes not int
     try:
@@ -1218,15 +1281,7 @@ def save_stable_diffusion_checkpoint(
     except:
         pass
 
-    new_ckpt["epoch"] = epochs
-    new_ckpt["global_step"] = steps
-
-    if is_safetensors(output_file):
-        # TODO Tensor以外のdictの値を削除したほうがいいか
-        save_file(state_dict, output_file, metadata)
-    else:
-        torch.save(new_ckpt, output_file)
-
+    save_wrapped_model(state_dict, output_file, metadata, epochs, steps)
     return key_count
 
 

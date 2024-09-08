@@ -20,17 +20,9 @@ logger = logging.getLogger(__name__)
 # MIN_DIFF = 1e-1
 
 
+# This function does not appear to be referenced anywhere
 def save_to_file(file_name, model, state_dict, dtype):
-    if dtype is not None:
-        for key in list(state_dict.keys()):
-            if type(state_dict[key]) == torch.Tensor:
-                state_dict[key] = state_dict[key].to(dtype)
-
-    if os.path.splitext(file_name)[1] == ".safetensors":
-        save_file(model, file_name)
-    else:
-        torch.save(model, file_name)
-
+    model_util.safe_save_file(model_util.tensor_set_save_dtype(model), file_name, dtype)
 
 def svd(
     model_org=None,

@@ -2854,7 +2854,7 @@ def load_metadata_from_safetensors(safetensors_file: str) -> dict:
     This method locks the file. see https://github.com/huggingface/safetensors/issues/164
     If the file isn't .safetensors or doesn't have metadata, return empty dict.
     """
-    if os.path.splitext(safetensors_file)[1] != ".safetensors":
+    if not model_util.is_safetensors(safetensors_file):
         return {}
 
     with safetensors.safe_open(safetensors_file, framework="pt", device="cpu") as f:

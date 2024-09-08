@@ -513,20 +513,13 @@ def save_stable_diffusion_checkpoint(
 
     # Put together new checkpoint
     key_count = len(state_dict.keys())
-    new_ckpt = {"state_dict": state_dict}
 
     # epoch and global_step are sometimes not int
     if ckpt_info is not None:
         epochs += ckpt_info[0]
         steps += ckpt_info[1]
 
-    new_ckpt["epoch"] = epochs
-    new_ckpt["global_step"] = steps
-
-    if model_util.is_safetensors(output_file):
-        save_file(state_dict, output_file, metadata)
-    else:
-        torch.save(new_ckpt, output_file)
+    model_util.save_wrapped_model(state_dict, output_file, metadata, epochs, steps)
 
     return key_count
 

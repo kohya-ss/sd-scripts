@@ -1,7 +1,7 @@
 import os
 from typing import Optional, List, Type
 import torch
-from library import sdxl_original_unet
+from library import model_util, sdxl_original_unet
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -311,7 +311,7 @@ class ControlNetLLLite(torch.nn.Module):
             module.multiplier = multiplier
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
@@ -357,18 +357,7 @@ class ControlNetLLLite(torch.nn.Module):
 
         state_dict = self.state_dict()
 
-        if dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
-                state_dict[key] = v
-
-        if os.path.splitext(file)[1] == ".safetensors":
-            from safetensors.torch import save_file
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, dtype), file, metadata)
 
 
 if __name__ == "__main__":

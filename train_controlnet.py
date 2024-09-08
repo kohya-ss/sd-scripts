@@ -222,7 +222,7 @@ def train(args):
     if args.controlnet_model_name_or_path:
         filename = args.controlnet_model_name_or_path
         if os.path.isfile(filename):
-            if os.path.splitext(filename)[1] == ".safetensors":
+            if model_util.is_safetensors(filename):
                 state_dict = load_file(filename)
             else:
                 state_dict = torch.load(filename)
@@ -383,18 +383,7 @@ def train(args):
 
         state_dict = model_util.convert_controlnet_state_dict_to_sd(model.state_dict())
 
-        if save_dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(save_dtype)
-                state_dict[key] = v
-
-        if os.path.splitext(ckpt_file)[1] == ".safetensors":
-            from safetensors.torch import save_file
-
-            save_file(state_dict, ckpt_file)
-        else:
-            torch.save(state_dict, ckpt_file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, save_dtype), ckpt_file)
 
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)

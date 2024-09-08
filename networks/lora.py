@@ -11,6 +11,7 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+from library import model_util
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -807,7 +808,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     is_sdxl = unet is not None and issubclass(unet.__class__, SdxlUNet2DConditionModel)
 
     if weights_sd is None:
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file, safe_open
 
             weights_sd = load_file(file)
@@ -1069,7 +1070,7 @@ class LoRANetwork(torch.nn.Module):
             lora.enabled = is_enabled
 
     def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
@@ -1258,26 +1259,7 @@ class LoRANetwork(torch.nn.Module):
 
         state_dict = self.state_dict()
 
-        if dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
-                state_dict[key] = v
-
-        if os.path.splitext(file)[1] == ".safetensors":
-            from safetensors.torch import save_file
-            from library import train_util
-
-            # Precalculate model hashes to save time on indexing
-            if metadata is None:
-                metadata = {}
-            model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
-            metadata["sshs_model_hash"] = model_hash
-            metadata["sshs_legacy_hash"] = legacy_hash
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.save_lora(state_dict, file, dtype, metadata)
 
     # mask is a tensor with values from 0 to 1
     def set_region(self, sub_prompt_index, is_last_network, mask):

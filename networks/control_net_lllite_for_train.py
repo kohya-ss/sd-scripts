@@ -5,7 +5,7 @@ import os
 import re
 from typing import Optional, List, Type
 import torch
-from library import sdxl_original_unet
+from library import sdxl_original_unet, model_util
 from library.utils import setup_logging
 
 setup_logging()
@@ -322,18 +322,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
             lllite_key = lllite_key.replace(".lllite_", ".")
             state_dict[lllite_key] = org_state_dict[key]
 
-        if dtype is not None:
-            for key in list(state_dict.keys()):
-                v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
-                state_dict[key] = v
-
-        if os.path.splitext(file)[1] == ".safetensors":
-            from safetensors.torch import save_file
-
-            save_file(state_dict, file, metadata)
-        else:
-            torch.save(state_dict, file)
+        model_util.safe_save_file(model_util.cpu_set_save_dtype(state_dict, dtype), file,  metadata)
 
     def load_lllite_weights(self, file, non_lllite_unet_sd=None):
         r"""
@@ -351,7 +340,7 @@ class SdxlUNet2DConditionModelControlNetLLLite(sdxl_original_unet.SdxlUNet2DCond
             info = self.load_state_dict(state_dict, False)
             return info
 
-        if os.path.splitext(file)[1] == ".safetensors":
+        if model_util.is_safetensors(file):
             from safetensors.torch import load_file
 
             weights_sd = load_file(file)
