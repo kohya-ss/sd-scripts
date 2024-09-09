@@ -11,6 +11,9 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 9, 2024:
+Added `--negative_prompt` and `--cfg_scale` to `flux_minimal_inference.py`. Negative prompts can be used. 
+
 Sep 5, 2024 (update 1):
 
 Added `--cpu_offload_checkpointing` option to LoRA training script. Offloads gradient checkpointing to CPU. This reduces up to 1GB of VRAM usage but slows down the training by about 15%. Cannot be used with `--split_mode`.
