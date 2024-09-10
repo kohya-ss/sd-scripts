@@ -55,7 +55,7 @@ def merge_to_sd_model(text_encoder1, text_encoder2, unet, models, ratios, merge_
     text_encoder1.to(merge_dtype)
     unet.to(merge_dtype)
         
-    # detect the method。OFT or LoRA_module
+    # detect the method: OFT or LoRA_module
     method = detect_method_from_training_model(models, merge_dtype)
     logger.info(f"method:{method}")
 
