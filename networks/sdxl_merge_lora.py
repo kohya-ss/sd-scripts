@@ -13,9 +13,7 @@ from library.utils import setup_logging
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
-
 import concurrent.futures
-
 
 def load_state_dict(file_name, dtype):
     if os.path.splitext(file_name)[1] == ".safetensors":
@@ -57,11 +55,9 @@ def merge_to_sd_model(text_encoder1, text_encoder2, unet, models, ratios, merge_
     text_encoder1.to(merge_dtype)
     unet.to(merge_dtype)
         
-    # 方式を判定。OFT or LoRA_module
+    # detect the method。OFT or LoRA_module
     method = detect_method_from_training_model(models, merge_dtype)
-    
-
-    print(f"method:{method}")
+    logger.info(f"method:{method}")
 
     # create module map
     name_to_module = {}
@@ -93,7 +89,7 @@ def merge_to_sd_model(text_encoder1, text_encoder2, unet, models, ratios, merge_
                             lora_name = lora_name.replace(".", "_")
                             name_to_module[lora_name] = child_module
                     elif method == 'OFT':
-                        if child_module.__class__.__name__ == "Linear" or child_module.__class__.__name__ == "conv2d_1x1" or child_module.__class__.__name__ == "conv2d":
+                        if child_module.__class__.__name__ == "Linear" or child_module.__class__.__name__ == "Conv2d":
                             oft_name = prefix + "." + name + "." + child_name
                             oft_name = oft_name.replace(".", "_")
                             name_to_module[oft_name] = child_module
@@ -209,7 +205,7 @@ def merge_to_sd_model(text_encoder1, text_encoder2, unet, models, ratios, merge_
                 else:
                     weight = torch.einsum("oi, op -> pi", org_weight, R)
                     
-                weight = weight.contiguous() # Tensorを連続化。ThreadPoolExecutor実行したので必要。
+                weight = weight.contiguous() # Make Tensor contiguous; required due to ThreadPoolExecutor
                
                 module.weight = torch.nn.Parameter(weight)
 
