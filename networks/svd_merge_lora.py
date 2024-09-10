@@ -17,125 +17,85 @@ logger = logging.getLogger(__name__)
 
 CLAMP_QUANTILE = 0.99
 
-# copied from hako-mikan/sd-webui-lora-block-weight/scripts/lora_block_weight.py
-BLOCKID26=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","IN09","IN10","IN11","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
-BLOCKID17=["BASE","IN01","IN02","IN04","IN05","IN07","IN08","M00","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08","OUT09","OUT10","OUT11"]
-BLOCKID12=["BASE","IN04","IN05","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05"]
-BLOCKID20=["BASE","IN00","IN01","IN02","IN03","IN04","IN05","IN06","IN07","IN08","M00","OUT00","OUT01","OUT02","OUT03","OUT04","OUT05","OUT06","OUT07","OUT08"]
-BLOCKNUMS = [12,17,20,26]
-BLOCKIDS=[BLOCKID12,BLOCKID17,BLOCKID20,BLOCKID26]
+ACCEPTABLE = [12, 17, 20, 26]
+SDXL_LAYER_NUM = [12, 20]
 
-BLOCKS=["encoder",  # BASE
-"diffusion_model_input_blocks_0_",  # IN00
-"diffusion_model_input_blocks_1_",  # IN01
-"diffusion_model_input_blocks_2_",  # IN02
-"diffusion_model_input_blocks_3_",  # IN03
-"diffusion_model_input_blocks_4_",  # IN04
-"diffusion_model_input_blocks_5_",  # IN05
-"diffusion_model_input_blocks_6_",  # IN06
-"diffusion_model_input_blocks_7_",  # IN07
-"diffusion_model_input_blocks_8_",  # IN08
-"diffusion_model_input_blocks_9_",  # IN09
-"diffusion_model_input_blocks_10_",  # IN10
-"diffusion_model_input_blocks_11_",  # IN11
-"diffusion_model_middle_block_",  # M00
-"diffusion_model_output_blocks_0_",  # OUT00
-"diffusion_model_output_blocks_1_",  # OUT01
-"diffusion_model_output_blocks_2_",  # OUT02
-"diffusion_model_output_blocks_3_",  # OUT03
-"diffusion_model_output_blocks_4_",  # OUT04
-"diffusion_model_output_blocks_5_",  # OUT05
-"diffusion_model_output_blocks_6_",  # OUT06
-"diffusion_model_output_blocks_7_",  # OUT07
-"diffusion_model_output_blocks_8_",  # OUT08
-"diffusion_model_output_blocks_9_",  # OUT09
-"diffusion_model_output_blocks_10_",  # OUT10
-"diffusion_model_output_blocks_11_",  # OUT11
-"embedders",
-"transformer_resblocks"]
+LAYER12 = {
+    "BASE": True,
+    "IN00": False, "IN01": False, "IN02": False, "IN03": False, "IN04": True, "IN05": True,
+    "IN06": False, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
+    "MID00": True,
+    "OUT00": True, "OUT01": True, "OUT02": True, "OUT03": True, "OUT04": True, "OUT05": True,
+    "OUT06": False, "OUT07": False, "OUT08": False, "OUT09": False, "OUT10": False, "OUT11": False
+}
+
+LAYER17 = {
+    "BASE": True,
+    "IN00": False, "IN01": True, "IN02": True, "IN03": False, "IN04": True, "IN05": True,
+    "IN06": False, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
+    "MID00": True,
+    "OUT00": False, "OUT01": False, "OUT02": False, "OUT03": True, "OUT04": True, "OUT05": True,
+    "OUT06": True, "OUT07": True, "OUT08": True, "OUT09": True, "OUT10": True, "OUT11": True,        
+}
+
+LAYER20 = {
+    "BASE": True,
+    "IN00": True, "IN01": True, "IN02": True, "IN03": True, "IN04": True, "IN05": True,
+    "IN06": True, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
+    "MID00": True,
+    "OUT00": True, "OUT01": True, "OUT02": True, "OUT03": True, "OUT04": True, "OUT05": True,
+    "OUT06": True, "OUT07": True, "OUT08": True, "OUT09": False, "OUT10": False, "OUT11": False,
+}
+
+layer12 = LAYER12.values()
+layer17 = LAYER17.values()
+layer20 = LAYER20.values()
+layer26 = [True] * 26
+assert len([v for v in layer12 if v]) == 12
+assert len([v for v in layer17 if v]) == 17
+assert len([v for v in layer20 if v]) == 20
+assert len([v for v in layer26 if v]) == 26
+
+RE_UPDOWN = re.compile(r"(up|down)_blocks_(\d+)_(resnets|upsamplers|downsamplers|attentions)_(\d+)_")
 
 
-def convert_diffusers_name_to_compvis(key, is_sd2):
-    "copied from AUTOMATIC1111/stable-diffusion-webui/extensions-builtin/Lora/networks.py"
+def get_block_index(lora_name: str, is_sdxl: bool = False) -> int:
+    block_idx = -1  # invalid lora name
+    if not is_sdxl:
+        m = RE_UPDOWN.search(lora_name)
+        if m:
+            g = m.groups()
+            i = int(g[1])
+            j = int(g[3])
+            if g[2] == "resnets":
+                idx = 3 * i + j
+            elif g[2] == "attentions":
+                idx = 3 * i + j
+            elif g[2] == "upsamplers" or g[2] == "downsamplers":
+                idx = 3 * i + 2
 
-    # put original globals here
-    re_digits = re.compile(r"\d+")
-    re_x_proj = re.compile(r"(.*)_([qkv]_proj)$")
-    re_compiled = {}
+            if g[0] == "down":
+                block_idx = 1 + idx  # 0に該当するLoRAは存在しない
+            elif g[0] == "up":
+                block_idx = LoRANetwork.NUM_OF_BLOCKS + 1 + idx
+        elif "mid_block_" in lora_name:
+            block_idx = LoRANetwork.NUM_OF_BLOCKS  # idx=12
+    else:
+        # copy from sdxl_train
+        if lora_name.startswith("lora_unet_"):
+            name = lora_name[len("lora_unet_") :]
+            if name.startswith("time_embed_") or name.startswith("label_emb_"):  # No LoRA
+                block_idx = 0  # 0
+            elif name.startswith("input_blocks_"):  # 1-9
+                block_idx = 1 + int(name.split("_")[2])
+            elif name.startswith("middle_block_"):  # 10-12
+                block_idx = 10 + int(name.split("_")[2])
+            elif name.startswith("output_blocks_"):  # 13-21
+                block_idx = 13 + int(name.split("_")[2])
+            elif name.startswith("out_"):  # 22, out, no LoRA
+                block_idx = 22
 
-    suffix_conversion = {
-        "attentions": {},
-        "resnets": {
-            "conv1": "in_layers_2",
-            "conv2": "out_layers_3",
-            "time_emb_proj": "emb_layers_1",
-            "conv_shortcut": "skip_connection",
-        }
-    }  # end of original globals
-
-    def match(match_list, regex_text):
-        regex = re_compiled.get(regex_text)
-        if regex is None:
-            regex = re.compile(regex_text)
-            re_compiled[regex_text] = regex
-
-        r = re.match(regex, key)
-        if not r:
-            return False
-
-        match_list.clear()
-        match_list.extend([int(x) if re.match(re_digits, x) else x for x in r.groups()])
-        return True
-
-    m = []
-
-    if match(m, r"lora_unet_conv_in(.*)"):
-        return f'diffusion_model_input_blocks_0_0{m[0]}'
-
-    if match(m, r"lora_unet_conv_out(.*)"):
-        return f'diffusion_model_out_2{m[0]}'
-
-    if match(m, r"lora_unet_time_embedding_linear_(\d+)(.*)"):
-        return f"diffusion_model_time_embed_{m[0] * 2 - 2}{m[1]}"
-
-    if match(m, r"lora_unet_down_blocks_(\d+)_(attentions|resnets)_(\d+)_(.+)"):
-        suffix = suffix_conversion.get(m[1], {}).get(m[3], m[3])
-        return f"diffusion_model_input_blocks_{1 + m[0] * 3 + m[2]}_{1 if m[1] == 'attentions' else 0}_{suffix}"
-
-    if match(m, r"lora_unet_mid_block_(attentions|resnets)_(\d+)_(.+)"):
-        suffix = suffix_conversion.get(m[0], {}).get(m[2], m[2])
-        return f"diffusion_model_middle_block_{1 if m[0] == 'attentions' else m[1] * 2}_{suffix}"
-
-    if match(m, r"lora_unet_up_blocks_(\d+)_(attentions|resnets)_(\d+)_(.+)"):
-        suffix = suffix_conversion.get(m[1], {}).get(m[3], m[3])
-        return f"diffusion_model_output_blocks_{m[0] * 3 + m[2]}_{1 if m[1] == 'attentions' else 0}_{suffix}"
-
-    if match(m, r"lora_unet_down_blocks_(\d+)_downsamplers_0_conv"):
-        return f"diffusion_model_input_blocks_{3 + m[0] * 3}_0_op"
-
-    if match(m, r"lora_unet_up_blocks_(\d+)_upsamplers_0_conv"):
-        return f"diffusion_model_output_blocks_{2 + m[0] * 3}_{2 if m[0]>0 else 1}_conv"
-
-    if match(m, r"lora_te_text_model_encoder_layers_(\d+)_(.+)"):
-        if is_sd2:
-            if 'mlp_fc1' in m[1]:
-                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc1', 'mlp_c_fc')}"
-            elif 'mlp_fc2' in m[1]:
-                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc2', 'mlp_c_proj')}"
-            else:
-                return f"model_transformer_resblocks_{m[0]}_{m[1].replace('self_attn', 'attn')}"
-
-        return f"transformer_text_model_encoder_layers_{m[0]}_{m[1]}"
-
-    if match(m, r"lora_te2_text_model_encoder_layers_(\d+)_(.+)"):
-        if 'mlp_fc1' in m[1]:
-            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc1', 'mlp_c_fc')}"
-        elif 'mlp_fc2' in m[1]:
-            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('mlp_fc2', 'mlp_c_proj')}"
-        else:
-            return f"1_model_transformer_resblocks_{m[0]}_{m[1].replace('self_attn', 'attn')}"
-
-    return key
+    return block_idx
 
 
 def load_state_dict(file_name, dtype):
@@ -165,10 +125,10 @@ def save_to_file(file_name, state_dict, dtype, metadata):
         torch.save(state_dict, file_name)
 
 
-def merge_lora_models(is_sd2, models, ratios, lbws, new_rank, new_conv_rank, device, merge_dtype):
+def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, merge_dtype):
     logger.info(f"new rank: {new_rank}, new conv rank: {new_conv_rank}")
     merged_sd = {}
-    v2 = None
+    v2 = None  # This is meaning LoRA Metadata v2, Not meaning SD2
     base_model = None
 
     if lbws:
@@ -179,12 +139,18 @@ def merge_lora_models(is_sd2, models, ratios, lbws, new_rank, new_conv_rank, dev
             raise ValueError(f"format of lbws are must be json / 層別適用率はJSON形式で書いてください")
         assert all(isinstance(lbw, list) for lbw in lbws), f"lbws are must be list / 層別適用率はリストにしてください"
         assert len(set(len(lbw) for lbw in lbws)) == 1, "all lbws should have the same length  / 層別適用率は同じ長さにしてください"
-        assert all(len(lbw) in BLOCKNUMS for lbw in lbws), f"length of lbw are must be in {BLOCKNUMS} / 層別適用率の長さは{BLOCKNUMS}のいずれかにしてください"
+        assert all(len(lbw) in ACCEPTABLE for lbw in lbws), f"length of lbw are must be in {ACCEPTABLE} / 層別適用率の長さは{ACCEPTABLE}のいずれかにしてください"
         assert all(all(isinstance(weight, (int, float)) for weight in lbw) for lbw in lbws), f"values of lbs are must be numbers / 層別適用率の値はすべて数値にしてください"
 
-        BLOCKID = BLOCKIDS[BLOCKNUMS.index(len(lbws[0]))]
-        conditions = [blockid in BLOCKID for blockid in BLOCKID26]
-        BLOCKS_ = [block for block, condition in zip(BLOCKS, conditions) if condition]
+        layer_num = len(lbws[0])
+        FLAGS = {
+            "12": layer12,
+            "17": layer17,
+            "20": layer20,
+            "26": layer26,
+        }[str(layer_num)]
+        is_sdxl = True if layer_num in SDXL_LAYER_NUM else False
+        TARGET = [i for i, flag in enumerate(FLAGS) if flag]
 
     for model, ratio, lbw in itertools.zip_longest(models, ratios, lbws):
         logger.info(f"loading: {model}")
@@ -196,6 +162,10 @@ def merge_lora_models(is_sd2, models, ratios, lbws, new_rank, new_conv_rank, dev
             if base_model is None:
                 base_model = lora_metadata.get(train_util.SS_METADATA_KEY_BASE_MODEL_VERSION, None)
 
+        full_lbw = [1] * 26
+        for weight, index in zip(lbw, TARGET):
+            full_lbw[index] = weight
+
         # merge
         logger.info(f"merging...")
         for key in tqdm(list(lora_sd.keys())):
@@ -203,15 +173,10 @@ def merge_lora_models(is_sd2, models, ratios, lbws, new_rank, new_conv_rank, dev
                 continue
 
             if lbw:
-                # keyをlora_unet_down_blocks_0_のようなdiffusers形式から、
-                # diffusion_model_input_blocks_0_のようなcompvis形式に変換する
-                compvis_key = convert_diffusers_name_to_compvis(key, is_sd2)
-
-                block_in_key = [block in compvis_key for block in BLOCKS_]
-                is_lbw_target = any(block_in_key)
+                index = 0 if "encoder" in key else get_block_index(key, is_sdxl)
+                is_lbw_target = index in TARGET
                 if is_lbw_target:
-                    index = [i for i, in_key in enumerate(block_in_key) if in_key][0]
-                    lbw_weight = lbw[index]
+                    lbw_weight = full_lbw[index]
 
             lora_module_name = key[: key.rfind(".lora_down")]
 
@@ -344,7 +309,7 @@ def merge(args):
 
     new_conv_rank = args.new_conv_rank if args.new_conv_rank is not None else args.new_rank
     state_dict, metadata, v2, base_model = merge_lora_models(
-        args.sd2, args.models, args.ratios, args.lbws, args.new_rank, new_conv_rank, args.device, merge_dtype
+        args.models, args.ratios, args.lbws, args.new_rank, new_conv_rank, args.device, merge_dtype
     )
 
     logger.info(f"calculating hashes and creating metadata...")
@@ -389,9 +354,6 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--save_to", type=str, default=None, help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors"
-    )
-    parser.add_argument(
-        "--sd2", action="store_true", help="set if LoRA models are for SD2 / マージするLoRAモデルがSD2用なら指定します"
     )
     parser.add_argument(
         "--models", type=str, nargs="*", help="LoRA models to merge: ckpt or safetensors file / マージするLoRAモデル、ckptまたはsafetensors"
