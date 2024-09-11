@@ -3355,15 +3355,14 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         type=int,
         default=None,
         help="Inverse sqrt timescale for inverse sqrt scheduler,defaults to `num_warmup_steps`"
-        " / 逆平方根スケジューラのタイムスケール、デフォルトは`num_warmup_steps`",
-        ,
+        + " / 逆平方根スケジューラのタイムスケール、デフォルトは`num_warmup_steps`",
     )
     parser.add_argument(
         "--lr_scheduler_min_lr_ratio",
         type=float,
         default=None,
         help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler and warmup decay scheduler"
-        " / 初期学習率の比率としての最小学習率を指定する、cosine with min lr と warmup decay スケジューラ で有効",
+        + " / 初期学習率の比率としての最小学習率を指定する、cosine with min lr と warmup decay スケジューラ で有効",
     )
 
 
