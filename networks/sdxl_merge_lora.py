@@ -183,7 +183,6 @@ def merge_to_sd_model(text_encoder1, text_encoder2, unet, models, ratios, merge_
                 num_blocks = dim
                 block_size = out_dim // dim
                 constraint = (0 if alpha is None else alpha) * out_dim
-                eye = torch.eye(block_size, device=oft_blocks.device)
                      
                 block_Q = oft_blocks - oft_blocks.transpose(1, 2)
                 norm_Q = torch.norm(block_Q.flatten())
