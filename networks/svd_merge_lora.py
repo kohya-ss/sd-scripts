@@ -24,7 +24,7 @@ LAYER12 = {
     "BASE": True,
     "IN00": False, "IN01": False, "IN02": False, "IN03": False, "IN04": True, "IN05": True,
     "IN06": False, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
-    "MID00": True,
+    "MID": True,
     "OUT00": True, "OUT01": True, "OUT02": True, "OUT03": True, "OUT04": True, "OUT05": True,
     "OUT06": False, "OUT07": False, "OUT08": False, "OUT09": False, "OUT10": False, "OUT11": False
 }
@@ -33,7 +33,7 @@ LAYER17 = {
     "BASE": True,
     "IN00": False, "IN01": True, "IN02": True, "IN03": False, "IN04": True, "IN05": True,
     "IN06": False, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
-    "MID00": True,
+    "MID": True,
     "OUT00": False, "OUT01": False, "OUT02": False, "OUT03": True, "OUT04": True, "OUT05": True,
     "OUT06": True, "OUT07": True, "OUT08": True, "OUT09": True, "OUT10": True, "OUT11": True,        
 }
@@ -42,58 +42,78 @@ LAYER20 = {
     "BASE": True,
     "IN00": True, "IN01": True, "IN02": True, "IN03": True, "IN04": True, "IN05": True,
     "IN06": True, "IN07": True, "IN08": True, "IN09": False, "IN10": False, "IN11": False,
-    "MID00": True,
+    "MID": True,
     "OUT00": True, "OUT01": True, "OUT02": True, "OUT03": True, "OUT04": True, "OUT05": True,
     "OUT06": True, "OUT07": True, "OUT08": True, "OUT09": False, "OUT10": False, "OUT11": False,
 }
 
-layer12 = LAYER12.values()
-layer17 = LAYER17.values()
-layer20 = LAYER20.values()
-layer26 = [True] * 26
-assert len([v for v in layer12 if v]) == 12
-assert len([v for v in layer17 if v]) == 17
-assert len([v for v in layer20 if v]) == 20
-assert len([v for v in layer26 if v]) == 26
+LAYER26 = {
+    "BASE": True,
+    "IN00": True, "IN01": True, "IN02": True, "IN03": True, "IN04": True, "IN05": True,
+    "IN06": True, "IN07": True, "IN08": True, "IN09": True, "IN10": True, "IN11": True,
+    "MID": True,
+    "OUT00": True, "OUT01": True, "OUT02": True, "OUT03": True, "OUT04": True, "OUT05": True,
+    "OUT06": True, "OUT07": True, "OUT08": True, "OUT09": True, "OUT10": True, "OUT11": True,
+}
+
+assert len([v for v in LAYER12.values() if v]) == 12
+assert len([v for v in LAYER17.values() if v]) == 17
+assert len([v for v in LAYER20.values() if v]) == 20
+assert len([v for v in LAYER26.values() if v]) == 26
 
 RE_UPDOWN = re.compile(r"(up|down)_blocks_(\d+)_(resnets|upsamplers|downsamplers|attentions)_(\d+)_")
 
 
-def get_block_index(lora_name: str, is_sdxl: bool = False) -> int:
+def get_lbw_block_index(lora_name: str, is_sdxl: bool = False) -> int:
+    # lbw block index is 0-based, but 0 for text encoder, so we return 0 for text encoder
+    if "text_model_encoder_" in lora_name:  # LoRA for text encoder
+        return 0
+
+    # lbw block index is 1-based for U-Net, and no "input_blocks.0" in CompVis SD, so "input_blocks.1" have index 2
     block_idx = -1  # invalid lora name
     if not is_sdxl:
+        NUM_OF_BLOCKS = 12  # up/down blocks
         m = RE_UPDOWN.search(lora_name)
         if m:
             g = m.groups()
+            up_down = g[0]
             i = int(g[1])
             j = int(g[3])
-            if g[2] == "resnets":
-                idx = 3 * i + j
-            elif g[2] == "attentions":
-                idx = 3 * i + j
-            elif g[2] == "upsamplers" or g[2] == "downsamplers":
-                idx = 3 * i + 2
+            if up_down == "down":
+                if g[2] == "resnets" or g[2] == "attentions":
+                    idx = 3 * i + j + 1
+                elif g[2] == "downsamplers":
+                    idx = 3 * (i + 1)
+                else:
+                    return block_idx  # invalid lora name
+            elif up_down == "up":
+                if g[2] == "resnets" or g[2] == "attentions":
+                    idx = 3 * i + j
+                elif g[2] == "upsamplers":
+                    idx = 3 * i + 2
+                else:
+                    return block_idx  # invalid lora name
 
             if g[0] == "down":
-                block_idx = 1 + idx  # 0に該当するLoRAは存在しない
+                block_idx = 1 + idx  # 1-based index, down block index
             elif g[0] == "up":
-                block_idx = LoRANetwork.NUM_OF_BLOCKS + 1 + idx
+                block_idx = 1 + NUM_OF_BLOCKS + 1 + idx  # 1-based index, num blocks, mid block, up block index
+
         elif "mid_block_" in lora_name:
-            block_idx = LoRANetwork.NUM_OF_BLOCKS  # idx=12
+            block_idx = 1 + NUM_OF_BLOCKS  # 1-based index, num blocks, mid block
     else:
-        # copy from sdxl_train
         if lora_name.startswith("lora_unet_"):
             name = lora_name[len("lora_unet_") :]
-            if name.startswith("time_embed_") or name.startswith("label_emb_"):  # No LoRA
-                block_idx = 0  # 0
-            elif name.startswith("input_blocks_"):  # 1-9
+            if name.startswith("time_embed_") or name.startswith("label_emb_"):  # 1, No LoRA in sd-scripts
+                block_idx = 1
+            elif name.startswith("input_blocks_"):  # 1-8 to 2-9
                 block_idx = 1 + int(name.split("_")[2])
-            elif name.startswith("middle_block_"):  # 10-12
-                block_idx = 10 + int(name.split("_")[2])
-            elif name.startswith("output_blocks_"):  # 13-21
-                block_idx = 13 + int(name.split("_")[2])
-            elif name.startswith("out_"):  # 22, out, no LoRA
-                block_idx = 22
+            elif name.startswith("middle_block_"):  # 10
+                block_idx = 10
+            elif name.startswith("output_blocks_"):  # 0-8 to 11-19
+                block_idx = 11 + int(name.split("_")[2])
+            elif name.startswith("out_"):  # 20, No LoRA in sd-scripts
+                block_idx = 20
 
     return block_idx
 
@@ -133,7 +153,7 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
 
     if lbws:
         try:
-            # lbsは"[1,1,1,1,1,1,1,1,1,1,1,1]"のような文字列で与えられることを期待している
+            # lbwは"[1,1,1,1,1,1,1,1,1,1,1,1]"のような文字列で与えられることを期待している
             lbws = [json.loads(lbw) for lbw in lbws]
         except Exception:
             raise ValueError(f"format of lbws are must be json / 層別適用率はJSON形式で書いてください")
@@ -143,14 +163,14 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
         assert all(all(isinstance(weight, (int, float)) for weight in lbw) for lbw in lbws), f"values of lbs are must be numbers / 層別適用率の値はすべて数値にしてください"
 
         layer_num = len(lbws[0])
-        FLAGS = {
-            "12": layer12,
-            "17": layer17,
-            "20": layer20,
-            "26": layer26,
-        }[str(layer_num)]
         is_sdxl = True if layer_num in SDXL_LAYER_NUM else False
-        TARGET = [i for i, flag in enumerate(FLAGS) if flag]
+        FLAGS = {
+            "12": LAYER12.values(),
+            "17": LAYER17.values(),
+            "20": LAYER20.values(),
+            "26": LAYER26.values(),
+        }[str(layer_num)]
+        LBW_TARGET_IDX = [i for i, flag in enumerate(FLAGS) if flag]
 
     for model, ratio, lbw in itertools.zip_longest(models, ratios, lbws):
         logger.info(f"loading: {model}")
@@ -162,21 +182,17 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
             if base_model is None:
                 base_model = lora_metadata.get(train_util.SS_METADATA_KEY_BASE_MODEL_VERSION, None)
 
-        full_lbw = [1] * 26
-        for weight, index in zip(lbw, TARGET):
-            full_lbw[index] = weight
+        if lbw:
+            lbw_weights = [1] * 26
+            for index, value in zip(LBW_TARGET_IDX, lbw):
+                lbw_weights[index] = value
+            print(dict(zip(LAYER26.keys(), lbw_weights)))
 
         # merge
         logger.info(f"merging...")
         for key in tqdm(list(lora_sd.keys())):
             if "lora_down" not in key:
                 continue
-
-            if lbw:
-                index = 0 if "encoder" in key else get_block_index(key, is_sdxl)
-                is_lbw_target = index in TARGET
-                if is_lbw_target:
-                    lbw_weight = full_lbw[index]
 
             lora_module_name = key[: key.rfind(".lora_down")]
 
@@ -207,9 +223,12 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
 
             # W <- W + U * D
             scale = alpha / network_dim
+
             if lbw:
+                index = get_lbw_block_index(key, is_sdxl)
+                is_lbw_target = index in LBW_TARGET_IDX
                 if is_lbw_target:
-                    scale *= lbw_weight  # keyがlbwの対象であれば、lbwの重みを掛ける
+                    scale *= lbw_weights[index]  # keyがlbwの対象であれば、lbwの重みを掛ける
 
             if device:  # and isinstance(scale, torch.Tensor):
                 scale = scale.to(device)
