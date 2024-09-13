@@ -16,12 +16,13 @@ from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
 )
-from library.utils import setup_logging
+from library.utils import setup_logging, add_logging_arguments
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
 
 def cache_to_disk(args: argparse.Namespace) -> None:
+    setup_logging(args, reset=True)
     train_util.prepare_dataset_args(args, True)
 
     # check cache latents arg
@@ -94,6 +95,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 
     # acceleratorを準備する
     logger.info("prepare accelerator")
+    args.deepspeed = False
     accelerator = train_util.prepare_accelerator(args)
 
     # mixed precisionに対応した型を用意しておき適宜castする
@@ -170,6 +172,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
+    add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
     train_util.add_training_arguments(parser, True)
     train_util.add_dataset_arguments(parser, True, True, True)
