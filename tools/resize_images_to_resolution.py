@@ -6,7 +6,7 @@ import shutil
 import math
 from PIL import Image
 import numpy as np
-from library.utils import setup_logging
+from library.utils import setup_logging, pil_resize
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
@@ -24,9 +24,9 @@ def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divi
 
   # Select interpolation method
   if interpolation == 'lanczos4':
-    cv2_interpolation = cv2.INTER_LANCZOS4
+    pil_interpolation = Image.LANCZOS
   elif interpolation == 'cubic':
-    cv2_interpolation = cv2.INTER_CUBIC
+    pil_interpolation = Image.BICUBIC
   else:
     cv2_interpolation = cv2.INTER_AREA
 
@@ -64,7 +64,10 @@ def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divi
         new_width = int(img.shape[1] * math.sqrt(scale_factor))
 
         # Resize image
-        img = cv2.resize(img, (new_width, new_height), interpolation=cv2_interpolation)
+        if cv2_interpolation:
+          img = cv2.resize(img, (new_width, new_height), interpolation=cv2_interpolation)
+        else:
+          img = pil_resize(img, (new_width, new_height), interpolation=pil_interpolation)
       else:
         new_height, new_width = img.shape[0:2]
 

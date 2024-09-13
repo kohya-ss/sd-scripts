@@ -101,6 +101,8 @@ LoRA的模型将会被保存在通过`--output_dir`选项指定的文件夹中�
   * 当在Text Encoder相关的LoRA模块中使用与常规学习率（由`--learning_rate`选项指定）不同的学习率时，应指定此选项。可能最好将Text Encoder的学习率稍微降低（例如5e-5）。
 * `--network_args`
   * 可以指定多个参数。将在下面详细说明。
+* `--alpha_mask`
+  * 使用图像的 Alpha 值作为遮罩。这在学习透明图像时使用。[PR #1223](https://github.com/kohya-ss/sd-scripts/pull/1223)
 
 当未指定`--network_train_unet_only`和`--network_train_text_encoder_only`时（默认情况），将启用Text Encoder和U-Net的两个LoRA模块。
 

@@ -333,7 +333,7 @@ def train(args):
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(
-            "lllite_control_net_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs
+            "lllite_control_net_train" if args.log_tracker_name is None else args.log_tracker_name, config=train_util.get_sanitized_config_or_none(args), init_kwargs=init_kwargs
         )
 
     loss_recorder = train_util.LossRecorder()
@@ -495,14 +495,14 @@ def train(args):
             logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 

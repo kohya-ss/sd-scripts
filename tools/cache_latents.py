@@ -19,7 +19,9 @@ from library.config_util import (
 from library.utils import setup_logging, add_logging_arguments
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 def cache_to_disk(args: argparse.Namespace) -> None:
     setup_logging(args, reset=True)
@@ -109,7 +111,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     else:
         _, vae, _, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
-    if torch.__version__ >= "2.0.0": # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+    if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
         vae.set_use_memory_efficient_attention_xformers(args.xformers)
     vae.to(accelerator.device, dtype=vae_dtype)
     vae.requires_grad_(False)
@@ -138,6 +140,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         b_size = len(batch["images"])
         vae_batch_size = b_size if args.vae_batch_size is None else args.vae_batch_size
         flip_aug = batch["flip_aug"]
+        alpha_mask = batch["alpha_mask"]
         random_crop = batch["random_crop"]
         bucket_reso = batch["bucket_reso"]
 
@@ -156,14 +159,16 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                 image_info.latents_npz = os.path.splitext(absolute_path)[0] + ".npz"
 
                 if args.skip_existing:
-                    if train_util.is_disk_cached_latents_is_expected(image_info.bucket_reso, image_info.latents_npz, flip_aug):
+                    if train_util.is_disk_cached_latents_is_expected(
+                        image_info.bucket_reso, image_info.latents_npz, flip_aug, alpha_mask
+                    ):
                         logger.warning(f"Skipping {image_info.latents_npz} because it already exists.")
                         continue
 
                 image_infos.append(image_info)
 
             if len(image_infos) > 0:
-                train_util.cache_batch_latents(vae, True, image_infos, flip_aug, random_crop)
+                train_util.cache_batch_latents(vae, True, image_infos, flip_aug, alpha_mask, random_crop)
 
     accelerator.wait_for_everyone()
     accelerator.print(f"Finished caching latents for {len(train_dataset_group)} batches.")
