@@ -335,7 +335,7 @@ def train(args):
     lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.optimizer_type.lower().endswith("schedulefree"):
+    if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
         text_encoder, optimizer, train_dataloader = accelerator.prepare(
             text_encoder, optimizer, train_dataloader
         )   
@@ -359,11 +359,11 @@ def train(args):
     unet.to(accelerator.device, dtype=weight_dtype)
     if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
         unet.train()
-        if (args.optimizer_type.lower().endswith("schedulefree")):
+        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
             optimizer.train()
     else:
         unet.eval()
-        if (args.optimizer_type.lower().endswith("schedulefree")):
+        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
             optimizer.eval()
 
     if not cache_latents:
@@ -447,7 +447,7 @@ def train(args):
         loss_total = 0
 
         for step, batch in enumerate(train_dataloader):
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(text_encoder):
@@ -507,7 +507,7 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("schedulefree"):
+                if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
@@ -517,7 +517,7 @@ def train(args):
                         index_no_updates
                     ]
 
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes

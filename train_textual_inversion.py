@@ -452,11 +452,11 @@ class TextualInversionTrainer:
         unet.to(accelerator.device, dtype=weight_dtype)
         if args.gradient_checkpointing:  # according to TI example in Diffusers, train is required
             # TODO U-Netをオリジナルに置き換えたのでいらないはずなので、後で確認して消す
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.train()
             unet.train()
         else:
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.eval()
             unet.eval()
 
@@ -569,7 +569,7 @@ class TextualInversionTrainer:
             loss_total = 0
 
             for step, batch in enumerate(train_dataloader):
-                if (args.optimizer_type.lower().endswith("schedulefree")):
+                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                     optimizer.train()
                 current_step.value = global_step
                 with accelerator.accumulate(text_encoders[0]):
@@ -634,7 +634,8 @@ class TextualInversionTrainer:
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
+                        lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                     # Let's make sure we don't update any embedding weights besides the newly added token
@@ -648,7 +649,7 @@ class TextualInversionTrainer:
                                 index_no_updates
                             ]
 
-                if (args.optimizer_type.lower().endswith("schedulefree")):
+                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                     optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes

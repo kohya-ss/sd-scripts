@@ -587,7 +587,7 @@ class NetworkTrainer:
                 text_encoder2=(text_encoders[1] if flags[1] else None) if len(text_encoders) > 1 else None,
                 network=network,
             )
-            if args.optimizer_type.lower().endswith("schedulefree"):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 ds_model, optimizer, train_dataloader = accelerator.prepare(
                     ds_model, optimizer, train_dataloader
                 )    
@@ -613,7 +613,7 @@ class NetworkTrainer:
             else:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
             
-            if args.optimizer_type.lower().endswith("schedulefree"):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 network, optimizer, train_dataloader = accelerator.prepare(
                     network, optimizer, train_dataloader
                 )  
@@ -625,7 +625,7 @@ class NetworkTrainer:
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.train()
             unet.train()
 
@@ -637,7 +637,7 @@ class NetworkTrainer:
                     self.prepare_text_encoder_grad_ckpt_workaround(i, t_enc)
 
         else:
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.eval()
             unet.eval()
             for t_enc in text_encoders:
@@ -1200,7 +1200,7 @@ class NetworkTrainer:
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    if not args.optimizer_type.lower().endswith("schedulefree"):
+                    if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
                         lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
@@ -1212,7 +1212,7 @@ class NetworkTrainer:
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
 
-                if (args.optimizer_type.lower().endswith("schedulefree")):
+                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                     optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes

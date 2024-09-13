@@ -484,7 +484,7 @@ def train(args):
             text_encoder2=text_encoder2 if train_text_encoder2 else None,
         )
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
-        if args.optimizer_type.lower().endswith("schedulefree"):
+        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
             ds_model, optimizer, train_dataloader = accelerator.prepare(
                 ds_model, optimizer, train_dataloader
             )
@@ -502,7 +502,7 @@ def train(args):
             text_encoder1 = accelerator.prepare(text_encoder1)
         if train_text_encoder2:
             text_encoder2 = accelerator.prepare(text_encoder2)
-        if args.optimizer_type.lower().endswith("schedulefree"):
+        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
             optimizer, train_dataloader = accelerator.prepare(optimizer, train_dataloader)
         else:
             optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
@@ -638,7 +638,7 @@ def train(args):
             m.train()
 
         for step, batch in enumerate(train_dataloader):
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.train()
             current_step.value = global_step
 
@@ -770,7 +770,7 @@ def train(args):
                         for i in range(1, len(optimizers)):
                             lr_schedulers[i].step()
 
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes

@@ -244,7 +244,7 @@ def train(args):
             ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet, text_encoder=text_encoder)
         else:
             ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)
-        if args.optimizer_type.lower().endswith("schedulefree"):
+        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
             ds_model, optimizer, train_dataloader = accelerator.prepare(
                 ds_model, optimizer, train_dataloader
             )
@@ -256,7 +256,7 @@ def train(args):
 
     else:
         if train_text_encoder:
-            if args.optimizer_type.lower().endswith("schedulefree"):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 unet, text_encoder, optimizer, train_dataloader  = accelerator.prepare(
                     unet, text_encoder, optimizer, train_dataloader
                 )
@@ -266,7 +266,7 @@ def train(args):
                 )
             training_models = [unet, text_encoder]
         else:
-            if args.optimizer_type.lower().endswith("schedulefree"):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 unet, optimizer, train_dataloader = accelerator.prepare(unet, optimizer, train_dataloader)
             else:
                 unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(unet, optimizer, train_dataloader, lr_scheduler)
@@ -344,7 +344,7 @@ def train(args):
             text_encoder.train()
 
         for step, batch in enumerate(train_dataloader):
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.train()
             current_step.value = global_step
             # 指定したステップ数でText Encoderの学習を止める
@@ -429,11 +429,11 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not args.optimizer_type.lower().endswith("schedulefree"):
+                if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
-            if (args.optimizer_type.lower().endswith("schedulefree")):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
                 optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
