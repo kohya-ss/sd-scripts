@@ -704,6 +704,13 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) frodo821 氏に感謝します
 
 - `gen_imgs.py` のプロンプトオプションに、保存時のファイル名を指定する `--f` オプションを追加しました。また同スクリプトで Diffusers ベースのキーを持つ LoRA の重みに対応しました。
 
+
+### Sep 13, 2024 / 2024-09-13: 
+
+- `sdxl_merge_lora.py` now supports OFT. Thanks to Maru-mee for the PR [#1580](https://github.com/kohya-ss/sd-scripts/pull/1580). Will be included in the next release.
+
+- `sdxl_merge_lora.py` が OFT をサポートしました。PR [#1580](https://github.com/kohya-ss/sd-scripts/pull/1580) Maru-mee 氏に感謝します。次のリリースに含まれます。
+
 ### Jun 23, 2024 / 2024-06-23: 
 
 - Fixed `cache_latents.py` and `cache_text_encoder_outputs.py` not working. (Will be included in the next release.)
