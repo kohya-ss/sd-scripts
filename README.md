@@ -213,10 +213,12 @@ When network_args is not specified, the default value (`network_dim`) is applied
 |single_dim|linear1 and linear2 in SingleStreamBlock|
 |single_mod_dim|modulation in SingleStreamBlock|
 
+`"verbose=True"` is also available for debugging. It shows the rank of each layer.
+
 example: 
 ```
 --network_args "img_attn_dim=4" "img_mlp_dim=8" "txt_attn_dim=2" "txt_mlp_dim=2" 
-"img_mod_dim=2" "txt_mod_dim=2" "single_dim=4" "single_mod_dim=2"
+"img_mod_dim=2" "txt_mod_dim=2" "single_dim=4" "single_mod_dim=2" "verbose=True"
 ```
 
 You can apply LoRA to the conditioning layers of Flux by specifying `in_dims` in network_args. When specifying, be sure to specify 5 numbers in `[]` as a comma-separated list.
