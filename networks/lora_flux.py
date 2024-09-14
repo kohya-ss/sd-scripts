@@ -41,7 +41,11 @@ class LoRAModule(torch.nn.Module):
         module_dropout=None,
         split_dims: Optional[List[int]] = None,
     ):
-        """if alpha == 0 or None, alpha is rank (no scaling)."""
+        """
+        if alpha == 0 or None, alpha is rank (no scaling).
+
+        split_dims is used to mimic the split qkv of FLUX as same as Diffusers
+        """
         super().__init__()
         self.lora_name = lora_name
 
