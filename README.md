@@ -11,6 +11,12 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 15, 2024:
+
+Added a script `convert_diffusers_to_flux.py` to convert Diffusers format FLUX.1 models (checkpoints) to BFL format. See `--help` for usage. Only Flux models are supported. AE/CLIP/T5XXL are not supported. 
+
+The implementation is based on 2kpr's code. Thanks to 2kpr!
+
 Sep 14, 2024:
 - You can now specify the rank for each layer in FLUX.1. See [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1) for details.
 - OFT is now supported with FLUX.1. See [FLUX.1 OFT training](#flux1-oft-training) for details.
@@ -57,6 +63,7 @@ Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `
 - [Convert FLUX LoRA](#convert-flux-lora)
 - [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint)
 - [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training)
+- [Convert Diffusers to FLUX.1](#convert-diffusers-to-flux1)
 
 ### FLUX.1 LoRA training
 
@@ -355,7 +362,7 @@ If you use LoRA in the inference environment, converting it to AI-toolkit format
 
 Note that re-conversion will increase the size of LoRA.
 
-CLIP-L LoRA is not supported.
+CLIP-L/T5XXL LoRA is not supported.
 
 ### Merge LoRA to FLUX.1 checkpoint
 
@@ -433,6 +440,16 @@ resolution = [512, 512]
   [[datasets.subsets]]
   image_dir = "path/to/image/dir"
   num_repeats = 1
+```
+
+### Convert Diffusers to FLUX.1
+
+Script: `convert_diffusers_to_flux1.py`
+
+Converts Diffusers models to FLUX.1 models. The script is experimental. See `--help` for options. schnell and dev models are supported. AE/CLIP/T5XXL are not supported. The diffusers folder is a parent folder of `transfomer` folder.
+
+```
+python tools/convert_diffusers_to_flux.py --diffusers_path path/to/diffusers_folder_or_00001_safetensors --save_to path/to/flux1.safetensors --mem_eff_load_save --save_precision bf16
 ```
 
 ## SD3 training
