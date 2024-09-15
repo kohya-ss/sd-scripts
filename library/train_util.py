@@ -3310,7 +3310,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
-        "--schedulefree_wrapper_kwargs",
+        "--schedulefree_wrapper_args",
         type=str,
         default=None,
         nargs="*",
@@ -4375,6 +4375,8 @@ def get_optimizer(args, trainable_params):
             optimizer_kwargs[key] = value
     # logger.info(f"optkwargs {optimizer}_{kwargs}")
 
+    schedulefree_wrapper_kwargs = {}
+
     lr = args.learning_rate
     optimizer = None
 
@@ -4617,29 +4619,30 @@ def get_optimizer(args, trainable_params):
         logger.info(f"use {optimizer_type} | {optimizer_kwargs}")
         if "." not in optimizer_type:
             optimizer_module = torch.optim
+            optimizer_class = getattr(optimizer_module, optimizer_type)
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+            if args.optimizer_schedulefree_wrapper and not optimizer_type.endswith("schedulefree"):
+                try:
+                    import schedulefree as sf
+                except ImportError:
+                    raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
+
+                if args.schedulefree_wrapper_args is not None and len(args.schedulefree_wrapper_args) > 0:
+                    for arg in args.schedulefree_wrapper_args:
+                        key, value = arg.split("=")
+                        value = ast.literal_eval(value)
+                        schedulefree_wrapper_kwargs[key] = value
+                optimizer = sf.ScheduleFreeWrapper(optimizer, **schedulefree_wrapper_kwargs)
         else:
             values = optimizer_type.split(".")
             optimizer_module = importlib.import_module(".".join(values[:-1]))
             optimizer_type = values[-1]
 
-        optimizer_class = getattr(optimizer_module, optimizer_type)
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+            optimizer_class = getattr(optimizer_module, optimizer_type)
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
     optimizer_args = ",".join([f"{k}={v}" for k, v in optimizer_kwargs.items()])
-
-    if args.optimizer_schedulefree_wrapper and not optimizer_type.endswith("schedulefree"):
-        try:
-            import schedulefree as sf
-        except ImportError:
-            raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
-        schedulefree_wrapper_kwargs = {}
-        if args.schedulefree_wrapper_args is not None and len(args.schedulefree_wrapper_args) > 0:
-            for arg in args.schedulefree_wrapper_kwargs:
-                key, value = arg.split("=")
-                value = ast.literal_eval(value)
-                schedulefree_wrapper_kwargs[key] = value
-        optimizer = sf.ScheduleFreeWrapper(optimizer, **schedulefree_wrapper_kwargs)
 
     return optimizer_name, optimizer_args, optimizer
 
