@@ -298,9 +298,14 @@ def train(args):
         controlnet.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+        controlnet, optimizer, train_dataloader = accelerator.prepare(
+            controlnet, optimizer, train_dataloader
+        )
+    else:
+        controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            controlnet, optimizer, train_dataloader, lr_scheduler
+        )
 
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
@@ -420,6 +425,8 @@ def train(args):
         current_epoch.value = epoch + 1
 
         for step, batch in enumerate(train_dataloader):
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(controlnet):
                 with torch.no_grad():
@@ -500,8 +507,12 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                lr_scheduler.step()
+                if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
+                    lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

@@ -587,9 +587,14 @@ class NetworkTrainer:
                 text_encoder2=(text_encoders[1] if flags[1] else None) if len(text_encoders) > 1 else None,
                 network=network,
             )
-            ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                ds_model, optimizer, train_dataloader, lr_scheduler
-            )
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                ds_model, optimizer, train_dataloader = accelerator.prepare(
+                    ds_model, optimizer, train_dataloader
+                )    
+            else:
+                ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                    ds_model, optimizer, train_dataloader, lr_scheduler
+                )
             training_model = ds_model
         else:
             if train_unet:
@@ -607,15 +612,23 @@ class NetworkTrainer:
                     text_encoder = text_encoders[0]
             else:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
-
-            network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                network, optimizer, train_dataloader, lr_scheduler
-            )
+            
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                network, optimizer, train_dataloader = accelerator.prepare(
+                    network, optimizer, train_dataloader
+                )  
+            else:
+                network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                    network, optimizer, train_dataloader, lr_scheduler
+                )
             training_model = network
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                optimizer.train()
             unet.train()
+
             for i, (t_enc, frag) in enumerate(zip(text_encoders, self.get_text_encoders_train_flags(args, text_encoders))):
                 t_enc.train()
 
@@ -624,6 +637,8 @@ class NetworkTrainer:
                     self.prepare_text_encoder_grad_ckpt_workaround(i, t_enc)
 
         else:
+            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                optimizer.eval()
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
@@ -1074,6 +1089,8 @@ class NetworkTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
+                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                    optimizer.train()
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
@@ -1183,7 +1200,8 @@ class NetworkTrainer:
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
+                        lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
@@ -1193,6 +1211,9 @@ class NetworkTrainer:
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
+
+                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
+                    optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
