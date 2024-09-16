@@ -254,24 +254,15 @@ def train(args):
         network.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
-    if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-        unet, network, optimizer, train_dataloader = accelerator.prepare(
-            unet, network, optimizer, train_dataloader
-        )
-    else:
-        unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, network, optimizer, train_dataloader, lr_scheduler
-        )
+    unet, network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, network, optimizer, train_dataloader, lr_scheduler
+    )
     network: control_net_lllite.ControlNetLLLite
 
     if args.gradient_checkpointing:
         unet.train()  # according to TI example in Diffusers, train is required -> これオリジナルのU-Netしたので本当は外せる
-        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-            optimizer.train()
     else:
         unet.eval()
-        if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-            optimizer.eval()
 
     network.prepare_grad_etc()
 
@@ -366,8 +357,6 @@ def train(args):
         network.on_epoch_start()  # train()
 
         for step, batch in enumerate(train_dataloader):
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                optimizer.train()
             current_step.value = global_step
             with accelerator.accumulate(network):
                 with torch.no_grad():
@@ -460,12 +449,8 @@ def train(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
-                if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
-                    lr_scheduler.step()
+                lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                optimizer.eval()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
