@@ -11,6 +11,10 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 16, 2024:
+
+ Added `train_double_block_indices` and `train_double_block_indices` to the LoRA training script to specify the indices of the blocks to train. See [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training) for details.
+
 Sep 15, 2024:
 
 Added a script `convert_diffusers_to_flux.py` to convert Diffusers format FLUX.1 models (checkpoints) to BFL format. See `--help` for usage. Only Flux models are supported. AE/CLIP/T5XXL are not supported. 
@@ -54,9 +58,12 @@ Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `
 
 - [FLUX.1 LoRA training](#flux1-lora-training)
   - [Key Options for FLUX.1 LoRA training](#key-options-for-flux1-lora-training)
-  - [Inference for FLUX.1 LoRA model](#inference-for-flux1-lora-model)
+  - [Distribution of timesteps](#distribution-of-timesteps)
   - [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training)
+  - [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1)
+  - [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training)
 - [FLUX.1 OFT training](#flux1-oft-training)
+- [Inference for FLUX.1 with LoRA model](#inference-for-flux1-with-lora-model)
 - [FLUX.1 fine-tuning](#flux1-fine-tuning)
   - [Key Features for FLUX.1 fine-tuning](#key-features-for-flux1-fine-tuning)
 - [Extract LoRA from FLUX.1 Models](#extract-lora-from-flux1-models)
@@ -238,6 +245,21 @@ example:
 Each number corresponds to `img_in`, `time_in`, `vector_in`, `guidance_in`, `txt_in`. The above example applies LoRA to all conditioning layers, with rank 4 for `img_in`, 2 for `time_in`, `vector_in`, `guidance_in`, and 4 for `txt_in`.
 
 If you specify `0`, LoRA will not be applied to that layer. For example, `[4,0,0,0,4]` applies LoRA only to `img_in` and `txt_in`.
+
+#### Specify blocks to train in FLUX.1 LoRA training
+
+You can specify the blocks to train in FLUX.1 LoRA training by specifying `train_double_block_indices` and `train_single_block_indices` in network_args. The indices are 0-based. The default (when omitted) is to train all blocks. The indices are specified as a list of integers or a range of integers, like `0,1,5,8` or `0,1,4-5,7`. The number of double blocks is 19, and the number of single blocks is 38, so the valid range is 0-18 and 0-37, respectively. `all` is also available to train all blocks, `none` is also available to train no blocks.
+
+example: 
+```
+--network_args "train_double_block_indices=0,1,8-12,18" "train_single_block_indices=3,10,20-25,37"
+```
+
+```
+--network_args "train_double_block_indices=none" "train_single_block_indices=10-15"
+```
+
+If you specify one of `train_double_block_indices` or `train_single_block_indices`, the other will be trained as usual. 
 
 ### FLUX.1 OFT training
 
