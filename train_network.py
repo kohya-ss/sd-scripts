@@ -587,14 +587,9 @@ class NetworkTrainer:
                 text_encoder2=(text_encoders[1] if flags[1] else None) if len(text_encoders) > 1 else None,
                 network=network,
             )
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                ds_model, optimizer, train_dataloader = accelerator.prepare(
-                    ds_model, optimizer, train_dataloader
-                )    
-            else:
-                ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    ds_model, optimizer, train_dataloader, lr_scheduler
-                )
+            ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                ds_model, optimizer, train_dataloader, lr_scheduler
+            )
             training_model = ds_model
         else:
             if train_unet:
@@ -612,21 +607,15 @@ class NetworkTrainer:
                     text_encoder = text_encoders[0]
             else:
                 pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
-            
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                network, optimizer, train_dataloader = accelerator.prepare(
-                    network, optimizer, train_dataloader
-                )  
-            else:
-                network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                    network, optimizer, train_dataloader, lr_scheduler
-                )
+
+            network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                network, optimizer, train_dataloader, lr_scheduler
+            )
             training_model = network
+        print(f"bbbbbbb", optimizer.state["exp_avg"], len(optimizer.state))
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                optimizer.train()
             unet.train()
 
             for i, (t_enc, frag) in enumerate(zip(text_encoders, self.get_text_encoders_train_flags(args, text_encoders))):
@@ -637,8 +626,6 @@ class NetworkTrainer:
                     self.prepare_text_encoder_grad_ckpt_workaround(i, t_enc)
 
         else:
-            if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                optimizer.eval()
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
@@ -1075,6 +1062,8 @@ class NetworkTrainer:
 
         clean_memory_on_device(accelerator.device)
 
+        print(f"cccccccccccc", optimizer.state["exp_avg"], len(optimizer.state))
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
@@ -1089,8 +1078,6 @@ class NetworkTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                    optimizer.train()
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
@@ -1199,9 +1186,50 @@ class NetworkTrainer:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
+                    def inspect_property_chain(wrapper_b):
+                        print("Inspecting property chain:")
+                        
+                        # WrapperB の state プロパティを調査
+                        print("WrapperB.state:")
+                        wb_state_property = type(wrapper_b).__dict__['state']
+                        print(f"  Defined in: {type(wrapper_b).__name__}")
+                        print(f"  Returns: {len(wb_state_property.fget(wrapper_b))}")
+                        
+                        # Proxy の state プロパティを調査
+                        optim_proxy = wrapper_b.optimizer
+                        print(f"Class of optim_proxy: {type(optim_proxy).__name__}")
+                        print("\OptimProxy.state:")
+                        wa_state_property = type(optim_proxy).__dict__['state']
+                        print(f"  Defined in: {type(optim_proxy).__name__}")
+                        print(f"  Returns: {len(wa_state_property.fget(optim_proxy))}")
+                        
+                        # WrapperA の state プロパティを調査
+                        wrapper_a = optim_proxy._sf_wrapper
+                        print(f"Class of wrapper_a: {type(wrapper_a).__name__}")
+                        print("\nWrapperA.state:")
+                        wa_state_property = type(wrapper_a).__dict__['state']
+                        print(f"  Defined in: {type(wrapper_a).__name__}")
+                        print(f"  Returns: {len(wa_state_property.fget(wrapper_a))}")
+                        
+                        # 元の optimizer の state を調査
+                        optimizer = wrapper_a.base
+                        print("\nOriginal Optimizer state:")
+                        if hasattr(optimizer, 'state'):
+                            # if isinstance(type(optimizer).state, property):
+                            #     opt_state_property = type(optimizer).__dict__['state']
+                            #     print(f"  Defined as property in: {type(optimizer).__name__}")
+                            #     print(f"  Returns: {len(opt_state_property.fget(optimizer))}")
+                            # else:
+                                print(f"  Defined as attribute in: {type(optimizer).__name__}")
+                                print(f"  Value: {len(optimizer.state)}")
+                        else:
+                            print("  'state' not found in original optimizer")
+                        
+                    # print("Inspecting property chain:", inspect_property_chain(optimizer))
+                    print(optimizer.state.__class__)
+                    print(len(optimizer.state.keys()))
                     optimizer.step()
-                    if not (args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper):
-                        lr_scheduler.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
@@ -1211,9 +1239,6 @@ class NetworkTrainer:
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
-
-                if args.optimizer_type.lower().endswith("schedulefree") or args.optimizer_schedulefree_wrapper:
-                    optimizer.eval()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
