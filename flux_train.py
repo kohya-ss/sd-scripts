@@ -265,7 +265,7 @@ def train(args):
 
     flux.requires_grad_(True)
 
-    is_swapping_blocks = args.double_blocks_to_swap is not None or args.single_blocks_to_swap is not None
+    is_swapping_blocks = args.double_blocks_to_swap or args.single_blocks_to_swap
     if is_swapping_blocks:
         # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
         # This idea is based on 2kpr's great work. Thank you!
