@@ -11,6 +11,14 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 18, 2024:
+
+- Schedule-free optimizer is added. Thanks to sdbds! See PR [#1600](https://github.com/kohya-ss/sd-scripts/pull/1600) for details.
+  - `schedulefree` is added to the dependencies. Please update the library if necessary.
+  - AdamWScheduleFree or SGDScheduleFree can be used. Specify `adamwschedulefree` or `sgdschedulefree` in `--optimizer_type`.
+  - Wrapper classes are not available for now.
+  - These can be used not only for FLUX.1 training but also for other training scripts after merging to the dev/main branch.
+
 Sep 16, 2024:
 
  Added `train_double_block_indices` and `train_double_block_indices` to the LoRA training script to specify the indices of the blocks to train. See [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training) for details.
