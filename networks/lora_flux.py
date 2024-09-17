@@ -966,8 +966,8 @@ class LoRANetwork(torch.nn.Module):
         # if float, use the same value for both text encoders
         if text_encoder_lr is None or (isinstance(text_encoder_lr, list) and len(text_encoder_lr) == 0):
             text_encoder_lr = [default_lr, default_lr]
-        elif isinstance(text_encoder_lr, float):
-            text_encoder_lr = [text_encoder_lr, text_encoder_lr]
+        elif isinstance(text_encoder_lr, float) or isinstance(text_encoder_lr, int):
+            text_encoder_lr = [float(text_encoder_lr), float(text_encoder_lr)]
         elif len(text_encoder_lr) == 1:
             text_encoder_lr = [text_encoder_lr[0], text_encoder_lr[0]]
 
