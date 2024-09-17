@@ -14,6 +14,7 @@ The command to install PyTorch is as follows:
 Sep 18, 2024:
 
 - Schedule-free optimizer is added. Thanks to sdbds! See PR [#1600](https://github.com/kohya-ss/sd-scripts/pull/1600) for details.
+  - Details of the schedule-free optimizer can be found in [facebookresearch/schedule_free](https://github.com/facebookresearch/schedule_free).
   - `schedulefree` is added to the dependencies. Please update the library if necessary.
   - AdamWScheduleFree or SGDScheduleFree can be used. Specify `adamwschedulefree` or `sgdschedulefree` in `--optimizer_type`.
   - Wrapper classes are not available for now.
