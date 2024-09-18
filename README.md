@@ -11,6 +11,9 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 18, 2024 (update 1):
+Fixed an issue where train()/eval() was not called properly with the schedule-free optimizer. The schedule-free optimizer can be used in FLUX.1 LoRA training and fine-tuning for now.
+
 Sep 18, 2024:
 
 - Schedule-free optimizer is added. Thanks to sdbds! See PR [#1600](https://github.com/kohya-ss/sd-scripts/pull/1600) for details.
