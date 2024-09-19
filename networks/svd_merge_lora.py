@@ -184,18 +184,19 @@ def get_lbw_block_index(lora_name: str, is_sdxl: bool = False) -> int:
         elif "mid_block_" in lora_name:
             block_idx = 1 + NUM_OF_BLOCKS  # 1-based index, num blocks, mid block
     else:
+        # SDXL: some numbers are skipped
         if lora_name.startswith("lora_unet_"):
             name = lora_name[len("lora_unet_") :]
             if name.startswith("time_embed_") or name.startswith("label_emb_"):  # 1, No LoRA in sd-scripts
                 block_idx = 1
             elif name.startswith("input_blocks_"):  # 1-8 to 2-9
                 block_idx = 1 + int(name.split("_")[2])
-            elif name.startswith("middle_block_"):  # 10
-                block_idx = 10
-            elif name.startswith("output_blocks_"):  # 0-8 to 11-19
-                block_idx = 11 + int(name.split("_")[2])
-            elif name.startswith("out_"):  # 20, No LoRA in sd-scripts
-                block_idx = 20
+            elif name.startswith("middle_block_"):  # 13
+                block_idx = 13
+            elif name.startswith("output_blocks_"):  # 0-8 to 14-22
+                block_idx = 14 + int(name.split("_")[2])
+            elif name.startswith("out_"):  # 23, No LoRA in sd-scripts
+                block_idx = 23
 
     return block_idx
 
