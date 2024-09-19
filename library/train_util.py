@@ -2407,7 +2407,7 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alph
         if alpha_mask:
             if "alpha_mask" not in npz:
                 return False
-            if npz["alpha_mask"].shape[0:2] != reso:  # HxW
+            if (npz["alpha_mask"].shape[1], npz["alpha_mask"].shape[0]) != reso:  # HxW => WxH != reso
                 return False
         else:
             if "alpha_mask" in npz:
