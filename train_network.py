@@ -472,7 +472,7 @@ class NetworkTrainer:
             text_encoder_lr = args.text_encoder_lr
         else:
             # toml backward compatibility
-            if args.text_encoder_lr is None or isinstance(args.text_encoder_lr, float):
+            if args.text_encoder_lr is None or isinstance(args.text_encoder_lr, float) or isinstance(args.text_encoder_lr, int):
                 text_encoder_lr = args.text_encoder_lr
             else:
                 text_encoder_lr = None if len(args.text_encoder_lr) == 0 else args.text_encoder_lr[0]
