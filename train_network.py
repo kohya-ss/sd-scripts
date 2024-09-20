@@ -471,7 +471,11 @@ class NetworkTrainer:
         if support_multiple_lrs:
             text_encoder_lr = args.text_encoder_lr
         else:
-            text_encoder_lr = None if args.text_encoder_lr is None or len(args.text_encoder_lr) == 0 else args.text_encoder_lr[0]
+            # toml backward compatibility
+            if args.text_encoder_lr is None or isinstance(args.text_encoder_lr, float):
+                text_encoder_lr = args.text_encoder_lr
+            else:
+                text_encoder_lr = None if len(args.text_encoder_lr) == 0 else args.text_encoder_lr[0]
         try:
             if support_multiple_lrs:
                 results = network.prepare_optimizer_params_with_multiple_te_lrs(text_encoder_lr, args.unet_lr, args.learning_rate)
