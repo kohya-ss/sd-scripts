@@ -2207,7 +2207,11 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alph
         if alpha_mask:
             if "alpha_mask" not in npz:
                 return False
-            if (npz["alpha_mask"].shape[1], npz["alpha_mask"].shape[0]) != reso:  # HxW => WxH != reso
+            alpha_mask_size = npz["alpha_mask"].shape[0:2]
+            if alpha_mask_size[0] != alpha_mask_size[0] // 8 * 8 or alpha_mask_size[1] != alpha_mask_size[1] // 8 * 8: # ...is legacy caching scheme without rounding to divisible by 8
+                return False
+            alpha_mask_size = (alpha_mask_size[0] // 8, alpha_mask_size[1] // 8) # Resize alpha_mask to 1/8 scale, the same as latents
+            if alpha_mask_size != expected_latents_size:  # HxW
                 return False
         else:
             if "alpha_mask" in npz:
@@ -2514,6 +2518,7 @@ def cache_batch_latents(
             if image.shape[2] == 4:
                 alpha_mask = image[:, :, 3]  # [H,W]
                 alpha_mask = alpha_mask.astype(np.float32) / 255.0
+                alpha_mask = alpha_mask[:image.shape[0] // 8 * 8, :image.shape[1] // 8 * 8]  # Without rounding down [H, W], Tensor sizes may not match, so stack the tensors.
                 alpha_mask = torch.FloatTensor(alpha_mask)  # [H,W]
             else:
                 alpha_mask = torch.ones_like(image[:, :, 0], dtype=torch.float32)  # [H,W]
