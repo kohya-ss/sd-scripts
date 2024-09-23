@@ -261,11 +261,11 @@ def train(args):
     )
 
     if args.gradient_checkpointing:
-        flux.enable_gradient_checkpointing(args.cpu_offload_checkpointing)
+        flux.enable_gradient_checkpointing(cpu_offload=args.cpu_offload_checkpointing)
 
     flux.requires_grad_(True)
 
-    is_swapping_blocks = args.double_blocks_to_swap is not None or args.single_blocks_to_swap is not None
+    is_swapping_blocks = args.double_blocks_to_swap or args.single_blocks_to_swap
     if is_swapping_blocks:
         # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
         # This idea is based on 2kpr's great work. Thank you!
@@ -347,8 +347,13 @@ def train(args):
 
         logger.info(f"using {len(optimizers)} optimizers for blockwise fused optimizers")
 
+        if train_util.is_schedulefree_optimizer(optimizers[0], args):
+            raise ValueError("Schedule-free optimizer is not supported with blockwise fused optimizers")
+        optimizer_train_fn = lambda: None  # dummy function
+        optimizer_eval_fn = lambda: None  # dummy function
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+        optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -629,6 +634,9 @@ def train(args):
 
     # For --sample_at_first
     flux_train_utils.sample_images(accelerator, args, 0, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs)
+    if len(accelerator.trackers) > 0:
+        # log empty object to commit the sample images to wandb
+        accelerator.log({}, step=0)
 
     loss_recorder = train_util.LossRecorder()
     epoch = 0  # avoid error when max_train_steps is 0
@@ -651,7 +659,7 @@ def train(args):
                 else:
                     with torch.no_grad():
                         # encode images to latents. images are [-1, 1]
-                        latents = ae.encode(batch["images"])
+                        latents = ae.encode(batch["images"].to(ae.dtype)).to(accelerator.device, dtype=weight_dtype)
 
                     # NaNが含まれていれば警告を表示し0に置き換える
                     if torch.any(torch.isnan(latents)):
@@ -757,6 +765,7 @@ def train(args):
                 progress_bar.update(1)
                 global_step += 1
 
+                optimizer_eval_fn()
                 flux_train_utils.sample_images(
                     accelerator, args, None, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs
                 )
@@ -775,9 +784,10 @@ def train(args):
                             global_step,
                             accelerator.unwrap_model(flux),
                         )
+                optimizer_train_fn()
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = {"loss": current_loss}
                 train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=True)
 
@@ -791,12 +801,13 @@ def train(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
         accelerator.wait_for_everyone()
 
+        optimizer_eval_fn()
         if args.save_every_n_epochs is not None:
             if accelerator.is_main_process:
                 flux_train_utils.save_flux_model_on_epoch_end_or_stepwise(
@@ -813,12 +824,14 @@ def train(args):
         flux_train_utils.sample_images(
             accelerator, args, epoch + 1, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs
         )
+        optimizer_train_fn()
 
     is_main_process = accelerator.is_main_process
     # if is_main_process:
     flux = accelerator.unwrap_model(flux)
 
     accelerator.end_training()
+    optimizer_eval_fn()
 
     if args.save_state or args.save_state_on_train_end:
         train_util.save_state_on_train_end(args, accelerator)

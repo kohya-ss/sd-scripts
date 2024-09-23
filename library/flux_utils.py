@@ -171,7 +171,9 @@ def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.dev
     return clip
 
 
-def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False) -> T5EncoderModel:
+def load_t5xxl(
+    ckpt_path: str, dtype: Optional[torch.dtype], device: Union[str, torch.device], disable_mmap: bool = False
+) -> T5EncoderModel:
     T5_CONFIG_JSON = """
 {
   "architectures": [
@@ -215,6 +217,11 @@ def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.devi
     info = t5xxl.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded T5xxl: {info}")
     return t5xxl
+
+
+def get_t5xxl_actual_dtype(t5xxl: T5EncoderModel) -> torch.dtype:
+    # nn.Embedding is the first layer, but it could be casted to bfloat16 or float32
+    return t5xxl.encoder.block[0].layer[0].SelfAttention.q.weight.dtype
 
 
 def prepare_img_ids(batch_size: int, packed_latent_height: int, packed_latent_width: int):

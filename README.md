@@ -11,6 +11,58 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 18, 2024 (update 1):
+Fixed an issue where train()/eval() was not called properly with the schedule-free optimizer. The schedule-free optimizer can be used in FLUX.1 LoRA training and fine-tuning for now.
+
+Sep 18, 2024:
+
+- Schedule-free optimizer is added. Thanks to sdbds! See PR [#1600](https://github.com/kohya-ss/sd-scripts/pull/1600) for details.
+  - Details of the schedule-free optimizer can be found in [facebookresearch/schedule_free](https://github.com/facebookresearch/schedule_free).
+  - `schedulefree` is added to the dependencies. Please update the library if necessary.
+  - AdamWScheduleFree or SGDScheduleFree can be used. Specify `adamwschedulefree` or `sgdschedulefree` in `--optimizer_type`.
+  - Wrapper classes are not available for now.
+  - These can be used not only for FLUX.1 training but also for other training scripts after merging to the dev/main branch.
+
+Sep 16, 2024:
+
+ Added `train_double_block_indices` and `train_double_block_indices` to the LoRA training script to specify the indices of the blocks to train. See [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training) for details.
+
+Sep 15, 2024:
+
+Added a script `convert_diffusers_to_flux.py` to convert Diffusers format FLUX.1 models (checkpoints) to BFL format. See `--help` for usage. Only Flux models are supported. AE/CLIP/T5XXL are not supported. 
+
+The implementation is based on 2kpr's code. Thanks to 2kpr!
+
+Sep 14, 2024:
+- You can now specify the rank for each layer in FLUX.1. See [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1) for details.
+- OFT is now supported with FLUX.1. See [FLUX.1 OFT training](#flux1-oft-training) for details.
+
+Sep 11, 2024: 
+Logging to wandb is improved. See PR [#1576](https://github.com/kohya-ss/sd-scripts/pull/1576) for details. Thanks to p1atdev!
+
+Sep 10, 2024:
+In FLUX.1 LoRA training, individual learning rates can be specified for CLIP-L and T5XXL. By specifying multiple numbers in `--text_encoder_lr`, you can set the learning rates for CLIP-L and T5XXL separately. Specify like `--text_encoder_lr 1e-4 1e-5`. The first value is the learning rate for CLIP-L, and the second value is for T5XXL. If you specify only one, the learning rates for CLIP-L and T5XXL will be the same.
+
+Sep 9, 2024:
+Added `--negative_prompt` and `--cfg_scale` to `flux_minimal_inference.py`. Negative prompts can be used. 
+
+Sep 5, 2024 (update 1):
+
+Added `--cpu_offload_checkpointing` option to LoRA training script. Offloads gradient checkpointing to CPU. This reduces up to 1GB of VRAM usage but slows down the training by about 15%. Cannot be used with `--split_mode`.
+
+Sep 5, 2024:
+
+The LoRA merge script now supports CLIP-L and T5XXL LoRA. Please specify `--clip_l` and `--t5xxl`. `--clip_l_save_to` and `--t5xxl_save_to` specify the save destination for CLIP-L and T5XXL. See [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint) for details.
+
+Sep 4, 2024:
+- T5XXL LoRA is supported in LoRA training. Remove `--network_train_unet_only` and add `train_t5xxl=True` to `--network_args`. CLIP-L is also trained at the same time (T5XXL only cannot be trained). The trained model can be used with ComfyUI. See [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training) for details.
+- In LoRA training, when `--fp8_base` is specified, you can specify `t5xxl_fp8_e4m3fn.safetensors` as the T5XXL weights. However, it is recommended to use fp16 weights for caching.
+- Fixed an issue where the training CLIP-L LoRA was not used in sample image generation during LoRA training.
+
+Sep 1, 2024:
+- `--timestamp_sampling` has `flux_shift` option. Thanks to sdbds!
+  - This is the same shift as FLUX.1 dev inference, adjusting the timestep sampling depending on the resolution. `--discrete_flow_shift` is ignored when `flux_shift` is specified. It is not verified which is better, `shift` or `flux_shift`.
+
 Aug 29, 2024: 
 Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `requirements.txt` is updated.
 
@@ -18,14 +70,19 @@ Please update `safetensors` to `0.4.4` to fix the error when using `--resume`. `
 
 - [FLUX.1 LoRA training](#flux1-lora-training)
   - [Key Options for FLUX.1 LoRA training](#key-options-for-flux1-lora-training)
-  - [Inference for FLUX.1 LoRA model](#inference-for-flux1-lora-model)
+  - [Distribution of timesteps](#distribution-of-timesteps)
   - [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training)
+  - [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1)
+  - [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training)
+- [FLUX.1 OFT training](#flux1-oft-training)
+- [Inference for FLUX.1 with LoRA model](#inference-for-flux1-with-lora-model)
 - [FLUX.1 fine-tuning](#flux1-fine-tuning)
   - [Key Features for FLUX.1 fine-tuning](#key-features-for-flux1-fine-tuning)
 - [Extract LoRA from FLUX.1 Models](#extract-lora-from-flux1-models)
 - [Convert FLUX LoRA](#convert-flux-lora)
 - [Merge LoRA to FLUX.1 checkpoint](#merge-lora-to-flux1-checkpoint)
 - [FLUX.1 Multi-resolution training](#flux1-multi-resolution-training)
+- [Convert Diffusers to FLUX.1](#convert-diffusers-to-flux1)
 
 ### FLUX.1 LoRA training
 
@@ -37,8 +94,8 @@ Sample command is below. It will work with 24GB VRAM GPUs.
 
 ```
 accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train_network.py 
---pretrained_model_name_or_path flux1-dev.sft --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors 
---ae ae.sft --cache_latents_to_disk --save_model_as safetensors --sdpa --persistent_data_loader_workers 
+--pretrained_model_name_or_path flux1-dev.safetensors --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors 
+--ae ae.safetensors --cache_latents_to_disk --save_model_as safetensors --sdpa --persistent_data_loader_workers 
 --max_data_loader_n_workers 2 --seed 42 --gradient_checkpointing --mixed_precision bf16 --save_precision bf16 
 --network_module networks.lora_flux --network_dim 4 --optimizer_type adamw8bit --learning_rate 1e-4 
 --cache_text_encoder_outputs --cache_text_encoder_outputs_to_disk --fp8_base 
@@ -60,6 +117,8 @@ The training can be done with 12GB VRAM GPUs with Adafactor optimizer, `--split_
 --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --split_mode --network_args "train_blocks=single" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
 ```
 
+`--cpu_offload_checkpointing` offloads gradient checkpointing to CPU. This reduces up to 1GB of VRAM usage but slows down the training by about 15%. Cannot be used with `--split_mode`.
+
 We also not sure how many epochs are needed for convergence, and how the learning rate should be adjusted.
 
 The trained LoRA model can be used with ComfyUI. 
@@ -68,11 +127,17 @@ The trained LoRA model can be used with ComfyUI.
 
 There are many unknown points in FLUX.1 training, so some settings can be specified by arguments. Here are the arguments. The arguments and sample settings are still experimental and may change in the future. Feedback on the settings is welcome.
 
+- `--pretrained_model_name_or_path` is the path to the pretrained model (FLUX.1). bf16 (original BFL model) is recommended (`flux1-dev.safetensors` or `flux1-dev.sft`). If you specify `--fp8_base`, you can use fp8 models for FLUX.1. The fp8 model is only compatible with `float8_e4m3fn` format.
+- `--clip_l` is the path to the CLIP-L model. 
+- `--t5xxl` is the path to the T5XXL model. If you specify `--fp8_base`, you can use fp8 (float8_e4m3fn) models for T5XXL. However, it is recommended to use fp16 models for caching.
+- `--ae` is the path to the autoencoder model (`ae.safetensors` or `ae.sft`).
+
 - `--timestep_sampling` is the method to sample timesteps (0-1):
   - `sigma`: sigma-based, same as SD3
   - `uniform`: uniform random
   - `sigmoid`: sigmoid of random normal, same as x-flux, AI-toolkit etc.
   - `shift`: shifts the value of sigmoid of normal distribution random number
+  - `flux_shift`: shifts the value of sigmoid of normal distribution random number, depending on the resolution (same as FLUX.1 dev inference). `--discrete_flow_shift` is ignored when `flux_shift` is specified.
 - `--sigmoid_scale` is the scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). The default is 1.0. Larger values will make the sampling more uniform.
   - This option is effective even when`--timestep_sampling shift` is specified.
   - Normally, leave it at 1.0. Larger values make the value before shift closer to a uniform distribution.
@@ -109,16 +174,30 @@ The effect of `--timestep_sampling sigmoid` and `--sigmoid_scale` (when `--times
 
 #### Key Features for FLUX.1 LoRA training
 
-1. CLIP-L LoRA Support:
-   - FLUX.1 LoRA training now supports CLIP-L LoRA.
+1. CLIP-L and T5XXL LoRA Support:
+   - FLUX.1 LoRA training now supports CLIP-L and T5XXL LoRA training.
    - Remove `--network_train_unet_only` from your command.
-   - T5XXL is not trained. Its output is still cached, so `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is still required.
+   - Add `train_t5xxl=True` to `--network_args` to train T5XXL LoRA. CLIP-L is also trained at the same time.
+   - T5XXL output can be cached for CLIP-L LoRA training. So, `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is also available.
+   - The learning rates for CLIP-L and T5XXL can be specified separately. Multiple numbers can be specified in `--text_encoder_lr`. For example, `--text_encoder_lr 1e-4 1e-5`. The first value is the learning rate for CLIP-L, and the second value is for T5XXL. If you specify only one, the learning rates for CLIP-L and T5XXL will be the same. If `--text_encoder_lr` is not specified, the default learning rate `--learning_rate` is used for both CLIP-L and T5XXL.
    - The trained LoRA can be used with ComfyUI.
-   - Note: `flux_extract_lora.py` and `convert_flux_lora.py` do not support CLIP-L LoRA.
+   - Note: `flux_extract_lora.py`, `convert_flux_lora.py`and `merge_flux_lora.py` do not support CLIP-L and T5XXL LoRA yet.
+
+    | trained LoRA|option|network_args|cache_text_encoder_outputs (*1)|
+    |---|---|---|---|
+    |FLUX.1|`--network_train_unet_only`|-|o|
+    |FLUX.1 + CLIP-L|-|-|o (*2)|
+    |FLUX.1 + CLIP-L + T5XXL|-|`train_t5xxl=True`|-|
+    |CLIP-L (*3)|`--network_train_text_encoder_only`|-|o (*2)|
+    |CLIP-L + T5XXL (*3)|`--network_train_text_encoder_only`|`train_t5xxl=True`|-|
+
+    - *1: `--cache_text_encoder_outputs` or `--cache_text_encoder_outputs_to_disk` is also available.
+    - *2: T5XXL output can be cached for CLIP-L LoRA training.
+    - *3: Not tested yet.
 
 2. Experimental FP8/FP16 mixed training:
-   - `--fp8_base_unet` enables training with fp8 for FLUX and bf16/fp16 for CLIP-L.
-   - FLUX can be trained with fp8, and CLIP-L can be trained with bf16/fp16.
+   - `--fp8_base_unet` enables training with fp8 for FLUX and bf16/fp16 for CLIP-L/T5XXL.
+   - FLUX can be trained with fp8, and CLIP-L/T5XXL can be trained with bf16/fp16.
    - When specifying this option, the `--fp8_base` option is automatically enabled.
 
 3. Split Q/K/V Projection Layers (Experimental):
@@ -143,12 +222,85 @@ In the implementation of Black Forest Labs' model, the projection layers of q/k/
 
 The compatibility of the saved model (state dict) is ensured by concatenating the weights of multiple LoRAs. However, since there are zero weights in some parts, the model size will be large.
 
+#### Specify rank for each layer in FLUX.1
+
+You can specify the rank for each layer in FLUX.1 by specifying the following network_args. If you specify `0`, LoRA will not be applied to that layer.
+
+When network_args is not specified, the default value (`network_dim`) is applied, same as before.
+
+|network_args|target layer|
+|---|---|
+|img_attn_dim|img_attn in DoubleStreamBlock|
+|txt_attn_dim|txt_attn in DoubleStreamBlock|
+|img_mlp_dim|img_mlp in DoubleStreamBlock|
+|txt_mlp_dim|txt_mlp in DoubleStreamBlock|
+|img_mod_dim|img_mod in DoubleStreamBlock|
+|txt_mod_dim|txt_mod in DoubleStreamBlock|
+|single_dim|linear1 and linear2 in SingleStreamBlock|
+|single_mod_dim|modulation in SingleStreamBlock|
+
+`"verbose=True"` is also available for debugging. It shows the rank of each layer.
+
+example: 
+```
+--network_args "img_attn_dim=4" "img_mlp_dim=8" "txt_attn_dim=2" "txt_mlp_dim=2" 
+"img_mod_dim=2" "txt_mod_dim=2" "single_dim=4" "single_mod_dim=2" "verbose=True"
+```
+
+You can apply LoRA to the conditioning layers of Flux by specifying `in_dims` in network_args. When specifying, be sure to specify 5 numbers in `[]` as a comma-separated list.
+
+example: 
+```
+--network_args "in_dims=[4,2,2,2,4]"
+```
+
+Each number corresponds to `img_in`, `time_in`, `vector_in`, `guidance_in`, `txt_in`. The above example applies LoRA to all conditioning layers, with rank 4 for `img_in`, 2 for `time_in`, `vector_in`, `guidance_in`, and 4 for `txt_in`.
+
+If you specify `0`, LoRA will not be applied to that layer. For example, `[4,0,0,0,4]` applies LoRA only to `img_in` and `txt_in`.
+
+#### Specify blocks to train in FLUX.1 LoRA training
+
+You can specify the blocks to train in FLUX.1 LoRA training by specifying `train_double_block_indices` and `train_single_block_indices` in network_args. The indices are 0-based. The default (when omitted) is to train all blocks. The indices are specified as a list of integers or a range of integers, like `0,1,5,8` or `0,1,4-5,7`. The number of double blocks is 19, and the number of single blocks is 38, so the valid range is 0-18 and 0-37, respectively. `all` is also available to train all blocks, `none` is also available to train no blocks.
+
+example: 
+```
+--network_args "train_double_block_indices=0,1,8-12,18" "train_single_block_indices=3,10,20-25,37"
+```
+
+```
+--network_args "train_double_block_indices=none" "train_single_block_indices=10-15"
+```
+
+If you specify one of `train_double_block_indices` or `train_single_block_indices`, the other will be trained as usual. 
+
+### FLUX.1 OFT training
+
+You can train OFT with almost the same options as LoRA, such as `--timestamp_sampling`. The following points are different.
+
+- Change `--network_module` from `networks.lora_flux` to `networks.oft_flux`.
+- `--network_dim` is the number of OFT blocks. Unlike LoRA rank, the smaller the dim, the larger the model. We recommend about 64 or 128. Please make the output dimension of the target layer of OFT divisible by the value of `--network_dim` (an error will occur if it is not divisible). Valid values are 64, 128, 256, 512, 1024, etc.
+- `--network_alpha` is treated as a constraint for OFT. We recommend about 1e-2 to 1e-4. The default value when omitted is 1, which is too large, so be sure to specify it.
+- CLIP/T5XXL is not supported. Specify `--network_train_unet_only`.
+- `--network_args` specifies the hyperparameters of OFT. The following are valid:
+    - Specify `enable_all_linear=True` to target all linear connections in the MLP layer. The default is False, which targets only attention.
+
+Currently, there is no environment to infer FLUX.1 OFT. Inference is only possible with `flux_minimal_inference.py` (specify OFT model with `--lora`).
+
+Sample command is below. It will work with 24GB VRAM GPUs with the batch size of 1.
+
+```
+--network_module networks.oft_flux  --network_dim 128 --network_alpha 1e-3 
+--network_args "enable_all_linear=True" --learning_rate 1e-5 
+```
+
+The training can be done with 16GB VRAM GPUs without `--enable_all_linear` option and with Adafactor optimizer. 
+
 ### Inference for FLUX.1 with LoRA model
 
 The inference script is also available. The script is `flux_minimal_inference.py`. See `--help` for options. 
 
 ```
-python flux_minimal_inference.py --ckpt flux1-dev.sft --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors --ae ae.sft --dtype bf16 --prompt "a cat holding a sign that says hello world" --out path/to/output/dir --seed 1 --flux_dtype fp8 --offload --lora lora-flux-name.safetensors;1.0
+python flux_minimal_inference.py --ckpt flux1-dev.safetensors --clip_l sd3/clip_l.safetensors --t5xxl sd3/t5xxl_fp16.safetensors --ae ae.safetensors --dtype bf16 --prompt "a cat holding a sign that says hello world" --out path/to/output/dir --seed 1 --flux_dtype fp8 --offload --lora lora-flux-name.safetensors;1.0
 ```
 
 ### FLUX.1 fine-tuning
@@ -159,7 +311,7 @@ Sample command for FLUX.1 fine-tuning is below. This will work with 24GB VRAM GP
 
 ```
 accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train.py   
---pretrained_model_name_or_path flux1-dev.sft  --clip_l clip_l.safetensors --t5xxl t5xxl_fp16.safetensors --ae ae_dev.sft 
+--pretrained_model_name_or_path flux1-dev.safetensors  --clip_l clip_l.safetensors --t5xxl t5xxl_fp16.safetensors --ae ae_dev.safetensors 
 --save_model_as safetensors --sdpa --persistent_data_loader_workers --max_data_loader_n_workers 2 
 --seed 42 --gradient_checkpointing --mixed_precision bf16 --save_precision bf16 
 --dataset_config dataset_1024_bs1.toml  --output_dir path/to/output/dir --output_name output-name 
@@ -179,7 +331,7 @@ Options are almost the same as LoRA training. The difference is `--full_bf16`, `
 
 `--blockwise_fused_optimizers` enables the fusing of the optimizer step into the backward pass for each block. This is similar to `--fused_backward_pass`. Any optimizer can be used, but Adafactor is recommended for memory efficiency. `--blockwise_fused_optimizers` cannot be used with `--fused_backward_pass`. Stochastic rounding is not supported for now.
 
-`--double_blocks_to_swap` and `--single_blocks_to_swap` are the number of double blocks and single blocks to swap. The default is None (no swap). These options must be combined with `--fused_backward_pass` or `--blockwise_fused_optimizers`. `--double_blocks_to_swap` can be specified with `--single_blocks_to_swap`. The recommended maximum number of blocks to swap is 9 for double blocks and 18 for single blocks.
+`--double_blocks_to_swap` and `--single_blocks_to_swap` are the number of double blocks and single blocks to swap. The default is None (no swap). These options must be combined with `--fused_backward_pass` or `--blockwise_fused_optimizers`. `--double_blocks_to_swap` can be specified with `--single_blocks_to_swap`. The recommended maximum number of blocks to swap is 9 for double blocks and 18 for single blocks. Please see the next chapter for details.
 
 `--cpu_offload_checkpointing` is to offload the gradient checkpointing to CPU. This reduces about 2GB of VRAM usage.
 
@@ -193,24 +345,32 @@ The learning rate and the number of epochs are not optimized yet. Please adjust 
 
 #### Key Features for FLUX.1 fine-tuning
 
-1. Sample Image Generation:
+1.  Technical details of double/single block swap:
+    - Reduce memory usage by transferring double and single blocks of FLUX.1 from GPU to CPU when they are not needed.
+    - During forward pass, the weights of the blocks that have finished calculation are transferred to CPU, and the weights of the blocks to be calculated are transferred to GPU.
+    - The same is true for the backward pass, but the order is reversed. The gradients remain on the GPU.
+    - Since the transfer between CPU and GPU takes time, the training will be slower.
+    - `--double_blocks_to_swap` and `--single_blocks_to_swap` specify the number of blocks to swap. For example, `--double_blocks_to_swap 6` swaps 6 blocks at each step of training, but the remaining 13 blocks are always on the GPU.
+    - About 640MB of memory can be saved per double block, and about 320MB of memory can be saved per single block.
+
+2. Sample Image Generation:
    - Sample image generation during training is now supported.
    - The prompts are cached and used for generation if `--cache_latents` is specified. So changing the prompts during training will not affect the generated images.
    - Specify options such as `--sample_prompts` and `--sample_every_n_epochs`.
    - Note: It will be very slow when `--split_mode` is specified.
 
-2. Experimental Memory-Efficient Saving:
+3. Experimental Memory-Efficient Saving:
    - `--mem_eff_save` option can further reduce memory consumption during model saving (about 22GB).
    - This is a custom implementation and may cause unexpected issues. Use with caution.
 
-3. T5XXL Token Length Control:
+4. T5XXL Token Length Control:
    - Added `--t5xxl_max_token_length` option to specify the maximum token length of T5XXL.
    - Default is 512 in dev and 256 in schnell models.
 
-4. Multi-GPU Training Support:
+5. Multi-GPU Training Support:
    - Note: `--double_blocks_to_swap` and `--single_blocks_to_swap` cannot be used in multi-GPU training.
 
-5. Disable mmap Load for Safetensors:
+6. Disable mmap Load for Safetensors:
    - `--disable_mmap_load_safetensors` option now works in `flux_train.py`.
    - Speeds up model loading during training in WSL2.
    - Effective in reducing memory usage when loading models during multi-GPU training.
@@ -236,25 +396,36 @@ If you use LoRA in the inference environment, converting it to AI-toolkit format
 
 Note that re-conversion will increase the size of LoRA.
 
-CLIP-L LoRA is not supported.
+CLIP-L/T5XXL LoRA is not supported.
 
 ### Merge LoRA to FLUX.1 checkpoint
 
-`networks/flux_merge_lora.py` merges LoRA to FLUX.1 checkpoint. __The script is experimental.__ 
+`networks/flux_merge_lora.py` merges LoRA to FLUX.1 checkpoint, CLIP-L or T5XXL models. __The script is experimental.__ 
 
 ```
-python networks/flux_merge_lora.py --flux_model flux1-dev.sft --save_to output.safetensors --models lora1.safetensors --ratios 2.0 --save_precision fp16 --loading_device cuda --working_device cpu
+python networks/flux_merge_lora.py --flux_model flux1-dev.safetensors --save_to output.safetensors --models lora1.safetensors --ratios 2.0 --save_precision fp16 --loading_device cuda --working_device cpu
 ```
 
 You can also merge multiple LoRA models into a FLUX.1 model. Specify multiple LoRA models in `--models`. Specify the same number of ratios in `--ratios`.
 
-`--loading_device` is the device to load the LoRA models. `--working_device` is the device to merge (calculate) the models. Default is `cpu` for both. Loading / working device examples are below (in the case of `--save_precision fp16` or `--save_precision bf16`):
+CLIP-L and T5XXL LoRA are supported. `--clip_l` and `--clip_l_save_to` are for CLIP-L, `--t5xxl` and `--t5xxl_save_to` are for T5XXL. Sample command is below.
+
+```
+--clip_l clip_l.safetensors --clip_l_save_to merged_clip_l.safetensors  --t5xxl t5xxl_fp16.safetensors --t5xxl_save_to merged_t5xxl.safetensors
+```
+
+FLUX.1, CLIP-L, and T5XXL can be merged together or separately for memory efficiency.
+
+An experimental option `--mem_eff_load_save` is available. This option is for memory-efficient loading and saving. It may also speed up loading and saving. 
+
+`--loading_device` is the device to load the LoRA models. `--working_device` is the device to merge (calculate) the models. Default is `cpu` for both. Loading / working device examples are below (in the case of `--save_precision fp16` or `--save_precision bf16`, `float32` will consume more memory):
 
 - 'cpu' / 'cpu': Uses >50GB of RAM, but works on any machine.
 - 'cuda' / 'cpu': Uses 24GB of VRAM, but requires 30GB of RAM.
-- 'cuda' / 'cuda': Uses 30GB of VRAM, but requires 30GB of RAM, faster than 'cuda' / 'cpu'.
+- 'cpu' / 'cuda': Uses 4GB of VRAM, but requires 50GB of RAM, faster than 'cpu' / 'cpu' or 'cuda' / 'cpu'.
+- 'cuda' / 'cuda': Uses 30GB of VRAM, but requires 30GB of RAM, faster than 'cpu' / 'cpu' or 'cuda' / 'cpu'.
 
-In the case of LoRA models are trained with `bf16`, we are not sure which is better, `fp16` or `bf16` for `--save_precision`.
+`--save_precision` is the precision to save the merged model. In the case of LoRA models are trained with `bf16`, we are not sure which is better, `fp16` or `bf16` for `--save_precision`.
 
 The script can merge multiple LoRA models. If you want to merge multiple LoRA models, specify `--concat` option to work the merged LoRA model properly.
 
@@ -305,9 +476,22 @@ resolution = [512, 512]
   num_repeats = 1
 ```
 
+### Convert Diffusers to FLUX.1
+
+Script: `convert_diffusers_to_flux1.py`
+
+Converts Diffusers models to FLUX.1 models. The script is experimental. See `--help` for options. schnell and dev models are supported. AE/CLIP/T5XXL are not supported. The diffusers folder is a parent folder of `rmer` folder.
+
+```
+python tools/convert_diffusers_to_flux.py --diffusers_path path/to/diffusers_folder_or_00001_safetensors --save_to path/to/flux1.safetensors --mem_eff_load_save --save_precision bf16
+```
+
 ## SD3 training
 
 SD3 training is done with `sd3_train.py`. 
+
+__Sep 1, 2024__:
+- `--num_last_block_to_freeze` is added to `sd3_train.py`. This option is to freeze the last n blocks of the MMDiT. See [#1417](https://github.com/kohya-ss/sd-scripts/pull/1417) for details. Thanks to sdbds!
 
 __Jul  27, 2024__: 
 - Latents and text encoder outputs caching mechanism is refactored significantly. 
@@ -493,7 +677,45 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ### Working in progress
 
+- __important__ The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
+  - transformers, accelerate and huggingface_hub are updated. 
+  - If you encounter any issues, please report them.
+
+- Improvements in OFT (Orthogonal Finetuning) Implementation
+  1. Optimization of Calculation Order:
+      - Changed the calculation order in the forward method from (Wx)R to W(xR).
+      - This has improved computational efficiency and processing speed.
+  2. Correction of Bias Application:
+      - In the previous implementation, R was incorrectly applied to the bias.
+      - The new implementation now correctly handles bias by using F.conv2d and F.linear.
+  3. Efficiency Enhancement in Matrix Operations:
+      - Introduced einsum in both the forward and merge_to methods.
+      - This has optimized matrix operations, resulting in further speed improvements.
+  4. Proper Handling of Data Types:
+      - Improved to use torch.float32 during calculations and convert results back to the original data type.
+      - This maintains precision while ensuring compatibility with the original model.
+  5. Unified Processing for Conv2d and Linear Layers:
+     - Implemented a consistent method for applying OFT to both layer types.
+  - These changes have made the OFT implementation more efficient and accurate, potentially leading to improved model performance and training stability.
+
+  - Additional Information
+    * Recommended α value for OFT constraint: We recommend using α values between 1e-4 and 1e-2. This differs slightly from the original implementation of "(α\*out_dim\*out_dim)". Our implementation uses "(α\*out_dim)", hence we recommend higher values than the 1e-5 suggested in the original implementation.
+
+    * Performance Improvement: Training speed has been improved by approximately 30%.
+
+    * Inference Environment: This implementation is compatible with and operates within Stable Diffusion web UI (SD1/2 and SDXL).
+
+- The INVERSE_SQRT, COSINE_WITH_MIN_LR, and WARMUP_STABLE_DECAY learning rate schedules are now available in the transformers library. See PR [#1393](https://github.com/kohya-ss/sd-scripts/pull/1393) for details. Thanks to sdbds!
+  - See the [transformers documentation](https://huggingface.co/docs/transformers/v4.44.2/en/main_classes/optimizer_schedules#schedules) for details on each scheduler.
+  - `--lr_warmup_steps` and `--lr_decay_steps` can now be specified as a ratio of the number of training steps, not just the step value. Example: `--lr_warmup_steps=0.1` or `--lr_warmup_steps=10%`, etc.
+
+https://github.com/kohya-ss/sd-scripts/pull/1393
+- When enlarging images in the script (when the size of the training image is small and bucket_no_upscale is not specified), it has been changed to use Pillow's resize and LANCZOS interpolation instead of OpenCV2's resize and Lanczos4 interpolation. The quality of the image enlargement may be slightly improved. PR [#1426](https://github.com/kohya-ss/sd-scripts/pull/1426) Thanks to sdbds!
+
+- Sample image generation during training now works on non-CUDA devices. PR [#1433](https://github.com/kohya-ss/sd-scripts/pull/1433) Thanks to millie-v!
+
 - `--v_parameterization` is available in `sdxl_train.py`. The results are unpredictable, so use with caution. PR [#1505](https://github.com/kohya-ss/sd-scripts/pull/1505) Thanks to liesened!
+
 - Fused optimizer is available for SDXL training. PR [#1259](https://github.com/kohya-ss/sd-scripts/pull/1259) Thanks to 2kpr!
   - The memory usage during training is significantly reduced by integrating the optimizer's backward pass with step. The training results are the same as before, but if you have plenty of memory, the speed will be slower.
   - Specify the `--fused_backward_pass` option in `sdxl_train.py`. At this time, only Adafactor is supported. Gradient accumulation is not available.
@@ -619,6 +841,21 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) frodo821 氏に感謝します
 - DeepSpeed 使用時のいくつかのバグを修正しました。関連 [#1247](https://github.com/kohya-ss/sd-scripts/pull/1247)
 
 - `gen_imgs.py` のプロンプトオプションに、保存時のファイル名を指定する `--f` オプションを追加しました。また同スクリプトで Diffusers ベースのキーを持つ LoRA の重みに対応しました。
+
+
+### Sep 13, 2024 / 2024-09-13: 
+
+- `sdxl_merge_lora.py` now supports OFT. Thanks to Maru-mee for the PR [#1580](https://github.com/kohya-ss/sd-scripts/pull/1580). 
+- `svd_merge_lora.py` now supports LBW. Thanks to terracottahaniwa. See PR [#1575](https://github.com/kohya-ss/sd-scripts/pull/1575) for details.
+- `sdxl_merge_lora.py` also supports LBW. 
+- See [LoRA Block Weight](https://github.com/hako-mikan/sd-webui-lora-block-weight) by hako-mikan for details on LBW.
+- These will be included in the next release.
+
+- `sdxl_merge_lora.py` が OFT をサポートされました。PR [#1580](https://github.com/kohya-ss/sd-scripts/pull/1580) Maru-mee 氏に感謝します。
+- `svd_merge_lora.py` で LBW がサポートされました。PR [#1575](https://github.com/kohya-ss/sd-scripts/pull/1575) terracottahaniwa 氏に感謝します。
+- `sdxl_merge_lora.py` でも LBW がサポートされました。
+- LBW の詳細は hako-mikan 氏の [LoRA Block Weight](https://github.com/hako-mikan/sd-webui-lora-block-weight) をご覧ください。
+- 以上は次回リリースに含まれます。
 
 ### Jun 23, 2024 / 2024-06-23: 
 

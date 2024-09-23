@@ -17,8 +17,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-RE_UPDOWN = re.compile(r"(up|down)_blocks_(\d+)_(resnets|upsamplers|downsamplers|attentions)_(\d+)_")
-
 
 class OFTModule(torch.nn.Module):
     """
@@ -32,37 +30,46 @@ class OFTModule(torch.nn.Module):
         multiplier=1.0,
         dim=4,
         alpha=1,
+        split_dims: Optional[List[int]] = None,
     ):
         """
         dim -> num blocks
         alpha -> constraint
+
+        split_dims is used to mimic the split qkv of FLUX as same as Diffusers
         """
         super().__init__()
         self.oft_name = oft_name
-
         self.num_blocks = dim
-
-        if "Linear" in org_module.__class__.__name__:
-            out_dim = org_module.out_features
-        elif "Conv" in org_module.__class__.__name__:
-            out_dim = org_module.out_channels
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().numpy()
-        
-        # constraint in original paper is alpha * out_dim * out_dim, but we use alpha * out_dim for backward compatibility
-        # original alpha is 1e-5, so we use 1e-2 or 1e-4 for alpha
-        self.constraint = alpha * out_dim 
-        
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        self.block_size = out_dim // self.num_blocks
-        self.oft_blocks = torch.nn.Parameter(torch.zeros(self.num_blocks, self.block_size, self.block_size))
-        self.I = torch.eye(self.block_size).unsqueeze(0).repeat(self.num_blocks, 1, 1)  # cpu
+        # No conv2d in FLUX
+        # if "Linear" in org_module.__class__.__name__:
+        self.out_dim = org_module.out_features
+        # elif "Conv" in org_module.__class__.__name__:
+        #     out_dim = org_module.out_channels
 
-        self.out_dim = out_dim
+        if split_dims is None:
+            split_dims = [self.out_dim]
+        else:
+            assert sum(split_dims) == self.out_dim, "sum of split_dims must be equal to out_dim"
+        self.split_dims = split_dims
+
+        # assert all dim is divisible by num_blocks
+        for split_dim in self.split_dims:
+            assert split_dim % self.num_blocks == 0, "split_dim must be divisible by num_blocks"
+
+        self.constraint = [alpha * split_dim for split_dim in self.split_dims]
+        self.block_size = [split_dim // self.num_blocks for split_dim in self.split_dims]
+        self.oft_blocks = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.zeros(self.num_blocks, block_size, block_size)) for block_size in self.block_size]
+        )
+        self.I = [torch.eye(block_size).unsqueeze(0).repeat(self.num_blocks, 1, 1) for block_size in self.block_size]
+
         self.shape = org_module.weight.shape
-
         self.multiplier = multiplier
         self.org_module = [org_module]  # moduleにならないようにlistに入れる
 
@@ -74,39 +81,52 @@ class OFTModule(torch.nn.Module):
         if multiplier is None:
             multiplier = self.multiplier
 
-        block_Q = self.oft_blocks - self.oft_blocks.transpose(1, 2)
-        norm_Q = torch.norm(block_Q.flatten())
-        new_norm_Q = torch.clamp(norm_Q, max=self.constraint)
-        block_Q = block_Q * ((new_norm_Q + 1e-8) / (norm_Q + 1e-8))
+        if self.I[0].device != self.oft_blocks[0].device:
+            self.I = [I.to(self.oft_blocks[0].device) for I in self.I]
 
-        if self.I.device != block_Q.device:
-            self.I = self.I.to(block_Q.device)
-        I = self.I
-        block_R = torch.matmul(I + block_Q, (I - block_Q).float().inverse())
-        block_R_weighted = self.multiplier * (block_R - I) + I
-        return block_R_weighted
+        block_R_weighted_list = []
+        for i in range(len(self.oft_blocks)):
+            block_Q = self.oft_blocks[i] - self.oft_blocks[i].transpose(1, 2)
+            norm_Q = torch.norm(block_Q.flatten())
+            new_norm_Q = torch.clamp(norm_Q, max=self.constraint[i])
+            block_Q = block_Q * ((new_norm_Q + 1e-8) / (norm_Q + 1e-8))
+
+            I = self.I[i]
+            block_R = torch.matmul(I + block_Q, (I - block_Q).float().inverse())
+            block_R_weighted = self.multiplier * (block_R - I) + I
+
+            block_R_weighted_list.append(block_R_weighted)
+
+        return block_R_weighted_list
 
     def forward(self, x, scale=None):
         if self.multiplier == 0.0:
             return self.org_forward(x)
+
         org_module = self.org_module[0]
         org_dtype = x.dtype
 
-        R = self.get_weight().to(torch.float32)
+        R = self.get_weight()
         W = org_module.weight.to(torch.float32)
+        B = org_module.bias.to(torch.float32)
 
-        if len(W.shape) == 4:  # Conv2d
-            W_reshaped = einops.rearrange(W, "(k n) ... -> k n ...", k=self.num_blocks, n=self.block_size)
-            RW = torch.einsum("k n m, k n ... -> k m ...", R, W_reshaped)
-            RW = einops.rearrange(RW, "k m ... -> (k m) ...")
-            result = F.conv2d(
-                x, RW.to(org_dtype), org_module.bias, org_module.stride, org_module.padding, org_module.dilation, org_module.groups
-            )
-        else:  # Linear
-            W_reshaped = einops.rearrange(W, "(k n) m -> k n m", k=self.num_blocks, n=self.block_size)
-            RW = torch.einsum("k n m, k n p -> k m p", R, W_reshaped)
-            RW = einops.rearrange(RW, "k m p -> (k m) p")
-            result = F.linear(x, RW.to(org_dtype), org_module.bias)
+        # split W to match R
+        results = []
+        d2 = 0
+        for i in range(len(R)):
+            d1 = d2
+            d2 += self.split_dims[i]
+
+            W1 = W[d1:d2]
+            W_reshaped = einops.rearrange(W1, "(k n) m -> k n m", k=self.num_blocks, n=self.block_size[i])
+            RW_1 = torch.einsum("k n m, k n p -> k m p", R[i], W_reshaped)
+            RW_1 = einops.rearrange(RW_1, "k m p -> (k m) p")
+
+            B1 = B[d1:d2]
+            result = F.linear(x, RW_1.to(org_dtype), B1.to(org_dtype))
+            results.append(result)
+
+        result = torch.cat(results, dim=-1)
         return result
 
 
@@ -118,10 +138,11 @@ class OFTInfModule(OFTModule):
         multiplier=1.0,
         dim=4,
         alpha=1,
+        split_dims: Optional[List[int]] = None,
         **kwargs,
     ):
         # no dropout for inference
-        super().__init__(oft_name, org_module, multiplier, dim, alpha)
+        super().__init__(oft_name, org_module, multiplier, dim, alpha, split_dims)
         self.enabled = True
         self.network: OFTNetwork = None
 
@@ -136,19 +157,29 @@ class OFTInfModule(OFTModule):
     def merge_to(self, multiplier=None):
         # get org weight
         org_sd = self.org_module[0].state_dict()
-        org_weight = org_sd["weight"].to(torch.float32)
-
+        W = org_sd["weight"].to(torch.float32)
         R = self.get_weight(multiplier).to(torch.float32)
 
-        weight = org_weight.reshape(self.num_blocks, self.block_size, -1)
-        weight = torch.einsum("k n m, k n ... -> k m ...", R, weight)
-        weight = weight.reshape(org_weight.shape)
+        d2 = 0
+        W_list = []
+        for i in range(len(self.oft_blocks)):
+            d1 = d2
+            d2 += self.split_dims[i]
+
+            W1 = W[d1:d2]
+            W_reshaped = einops.rearrange(W1, "(k n) m -> k n m", k=self.num_blocks, n=self.block_size[i])
+            W1 = torch.einsum("k n m, k n p -> k m p", R[i], W_reshaped)
+            W1 = einops.rearrange(W1, "k m p -> (k m) p")
+
+            W_list.append(W1)
+
+        W = torch.cat(W_list, dim=-1)
 
         # convert back to original dtype
-        weight = weight.to(org_sd["weight"].dtype)
+        W = W.to(org_sd["weight"].dtype)
 
         # set weight to org_module
-        org_sd["weight"] = weight
+        org_sd["weight"] = W
         self.org_module[0].load_state_dict(org_sd)
 
 
@@ -175,12 +206,13 @@ def create_network(
             " / network_alphaが大きすぎるようです(>=1, デフォルト値が大きすぎる可能性があります)。1e-3のような小さな値を推奨"
         )
 
+    # attn only or all linear (FFN) layers
     enable_all_linear = kwargs.get("enable_all_linear", None)
-    enable_conv = kwargs.get("enable_conv", None)
+    # enable_conv = kwargs.get("enable_conv", None)
     if enable_all_linear is not None:
         enable_all_linear = bool(enable_all_linear)
-    if enable_conv is not None:
-        enable_conv = bool(enable_conv)
+    # if enable_conv is not None:
+    #     enable_conv = bool(enable_conv)
 
     network = OFTNetwork(
         text_encoder,
@@ -189,7 +221,6 @@ def create_network(
         dim=network_dim,
         alpha=network_alpha,
         enable_all_linear=enable_all_linear,
-        enable_conv=enable_conv,
         varbose=True,
     )
     return network
@@ -208,23 +239,20 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     # check dim, alpha and if weights have for conv2d
     dim = None
     alpha = None
-    has_conv2d = None
     all_linear = None
     for name, param in weights_sd.items():
         if name.endswith(".alpha"):
             if alpha is None:
                 alpha = param.item()
+        elif "qkv" in name:
+            continue  # ignore qkv
         else:
             if dim is None:
                 dim = param.size()[0]
-            if has_conv2d is None and "in_layers_2" in name:
-                has_conv2d = True
-            if all_linear is None and "_ff_" in name:
+            if all_linear is None and "_mlp" in name:
                 all_linear = True
-        if dim is not None and alpha is not None and has_conv2d is not None and all_linear is not None:
+        if dim is not None and alpha is not None and all_linear is not None:
             break
-    if has_conv2d is None:
-        has_conv2d = False
     if all_linear is None:
         all_linear = False
 
@@ -236,17 +264,15 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         dim=dim,
         alpha=alpha,
         enable_all_linear=all_linear,
-        enable_conv=has_conv2d,
         module_class=module_class,
     )
     return network, weights_sd
 
 
 class OFTNetwork(torch.nn.Module):
-    UNET_TARGET_REPLACE_MODULE_ATTN_ONLY = ["CrossAttention"]
-    UNET_TARGET_REPLACE_MODULE_ALL_LINEAR = ["Transformer2DModel"]
-    UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    OFT_PREFIX_UNET = "oft_unet"  # これ変えないほうがいいかな
+    FLUX_TARGET_REPLACE_MODULE_ALL_LINEAR = ["DoubleStreamBlock", "SingleStreamBlock"]
+    FLUX_TARGET_REPLACE_MODULE_ATTN_ONLY = ["SelfAttention"]
+    OFT_PREFIX_UNET = "oft_unet"
 
     def __init__(
         self,
@@ -256,18 +282,18 @@ class OFTNetwork(torch.nn.Module):
         dim: int = 4,
         alpha: float = 1,
         enable_all_linear: Optional[bool] = False,
-        enable_conv: Optional[bool] = False,
-        module_class: Type[object] = OFTModule,
+        module_class: Union[Type[OFTModule], Type[OFTInfModule]] = OFTModule,
         varbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
+        self.train_t5xxl = False  # make compatible with LoRA
         self.multiplier = multiplier
 
         self.dim = dim
         self.alpha = alpha
 
         logger.info(
-            f"create OFT network. num blocks: {self.dim}, constraint: {self.alpha}, multiplier: {self.multiplier}, enable_conv: {enable_conv}, enable_all_linear: {enable_all_linear}"
+            f"create OFT network. num blocks: {self.dim}, constraint: {self.alpha}, multiplier: {self.multiplier}, enable_all_linear: {enable_all_linear}"
         )
 
         # create module instances
@@ -281,34 +307,31 @@ class OFTNetwork(torch.nn.Module):
                 if module.__class__.__name__ in target_replace_modules:
                     for child_name, child_module in module.named_modules():
                         is_linear = "Linear" in child_module.__class__.__name__
-                        is_conv2d = "Conv2d" in child_module.__class__.__name__
-                        is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
 
-                        if is_linear or is_conv2d_1x1 or (is_conv2d and enable_conv):
+                        if is_linear:
                             oft_name = prefix + "." + name + "." + child_name
                             oft_name = oft_name.replace(".", "_")
                             # logger.info(oft_name)
 
-                            oft = module_class(
-                                oft_name,
-                                child_module,
-                                self.multiplier,
-                                dim,
-                                alpha,
-                            )
+                            if "double" in oft_name and "qkv" in oft_name:
+                                split_dims = [3072] * 3
+                            elif "single" in oft_name and "linear1" in oft_name:
+                                split_dims = [3072] * 3 + [12288]
+                            else:
+                                split_dims = None
+
+                            oft = module_class(oft_name, child_module, self.multiplier, dim, alpha, split_dims)
                             ofts.append(oft)
             return ofts
 
         # extend U-Net target modules if conv2d 3x3 is enabled, or load from weights
         if enable_all_linear:
-            target_modules = OFTNetwork.UNET_TARGET_REPLACE_MODULE_ALL_LINEAR
+            target_modules = OFTNetwork.FLUX_TARGET_REPLACE_MODULE_ALL_LINEAR
         else:
-            target_modules = OFTNetwork.UNET_TARGET_REPLACE_MODULE_ATTN_ONLY
-        if enable_conv:
-            target_modules += OFTNetwork.UNET_TARGET_REPLACE_MODULE_CONV2D_3X3
+            target_modules = OFTNetwork.FLUX_TARGET_REPLACE_MODULE_ATTN_ONLY
 
         self.unet_ofts: List[OFTModule] = create_modules(unet, target_modules)
-        logger.info(f"create OFT for U-Net: {len(self.unet_ofts)} modules.")
+        logger.info(f"create OFT for Flux: {len(self.unet_ofts)} modules.")
 
         # assertion
         names = set()

@@ -85,7 +85,7 @@ def sample_images(
 
     if distributed_state.num_processes <= 1:
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
-        with torch.no_grad():
+        with torch.no_grad(), accelerator.autocast():
             for prompt_dict in prompts:
                 sample_image_inference(
                     accelerator,
@@ -187,14 +187,27 @@ def sample_image_inference(
     tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
     encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
 
+    text_encoder_conds = []
     if sample_prompts_te_outputs and prompt in sample_prompts_te_outputs:
-        te_outputs = sample_prompts_te_outputs[prompt]
-    else:
+        text_encoder_conds = sample_prompts_te_outputs[prompt]
+        print(f"Using cached text encoder outputs for prompt: {prompt}")
+    if text_encoders is not None:
+        print(f"Encoding prompt: {prompt}")
         tokens_and_masks = tokenize_strategy.tokenize(prompt)
         # strategy has apply_t5_attn_mask option
-        te_outputs = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
+        encoded_text_encoder_conds = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
+        print([x.shape if x is not None else None for x in encoded_text_encoder_conds])
 
-    l_pooled, t5_out, txt_ids, t5_attn_mask = te_outputs
+        # if text_encoder_conds is not cached, use encoded_text_encoder_conds
+        if len(text_encoder_conds) == 0:
+            text_encoder_conds = encoded_text_encoder_conds
+        else:
+            # if encoded_text_encoder_conds is not None, update cached text_encoder_conds
+            for i in range(len(encoded_text_encoder_conds)):
+                if encoded_text_encoder_conds[i] is not None:
+                    text_encoder_conds[i] = encoded_text_encoder_conds[i]
+
+    l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
 
     # sample image
     weight_dtype = ae.dtype  # TOFO give dtype as argument
@@ -241,17 +254,19 @@ def sample_image_inference(
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
     image.save(os.path.join(save_dir, img_filename))
 
-    # wandb有効時のみログを送信
-    try:
+    # send images to wandb if enabled
+    if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
-        try:
-            import wandb
-        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-            raise ImportError("No wandb / wandb がインストールされていないようです")
 
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-    except:  # wandb 無効時
-        pass
+        import wandb
+        # not to commit images to avoid inconsistency between training and logging steps
+        wandb_tracker.log(
+            {f"sample_{i}": wandb.Image(
+                image,
+                caption=prompt # positive prompt as a caption
+            )}, 
+            commit=False
+        )
 
 
 def time_shift(mu: float, sigma: float, t: torch.Tensor):
@@ -371,7 +386,7 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
 def get_noisy_model_input_and_timesteps(
     args, noise_scheduler, latents, noise, device, dtype
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    bsz = latents.shape[0]
+    bsz, _, h, w = latents.shape
     sigmas = None
 
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
@@ -391,6 +406,16 @@ def get_noisy_model_input_and_timesteps(
         logits_norm = logits_norm * args.sigmoid_scale  # larger scale for more uniform sampling
         timesteps = logits_norm.sigmoid()
         timesteps = (timesteps * shift) / (1 + (shift - 1) * timesteps)
+
+        t = timesteps.view(-1, 1, 1, 1)
+        timesteps = timesteps * 1000.0
+        noisy_model_input = (1 - t) * latents + t * noise
+    elif args.timestep_sampling == "flux_shift":
+        logits_norm = torch.randn(bsz, device=device)
+        logits_norm = logits_norm * args.sigmoid_scale  # larger scale for more uniform sampling
+        timesteps = logits_norm.sigmoid()
+        mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+        timesteps = time_shift(mu, 1.0, timesteps)
 
         t = timesteps.view(-1, 1, 1, 1)
         timesteps = timesteps * 1000.0
@@ -571,10 +596,10 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
         default="sigma",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal and shift of sigmoid."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト。",
+        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and FLUX.1 shifting."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト。",
     )
     parser.add_argument(
         "--sigmoid_scale",

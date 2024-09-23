@@ -10,6 +10,9 @@ from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
+import cv2
+from PIL import Image
+import numpy as np
 
 
 def fire_in_thread(f, *args, **kwargs):
@@ -300,6 +303,24 @@ class MemoryEfficientSafeOpen:
             # print(f"Warning: {dtype_str} is not supported in this PyTorch version. Converting to float16.")
             # return byte_tensor.view(torch.uint8).to(torch.float16).reshape(shape)
             raise ValueError(f"Unsupported float8 type: {dtype_str} (upgrade PyTorch to support float8 types)")
+
+def pil_resize(image, size, interpolation=Image.LANCZOS):
+    has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
+
+    if has_alpha:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA))
+    else:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    resized_pil = pil_image.resize(size, interpolation)
+
+    # Convert back to cv2 format
+    if has_alpha:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGBA2BGRA)
+    else:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
+
+    return resized_cv2
 
 
 # TODO make inf_utils.py

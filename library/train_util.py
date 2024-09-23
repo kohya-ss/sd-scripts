@@ -13,6 +13,7 @@ import shutil
 import time
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     NamedTuple,
@@ -44,7 +45,11 @@ from torch.optim import Optimizer
 from torchvision import transforms
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 import transformers
-from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
+from diffusers.optimization import (
+    SchedulerType as DiffusersSchedulerType,
+    TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
+)
+from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 from diffusers import (
     StableDiffusionPipeline,
     DDPMScheduler,
@@ -73,7 +78,7 @@ import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
 import library.deepspeed_utils as deepspeed_utils
-from library.utils import setup_logging
+from library.utils import setup_logging, pil_resize
 
 setup_logging()
 import logging
@@ -1708,7 +1713,7 @@ class DreamBoothDataset(BaseDataset):
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):
                 logger.warning(f"not directory: {subset.image_dir}")
-                return [], []
+                return [], [], []
 
             info_cache_file = os.path.join(subset.image_dir, self.IMAGE_INFO_CACHE_FILE)
             use_cached_info_for_subset = subset.cache_info
@@ -2263,9 +2268,7 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img = cv2.resize(
-                        cond_img, (int(target_size_hw[1]), int(target_size_hw[0])), interpolation=cv2.INTER_LANCZOS4
-                    )
+                    cond_img = pil_resize(cond_img, (int(target_size_hw[1]), int(target_size_hw[0])))
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -2404,7 +2407,7 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alph
         if alpha_mask:
             if "alpha_mask" not in npz:
                 return False
-            if npz["alpha_mask"].shape[0:2] != reso:  # HxW
+            if (npz["alpha_mask"].shape[1], npz["alpha_mask"].shape[0]) != reso:  # HxW => WxH != reso
                 return False
         else:
             if "alpha_mask" in npz:
@@ -2659,7 +2662,10 @@ def trim_and_resize_if_required(
 
     if image_width != resized_size[0] or image_height != resized_size[1]:
         # リサイズする
-        image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
+        if image_width > resized_size[0] and image_height > resized_size[1]:
+            image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
+        else:
+            image = pil_resize(image, resized_size)
 
     image_height, image_width = image.shape[0:2]
 
@@ -3255,6 +3261,20 @@ def add_sd_models_arguments(parser: argparse.ArgumentParser):
 
 
 def add_optimizer_arguments(parser: argparse.ArgumentParser):
+    def int_or_float(value):
+        if value.endswith("%"):
+            try:
+                return float(value[:-1]) / 100.0
+            except ValueError:
+                raise argparse.ArgumentTypeError(f"Value '{value}' is not a valid percentage")
+        try:
+            float_value = float(value)
+            if float_value >= 1:
+                return int(value)
+            return float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"'{value}' is not an int or float")
+
     parser.add_argument(
         "--optimizer_type",
         type=str,
@@ -3290,6 +3310,20 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
 
+    # parser.add_argument(
+    #     "--optimizer_schedulefree_wrapper",
+    #     action="store_true",
+    #     help="use schedulefree_wrapper any optimizer / 任意のオプティマイザにschedulefree_wrapperを使用",
+    # )
+
+    # parser.add_argument(
+    #     "--schedulefree_wrapper_args",
+    #     type=str,
+    #     default=None,
+    #     nargs="*",
+    #     help='additional arguments for schedulefree_wrapper (like "momentum=0.9 weight_decay_at_y=0.1 ...") / オプティマイザの追加引数（例： "momentum=0.9 weight_decay_at_y=0.1 ..."）',
+    # )
+
     parser.add_argument("--lr_scheduler_type", type=str, default="", help="custom scheduler module / 使用するスケジューラ")
     parser.add_argument(
         "--lr_scheduler_args",
@@ -3307,9 +3341,17 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--lr_warmup_steps",
-        type=int,
+        type=int_or_float,
         default=0,
-        help="Number of steps for the warmup in the lr scheduler (default is 0) / 学習率のスケジューラをウォームアップするステップ数（デフォルト0）",
+        help="Int number of steps for the warmup in the lr scheduler (default is 0) or float with ratio of train steps"
+        " / 学習率のスケジューラをウォームアップするステップ数（デフォルト0）、または学習ステップの比率（1未満のfloat値の場合）",
+    )
+    parser.add_argument(
+        "--lr_decay_steps",
+        type=int_or_float,
+        default=0,
+        help="Int number of steps for the decay in the lr scheduler (default is 0) or float (<1) with ratio of train steps"
+        " / 学習率のスケジューラを減衰させるステップ数（デフォルト0）、または学習ステップの比率（1未満のfloat値の場合）",
     )
     parser.add_argument(
         "--lr_scheduler_num_cycles",
@@ -3328,6 +3370,20 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         action="store_true",
         help="Combines backward pass and optimizer step to reduce VRAM usage. Only available in SDXL"
         + " / バックワードパスとオプティマイザステップを組み合わせてVRAMの使用量を削減します。SDXLでのみ有効",
+    )
+    parser.add_argument(
+        "--lr_scheduler_timescale",
+        type=int,
+        default=None,
+        help="Inverse sqrt timescale for inverse sqrt scheduler,defaults to `num_warmup_steps`"
+        + " / 逆平方根スケジューラのタイムスケール、デフォルトは`num_warmup_steps`",
+    )
+    parser.add_argument(
+        "--lr_scheduler_min_lr_ratio",
+        type=float,
+        default=None,
+        help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler and warmup decay scheduler"
+        + " / 初期学習率の比率としての最小学習率を指定する、cosine with min lr と warmup decay スケジューラ で有効",
     )
 
 
@@ -4547,24 +4603,156 @@ def get_optimizer(args, trainable_params):
         optimizer_class = torch.optim.AdamW
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type.endswith("schedulefree".lower()):
+        try:
+            import schedulefree as sf
+        except ImportError:
+            raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
+        if optimizer_type == "AdamWScheduleFree".lower():
+            optimizer_class = sf.AdamWScheduleFree
+            logger.info(f"use AdamWScheduleFree optimizer | {optimizer_kwargs}")
+        elif optimizer_type == "SGDScheduleFree".lower():
+            optimizer_class = sf.SGDScheduleFree
+            logger.info(f"use SGDScheduleFree optimizer | {optimizer_kwargs}")
+        else:
+            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+        # make optimizer as train mode: we don't need to call train again, because eval will not be called in training loop
+        optimizer.train()
+
     if optimizer is None:
         # 任意のoptimizerを使う
-        optimizer_type = args.optimizer_type  # lowerでないやつ（微妙）
-        logger.info(f"use {optimizer_type} | {optimizer_kwargs}")
-        if "." not in optimizer_type:
-            optimizer_module = torch.optim
-        else:
-            values = optimizer_type.split(".")
-            optimizer_module = importlib.import_module(".".join(values[:-1]))
-            optimizer_type = values[-1]
+        case_sensitive_optimizer_type = args.optimizer_type  # not lower
+        logger.info(f"use {case_sensitive_optimizer_type} | {optimizer_kwargs}")
 
-        optimizer_class = getattr(optimizer_module, optimizer_type)
+        if "." not in case_sensitive_optimizer_type:  # from torch.optim
+            optimizer_module = torch.optim
+        else:  # from other library
+            values = case_sensitive_optimizer_type.split(".")
+            optimizer_module = importlib.import_module(".".join(values[:-1]))
+            case_sensitive_optimizer_type = values[-1]
+
+        optimizer_class = getattr(optimizer_module, case_sensitive_optimizer_type)
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    """
+    # wrap any of above optimizer with schedulefree, if optimizer is not schedulefree
+    if args.optimizer_schedulefree_wrapper and not optimizer_type.endswith("schedulefree".lower()):
+        try:
+            import schedulefree as sf
+        except ImportError:
+            raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
+
+        schedulefree_wrapper_kwargs = {}
+        if args.schedulefree_wrapper_args is not None and len(args.schedulefree_wrapper_args) > 0:
+            for arg in args.schedulefree_wrapper_args:
+                key, value = arg.split("=")
+                value = ast.literal_eval(value)
+                schedulefree_wrapper_kwargs[key] = value
+
+        sf_wrapper = sf.ScheduleFreeWrapper(optimizer, **schedulefree_wrapper_kwargs)
+        sf_wrapper.train()  # make optimizer as train mode
+
+        # we need to make optimizer as a subclass of torch.optim.Optimizer, we make another Proxy class over SFWrapper
+        class OptimizerProxy(torch.optim.Optimizer):
+            def __init__(self, sf_wrapper):
+                self._sf_wrapper = sf_wrapper
+
+            def __getattr__(self, name):
+                return getattr(self._sf_wrapper, name)
+
+            # override properties
+            @property
+            def state(self):
+                return self._sf_wrapper.state
+
+            @state.setter
+            def state(self, state):
+                self._sf_wrapper.state = state
+
+            @property
+            def param_groups(self):
+                return self._sf_wrapper.param_groups
+
+            @param_groups.setter
+            def param_groups(self, param_groups):
+                self._sf_wrapper.param_groups = param_groups
+
+            @property
+            def defaults(self):
+                return self._sf_wrapper.defaults
+
+            @defaults.setter
+            def defaults(self, defaults):
+                self._sf_wrapper.defaults = defaults
+
+            def add_param_group(self, param_group):
+                self._sf_wrapper.add_param_group(param_group)
+
+            def load_state_dict(self, state_dict):
+                self._sf_wrapper.load_state_dict(state_dict)
+
+            def state_dict(self):
+                return self._sf_wrapper.state_dict()
+
+            def zero_grad(self):
+                self._sf_wrapper.zero_grad()
+
+            def step(self, closure=None):
+                self._sf_wrapper.step(closure)
+
+            def train(self):
+                self._sf_wrapper.train()
+
+            def eval(self):
+                self._sf_wrapper.eval()
+
+            # isinstance チェックをパスするためのメソッド
+            def __instancecheck__(self, instance):
+                return isinstance(instance, (type(self), Optimizer))
+
+        optimizer = OptimizerProxy(sf_wrapper)
+
+        logger.info(f"wrap optimizer with ScheduleFreeWrapper | {schedulefree_wrapper_kwargs}")
+    """
 
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
     optimizer_args = ",".join([f"{k}={v}" for k, v in optimizer_kwargs.items()])
 
     return optimizer_name, optimizer_args, optimizer
+
+
+def get_optimizer_train_eval_fn(optimizer: Optimizer, args: argparse.Namespace) -> Tuple[Callable, Callable]:
+    if not is_schedulefree_optimizer(optimizer, args):
+        # return dummy func
+        return lambda: None, lambda: None
+
+    # get train and eval functions from optimizer
+    train_fn = optimizer.train
+    eval_fn = optimizer.eval
+
+    return train_fn, eval_fn
+
+
+def is_schedulefree_optimizer(optimizer: Optimizer, args: argparse.Namespace) -> bool:
+    return args.optimizer_type.lower().endswith("schedulefree".lower())  # or args.optimizer_schedulefree_wrapper
+
+
+def get_dummy_scheduler(optimizer: Optimizer) -> Any:
+    # dummy scheduler for schedulefree optimizer. supports only empty step(), get_last_lr() and optimizers.
+    # this scheduler is used for logging only.
+    # this isn't be wrapped by accelerator because of this class is not a subclass of torch.optim.lr_scheduler._LRScheduler
+    class DummyScheduler:
+        def __init__(self, optimizer: Optimizer):
+            self.optimizer = optimizer
+
+        def step(self):
+            pass
+
+        def get_last_lr(self):
+            return [group["lr"] for group in self.optimizer.param_groups]
+
+    return DummyScheduler(optimizer)
 
 
 # Modified version of get_scheduler() function from diffusers.optimizer.get_scheduler
@@ -4575,11 +4763,23 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     """
     Unified API to get any scheduler from its name.
     """
+    # if schedulefree optimizer, return dummy scheduler
+    if is_schedulefree_optimizer(optimizer, args):
+        return get_dummy_scheduler(optimizer)
+
     name = args.lr_scheduler
-    num_warmup_steps: Optional[int] = args.lr_warmup_steps
     num_training_steps = args.max_train_steps * num_processes  # * args.gradient_accumulation_steps
+    num_warmup_steps: Optional[int] = (
+        int(args.lr_warmup_steps * num_training_steps) if isinstance(args.lr_warmup_steps, float) else args.lr_warmup_steps
+    )
+    num_decay_steps: Optional[int] = (
+        int(args.lr_decay_steps * num_training_steps) if isinstance(args.lr_decay_steps, float) else args.lr_decay_steps
+    )
+    num_stable_steps = num_training_steps - num_warmup_steps - num_decay_steps
     num_cycles = args.lr_scheduler_num_cycles
     power = args.lr_scheduler_power
+    timescale = args.lr_scheduler_timescale
+    min_lr_ratio = args.lr_scheduler_min_lr_ratio
 
     lr_scheduler_kwargs = {}  # get custom lr_scheduler kwargs
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
@@ -4615,14 +4815,16 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         # logger.info(f"adafactor scheduler init lr {initial_lr}")
         return wrap_check_needless_num_warmup_steps(transformers.optimization.AdafactorSchedule(optimizer, initial_lr))
 
+    if name == DiffusersSchedulerType.PIECEWISE_CONSTANT.value:
+        name = DiffusersSchedulerType(name)
+        schedule_func = DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION[name]
+        return schedule_func(optimizer, **lr_scheduler_kwargs)  # step_rules and last_epoch are given as kwargs
+
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
     if name == SchedulerType.CONSTANT:
         return wrap_check_needless_num_warmup_steps(schedule_func(optimizer, **lr_scheduler_kwargs))
-
-    if name == SchedulerType.PIECEWISE_CONSTANT:
-        return schedule_func(optimizer, **lr_scheduler_kwargs)  # step_rules and last_epoch are given as kwargs
 
     # All other schedulers require `num_warmup_steps`
     if num_warmup_steps is None:
@@ -4630,6 +4832,9 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
 
     if name == SchedulerType.CONSTANT_WITH_WARMUP:
         return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, **lr_scheduler_kwargs)
+
+    if name == SchedulerType.INVERSE_SQRT:
+        return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, timescale=timescale, **lr_scheduler_kwargs)
 
     # All other schedulers require `num_training_steps`
     if num_training_steps is None:
@@ -4649,7 +4854,46 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, power=power, **lr_scheduler_kwargs
         )
 
-    return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, **lr_scheduler_kwargs)
+    if name == SchedulerType.COSINE_WITH_MIN_LR:
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+            num_cycles=num_cycles / 2,
+            min_lr_rate=min_lr_ratio,
+            **lr_scheduler_kwargs,
+        )
+
+    # these schedulers do not require `num_decay_steps`
+    if name == SchedulerType.LINEAR or name == SchedulerType.COSINE:
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+            **lr_scheduler_kwargs,
+        )
+
+    # All other schedulers require `num_decay_steps`
+    if num_decay_steps is None:
+        raise ValueError(f"{name} requires `num_decay_steps`, please provide that argument.")
+    if name == SchedulerType.WARMUP_STABLE_DECAY:
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_stable_steps=num_stable_steps,
+            num_decay_steps=num_decay_steps,
+            num_cycles=num_cycles / 2,
+            min_lr_ratio=min_lr_ratio if min_lr_ratio is not None else 0.0,
+            **lr_scheduler_kwargs,
+        )
+
+    return schedule_func(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+        num_decay_steps=num_decay_steps,
+        **lr_scheduler_kwargs,
+    )
 
 
 def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
@@ -5663,7 +5907,7 @@ def sample_images_common(
     clean_memory_on_device(accelerator.device)
 
     torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
+    if torch.cuda.is_available() and cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
 
@@ -5697,11 +5941,13 @@ def sample_image_inference(
 
     if seed is not None:
         torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
     else:
         # True random sample image generation
         torch.seed()
-        torch.cuda.seed()
+        if torch.cuda.is_available():
+            torch.cuda.seed()
 
     scheduler = get_my_scheduler(
         sample_sampler=sampler_name,
@@ -5736,8 +5982,9 @@ def sample_image_inference(
             controlnet_image=controlnet_image,
         )
 
-    with torch.cuda.device(torch.cuda.current_device()):
-        torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        with torch.cuda.device(torch.cuda.current_device()):
+            torch.cuda.empty_cache()
 
     image = pipeline.latents_to_image(latents)[0]
 
@@ -5751,17 +5998,14 @@ def sample_image_inference(
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
     image.save(os.path.join(save_dir, img_filename))
 
-    # wandb有効時のみログを送信
-    try:
+    # send images to wandb if enabled
+    if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
-        try:
-            import wandb
-        except ImportError:  # 事前に一度確認するのでここはエラー出ないはず
-            raise ImportError("No wandb / wandb がインストールされていないようです")
 
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image)})
-    except:  # wandb 無効時
-        pass
+        import wandb
+
+        # not to commit images to avoid inconsistency between training and logging steps
+        wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
 
 
 def freeze_blocks(model, num_last_block_to_freeze, block_name="x_block"):
