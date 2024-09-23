@@ -83,13 +83,20 @@ def setup_logging(args=None, log_level=None, reset=False):
 
 
 def pil_resize(image, size, interpolation=Image.LANCZOS):
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
 
-    # use Pillow resize
+    if has_alpha:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA))
+    else:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
     resized_pil = pil_image.resize(size, interpolation)
 
-    # return cv2 image
-    resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
+    # Convert back to cv2 format
+    if has_alpha:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGBA2BGRA)
+    else:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
 
     return resized_cv2
 
