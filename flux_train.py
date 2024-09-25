@@ -516,7 +516,7 @@ def train(args):
         num_block_units = num_double_blocks + num_single_blocks // 2
         handled_unit_indices = set()
 
-        n = 1  # only asyncronous purpose, no need to increase this number
+        n = 1  # only asynchronous purpose, no need to increase this number
         # n = 2
         # n = max(1, os.cpu_count() // 2)
         thread_pool = ThreadPoolExecutor(max_workers=n)
@@ -608,7 +608,7 @@ def train(args):
         num_single_blocks = 38  # len(flux.single_blocks)
         num_block_units = num_double_blocks + num_single_blocks // 2
 
-        n = 1  # only asyncronous purpose, no need to increase this number
+        n = 1  # only asynchronous purpose, no need to increase this number
         # n = max(1, os.cpu_count() // 2)
         thread_pool = ThreadPoolExecutor(max_workers=n)
         futures = {}
