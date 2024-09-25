@@ -143,6 +143,8 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
   - transformers, accelerate and huggingface_hub are updated. 
   - If you encounter any issues, please report them.
 
+- Fixed an issue where the timesteps in the batch were the same when using Huber loss. PR [#1628](https://github.com/kohya-ss/sd-scripts/pull/1628) Thanks to recris!
+
 - Improvements in OFT (Orthogonal Finetuning) Implementation
   1. Optimization of Calculation Order:
       - Changed the calculation order in the forward method from (Wx)R to W(xR).
