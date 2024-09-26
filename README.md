@@ -140,8 +140,11 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 ### Working in progress
 
 - __important__ The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
-  - transformers, accelerate and huggingface_hub are updated. 
+  - bitsandbytes, transformers, accelerate and huggingface_hub are updated. 
   - If you encounter any issues, please report them.
+
+- `bitsandbytes` is updated to 0.44.0. Now you can use `AdEMAMix8bit` and `PagedAdEMAMix8bit` in the training script. PR [#1640](https://github.com/kohya-ss/sd-scripts/pull/1640) Thanks to sdbds!
+  - There is no abbreviation, so please specify the full path like `--optimizer_type bitsandbytes.optim.AdEMAMix8bit` (not bnb but bitsandbytes).
 
 - Fixed a bug in the cache of latents. When `flip_aug`, `alpha_mask`, and `random_crop` are different in multiple subsets in the dataset configuration file (.toml), the last subset is used instead of reflecting them correctly.
 
