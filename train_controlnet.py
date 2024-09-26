@@ -164,6 +164,7 @@ def train(args):
             "num_class_embeds": None,
             "resnet_time_scale_shift": "default",
             "projection_class_embeddings_input_dim": None,
+            "num_attention_heads": 8,
         }
     else:
         unet.config = {
@@ -192,6 +193,8 @@ def train(args):
             "upcast_attention": False,
             "resnet_time_scale_shift": "default",
             "projection_class_embeddings_input_dim": None,
+            "num_attention_heads": 8,
+            "mid_block_type": "UNetMidBlock2DCrossAttn",
         }
     unet.config = FrozenDict(**unet.config)
 
