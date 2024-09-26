@@ -5,7 +5,6 @@ import os
 import random
 import time
 from multiprocessing import Value
-from types import SimpleNamespace
 import toml
 
 from tqdm import tqdm
@@ -18,6 +17,7 @@ init_ipex()
 from torch.nn.parallel import DistributedDataParallel as DDP
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler, ControlNetModel
+from diffusers.configuration_utils import FrozenDict
 from safetensors.torch import load_file
 
 import library.model_util as model_util
@@ -193,7 +193,7 @@ def train(args):
             "resnet_time_scale_shift": "default",
             "projection_class_embeddings_input_dim": None,
         }
-    unet.config = SimpleNamespace(**unet.config)
+    unet.config = FrozenDict(**unet.config)
 
     controlnet = ControlNetModel.from_unet(unet)
 
@@ -226,7 +226,7 @@ def train(args):
             )
         vae.to("cpu")
         clean_memory_on_device(accelerator.device)
-        
+
         accelerator.wait_for_everyone()
 
     if args.gradient_checkpointing:
