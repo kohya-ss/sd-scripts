@@ -710,6 +710,8 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
   - transformers, accelerate and huggingface_hub are updated. 
   - If you encounter any issues, please report them.
 
+- Fixed a bug in the cache of latents. When `flip_aug`, `alpha_mask`, and `random_crop` are different in multiple subsets in the dataset configuration file (.toml), the last subset is used instead of reflecting them correctly.
+
 - Fixed an issue where the timesteps in the batch were the same when using Huber loss. PR [#1628](https://github.com/kohya-ss/sd-scripts/pull/1628) Thanks to recris!
 
 - Improvements in OFT (Orthogonal Finetuning) Implementation
