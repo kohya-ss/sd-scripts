@@ -1031,10 +1031,10 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 # if the modulo of num_processes is not equal to process_index, skip caching
                 # this makes each process cache different latents
-                if i % num_processes != process_index:  
+                if i % num_processes != process_index:
                     continue
 
-                print(f"{process_index}/{num_processes} {i}/{len(image_infos)} {info.latents_npz}")
+                # print(f"{process_index}/{num_processes} {i}/{len(image_infos)} {info.latents_npz}")
 
                 cache_available = caching_strategy.is_disk_cached_latents_expected(
                     info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
