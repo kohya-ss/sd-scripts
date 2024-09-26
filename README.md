@@ -11,6 +11,10 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Sep 26, 2024:
+The implementation of block swap during FLUX.1 fine-tuning has been changed to improve speed about 10% (depends on the environment). A new `--blocks_to_swap` option has been added, and `--double_blocks_to_swap` and `--single_blocks_to_swap` are deprecated. `--double_blocks_to_swap` and `--single_blocks_to_swap` are working as before, but they will be removed in the future. See [FLUX.1 fine-tuning](#flux1-fine-tuning) for details.
+
+
 Sep 18, 2024 (update 1):
 Fixed an issue where train()/eval() was not called properly with the schedule-free optimizer. The schedule-free optimizer can be used in FLUX.1 LoRA training and fine-tuning for now.
 
@@ -307,6 +311,8 @@ python flux_minimal_inference.py --ckpt flux1-dev.safetensors --clip_l sd3/clip_
 
 The memory-efficient training with block swap is based on 2kpr's implementation. Thanks to 2kpr!
 
+__`--double_blocks_to_swap` and `--single_blocks_to_swap` are deprecated. These options is still available, but they will be removed in the future. Please use `--blocks_to_swap` instead. These options are equivalent to specifying `double_blocks_to_swap + single_blocks_to_swap // 2` in `--blocks_to_swap`.__
+
 Sample command for FLUX.1 fine-tuning is below. This will work with 24GB VRAM GPUs, and 64GB main memory is recommended. 
 
 ```
@@ -319,39 +325,62 @@ accelerate launch  --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_t
 --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" 
 --lr_scheduler constant_with_warmup --max_grad_norm 0.0 
 --timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0 
---fused_backward_pass  --double_blocks_to_swap 6 --cpu_offload_checkpointing --full_bf16 
+--fused_backward_pass  --blocks_to_swap 8 --full_bf16 
 ```
 (The command is multi-line for readability. Please combine it into one line.)
 
-Options are almost the same as LoRA training. The difference is `--full_bf16`, `--blockwise_fused_optimizers`, `--double_blocks_to_swap` and `--cpu_offload_checkpointing`.  `--single_blocks_to_swap` is also available.
+Options are almost the same as LoRA training. The difference is `--full_bf16`, `--fused_backward_pass` and  `--blocks_to_swap`. `--cpu_offload_checkpointing` is also available.
 
 `--full_bf16` enables the training with bf16 (weights and gradients). 
 
 `--fused_backward_pass` enables the fusing of the optimizer step into the backward pass for each parameter. This reduces the memory usage during training. Only Adafactor optimizer is supported for now. Stochastic rounding is also enabled when `--fused_backward_pass` and `--full_bf16` are specified.
 
-`--blockwise_fused_optimizers` enables the fusing of the optimizer step into the backward pass for each block. This is similar to `--fused_backward_pass`. Any optimizer can be used, but Adafactor is recommended for memory efficiency. `--blockwise_fused_optimizers` cannot be used with `--fused_backward_pass`. Stochastic rounding is not supported for now.
+`--blockwise_fused_optimizers` enables the fusing of the optimizer step into the backward pass for each block. This is similar to `--fused_backward_pass`. Any optimizer can be used, but Adafactor is recommended for memory efficiency and stochastic rounding. `--blockwise_fused_optimizers` cannot be used with `--fused_backward_pass`. Stochastic rounding is not supported for now.
 
-`--double_blocks_to_swap` and `--single_blocks_to_swap` are the number of double blocks and single blocks to swap. The default is None (no swap). These options must be combined with `--fused_backward_pass` or `--blockwise_fused_optimizers`. `--double_blocks_to_swap` can be specified with `--single_blocks_to_swap`. The recommended maximum number of blocks to swap is 9 for double blocks and 18 for single blocks. Please see the next chapter for details.
+`--blocks_to_swap` is the number of blocks to swap. The default is None (no swap). These options must be combined with `--fused_backward_pass` or `--blockwise_fused_optimizers`. The recommended maximum value is 36. 
 
-`--cpu_offload_checkpointing` is to offload the gradient checkpointing to CPU. This reduces about 2GB of VRAM usage.
+`--cpu_offload_checkpointing` is to offload the gradient checkpointing to CPU. This reduces about 2GB of VRAM usage. 
 
 All these options are experimental and may change in the future.
 
 The increasing the number of blocks to swap may reduce the memory usage, but the training speed will be slower. `--cpu_offload_checkpointing` also slows down the training.
 
-Swap 6 double blocks and use cpu offload checkpointing may be a good starting point. Please try different settings according to VRAM usage and training speed.
+Swap 8 blocks without cpu offload checkpointing may be a good starting point for 24GB VRAM GPUs. Please try different settings according to VRAM usage and training speed.
 
 The learning rate and the number of epochs are not optimized yet. Please adjust them according to the training results.
 
+#### How to use block swap
+
+There are two possible ways to use block swap. It is unknown which is better.
+
+1. Swap the minimum number of blocks that fit in VRAM with batch size 1 and shorten the training speed of one step.
+
+    The above command example is for this usage.
+
+2. Swap many blocks to increase the batch size and shorten the training speed per data.
+
+    For example, swapping 20 blocks seems to increase the batch size to about 6. In this case, the training speed per data will be relatively faster than 1.
+  
+#### Training with <24GB VRAM GPUs
+
+Swap 28 blocks without cpu offload checkpointing may be working with 12GB VRAM GPUs. Please try different settings according to VRAM size of your GPU.
+
+T5XXL requires about 10GB of VRAM, so 10GB of VRAM will be minimum requirement for FLUX.1 fine-tuning.
+
 #### Key Features for FLUX.1 fine-tuning
 
-1.  Technical details of double/single block swap:
+1.  Technical details of block swap:
     - Reduce memory usage by transferring double and single blocks of FLUX.1 from GPU to CPU when they are not needed.
     - During forward pass, the weights of the blocks that have finished calculation are transferred to CPU, and the weights of the blocks to be calculated are transferred to GPU.
     - The same is true for the backward pass, but the order is reversed. The gradients remain on the GPU.
     - Since the transfer between CPU and GPU takes time, the training will be slower.
-    - `--double_blocks_to_swap` and `--single_blocks_to_swap` specify the number of blocks to swap. For example, `--double_blocks_to_swap 6` swaps 6 blocks at each step of training, but the remaining 13 blocks are always on the GPU.
-    - About 640MB of memory can be saved per double block, and about 320MB of memory can be saved per single block.
+    - `--blocks_to_swap` specify the number of blocks to swap. 
+    - About 640MB of memory can be saved per block.
+    - Since the memory usage of one double block and two single blocks is almost the same, the transfer of single blocks is done in units of two. For example, consider the case of `--blocks_to_swap 6`.
+      - Before the forward pass, all double blocks and 26 (=38-12) single blocks are on the GPU. The last 12 single blocks are on the CPU.
+      - In the forward pass, the 6 double blocks that have finished calculation (the first 6 blocks) are transferred to the CPU, and the 12 single blocks to be calculated (the last 12 blocks) are transferred to the GPU.
+      - The same is true for the backward pass, but in reverse order. The 12 single blocks that have finished calculation are transferred to the CPU, and the 6 double blocks to be calculated are transferred to the GPU. 
+      - After the backward pass, the blocks are back to their original locations.
 
 2. Sample Image Generation:
    - Sample image generation during training is now supported.
@@ -678,8 +707,15 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 ### Working in progress
 
 - __important__ The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
-  - transformers, accelerate and huggingface_hub are updated. 
+  - bitsandbytes, transformers, accelerate and huggingface_hub are updated. 
   - If you encounter any issues, please report them.
+
+- `bitsandbytes` is updated to 0.44.0. Now you can use `AdEMAMix8bit` and `PagedAdEMAMix8bit` in the training script. PR [#1640](https://github.com/kohya-ss/sd-scripts/pull/1640) Thanks to sdbds!
+  - There is no abbreviation, so please specify the full path like `--optimizer_type bitsandbytes.optim.AdEMAMix8bit` (not bnb but bitsandbytes).
+
+- Fixed a bug in the cache of latents. When `flip_aug`, `alpha_mask`, and `random_crop` are different in multiple subsets in the dataset configuration file (.toml), the last subset is used instead of reflecting them correctly.
+
+- Fixed an issue where the timesteps in the batch were the same when using Huber loss. PR [#1628](https://github.com/kohya-ss/sd-scripts/pull/1628) Thanks to recris!
 
 - Improvements in OFT (Orthogonal Finetuning) Implementation
   1. Optimization of Calculation Order:
