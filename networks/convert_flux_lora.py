@@ -412,6 +412,10 @@ def main(args):
         state_dict = convert_ai_toolkit_to_sd_scripts(state_dict)
     elif args.src == "sd-scripts" and args.dst == "ai-toolkit":
         state_dict = convert_sd_scripts_to_ai_toolkit(state_dict)
+
+        # eliminate 'shared tensors' 
+        for k in list(state_dict.keys()):
+            state_dict[k] = state_dict[k].detach().clone()
     else:
         raise NotImplementedError(f"Conversion from {args.src} to {args.dst} is not supported")
 
