@@ -300,6 +300,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 self.flux_lower = flux_lower
                 self.target_device = device
 
+            def prepare_block_swap_before_forward(self):
+                pass
+
             def forward(self, img, img_ids, txt, txt_ids, timesteps, y, guidance=None, txt_attention_mask=None):
                 self.flux_lower.to("cpu")
                 clean_memory_on_device(self.target_device)

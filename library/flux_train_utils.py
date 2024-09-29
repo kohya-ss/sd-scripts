@@ -196,7 +196,6 @@ def sample_image_inference(
         tokens_and_masks = tokenize_strategy.tokenize(prompt)
         # strategy has apply_t5_attn_mask option
         encoded_text_encoder_conds = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
-        print([x.shape if x is not None else None for x in encoded_text_encoder_conds])
 
         # if text_encoder_conds is not cached, use encoded_text_encoder_conds
         if len(text_encoder_conds) == 0:
