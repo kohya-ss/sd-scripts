@@ -128,6 +128,8 @@ These are options related to the configuration of the data set. They cannot be d
 
 * `batch_size`
     * This corresponds to the command-line argument `--train_batch_size`.
+* `max_bucket_reso`, `min_bucket_reso`
+    * Specify the maximum and minimum resolutions of the bucket. It must be divisible by `bucket_reso_steps`.
 
 These settings are fixed per dataset. That means that subsets belonging to the same dataset will share these settings. For example, if you want to prepare datasets with different resolutions, you can define them as separate datasets as shown in the example above, and set different resolutions for each.
 
