@@ -653,6 +653,34 @@ class BaseDataset(torch.utils.data.Dataset):
         # caching
         self.caching_mode = None  # None, 'latents', 'text'
 
+    def adjust_min_max_bucket_reso_by_steps(
+        self, resolution: Tuple[int, int], min_bucket_reso: int, max_bucket_reso: int, bucket_reso_steps: int
+    ) -> Tuple[int, int]:
+        # make min/max bucket reso to be multiple of bucket_reso_steps
+        if min_bucket_reso % bucket_reso_steps != 0:
+            adjusted_min_bucket_reso = min_bucket_reso - min_bucket_reso % bucket_reso_steps
+            logger.warning(
+                f"min_bucket_reso is adjusted to be multiple of bucket_reso_steps"
+                f" / min_bucket_resoがbucket_reso_stepsの倍数になるように調整されました: {min_bucket_reso} -> {adjusted_min_bucket_reso}"
+            )
+            min_bucket_reso = adjusted_min_bucket_reso
+        if max_bucket_reso % bucket_reso_steps != 0:
+            adjusted_max_bucket_reso = max_bucket_reso + bucket_reso_steps - max_bucket_reso % bucket_reso_steps
+            logger.warning(
+                f"max_bucket_reso is adjusted to be multiple of bucket_reso_steps"
+                f" / max_bucket_resoがbucket_reso_stepsの倍数になるように調整されました: {max_bucket_reso} -> {adjusted_max_bucket_reso}"
+            )
+            max_bucket_reso = adjusted_max_bucket_reso
+
+        assert (
+            min(resolution) >= min_bucket_reso
+        ), f"min_bucket_reso must be equal or less than resolution / min_bucket_resoは最小解像度より大きくできません。解像度を大きくするかmin_bucket_resoを小さくしてください"
+        assert (
+            max(resolution) <= max_bucket_reso
+        ), f"max_bucket_reso must be equal or greater than resolution / max_bucket_resoは最大解像度より小さくできません。解像度を小さくするかmin_bucket_resoを大きくしてください"
+
+        return min_bucket_reso, max_bucket_reso
+
     def set_seed(self, seed):
         self.seed = seed
 
@@ -1533,12 +1561,9 @@ class DreamBoothDataset(BaseDataset):
 
         self.enable_bucket = enable_bucket
         if self.enable_bucket:
-            assert (
-                min(resolution) >= min_bucket_reso
-            ), f"min_bucket_reso must be equal or less than resolution / min_bucket_resoは最小解像度より大きくできません。解像度を大きくするかmin_bucket_resoを小さくしてください"
-            assert (
-                max(resolution) <= max_bucket_reso
-            ), f"max_bucket_reso must be equal or greater than resolution / max_bucket_resoは最大解像度より小さくできません。解像度を小さくするかmin_bucket_resoを大きくしてください"
+            min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
+                resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
+            )
             self.min_bucket_reso = min_bucket_reso
             self.max_bucket_reso = max_bucket_reso
             self.bucket_reso_steps = bucket_reso_steps
@@ -1901,6 +1926,9 @@ class FineTuningDataset(BaseDataset):
 
             self.enable_bucket = enable_bucket
             if self.enable_bucket:
+                min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
+                    resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
+                )
                 self.min_bucket_reso = min_bucket_reso
                 self.max_bucket_reso = max_bucket_reso
                 self.bucket_reso_steps = bucket_reso_steps

@@ -93,6 +93,8 @@ def train(args):
     if args.no_token_padding:
         train_dataset_group.disable_token_padding()
 
+    train_dataset_group.verify_bucket_reso_steps(64)
+
     if args.debug_dataset:
         train_util.debug_dataset(train_dataset_group)
         return
