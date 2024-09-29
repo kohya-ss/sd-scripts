@@ -3865,8 +3865,20 @@ def add_dataset_arguments(
         action="store_true",
         help="enable buckets for multi aspect ratio training / 複数解像度学習のためのbucketを有効にする",
     )
-    parser.add_argument("--min_bucket_reso", type=int, default=256, help="minimum resolution for buckets / bucketの最小解像度")
-    parser.add_argument("--max_bucket_reso", type=int, default=1024, help="maximum resolution for buckets / bucketの最大解像度")
+    parser.add_argument(
+        "--min_bucket_reso",
+        type=int,
+        default=256,
+        help="minimum resolution for buckets, must be divisible by bucket_reso_steps "
+        " / bucketの最小解像度、bucket_reso_stepsで割り切れる必要があります",
+    )
+    parser.add_argument(
+        "--max_bucket_reso",
+        type=int,
+        default=1024,
+        help="maximum resolution for buckets, must be divisible by bucket_reso_steps "
+        " / bucketの最大解像度、bucket_reso_stepsで割り切れる必要があります",
+    )
     parser.add_argument(
         "--bucket_reso_steps",
         type=int,
