@@ -1890,7 +1890,7 @@ def main(args):
 
                 state_dict = load_file(model_file)
 
-                logger.info(f"Initalizing SDXL ControlNet with multiplier: {multiplier}")
+                logger.info(f"Initializing SDXL ControlNet with multiplier: {multiplier}")
                 with init_empty_weights():
                     control_net = SdxlControlNet(multiplier=multiplier)
                 control_net.load_state_dict(state_dict)
