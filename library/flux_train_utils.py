@@ -196,7 +196,6 @@ def sample_image_inference(
         tokens_and_masks = tokenize_strategy.tokenize(prompt)
         # strategy has apply_t5_attn_mask option
         encoded_text_encoder_conds = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
-        print([x.shape if x is not None else None for x in encoded_text_encoder_conds])
 
         # if text_encoder_conds is not cached, use encoded_text_encoder_conds
         if len(text_encoder_conds) == 0:
@@ -313,6 +312,7 @@ def denoise(
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for t_curr, t_prev in zip(tqdm(timesteps[:-1]), timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
+        model.prepare_block_swap_before_forward()
         pred = model(
             img=img,
             img_ids=img_ids,
@@ -325,7 +325,8 @@ def denoise(
         )
 
         img = img + (t_prev - t_curr) * pred
-
+        
+    model.prepare_block_swap_before_forward()
     return img
 
 

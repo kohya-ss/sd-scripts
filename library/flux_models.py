@@ -999,8 +999,9 @@ class Flux(nn.Module):
 
     def prepare_block_swap_before_forward(self):
         # make: first n blocks are on cuda, and last n blocks are on cpu
-        if self.blocks_to_swap is None:
-            raise ValueError("Block swap is not enabled.")
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            # raise ValueError("Block swap is not enabled.")
+            return
         for i in range(self.num_block_units - self.blocks_to_swap):
             for b in self.get_block_unit(i):
                 b.to(self.device)
