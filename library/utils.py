@@ -10,6 +10,9 @@ from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
+import cv2
+from PIL import Image
+import numpy as np
 
 
 def fire_in_thread(f, *args, **kwargs):
@@ -80,6 +83,66 @@ def setup_logging(args=None, log_level=None, reset=False):
     if msg_init is not None:
         logger = logging.getLogger(__name__)
         logger.info(msg_init)
+
+
+def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) -> torch.dtype:
+    """
+    Convert a string to a torch.dtype
+
+    Args:
+        s: string representation of the dtype
+        default_dtype: default dtype to return if s is None
+
+    Returns:
+        torch.dtype: the corresponding torch.dtype
+
+    Raises:
+        ValueError: if the dtype is not supported
+
+    Examples:
+        >>> str_to_dtype("float32")
+        torch.float32
+        >>> str_to_dtype("fp32")
+        torch.float32
+        >>> str_to_dtype("float16")
+        torch.float16
+        >>> str_to_dtype("fp16")
+        torch.float16
+        >>> str_to_dtype("bfloat16")
+        torch.bfloat16
+        >>> str_to_dtype("bf16")
+        torch.bfloat16
+        >>> str_to_dtype("fp8")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fn")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fnuz")
+        torch.float8_e4m3fnuz
+        >>> str_to_dtype("fp8_e5m2")
+        torch.float8_e5m2
+        >>> str_to_dtype("fp8_e5m2fnuz")
+        torch.float8_e5m2fnuz
+    """
+    if s is None:
+        return default_dtype
+    if s in ["bf16", "bfloat16"]:
+        return torch.bfloat16
+    elif s in ["fp16", "float16"]:
+        return torch.float16
+    elif s in ["fp32", "float32", "float"]:
+        return torch.float32
+    elif s in ["fp8_e4m3fn", "e4m3fn", "float8_e4m3fn"]:
+        return torch.float8_e4m3fn
+    elif s in ["fp8_e4m3fnuz", "e4m3fnuz", "float8_e4m3fnuz"]:
+        return torch.float8_e4m3fnuz
+    elif s in ["fp8_e5m2", "e5m2", "float8_e5m2"]:
+        return torch.float8_e5m2
+    elif s in ["fp8_e5m2fnuz", "e5m2fnuz", "float8_e5m2fnuz"]:
+        return torch.float8_e5m2fnuz
+    elif s in ["fp8", "float8"]:
+        return torch.float8_e4m3fn  # default fp8
+    else:
+        raise ValueError(f"Unsupported dtype: {s}")
 
 
 def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
@@ -198,7 +261,7 @@ class MemoryEfficientSafeOpen:
         if tensor_bytes is None:
             byte_tensor = torch.empty(0, dtype=torch.uint8)
         else:
-            tensor_bytes = bytearray(tensor_bytes) # make it writable
+            tensor_bytes = bytearray(tensor_bytes)  # make it writable
             byte_tensor = torch.frombuffer(tensor_bytes, dtype=torch.uint8)
 
         # process float8 types
@@ -240,6 +303,24 @@ class MemoryEfficientSafeOpen:
             # print(f"Warning: {dtype_str} is not supported in this PyTorch version. Converting to float16.")
             # return byte_tensor.view(torch.uint8).to(torch.float16).reshape(shape)
             raise ValueError(f"Unsupported float8 type: {dtype_str} (upgrade PyTorch to support float8 types)")
+
+def pil_resize(image, size, interpolation=Image.LANCZOS):
+    has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
+
+    if has_alpha:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA))
+    else:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    resized_pil = pil_image.resize(size, interpolation)
+
+    # Convert back to cv2 format
+    if has_alpha:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGBA2BGRA)
+    else:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
+
+    return resized_cv2
 
 
 # TODO make inf_utils.py

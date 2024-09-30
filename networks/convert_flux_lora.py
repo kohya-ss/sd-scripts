@@ -266,11 +266,12 @@ def convert_to_ai_toolkit_cat(sds_sd, ait_sd, sds_key, ait_keys, dims=None):
     if sds_key + ".lora_down.weight" not in sds_sd:
         return
     down_weight = sds_sd.pop(sds_key + ".lora_down.weight")
+    up_weight = sds_sd.pop(sds_key + ".lora_up.weight")
+    sd_lora_rank = down_weight.shape[0]
 
     # scale weight by alpha and dim
-    rank = down_weight.shape[0]
     alpha = sds_sd.pop(sds_key + ".alpha")
-    scale = alpha / rank
+    scale = alpha / sd_lora_rank
 
     # calculate scale_down and scale_up
     scale_down = scale
@@ -279,23 +280,49 @@ def convert_to_ai_toolkit_cat(sds_sd, ait_sd, sds_key, ait_keys, dims=None):
         scale_down *= 2
         scale_up /= 2
 
-    ait_down_keys = [k + ".lora_A.weight" for k in ait_keys]
-    ait_up_keys = [k + ".lora_B.weight" for k in ait_keys]
-
-    num_splits = len(ait_keys)
-    up_weight = sds_sd.pop(sds_key + ".lora_up.weight")
-
-    # down_weight is copied to each split
-    ait_sd.update({k: down_weight * scale_down for k in ait_down_keys})
+    down_weight = down_weight * scale_down
+    up_weight = up_weight * scale_up
 
     # calculate dims if not provided
+    num_splits = len(ait_keys)
     if dims is None:
         dims = [up_weight.shape[0] // num_splits] * num_splits
     else:
         assert sum(dims) == up_weight.shape[0]
 
-    # up_weight is split to each split
-    ait_sd.update({k: v * scale_up for k, v in zip(ait_up_keys, torch.split(up_weight, dims, dim=0))})
+    # check upweight is sparse or not
+    is_sparse = False
+    if sd_lora_rank % num_splits == 0:
+        ait_rank = sd_lora_rank // num_splits
+        is_sparse = True
+        i = 0
+        for j in range(len(dims)):
+            for k in range(len(dims)):
+                if j == k:
+                    continue
+                is_sparse = is_sparse and torch.all(up_weight[i : i + dims[j], k * ait_rank : (k + 1) * ait_rank] == 0)
+            i += dims[j]
+        if is_sparse:
+            logger.info(f"weight is sparse: {sds_key}")
+
+    # make ai-toolkit weight
+    ait_down_keys = [k + ".lora_A.weight" for k in ait_keys]
+    ait_up_keys = [k + ".lora_B.weight" for k in ait_keys]
+    if not is_sparse:
+        # down_weight is copied to each split
+        ait_sd.update({k: down_weight for k in ait_down_keys})
+
+        # up_weight is split to each split
+        ait_sd.update({k: v for k, v in zip(ait_up_keys, torch.split(up_weight, dims, dim=0))})
+    else:
+        # down_weight is chunked to each split
+        ait_sd.update({k: v for k, v in zip(ait_down_keys, torch.chunk(down_weight, num_splits, dim=0))})
+
+        # up_weight is sparse: only non-zero values are copied to each split
+        i = 0
+        for j in range(len(dims)):
+            ait_sd[ait_up_keys[j]] = up_weight[i : i + dims[j], j * ait_rank : (j + 1) * ait_rank].contiguous()
+            i += dims[j]
 
 
 def convert_sd_scripts_to_ai_toolkit(sds_sd):
@@ -385,6 +412,10 @@ def main(args):
         state_dict = convert_ai_toolkit_to_sd_scripts(state_dict)
     elif args.src == "sd-scripts" and args.dst == "ai-toolkit":
         state_dict = convert_sd_scripts_to_ai_toolkit(state_dict)
+
+        # eliminate 'shared tensors' 
+        for k in list(state_dict.keys()):
+            state_dict[k] = state_dict[k].detach().clone()
     else:
         raise NotImplementedError(f"Conversion from {args.src} to {args.dst} is not supported")
 

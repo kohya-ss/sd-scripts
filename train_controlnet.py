@@ -107,6 +107,8 @@ def train(args):
     ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
     collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
+    train_dataset_group.verify_bucket_reso_steps(64)
+
     if args.debug_dataset:
         train_util.debug_dataset(train_dataset_group)
         return
@@ -409,6 +411,9 @@ def train(args):
     train_util.sample_images(
         accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, controlnet=controlnet
     )
+    if len(accelerator.trackers) > 0:
+        # log empty object to commit the sample images to wandb
+        accelerator.log({}, step=0)
 
     # training loop
     for epoch in range(num_train_epochs):
@@ -542,14 +547,14 @@ def train(args):
             logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = generate_step_logs(args, current_loss, avr_loss, lr_scheduler)
                 accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 

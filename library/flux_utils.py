@@ -1,5 +1,5 @@
 import json
-from typing import Union
+from typing import Optional, Union
 import einops
 import torch
 
@@ -20,7 +20,9 @@ MODEL_VERSION_FLUX_V1 = "flux1"
 
 
 # temporary copy from sd3_utils TODO refactor
-def load_safetensors(path: str, device: Union[str, torch.device], disable_mmap: bool = False, dtype: torch.dtype = torch.float32):
+def load_safetensors(
+    path: str, device: Union[str, torch.device], disable_mmap: bool = False, dtype: Optional[torch.dtype] = torch.float32
+):
     if disable_mmap:
         # return safetensors.torch.load(open(path, "rb").read())
         # use experimental loader
@@ -38,11 +40,13 @@ def load_safetensors(path: str, device: Union[str, torch.device], disable_mmap: 
 
 
 def load_flow_model(
-    name: str, ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+    name: str, ckpt_path: str, dtype: Optional[torch.dtype], device: Union[str, torch.device], disable_mmap: bool = False
 ) -> flux_models.Flux:
     logger.info(f"Building Flux model {name}")
     with torch.device("meta"):
-        model = flux_models.Flux(flux_models.configs[name].params).to(dtype)
+        model = flux_models.Flux(flux_models.configs[name].params)
+        if dtype is not None:
+            model = model.to(dtype)
 
     # load_sft doesn't support torch.device
     logger.info(f"Loading state dict from {ckpt_path}")
@@ -167,7 +171,9 @@ def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.dev
     return clip
 
 
-def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False) -> T5EncoderModel:
+def load_t5xxl(
+    ckpt_path: str, dtype: Optional[torch.dtype], device: Union[str, torch.device], disable_mmap: bool = False
+) -> T5EncoderModel:
     T5_CONFIG_JSON = """
 {
   "architectures": [
@@ -211,6 +217,11 @@ def load_t5xxl(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.devi
     info = t5xxl.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded T5xxl: {info}")
     return t5xxl
+
+
+def get_t5xxl_actual_dtype(t5xxl: T5EncoderModel) -> torch.dtype:
+    # nn.Embedding is the first layer, but it could be casted to bfloat16 or float32
+    return t5xxl.encoder.block[0].layer[0].SelfAttention.q.weight.dtype
 
 
 def prepare_img_ids(batch_size: int, packed_latent_height: int, packed_latent_width: int):

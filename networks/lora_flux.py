@@ -24,6 +24,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+NUM_DOUBLE_BLOCKS = 19
+NUM_SINGLE_BLOCKS = 38
+
+
 class LoRAModule(torch.nn.Module):
     """
     replaces forward method of the original Linear, instead of replacing the original Linear module.
@@ -39,8 +43,13 @@ class LoRAModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        split_dims: Optional[List[int]] = None,
     ):
-        """if alpha == 0 or None, alpha is rank (no scaling)."""
+        """
+        if alpha == 0 or None, alpha is rank (no scaling).
+
+        split_dims is used to mimic the split qkv of FLUX as same as Diffusers
+        """
         super().__init__()
         self.lora_name = lora_name
 
@@ -52,16 +61,34 @@ class LoRAModule(torch.nn.Module):
             out_dim = org_module.out_features
 
         self.lora_dim = lora_dim
+        self.split_dims = split_dims
 
-        if org_module.__class__.__name__ == "Conv2d":
-            kernel_size = org_module.kernel_size
-            stride = org_module.stride
-            padding = org_module.padding
-            self.lora_down = torch.nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
-            self.lora_up = torch.nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
+        if split_dims is None:
+            if org_module.__class__.__name__ == "Conv2d":
+                kernel_size = org_module.kernel_size
+                stride = org_module.stride
+                padding = org_module.padding
+                self.lora_down = torch.nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
+                self.lora_up = torch.nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
+            else:
+                self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
+                self.lora_up = torch.nn.Linear(self.lora_dim, out_dim, bias=False)
+
+            torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+            torch.nn.init.zeros_(self.lora_up.weight)
         else:
-            self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
-            self.lora_up = torch.nn.Linear(self.lora_dim, out_dim, bias=False)
+            # conv2d not supported
+            assert sum(split_dims) == out_dim, "sum of split_dims must be equal to out_dim"
+            assert org_module.__class__.__name__ == "Linear", "split_dims is only supported for Linear"
+            # print(f"split_dims: {split_dims}")
+            self.lora_down = torch.nn.ModuleList(
+                [torch.nn.Linear(in_dim, self.lora_dim, bias=False) for _ in range(len(split_dims))]
+            )
+            self.lora_up = torch.nn.ModuleList([torch.nn.Linear(self.lora_dim, split_dim, bias=False) for split_dim in split_dims])
+            for lora_down in self.lora_down:
+                torch.nn.init.kaiming_uniform_(lora_down.weight, a=math.sqrt(5))
+            for lora_up in self.lora_up:
+                torch.nn.init.zeros_(lora_up.weight)
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -70,9 +97,6 @@ class LoRAModule(torch.nn.Module):
         self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         # same as microsoft's
-        torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
-        torch.nn.init.zeros_(self.lora_up.weight)
-
         self.multiplier = multiplier
         self.org_module = org_module  # remove in applying
         self.dropout = dropout
@@ -92,30 +116,56 @@ class LoRAModule(torch.nn.Module):
             if torch.rand(1) < self.module_dropout:
                 return org_forwarded
 
-        lx = self.lora_down(x)
+        if self.split_dims is None:
+            lx = self.lora_down(x)
 
-        # normal dropout
-        if self.dropout is not None and self.training:
-            lx = torch.nn.functional.dropout(lx, p=self.dropout)
+            # normal dropout
+            if self.dropout is not None and self.training:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-        # rank dropout
-        if self.rank_dropout is not None and self.training:
-            mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
-            if len(lx.size()) == 3:
-                mask = mask.unsqueeze(1)  # for Text Encoder
-            elif len(lx.size()) == 4:
-                mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
-            lx = lx * mask
+            # rank dropout
+            if self.rank_dropout is not None and self.training:
+                mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
+                if len(lx.size()) == 3:
+                    mask = mask.unsqueeze(1)  # for Text Encoder
+                elif len(lx.size()) == 4:
+                    mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
+                lx = lx * mask
 
-            # scaling for rank dropout: treat as if the rank is changed
-            # maskから計算することも考えられるが、augmentation的な効果を期待してrank_dropoutを用いる
-            scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
+                # scaling for rank dropout: treat as if the rank is changed
+                # maskから計算することも考えられるが、augmentation的な効果を期待してrank_dropoutを用いる
+                scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
+            else:
+                scale = self.scale
+
+            lx = self.lora_up(lx)
+
+            return org_forwarded + lx * self.multiplier * scale
         else:
-            scale = self.scale
+            lxs = [lora_down(x) for lora_down in self.lora_down]
 
-        lx = self.lora_up(lx)
+            # normal dropout
+            if self.dropout is not None and self.training:
+                lxs = [torch.nn.functional.dropout(lx, p=self.dropout) for lx in lxs]
 
-        return org_forwarded + lx * self.multiplier * scale
+            # rank dropout
+            if self.rank_dropout is not None and self.training:
+                masks = [torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout for lx in lxs]
+                for i in range(len(lxs)):
+                    if len(lx.size()) == 3:
+                        masks[i] = masks[i].unsqueeze(1)
+                    elif len(lx.size()) == 4:
+                        masks[i] = masks[i].unsqueeze(-1).unsqueeze(-1)
+                    lxs[i] = lxs[i] * masks[i]
+
+                # scaling for rank dropout: treat as if the rank is changed
+                scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
+            else:
+                scale = self.scale
+
+            lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
+
+            return org_forwarded + torch.cat(lxs, dim=-1) * self.multiplier * scale
 
 
 class LoRAInfModule(LoRAModule):
@@ -152,31 +202,50 @@ class LoRAInfModule(LoRAModule):
         if device is None:
             device = org_device
 
-        # get up/down weight
-        up_weight = sd["lora_up.weight"].to(torch.float).to(device)
-        down_weight = sd["lora_down.weight"].to(torch.float).to(device)
+        if self.split_dims is None:
+            # get up/down weight
+            down_weight = sd["lora_down.weight"].to(torch.float).to(device)
+            up_weight = sd["lora_up.weight"].to(torch.float).to(device)
 
-        # merge weight
-        if len(weight.size()) == 2:
-            # linear
-            weight = weight + self.multiplier * (up_weight @ down_weight) * self.scale
-        elif down_weight.size()[2:4] == (1, 1):
-            # conv2d 1x1
-            weight = (
-                weight
-                + self.multiplier
-                * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
-                * self.scale
-            )
+            # merge weight
+            if len(weight.size()) == 2:
+                # linear
+                weight = weight + self.multiplier * (up_weight @ down_weight) * self.scale
+            elif down_weight.size()[2:4] == (1, 1):
+                # conv2d 1x1
+                weight = (
+                    weight
+                    + self.multiplier
+                    * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+                    * self.scale
+                )
+            else:
+                # conv2d 3x3
+                conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+                # logger.info(conved.size(), weight.size(), module.stride, module.padding)
+                weight = weight + self.multiplier * conved * self.scale
+
+            # set weight to org_module
+            org_sd["weight"] = weight.to(dtype)
+            self.org_module.load_state_dict(org_sd)
         else:
-            # conv2d 3x3
-            conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
-            # logger.info(conved.size(), weight.size(), module.stride, module.padding)
-            weight = weight + self.multiplier * conved * self.scale
+            # split_dims
+            total_dims = sum(self.split_dims)
+            for i in range(len(self.split_dims)):
+                # get up/down weight
+                down_weight = sd[f"lora_down.{i}.weight"].to(torch.float).to(device)  # (rank, in_dim)
+                up_weight = sd[f"lora_up.{i}.weight"].to(torch.float).to(device)  # (split dim, rank)
 
-        # set weight to org_module
-        org_sd["weight"] = weight.to(dtype)
-        self.org_module.load_state_dict(org_sd)
+                # pad up_weight -> (total_dims, rank)
+                padded_up_weight = torch.zeros((total_dims, up_weight.size(0)), device=device, dtype=torch.float)
+                padded_up_weight[sum(self.split_dims[:i]) : sum(self.split_dims[: i + 1])] = up_weight
+
+                # merge weight
+                weight = weight + self.multiplier * (up_weight @ down_weight) * self.scale
+
+            # set weight to org_module
+            org_sd["weight"] = weight.to(dtype)
+            self.org_module.load_state_dict(org_sd)
 
     # 復元できるマージのため、このモジュールのweightを返す
     def get_weight(self, multiplier=None):
@@ -211,7 +280,14 @@ class LoRAInfModule(LoRAModule):
 
     def default_forward(self, x):
         # logger.info(f"default_forward {self.lora_name} {x.size()}")
-        return self.org_forward(x) + self.lora_up(self.lora_down(x)) * self.multiplier * self.scale
+        if self.split_dims is None:
+            lx = self.lora_down(x)
+            lx = self.lora_up(lx)
+            return self.org_forward(x) + lx * self.multiplier * self.scale
+        else:
+            lxs = [lora_down(x) for lora_down in self.lora_down]
+            lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
+            return self.org_forward(x) + torch.cat(lxs, dim=-1) * self.multiplier * self.scale
 
     def forward(self, x):
         if not self.enabled:
@@ -244,6 +320,88 @@ def create_network(
         else:
             conv_alpha = float(conv_alpha)
 
+    # attn dim, mlp dim: only for DoubleStreamBlock. SingleStreamBlock is not supported because of combined qkv
+    img_attn_dim = kwargs.get("img_attn_dim", None)
+    txt_attn_dim = kwargs.get("txt_attn_dim", None)
+    img_mlp_dim = kwargs.get("img_mlp_dim", None)
+    txt_mlp_dim = kwargs.get("txt_mlp_dim", None)
+    img_mod_dim = kwargs.get("img_mod_dim", None)
+    txt_mod_dim = kwargs.get("txt_mod_dim", None)
+    single_dim = kwargs.get("single_dim", None)  # SingleStreamBlock
+    single_mod_dim = kwargs.get("single_mod_dim", None)  # SingleStreamBlock
+    if img_attn_dim is not None:
+        img_attn_dim = int(img_attn_dim)
+    if txt_attn_dim is not None:
+        txt_attn_dim = int(txt_attn_dim)
+    if img_mlp_dim is not None:
+        img_mlp_dim = int(img_mlp_dim)
+    if txt_mlp_dim is not None:
+        txt_mlp_dim = int(txt_mlp_dim)
+    if img_mod_dim is not None:
+        img_mod_dim = int(img_mod_dim)
+    if txt_mod_dim is not None:
+        txt_mod_dim = int(txt_mod_dim)
+    if single_dim is not None:
+        single_dim = int(single_dim)
+    if single_mod_dim is not None:
+        single_mod_dim = int(single_mod_dim)
+    type_dims = [img_attn_dim, txt_attn_dim, img_mlp_dim, txt_mlp_dim, img_mod_dim, txt_mod_dim, single_dim, single_mod_dim]
+    if all([d is None for d in type_dims]):
+        type_dims = None
+
+    # in_dims [img, time, vector, guidance, txt]
+    in_dims = kwargs.get("in_dims", None)
+    if in_dims is not None:
+        in_dims = in_dims.strip()
+        if in_dims.startswith("[") and in_dims.endswith("]"):
+            in_dims = in_dims[1:-1]
+        in_dims = [int(d) for d in in_dims.split(",")]  # is it better to use ast.literal_eval?
+        assert len(in_dims) == 5, f"invalid in_dims: {in_dims}, must be 5 dimensions (img, time, vector, guidance, txt)"
+
+    # double/single train blocks
+    def parse_block_selection(selection: str, total_blocks: int) -> List[bool]:
+        """
+        Parse a block selection string and return a list of booleans.
+
+        Args:
+        selection (str): A string specifying which blocks to select.
+        total_blocks (int): The total number of blocks available.
+
+        Returns:
+        List[bool]: A list of booleans indicating which blocks are selected.
+        """
+        if selection == "all":
+            return [True] * total_blocks
+        if selection == "none" or selection == "":
+            return [False] * total_blocks
+
+        selected = [False] * total_blocks
+        ranges = selection.split(",")
+
+        for r in ranges:
+            if "-" in r:
+                start, end = map(str.strip, r.split("-"))
+                start = int(start)
+                end = int(end)
+                assert 0 <= start < total_blocks, f"invalid start index: {start}"
+                assert 0 <= end < total_blocks, f"invalid end index: {end}"
+                assert start <= end, f"invalid range: {start}-{end}"
+                for i in range(start, end + 1):
+                    selected[i] = True
+            else:
+                index = int(r)
+                assert 0 <= index < total_blocks, f"invalid index: {index}"
+                selected[index] = True
+
+        return selected
+
+    train_double_block_indices = kwargs.get("train_double_block_indices", None)
+    train_single_block_indices = kwargs.get("train_single_block_indices", None)
+    if train_double_block_indices is not None:
+        train_double_block_indices = parse_block_selection(train_double_block_indices, NUM_DOUBLE_BLOCKS)
+    if train_single_block_indices is not None:
+        train_single_block_indices = parse_block_selection(train_single_block_indices, NUM_SINGLE_BLOCKS)
+
     # rank/module dropout
     rank_dropout = kwargs.get("rank_dropout", None)
     if rank_dropout is not None:
@@ -256,6 +414,21 @@ def create_network(
     train_blocks = kwargs.get("train_blocks", None)  # None (default), "all" (same as None), "single", "double"
     if train_blocks is not None:
         assert train_blocks in ["all", "single", "double"], f"invalid train_blocks: {train_blocks}"
+
+    # split qkv
+    split_qkv = kwargs.get("split_qkv", False)
+    if split_qkv is not None:
+        split_qkv = True if split_qkv == "True" else False
+
+    # train T5XXL
+    train_t5xxl = kwargs.get("train_t5xxl", False)
+    if train_t5xxl is not None:
+        train_t5xxl = True if train_t5xxl == "True" else False
+
+    # verbose
+    verbose = kwargs.get("verbose", False)
+    if verbose is not None:
+        verbose = True if verbose == "True" else False
 
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
@@ -270,7 +443,13 @@ def create_network(
         conv_lora_dim=conv_dim,
         conv_alpha=conv_alpha,
         train_blocks=train_blocks,
-        varbose=True,
+        split_qkv=split_qkv,
+        train_t5xxl=train_t5xxl,
+        type_dims=type_dims,
+        in_dims=in_dims,
+        train_double_block_indices=train_double_block_indices,
+        train_single_block_indices=train_single_block_indices,
+        verbose=verbose,
     )
 
     loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
@@ -296,9 +475,10 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
         else:
             weights_sd = torch.load(file, map_location="cpu")
 
-    # get dim/alpha mapping
+    # get dim/alpha mapping, and train t5xxl
     modules_dim = {}
     modules_alpha = {}
+    train_t5xxl = None
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -311,10 +491,41 @@ def create_network_from_weights(multiplier, file, ae, text_encoders, flux, weigh
             modules_dim[lora_name] = dim
             # logger.info(lora_name, value.size(), dim)
 
+        if train_t5xxl is None or train_t5xxl is False:
+            train_t5xxl = "lora_te3" in lora_name
+
+    if train_t5xxl is None:
+        train_t5xxl = False
+
+    # # split qkv
+    # double_qkv_rank = None
+    # single_qkv_rank = None
+    # rank = None
+    # for lora_name, dim in modules_dim.items():
+    #     if "double" in lora_name and "qkv" in lora_name:
+    #         double_qkv_rank = dim
+    #     elif "single" in lora_name and "linear1" in lora_name:
+    #         single_qkv_rank = dim
+    #     elif rank is None:
+    #         rank = dim
+    #     if double_qkv_rank is not None and single_qkv_rank is not None and rank is not None:
+    #         break
+    # split_qkv = (double_qkv_rank is not None and double_qkv_rank != rank) or (
+    #     single_qkv_rank is not None and single_qkv_rank != rank
+    # )
+    split_qkv = False  # split_qkv is not needed to care, because state_dict is qkv combined
+
     module_class = LoRAInfModule if for_inference else LoRAModule
 
     network = LoRANetwork(
-        text_encoders, flux, multiplier=multiplier, modules_dim=modules_dim, modules_alpha=modules_alpha, module_class=module_class
+        text_encoders,
+        flux,
+        multiplier=multiplier,
+        modules_dim=modules_dim,
+        modules_alpha=modules_alpha,
+        module_class=module_class,
+        split_qkv=split_qkv,
+        train_t5xxl=train_t5xxl,
     )
     return network, weights_sd
 
@@ -323,10 +534,10 @@ class LoRANetwork(torch.nn.Module):
     # FLUX_TARGET_REPLACE_MODULE = ["DoubleStreamBlock", "SingleStreamBlock"]
     FLUX_TARGET_REPLACE_MODULE_DOUBLE = ["DoubleStreamBlock"]
     FLUX_TARGET_REPLACE_MODULE_SINGLE = ["SingleStreamBlock"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP", "T5Attention", "T5DenseGatedActDense"]
     LORA_PREFIX_FLUX = "lora_unet"  # make ComfyUI compatible
     LORA_PREFIX_TEXT_ENCODER_CLIP = "lora_te1"
-    LORA_PREFIX_TEXT_ENCODER_T5 = "lora_te2"
+    LORA_PREFIX_TEXT_ENCODER_T5 = "lora_te3"  # make ComfyUI compatible
 
     def __init__(
         self,
@@ -344,7 +555,13 @@ class LoRANetwork(torch.nn.Module):
         modules_dim: Optional[Dict[str, int]] = None,
         modules_alpha: Optional[Dict[str, int]] = None,
         train_blocks: Optional[str] = None,
-        varbose: Optional[bool] = False,
+        split_qkv: bool = False,
+        train_t5xxl: bool = False,
+        type_dims: Optional[List[int]] = None,
+        in_dims: Optional[List[int]] = None,
+        train_double_block_indices: Optional[List[bool]] = None,
+        train_single_block_indices: Optional[List[bool]] = None,
+        verbose: Optional[bool] = False,
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
@@ -357,6 +574,13 @@ class LoRANetwork(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
         self.train_blocks = train_blocks if train_blocks is not None else "all"
+        self.split_qkv = split_qkv
+        self.train_t5xxl = train_t5xxl
+
+        self.type_dims = type_dims
+        self.in_dims = in_dims
+        self.train_double_block_indices = train_double_block_indices
+        self.train_single_block_indices = train_single_block_indices
 
         self.loraplus_lr_ratio = None
         self.loraplus_unet_lr_ratio = None
@@ -364,19 +588,32 @@ class LoRANetwork(torch.nn.Module):
 
         if modules_dim is not None:
             logger.info(f"create LoRA network from weights")
+            self.in_dims = [0] * 5  # create in_dims
+            # verbose = True
         else:
             logger.info(f"create LoRA network. base dim (rank): {lora_dim}, alpha: {alpha}")
             logger.info(
                 f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}"
             )
-            if self.conv_lora_dim is not None:
-                logger.info(
-                    f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
-                )
+            # if self.conv_lora_dim is not None:
+            #     logger.info(
+            #         f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
+            #     )
+        if self.split_qkv:
+            logger.info(f"split qkv for LoRA")
+        if self.train_blocks is not None:
+            logger.info(f"train {self.train_blocks} blocks only")
+        if train_t5xxl:
+            logger.info(f"train T5XXL as well")
 
         # create module instances
         def create_modules(
-            is_flux: bool, text_encoder_idx: Optional[int], root_module: torch.nn.Module, target_replace_modules: List[str]
+            is_flux: bool,
+            text_encoder_idx: Optional[int],
+            root_module: torch.nn.Module,
+            target_replace_modules: List[str],
+            filter: Optional[str] = None,
+            default_dim: Optional[int] = None,
         ) -> List[LoRAModule]:
             prefix = (
                 self.LORA_PREFIX_FLUX
@@ -387,15 +624,21 @@ class LoRANetwork(torch.nn.Module):
             loras = []
             skipped = []
             for name, module in root_module.named_modules():
-                if module.__class__.__name__ in target_replace_modules:
+                if target_replace_modules is None or module.__class__.__name__ in target_replace_modules:
+                    if target_replace_modules is None:  # dirty hack for all modules
+                        module = root_module  # search all modules
+
                     for child_name, child_module in module.named_modules():
                         is_linear = child_module.__class__.__name__ == "Linear"
                         is_conv2d = child_module.__class__.__name__ == "Conv2d"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
 
                         if is_linear or is_conv2d:
-                            lora_name = prefix + "." + name + "." + child_name
+                            lora_name = prefix + "." + (name + "." if name else "") + child_name
                             lora_name = lora_name.replace(".", "_")
+
+                            if filter is not None and not filter in lora_name:
+                                continue
 
                             dim = None
                             alpha = None
@@ -408,8 +651,49 @@ class LoRANetwork(torch.nn.Module):
                             else:
                                 # 通常、すべて対象とする
                                 if is_linear or is_conv2d_1x1:
-                                    dim = self.lora_dim
+                                    dim = default_dim if default_dim is not None else self.lora_dim
                                     alpha = self.alpha
+
+                                    if is_flux and type_dims is not None:
+                                        identifier = [
+                                            ("img_attn",),
+                                            ("txt_attn",),
+                                            ("img_mlp",),
+                                            ("txt_mlp",),
+                                            ("img_mod",),
+                                            ("txt_mod",),
+                                            ("single_blocks", "linear"),
+                                            ("modulation",),
+                                        ]
+                                        for i, d in enumerate(type_dims):
+                                            if d is not None and all([id in lora_name for id in identifier[i]]):
+                                                dim = d  # may be 0 for skip
+                                                break
+
+                                    if (
+                                        is_flux
+                                        and dim
+                                        and (
+                                            self.train_double_block_indices is not None
+                                            or self.train_single_block_indices is not None
+                                        )
+                                        and ("double" in lora_name or "single" in lora_name)
+                                    ):
+                                        # "lora_unet_double_blocks_0_..." or "lora_unet_single_blocks_0_..."
+                                        block_index = int(lora_name.split("_")[4])  # bit dirty
+                                        if (
+                                            "double" in lora_name
+                                            and self.train_double_block_indices is not None
+                                            and not self.train_double_block_indices[block_index]
+                                        ):
+                                            dim = 0
+                                        elif (
+                                            "single" in lora_name
+                                            and self.train_single_block_indices is not None
+                                            and not self.train_single_block_indices[block_index]
+                                        ):
+                                            dim = 0
+
                                 elif self.conv_lora_dim is not None:
                                     dim = self.conv_lora_dim
                                     alpha = self.conv_alpha
@@ -420,6 +704,14 @@ class LoRANetwork(torch.nn.Module):
                                     skipped.append(lora_name)
                                 continue
 
+                            # qkv split
+                            split_dims = None
+                            if is_flux and split_qkv:
+                                if "double" in lora_name and "qkv" in lora_name:
+                                    split_dims = [3072] * 3
+                                elif "single" in lora_name and "linear1" in lora_name:
+                                    split_dims = [3072] * 3 + [12288]
+
                             lora = module_class(
                                 lora_name,
                                 child_module,
@@ -429,8 +721,12 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
+                                split_dims=split_dims,
                             )
                             loras.append(lora)
+
+                if target_replace_modules is None:
+                    break  # all modules are searched
             return loras, skipped
 
         # create LoRA for text encoder
@@ -439,12 +735,15 @@ class LoRANetwork(torch.nn.Module):
         skipped_te = []
         for i, text_encoder in enumerate(text_encoders):
             index = i
+            if not train_t5xxl and index > 0:  # 0: CLIP, 1: T5XXL, so we skip T5XXL if train_t5xxl is False
+                break
+
             logger.info(f"create LoRA for Text Encoder {index+1}:")
 
             text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            logger.info(f"create LoRA for Text Encoder {index+1}: {len(text_encoder_loras)} modules.")
             self.text_encoder_loras.extend(text_encoder_loras)
             skipped_te += skipped
-        logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
 
         # create LoRA for U-Net
         if self.train_blocks == "all":
@@ -456,10 +755,20 @@ class LoRANetwork(torch.nn.Module):
 
         self.unet_loras: List[Union[LoRAModule, LoRAInfModule]]
         self.unet_loras, skipped_un = create_modules(True, None, unet, target_replace_modules)
+
+        # img, time, vector, guidance, txt
+        if self.in_dims:
+            for filter, in_dim in zip(["_img_in", "_time_in", "_vector_in", "_guidance_in", "_txt_in"], self.in_dims):
+                loras, _ = create_modules(True, None, unet, None, filter=filter, default_dim=in_dim)
+                self.unet_loras.extend(loras)
+
         logger.info(f"create LoRA for FLUX {self.train_blocks} blocks: {len(self.unet_loras)} modules.")
+        if verbose:
+            for lora in self.unet_loras:
+                logger.info(f"\t{lora.lora_name:50} {lora.lora_dim}, {lora.alpha}")
 
         skipped = skipped_te + skipped_un
-        if varbose and len(skipped) > 0:
+        if verbose and len(skipped) > 0:
             logger.warning(
                 f"because dim (rank) is 0, {len(skipped)} LoRA modules are skipped / dim (rank)が0の為、次の{len(skipped)}個のLoRAモジュールはスキップされます:"
             )
@@ -491,6 +800,111 @@ class LoRANetwork(torch.nn.Module):
 
         info = self.load_state_dict(weights_sd, False)
         return info
+
+    def load_state_dict(self, state_dict, strict=True):
+        # override to convert original weight to split qkv
+        if not self.split_qkv:
+            return super().load_state_dict(state_dict, strict)
+
+        # split qkv
+        for key in list(state_dict.keys()):
+            if "double" in key and "qkv" in key:
+                split_dims = [3072] * 3
+            elif "single" in key and "linear1" in key:
+                split_dims = [3072] * 3 + [12288]
+            else:
+                continue
+
+            weight = state_dict[key]
+            lora_name = key.split(".")[0]
+            if "lora_down" in key and "weight" in key:
+                # dense weight (rank*3, in_dim)
+                split_weight = torch.chunk(weight, len(split_dims), dim=0)
+                for i, split_w in enumerate(split_weight):
+                    state_dict[f"{lora_name}.lora_down.{i}.weight"] = split_w
+
+                del state_dict[key]
+                # print(f"split {key}: {weight.shape} to {[w.shape for w in split_weight]}")
+            elif "lora_up" in key and "weight" in key:
+                # sparse weight (out_dim=sum(split_dims), rank*3)
+                rank = weight.size(1) // len(split_dims)
+                i = 0
+                for j in range(len(split_dims)):
+                    state_dict[f"{lora_name}.lora_up.{j}.weight"] = weight[i : i + split_dims[j], j * rank : (j + 1) * rank]
+                    i += split_dims[j]
+                del state_dict[key]
+
+                # # check is sparse
+                # i = 0
+                # is_zero = True
+                # for j in range(len(split_dims)):
+                #     for k in range(len(split_dims)):
+                #         if j == k:
+                #             continue
+                #         is_zero = is_zero and torch.all(weight[i : i + split_dims[j], k * rank : (k + 1) * rank] == 0)
+                #     i += split_dims[j]
+                # if not is_zero:
+                #     logger.warning(f"weight is not sparse: {key}")
+                # else:
+                #     logger.info(f"weight is sparse: {key}")
+
+                # print(
+                #     f"split {key}: {weight.shape} to {[state_dict[k].shape for k in [f'{lora_name}.lora_up.{j}.weight' for j in range(len(split_dims))]]}"
+                # )
+
+            # alpha is unchanged
+
+        return super().load_state_dict(state_dict, strict)
+
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        if not self.split_qkv:
+            return super().state_dict(destination, prefix, keep_vars)
+
+        # merge qkv
+        state_dict = super().state_dict(destination, prefix, keep_vars)
+        new_state_dict = {}
+        for key in list(state_dict.keys()):
+            if "double" in key and "qkv" in key:
+                split_dims = [3072] * 3
+            elif "single" in key and "linear1" in key:
+                split_dims = [3072] * 3 + [12288]
+            else:
+                new_state_dict[key] = state_dict[key]
+                continue
+
+            if key not in state_dict:
+                continue  # already merged
+
+            lora_name = key.split(".")[0]
+
+            # (rank, in_dim) * 3
+            down_weights = [state_dict.pop(f"{lora_name}.lora_down.{i}.weight") for i in range(len(split_dims))]
+            # (split dim, rank) * 3
+            up_weights = [state_dict.pop(f"{lora_name}.lora_up.{i}.weight") for i in range(len(split_dims))]
+
+            alpha = state_dict.pop(f"{lora_name}.alpha")
+
+            # merge down weight
+            down_weight = torch.cat(down_weights, dim=0)  # (rank, split_dim) * 3 -> (rank*3, sum of split_dim)
+
+            # merge up weight (sum of split_dim, rank*3)
+            rank = up_weights[0].size(1)
+            up_weight = torch.zeros((sum(split_dims), down_weight.size(0)), device=down_weight.device, dtype=down_weight.dtype)
+            i = 0
+            for j in range(len(split_dims)):
+                up_weight[i : i + split_dims[j], j * rank : (j + 1) * rank] = up_weights[j]
+                i += split_dims[j]
+
+            new_state_dict[f"{lora_name}.lora_down.weight"] = down_weight
+            new_state_dict[f"{lora_name}.lora_up.weight"] = up_weight
+            new_state_dict[f"{lora_name}.alpha"] = alpha
+
+            # print(
+            #     f"merged {lora_name}: {lora_name}, {[w.shape for w in down_weights]}, {[w.shape for w in up_weights]} to {down_weight.shape}, {up_weight.shape}"
+            # )
+            print(f"new key: {lora_name}.lora_down.weight, {lora_name}.lora_up.weight, {lora_name}.alpha")
+
+        return new_state_dict
 
     def apply_to(self, text_encoders, flux, apply_text_encoder=True, apply_unet=True):
         if apply_text_encoder:
@@ -547,28 +961,26 @@ class LoRANetwork(torch.nn.Module):
         logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
-    # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
-        # TODO warn if optimizer is not compatible with LoRA+ (but it will cause error so we don't need to check it here?)
-        # if (
-        #     self.loraplus_lr_ratio is not None
-        #     or self.loraplus_text_encoder_lr_ratio is not None
-        #     or self.loraplus_unet_lr_ratio is not None
-        # ):
-        #     assert (
-        #         optimizer_type.lower() != "prodigy" and "dadapt" not in optimizer_type.lower()
-        #     ), "LoRA+ and Prodigy/DAdaptation is not supported / LoRA+とProdigy/DAdaptationの組み合わせはサポートされていません"
+    def prepare_optimizer_params_with_multiple_te_lrs(self, text_encoder_lr, unet_lr, default_lr):
+        # make sure text_encoder_lr as list of two elements
+        # if float, use the same value for both text encoders
+        if text_encoder_lr is None or (isinstance(text_encoder_lr, list) and len(text_encoder_lr) == 0):
+            text_encoder_lr = [default_lr, default_lr]
+        elif isinstance(text_encoder_lr, float) or isinstance(text_encoder_lr, int):
+            text_encoder_lr = [float(text_encoder_lr), float(text_encoder_lr)]
+        elif len(text_encoder_lr) == 1:
+            text_encoder_lr = [text_encoder_lr[0], text_encoder_lr[0]]
 
         self.requires_grad_(True)
 
         all_params = []
         lr_descriptions = []
 
-        def assemble_params(loras, lr, ratio):
+        def assemble_params(loras, lr, loraplus_ratio):
             param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
                 for name, param in lora.named_parameters():
-                    if ratio is not None and "lora_up" in name:
+                    if loraplus_ratio is not None and "lora_up" in name:
                         param_groups["plus"][f"{lora.lora_name}.{name}"] = param
                     else:
                         param_groups["lora"][f"{lora.lora_name}.{name}"] = param
@@ -583,7 +995,7 @@ class LoRANetwork(torch.nn.Module):
 
                 if lr is not None:
                     if key == "plus":
-                        param_data["lr"] = lr * ratio
+                        param_data["lr"] = lr * loraplus_ratio
                     else:
                         param_data["lr"] = lr
 
@@ -597,41 +1009,23 @@ class LoRANetwork(torch.nn.Module):
             return params, descriptions
 
         if self.text_encoder_loras:
-            params, descriptions = assemble_params(
-                self.text_encoder_loras,
-                text_encoder_lr if text_encoder_lr is not None else default_lr,
-                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
-            )
-            all_params.extend(params)
-            lr_descriptions.extend(["textencoder" + (" " + d if d else "") for d in descriptions])
+            loraplus_lr_ratio = self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio
+
+            # split text encoder loras for te1 and te3
+            te1_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER_CLIP)]
+            te3_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER_T5)]
+            if len(te1_loras) > 0:
+                logger.info(f"Text Encoder 1 (CLIP-L): {len(te1_loras)} modules, LR {text_encoder_lr[0]}")
+                params, descriptions = assemble_params(te1_loras, text_encoder_lr[0], loraplus_lr_ratio)
+                all_params.extend(params)
+                lr_descriptions.extend(["textencoder 1 " + (" " + d if d else "") for d in descriptions])
+            if len(te3_loras) > 0:
+                logger.info(f"Text Encoder 2 (T5XXL): {len(te3_loras)} modules, LR {text_encoder_lr[1]}")
+                params, descriptions = assemble_params(te3_loras, text_encoder_lr[1], loraplus_lr_ratio)
+                all_params.extend(params)
+                lr_descriptions.extend(["textencoder 2 " + (" " + d if d else "") for d in descriptions])
 
         if self.unet_loras:
-            # if self.block_lr:
-            #     is_sdxl = False
-            #     for lora in self.unet_loras:
-            #         if "input_blocks" in lora.lora_name or "output_blocks" in lora.lora_name:
-            #             is_sdxl = True
-            #             break
-
-            #     # 学習率のグラフをblockごとにしたいので、blockごとにloraを分類
-            #     block_idx_to_lora = {}
-            #     for lora in self.unet_loras:
-            #         idx = get_block_index(lora.lora_name, is_sdxl)
-            #         if idx not in block_idx_to_lora:
-            #             block_idx_to_lora[idx] = []
-            #         block_idx_to_lora[idx].append(lora)
-
-            #     # blockごとにパラメータを設定する
-            #     for idx, block_loras in block_idx_to_lora.items():
-            #         params, descriptions = assemble_params(
-            #             block_loras,
-            #             (unet_lr if unet_lr is not None else default_lr) * self.get_lr_weight(idx),
-            #             self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
-            #         )
-            #         all_params.extend(params)
-            #         lr_descriptions.extend([f"unet_block{idx}" + (" " + d if d else "") for d in descriptions])
-
-            # else:
             params, descriptions = assemble_params(
                 self.unet_loras,
                 unet_lr if unet_lr is not None else default_lr,

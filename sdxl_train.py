@@ -617,6 +617,9 @@ def train(args):
     sdxl_train_util.sample_images(
         accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, [text_encoder1, text_encoder2], unet
     )
+    if len(accelerator.trackers) > 0:
+        # log empty object to commit the sample images to wandb
+        accelerator.log({}, step=0)
 
     loss_recorder = train_util.LossRecorder()
     for epoch in range(num_train_epochs):
@@ -700,7 +703,11 @@ def train(args):
                 with accelerator.autocast():
                     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
 
-                target = noise
+                if args.v_parameterization:
+                    # v-parameterization training
+                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    target = noise
 
                 if (
                     args.min_snr_gamma
@@ -718,7 +725,7 @@ def train(args):
                     loss = loss.mean([1, 2, 3])
 
                     if args.min_snr_gamma:
-                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
                     if args.scale_v_pred_loss_like_noise_pred:
                         loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                     if args.v_pred_like_loss:
@@ -793,7 +800,7 @@ def train(args):
                         )
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = {"loss": current_loss}
                 if block_lrs is None:
                     train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=train_unet)
@@ -810,7 +817,7 @@ def train(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
