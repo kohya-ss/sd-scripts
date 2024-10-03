@@ -444,8 +444,11 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
+                min_timestep = args.min_timestep if args.min_timestep is not None else 0
+                sched_max_timestep = noise_scheduler.config.num_train_timesteps
+                max_timestep = args.max_timestep if args.max_timestep is not None else sched_max_timestep
                 timesteps, huber_c = train_util.get_timesteps_and_huber_c(
-                    args, 0, noise_scheduler.config.num_train_timesteps, noise_scheduler, b_size, latents.device
+                    args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device
                 )
 
                 # Add noise to the latents according to the noise magnitude at each timestep
