@@ -1042,7 +1042,9 @@ class NetworkTrainer:
             text_encoder = None
 
         # For --sample_at_first
+        optimizer_eval_fn()
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        optimizer_train_fn()
         if len(accelerator.trackers) > 0:
             # log empty object to commit the sample images to wandb
             accelerator.log({}, step=0)

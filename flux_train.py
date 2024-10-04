@@ -706,7 +706,9 @@ def train(args):
         accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
 
     # For --sample_at_first
+    optimizer_eval_fn()
     flux_train_utils.sample_images(accelerator, args, 0, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs)
+    optimizer_train_fn()
     if len(accelerator.trackers) > 0:
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
