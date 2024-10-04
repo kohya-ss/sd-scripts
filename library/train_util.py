@@ -3493,7 +3493,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--discrete_flow_shift",
         type=float,
         default=1.0,
-        help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
+        help="Discrete flow shift for the Euler Discrete Scheduler, default is 1.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは1.0。",
     )
 
     parser.add_argument(
