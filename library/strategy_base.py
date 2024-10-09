@@ -74,6 +74,9 @@ class TokenizeStrategy:
         raise NotImplementedError
 
     def tokenize_with_weights(self, text: Union[str, List[str]]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        returns: [tokens1, tokens2, ...], [weights1, weights2, ...]
+        """
         raise NotImplementedError
 
     def _get_weighted_input_ids(
@@ -303,7 +306,7 @@ class TextEncodingStrategy:
         :return: list of output embeddings for each architecture
         """
         raise NotImplementedError
-    
+
     def encode_tokens_with_weights(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], tokens: List[torch.Tensor], weights: List[torch.Tensor]
     ) -> List[torch.Tensor]:

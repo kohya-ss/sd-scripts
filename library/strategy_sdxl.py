@@ -174,7 +174,8 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
         """
         Args:
             tokenize_strategy: TokenizeStrategy
-            models: List of models, [text_encoder1, text_encoder2, unwrapped text_encoder2 (optional)]
+            models: List of models, [text_encoder1, text_encoder2, unwrapped text_encoder2 (optional)].
+                If text_encoder2 is wrapped by accelerate, unwrapped_text_encoder2 is required
             tokens: List of tokens, for text_encoder1 and text_encoder2
         """
         if len(models) == 2:

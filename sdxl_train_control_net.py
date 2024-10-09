@@ -12,24 +12,21 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from torch.nn.parallel import DistributedDataParallel as DDP
 from accelerate.utils import set_seed
 from accelerate import init_empty_weights
-from diffusers import DDPMScheduler, ControlNetModel
+from diffusers import DDPMScheduler
 from diffusers.utils.torch_utils import is_compiled_module
 from safetensors.torch import load_file
 from library import (
     deepspeed_utils,
     sai_model_spec,
     sdxl_model_util,
-    sdxl_original_unet,
     sdxl_train_util,
     strategy_base,
     strategy_sd,
     strategy_sdxl,
 )
 
-import library.model_util as model_util
 import library.train_util as train_util
 import library.config_util as config_util
 from library.config_util import (
@@ -264,7 +261,7 @@ def train(args):
     trainable_params.append({"params": ctrlnet_params, "lr": args.control_net_lr})
     trainable_params.append({"params": unet_params, "lr": args.learning_rate})
     all_params = ctrlnet_params + unet_params
-    
+
     logger.info(f"trainable params count: {len(all_params)}")
     logger.info(f"number of trainable parameters: {sum(p.numel() for p in all_params)}")
 
