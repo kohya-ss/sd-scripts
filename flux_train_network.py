@@ -2,7 +2,7 @@ import argparse
 import copy
 import math
 import random
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from accelerate import Accelerator
@@ -24,6 +24,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
         super().__init__()
         self.sample_prompts_te_outputs = None
+        self.is_schnell: Optional[bool] = None
 
     def assert_extra_args(self, args, train_dataset_group):
         super().assert_extra_args(args, train_dataset_group)
@@ -57,19 +58,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
-    def get_flux_model_name(self, args):
-        return "schnell" if "schnell" in args.pretrained_model_name_or_path else "dev"
-
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
-        name = self.get_flux_model_name(args)
 
         # if the file is fp8 and we are using fp8_base, we can load it as is (fp8)
         loading_dtype = None if args.fp8_base else weight_dtype
 
         # if we load to cpu, flux.to(fp8) takes a long time, so we should load to gpu in future
-        model = flux_utils.load_flow_model(
-            name, args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
+        self.is_schnell, model = flux_utils.load_flow_model(
+            args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
         )
         if args.fp8_base:
             # check dtype of model
@@ -100,7 +97,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             elif t5xxl.dtype == torch.float8_e4m3fn:
                 logger.info("Loaded fp8 T5XXL model")
 
-        ae = flux_utils.load_ae(name, args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
+        ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
 
@@ -142,10 +139,10 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return flux_lower
 
     def get_tokenize_strategy(self, args):
-        name = self.get_flux_model_name(args)
+        _, is_schnell, _ = flux_utils.check_flux_state_dict_diffusers_schnell(args.pretrained_model_name_or_path)
 
         if args.t5xxl_max_token_length is None:
-            if name == "schnell":
+            if is_schnell:
                 t5xxl_max_token_length = 256
             else:
                 t5xxl_max_token_length = 512
