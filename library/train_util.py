@@ -33,6 +33,7 @@ from io import BytesIO
 import toml
 
 from tqdm import tqdm
+from packaging.version import Version
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
@@ -5048,7 +5049,7 @@ def prepare_accelerator(args: argparse.Namespace):
     kwargs_handlers = [
         InitProcessGroupKwargs(
             backend = "gloo" if os.name == "nt" or not torch.cuda.is_available() else "nccl",
-            init_method="env://?use_libuv=False" if os.name == "nt" else None,
+            init_method="env://?use_libuv=False" if os.name == "nt" and Version(torch.__version__) >= Version("2.4.0") else None,
             timeout=datetime.timedelta(minutes=args.ddp_timeout) if args.ddp_timeout else None
         ) if torch.cuda.device_count() > 1 else None,
         DistributedDataParallelKwargs(
