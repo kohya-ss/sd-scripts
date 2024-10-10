@@ -321,7 +321,7 @@ def train(args):
         if args.cache_text_encoder_outputs:
             # Text Encodes are eval and no grad
             text_encoder_output_caching_strategy = strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
-                args.cache_text_encoder_outputs_to_disk, None, False
+                args.cache_text_encoder_outputs_to_disk, None, False, is_weighted=args.weighted_captions
             )
             strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_output_caching_strategy)
 

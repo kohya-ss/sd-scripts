@@ -356,21 +356,17 @@ def train(args):
                 # Get the text embedding for conditioning
                 with torch.set_grad_enabled(global_step < args.stop_text_encoder_training):
                     if args.weighted_captions:
-                        encoder_hidden_states = get_weighted_text_embeddings(
-                            tokenize_strategy.tokenizer,
-                            text_encoder,
-                            batch["captions"],
-                            accelerator.device,
-                            args.max_token_length // 75 if args.max_token_length else 1,
-                            clip_skip=args.clip_skip,
-                        )
+                        input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch["captions"])
+                        encoder_hidden_states = text_encoding_strategy.encode_tokens_with_weights(
+                            tokenize_strategy, [text_encoder], input_ids_list, weights_list
+                        )[0]
                     else:
                         input_ids = batch["input_ids_list"][0].to(accelerator.device)
                         encoder_hidden_states = text_encoding_strategy.encode_tokens(
                             tokenize_strategy, [text_encoder], [input_ids]
                         )[0]
-                        if args.full_fp16:
-                            encoder_hidden_states = encoder_hidden_states.to(weight_dtype)
+                    if args.full_fp16:
+                        encoder_hidden_states = encoder_hidden_states.to(weight_dtype)
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified

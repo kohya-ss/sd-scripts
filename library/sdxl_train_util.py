@@ -363,9 +363,9 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
     #         )
     #     logger.info(f"noise_offset is set to {args.noise_offset} / noise_offsetが{args.noise_offset}に設定されました")
 
-    assert (
-        not hasattr(args, "weighted_captions") or not args.weighted_captions
-    ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
+    # assert (
+    #     not hasattr(args, "weighted_captions") or not args.weighted_captions
+    # ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
 
     if supportTextEncoderCaching:
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
