@@ -705,7 +705,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--control_net_lr",
         type=float,
         default=1e-4,
-        help="learning rate for controlnet / controlnetの学習率",
+        help="learning rate for controlnet modules / controlnetモジュールの学習率",
     )
     return parser
 

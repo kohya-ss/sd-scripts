@@ -11,6 +11,16 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 11, 2024:
+- ControlNet training for SDXL has been implemented in this branch. Please use `sdxl_train_control_net.py`. 
+  - For details on defining the dataset, see [here](docs/train_lllite_README.md#creating-a-dataset-configuration-file).
+  - The learning rate for the copy part of the U-Net is specified by `--learning_rate`. The learning rate for the added modules in ControlNet is specified by `--control_net_lr`. The optimal value is still unknown, but try around U-Net `1e-5` and ControlNet `1e-4`.
+  - If you want to generate sample images, specify the control image as `--cn path/to/control/image`.
+  - The trained weights are automatically converted and saved in Diffusers format. It should be available in ComfyUI.
+- Weighting of prompts (captions) during training in SDXL is now supported (e.g., `(some text)`, `[some text]`, `(some text:1.4)`, etc.). The function is enabled by specifying `--weighted_captions`. 
+  - The default is `False`. It is same as before, and the parentheses are used as normal text.
+  - If `--weighted_captions` is specified, please use `\` to escape the parentheses in the prompt. For example, `\(some text:1.4\)`.
+
 Oct 6, 2024:
 - In FLUX.1 LoRA training and fine-tuning, the specified weight file (*.safetensors) is automatically determined to be dev or schnell. This allows schnell models to be loaded correctly. Note that LoRA training with schnell models and fine-tuning with schnell models are unverified.
 - FLUX.1 LoRA training and fine-tuning can now load weights in Diffusers format in addition to BFL format (a single *.safetensors file). Please specify the parent directory of `transformer` or `diffusion_pytorch_model-00001-of-00003.safetensors` with the full path. However, Diffusers format CLIP/T5XXL is not supported. Saving is supported only in BFL format.
