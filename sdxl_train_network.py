@@ -79,7 +79,9 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
-            return strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(args.cache_text_encoder_outputs_to_disk, None, False)
+            return strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
+                args.cache_text_encoder_outputs_to_disk, None, False, is_weighted=args.weighted_captions
+            )
         else:
             return None
 
