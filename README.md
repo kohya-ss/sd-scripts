@@ -14,7 +14,7 @@ The command to install PyTorch is as follows:
 Oct 12, 2024:
 
 - Multi-GPU training now works on Windows. Thanks to Akegarasu for PR [#1686](https://github.com/kohya-ss/sd-scripts/pull/1686)!
-  - It should work with all training scripts, but it is unverified.
+  - In simple tests, SDXL and FLUX.1 LoRA training worked. FLUX.1 fine-tuning did not work, probably due to a PyTorch-related error. Other scripts are unverified.
   - Set up multi-GPU training with `accelerate config`.
   - Specify `--rdzv_backend=c10d` when launching `accelerate launch`. You can also edit `config.yaml` directly.
     ```
