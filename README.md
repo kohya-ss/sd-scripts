@@ -11,6 +11,16 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 12, 2024 (update 1):
+
+- During multi-GPU training, caching of latents and Text Encoder outputs is now done in multi-GPU.
+- `--text_encoder_batch_size` option is enabled for FLUX.1 LoRA training and fine tuning. This option specifies the batch size for caching Text Encoder outputs (not for training). The default is same as the dataset batch size. If you have enough VRAM, you can increase the batch size to speed up the caching. 
+- `--skip_cache_check` option is added to each training script. 
+  - When specified, the consistency check of the cache file `*.npz` contents (e.g., image size and flip for latents, mask for Text Encoder outputs) is skipped. 
+  - Specify this option if you have a large number of cache files and the consistency check takes time. 
+  - Even if this option is specified, the cache will be created if the file does not exist.
+  - `--skip_latents_validity_check` in SD3/FLUX.1 is deprecated. Please use `--skip_cache_check` instead.
+
 Oct 12, 2024:
 
 - Multi-GPU training now works on Windows. Thanks to Akegarasu for PR [#1686](https://github.com/kohya-ss/sd-scripts/pull/1686)!

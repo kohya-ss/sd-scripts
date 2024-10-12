@@ -57,6 +57,10 @@ def train(args):
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
+    # temporary: backward compatibility for deprecated options. remove in the future
+    if not args.skip_cache_check:
+        args.skip_cache_check = args.skip_latents_validity_check
+
     # assert (
     #     not args.weighted_captions
     # ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
@@ -81,7 +85,7 @@ def train(args):
     # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
     if args.cache_latents:
         latents_caching_strategy = strategy_flux.FluxLatentsCachingStrategy(
-            args.cache_latents_to_disk, args.vae_batch_size, args.skip_latents_validity_check
+            args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
         )
         strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
 
@@ -142,7 +146,7 @@ def train(args):
         if args.cache_text_encoder_outputs:
             strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(
                 strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-                    args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, False, False
+                    args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, args.skip_cache_check, False
                 )
             )
         t5xxl_max_token_length = (
@@ -181,7 +185,7 @@ def train(args):
     # load VAE for caching latents
     ae = None
     if cache_latents:
-        ae = flux_utils.load_ae( args.ae, weight_dtype, "cpu", args.disable_mmap_load_safetensors)
+        ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", args.disable_mmap_load_safetensors)
         ae.to(accelerator.device, dtype=weight_dtype)
         ae.requires_grad_(False)
         ae.eval()
@@ -229,7 +233,7 @@ def train(args):
         strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 
         with accelerator.autocast():
-            train_dataset_group.new_cache_text_encoder_outputs([clip_l, t5xxl], accelerator.is_main_process)
+            train_dataset_group.new_cache_text_encoder_outputs([clip_l, t5xxl], accelerator)
 
         # cache sample prompt's embeddings to free text encoder's memory
         if args.sample_prompts is not None:
@@ -952,7 +956,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip_latents_validity_check",
         action="store_true",
-        help="skip latents validity check / latentsの正当性チェックをスキップする",
+        help="[Deprecated] use 'skip_cache_check' instead / 代わりに 'skip_cache_check' を使用してください",
     )
     parser.add_argument(
         "--blocks_to_swap",
