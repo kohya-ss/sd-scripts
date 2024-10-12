@@ -37,6 +37,22 @@ class SdxlTokenizeStrategy(TokenizeStrategy):
             torch.stack([self._get_input_ids(self.tokenizer2, t, self.max_length) for t in text], dim=0),
         )
 
+    def tokenize_with_weights(self, text: str | List[str]) -> Tuple[List[torch.Tensor]]:
+        text = [text] if isinstance(text, str) else text
+        tokens1_list, tokens2_list = [], []
+        weights1_list, weights2_list = [], []
+        for t in text:
+            tokens1, weights1 = self._get_input_ids(self.tokenizer1, t, self.max_length, weighted=True)
+            tokens2, weights2 = self._get_input_ids(self.tokenizer2, t, self.max_length, weighted=True)
+            tokens1_list.append(tokens1)
+            tokens2_list.append(tokens2)
+            weights1_list.append(weights1)
+            weights2_list.append(weights2)
+        return [torch.stack(tokens1_list, dim=0), torch.stack(tokens2_list, dim=0)], [
+            torch.stack(weights1_list, dim=0),
+            torch.stack(weights2_list, dim=0),
+        ]
+
 
 class SdxlTextEncodingStrategy(TextEncodingStrategy):
     def __init__(self) -> None:
@@ -98,7 +114,10 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
     ):
         # input_ids: b,n,77 -> b*n, 77
         b_size = input_ids1.size()[0]
-        max_token_length = input_ids1.size()[1] * input_ids1.size()[2]
+        if input_ids1.size()[1] == 1:
+            max_token_length = None
+        else:
+            max_token_length = input_ids1.size()[1] * input_ids1.size()[2]
         input_ids1 = input_ids1.reshape((-1, tokenizer1.model_max_length))  # batch_size*n, 77
         input_ids2 = input_ids2.reshape((-1, tokenizer2.model_max_length))  # batch_size*n, 77
         input_ids1 = input_ids1.to(text_encoder1.device)
@@ -155,7 +174,8 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
         """
         Args:
             tokenize_strategy: TokenizeStrategy
-            models: List of models, [text_encoder1, text_encoder2, unwrapped text_encoder2 (optional)]
+            models: List of models, [text_encoder1, text_encoder2, unwrapped text_encoder2 (optional)].
+                If text_encoder2 is wrapped by accelerate, unwrapped_text_encoder2 is required
             tokens: List of tokens, for text_encoder1 and text_encoder2
         """
         if len(models) == 2:
@@ -172,14 +192,45 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
         )
         return [hidden_states1, hidden_states2, pool2]
 
+    def encode_tokens_with_weights(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        tokens_list: List[torch.Tensor],
+        weights_list: List[torch.Tensor],
+    ) -> List[torch.Tensor]:
+        hidden_states1, hidden_states2, pool2 = self.encode_tokens(tokenize_strategy, models, tokens_list)
+
+        weights_list = [weights.to(hidden_states1.device) for weights in weights_list]
+
+        # apply weights
+        if weights_list[0].shape[1] == 1:  # no max_token_length
+            # weights: ((b, 1, 77), (b, 1, 77)), hidden_states: (b, 77, 768), (b, 77, 768)
+            hidden_states1 = hidden_states1 * weights_list[0].squeeze(1).unsqueeze(2)
+            hidden_states2 = hidden_states2 * weights_list[1].squeeze(1).unsqueeze(2)
+        else:
+            # weights: ((b, n, 77), (b, n, 77)), hidden_states: (b, n*75+2, 768), (b, n*75+2, 768)
+            for weight, hidden_states in zip(weights_list, [hidden_states1, hidden_states2]):
+                for i in range(weight.shape[1]):
+                    hidden_states[:, i * 75 + 1 : i * 75 + 76] = hidden_states[:, i * 75 + 1 : i * 75 + 76] * weight[
+                        :, i, 1:-1
+                    ].unsqueeze(-1)
+
+        return [hidden_states1, hidden_states2, pool2]
+
 
 class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_te_outputs.npz"
 
     def __init__(
-        self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool, is_partial: bool = False
+        self,
+        cache_to_disk: bool,
+        batch_size: int,
+        skip_disk_cache_validity_check: bool,
+        is_partial: bool = False,
+        is_weighted: bool = False,
     ) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial)
+        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial, is_weighted)
 
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
         return os.path.splitext(image_abs_path)[0] + SdxlTextEncoderOutputsCachingStrategy.SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
@@ -215,11 +266,19 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         sdxl_text_encoding_strategy = text_encoding_strategy  # type: SdxlTextEncodingStrategy
         captions = [info.caption for info in infos]
 
-        tokens1, tokens2 = tokenize_strategy.tokenize(captions)
-        with torch.no_grad():
-            hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens(
-                tokenize_strategy, models, [tokens1, tokens2]
-            )
+        if self.is_weighted:
+            tokens_list, weights_list = tokenize_strategy.tokenize_with_weights(captions)
+            with torch.no_grad():
+                hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens_with_weights(
+                    tokenize_strategy, models, tokens_list, weights_list
+                )
+        else:
+            tokens1, tokens2 = tokenize_strategy.tokenize(captions)
+            with torch.no_grad():
+                hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens(
+                    tokenize_strategy, models, [tokens1, tokens2]
+                )
+
         if hidden_state1.dtype == torch.bfloat16:
             hidden_state1 = hidden_state1.float()
         if hidden_state2.dtype == torch.bfloat16:
