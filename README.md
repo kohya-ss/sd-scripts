@@ -11,6 +11,16 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 12, 2024 (update 1):
+
+- [Experimental] FLUX.1 fine-tuning and LoRA training now support "FLUX.1 __compact__" models.
+  - A compact model is a model that retains the FLUX.1 architecture but reduces the number of double/single blocks from the default 19/38.
+  - The model is automatically determined based on the keys in *.safetensors.
+  - Specifications for compact model safetensors:
+    - Please specify the block indices as consecutive numbers. An error will occur if there are missing numbers. For example, if you reduce the double blocks to 15, the maximum key will be `double_blocks.14.*`. The same applies to single blocks.
+  - LoRA training is unverified.
+  - The trained model can be used for inference with `flux_minimal_inference.py`. Other inference environments are unverified.
+
 Oct 12, 2024:
 
 - Multi-GPU training now works on Windows. Thanks to Akegarasu for PR [#1686](https://github.com/kohya-ss/sd-scripts/pull/1686)!
