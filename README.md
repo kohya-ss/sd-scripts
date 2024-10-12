@@ -11,6 +11,17 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 12, 2024:
+
+- Multi-GPU training now works on Windows. Thanks to Akegarasu for PR [#1686](https://github.com/kohya-ss/sd-scripts/pull/1686)!
+  - It should work with all training scripts, but it is unverified.
+  - Set up multi-GPU training with `accelerate config`.
+  - Specify `--rdzv_backend=c10d` when launching `accelerate launch`. You can also edit `config.yaml` directly.
+    ```
+    accelerate launch --rdzv_backend=c10d sdxl_train_network.py ...
+    ```
+  - In multi-GPU training, the memory of multiple GPUs is not integrated. In other words, even if you have two 12GB VRAM GPUs, you cannot train the model that requires 24GB VRAM. Training that can be done with 12GB VRAM is executed at (up to) twice the speed.
+
 Oct 11, 2024:
 - ControlNet training for SDXL has been implemented in this branch. Please use `sdxl_train_control_net.py`. 
   - For details on defining the dataset, see [here](docs/train_lllite_README.md#creating-a-dataset-configuration-file).
