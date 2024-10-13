@@ -1857,9 +1857,30 @@ class DreamBoothDataset(BaseDataset):
                 strategy = LatentsCachingStrategy.get_strategy()
                 if strategy is not None:
                     logger.info("get image size from name of cache files")
+
+                    # make image path to npz path mapping
+                    npz_paths = glob.glob(os.path.join(subset.image_dir, "*" + strategy.cache_suffix))
+                    npz_paths.sort()
+                    npz_path_index = 0
+
                     size_set_count = 0
                     for i, img_path in enumerate(tqdm(img_paths)):
-                        w, h = strategy.get_image_size_from_disk_cache_path(img_path)
+                        l = len(os.path.splitext(img_path)[0])  # remove extension
+                        found = False
+                        while npz_path_index < len(npz_paths):  # until found or end of npz_paths
+                            # npz_paths are sorted, so if npz_path > img_path, img_path is not found
+                            if npz_paths[npz_path_index][:l] > img_path[:l]:
+                                break
+                            if npz_paths[npz_path_index][:l] == img_path[:l]:  # found
+                                found = True
+                                break
+                            npz_path_index += 1  # next npz_path
+
+                        if found:
+                            w, h = strategy.get_image_size_from_disk_cache_path(img_path, npz_paths[npz_path_index])
+                        else:
+                            w, h = None, None
+
                         if w is not None and h is not None:
                             sizes[i] = [w, h]
                             size_set_count += 1
