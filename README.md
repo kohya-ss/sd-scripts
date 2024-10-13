@@ -11,6 +11,41 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 12, 2024 (update 1):
+
+- [Experimental] FLUX.1 fine-tuning and LoRA training now support "FLUX.1 __compact__" models.
+  - A compact model is a model that retains the FLUX.1 architecture but reduces the number of double/single blocks from the default 19/38.
+  - The model is automatically determined based on the keys in *.safetensors.
+  - Specifications for compact model safetensors:
+    - Please specify the block indices as consecutive numbers. An error will occur if there are missing numbers. For example, if you reduce the double blocks to 15, the maximum key will be `double_blocks.14.*`. The same applies to single blocks.
+  - LoRA training is unverified.
+  - The trained model can be used for inference with `flux_minimal_inference.py`. Other inference environments are unverified.
+
+Oct 12, 2024:
+
+- Multi-GPU training now works on Windows. Thanks to Akegarasu for PR [#1686](https://github.com/kohya-ss/sd-scripts/pull/1686)!
+  - In simple tests, SDXL and FLUX.1 LoRA training worked. FLUX.1 fine-tuning did not work, probably due to a PyTorch-related error. Other scripts are unverified.
+  - Set up multi-GPU training with `accelerate config`.
+  - Specify `--rdzv_backend=c10d` when launching `accelerate launch`. You can also edit `config.yaml` directly.
+    ```
+    accelerate launch --rdzv_backend=c10d sdxl_train_network.py ...
+    ```
+  - In multi-GPU training, the memory of multiple GPUs is not integrated. In other words, even if you have two 12GB VRAM GPUs, you cannot train the model that requires 24GB VRAM. Training that can be done with 12GB VRAM is executed at (up to) twice the speed.
+
+Oct 11, 2024:
+- ControlNet training for SDXL has been implemented in this branch. Please use `sdxl_train_control_net.py`. 
+  - For details on defining the dataset, see [here](docs/train_lllite_README.md#creating-a-dataset-configuration-file).
+  - The learning rate for the copy part of the U-Net is specified by `--learning_rate`. The learning rate for the added modules in ControlNet is specified by `--control_net_lr`. The optimal value is still unknown, but try around U-Net `1e-5` and ControlNet `1e-4`.
+  - If you want to generate sample images, specify the control image as `--cn path/to/control/image`.
+  - The trained weights are automatically converted and saved in Diffusers format. It should be available in ComfyUI.
+- Weighting of prompts (captions) during training in SDXL is now supported (e.g., `(some text)`, `[some text]`, `(some text:1.4)`, etc.). The function is enabled by specifying `--weighted_captions`. 
+  - The default is `False`. It is same as before, and the parentheses are used as normal text.
+  - If `--weighted_captions` is specified, please use `\` to escape the parentheses in the prompt. For example, `\(some text:1.4\)`.
+
+Oct 6, 2024:
+- In FLUX.1 LoRA training and fine-tuning, the specified weight file (*.safetensors) is automatically determined to be dev or schnell. This allows schnell models to be loaded correctly. Note that LoRA training with schnell models and fine-tuning with schnell models are unverified.
+- FLUX.1 LoRA training and fine-tuning can now load weights in Diffusers format in addition to BFL format (a single *.safetensors file). Please specify the parent directory of `transformer` or `diffusion_pytorch_model-00001-of-00003.safetensors` with the full path. However, Diffusers format CLIP/T5XXL is not supported. Saving is supported only in BFL format.
+
 Sep 26, 2024:
 The implementation of block swap during FLUX.1 fine-tuning has been changed to improve speed about 10% (depends on the environment). A new `--blocks_to_swap` option has been added, and `--double_blocks_to_swap` and `--single_blocks_to_swap` are deprecated. `--double_blocks_to_swap` and `--single_blocks_to_swap` are working as before, but they will be removed in the future. See [FLUX.1 fine-tuning](#flux1-fine-tuning) for details.
 
