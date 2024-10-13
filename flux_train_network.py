@@ -139,7 +139,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return flux_lower
 
     def get_tokenize_strategy(self, args):
-        _, is_schnell, _ = flux_utils.check_flux_state_dict_diffusers_schnell(args.pretrained_model_name_or_path)
+        _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
 
         if args.t5xxl_max_token_length is None:
             if is_schnell:
