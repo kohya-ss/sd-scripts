@@ -9,7 +9,7 @@ from accelerate.utils import set_seed
 import torch
 from tqdm import tqdm
 
-from library import config_util, flux_utils, strategy_base, strategy_flux, strategy_sd, strategy_sdxl
+from library import config_util, flux_train_utils, flux_utils, strategy_base, strategy_flux, strategy_sd, strategy_sdxl
 from library import train_util
 from library import sdxl_train_util
 from library.config_util import (
@@ -30,7 +30,7 @@ def set_tokenize_strategy(is_sd: bool, is_sdxl: bool, is_flux: bool, args: argpa
     else:
         is_schnell = False
 
-    if is_sd or is_sdxl:
+    if is_sd:
         tokenize_strategy = strategy_sd.SdTokenizeStrategy(args.v2, args.max_token_length, args.tokenizer_cache_dir)
     elif is_sdxl:
         tokenize_strategy = strategy_sdxl.SdxlTokenizeStrategy(args.max_token_length, args.tokenizer_cache_dir)
@@ -51,6 +51,7 @@ def set_tokenize_strategy(is_sd: bool, is_sdxl: bool, is_flux: bool, args: argpa
 def cache_to_disk(args: argparse.Namespace) -> None:
     setup_logging(args, reset=True)
     train_util.prepare_dataset_args(args, True)
+    train_util.enable_high_vram(args)
 
     # assert args.cache_latents_to_disk, "cache_latents_to_disk must be True / cache_latents_to_diskはTrueである必要があります"
     args.cache_latents = True
@@ -161,10 +162,10 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_training_arguments(parser, True)
     train_util.add_dataset_arguments(parser, True, True, True)
+    train_util.add_masked_loss_arguments(parser)
     config_util.add_config_arguments(parser)
-    parser.add_argument(
-        "--ae", type=str, default=None, help="Autoencoder model of FLUX to use / 使用するFLUXのオートエンコーダモデル"
-    )
+    flux_train_utils.add_flux_train_arguments(parser)
+
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
     parser.add_argument("--flux", action="store_true", help="Use FLUX model / FLUXモデルを使用する")
     parser.add_argument(

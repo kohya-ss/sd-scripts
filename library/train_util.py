@@ -4064,15 +4064,18 @@ def verify_command_line_training_args(args: argparse.Namespace):
         )
 
 
+def enable_high_vram(args: argparse.Namespace):
+    if args.highvram:
+        logger.info("highvram is enabled / highvramが有効です")
+        global HIGH_VRAM
+        HIGH_VRAM = True
+
 def verify_training_args(args: argparse.Namespace):
     r"""
     Verify training arguments. Also reflect highvram option to global variable
     学習用引数を検証する。あわせて highvram オプションの指定をグローバル変数に反映する
     """
-    if args.highvram:
-        print("highvram is enabled / highvramが有効です")
-        global HIGH_VRAM
-        HIGH_VRAM = True
+    enable_high_vram(args)
 
     if args.v_parameterization and not args.v2:
         logger.warning(
