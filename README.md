@@ -11,10 +11,15 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
-Oct 12, 2024 (update 1):
+Oct 13, 2024:
+
+- Fixed an issue where it took a long time to load the image size when initializing the dataset, especially when the number of images in the dataset was large.
 
 - During multi-GPU training, caching of latents and Text Encoder outputs is now done in multi-GPU.
-- `--text_encoder_batch_size` option is enabled for FLUX.1 LoRA training and fine tuning. This option specifies the batch size for caching Text Encoder outputs (not for training). The default is same as the dataset batch size. If you have enough VRAM, you can increase the batch size to speed up the caching. 
+  - Please make sure that `--highvram` and `--vae_batch_size` are specified correctly. If you have enough VRAM, you can increase the batch size to speed up the caching. 
+  - `--text_encoder_batch_size` option is enabled for FLUX.1 LoRA training and fine tuning. This option specifies the batch size for caching Text Encoder outputs (not for training). The default is same as the dataset batch size. If you have enough VRAM, you can increase the batch size to speed up the caching. 
+  - Multi-threading is also implemented for caching of latents. This may speed up the caching process about 5% (depends on the environment).
+  - `tools/cache_latents.py` and `tools/cache_text_encoder_outputs.py` also have been updated to support multi-GPU caching.
 - `--skip_cache_check` option is added to each training script. 
   - When specified, the consistency check of the cache file `*.npz` contents (e.g., image size and flip for latents, mask for Text Encoder outputs) is skipped. 
   - Specify this option if you have a large number of cache files and the consistency check takes time. 
