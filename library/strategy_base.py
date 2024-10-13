@@ -325,7 +325,7 @@ class TextEncoderOutputsCachingStrategy:
     def __init__(
         self,
         cache_to_disk: bool,
-        batch_size: int,
+        batch_size: Optional[int],
         skip_disk_cache_validity_check: bool,
         is_partial: bool = False,
         is_weighted: bool = False,
