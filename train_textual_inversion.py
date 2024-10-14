@@ -378,7 +378,7 @@ class TextualInversionTrainer:
             vae.requires_grad_(False)
             vae.eval()
 
-            train_dataset_group.new_cache_latents(vae, accelerator.is_main_process)
+            train_dataset_group.new_cache_latents(vae, accelerator)
 
             clean_memory_on_device(accelerator.device)
             accelerator.wait_for_everyone()

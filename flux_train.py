@@ -190,7 +190,7 @@ def train(args):
         ae.requires_grad_(False)
         ae.eval()
 
-        train_dataset_group.new_cache_latents(ae, accelerator.is_main_process)
+        train_dataset_group.new_cache_latents(ae, accelerator)
 
         ae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
