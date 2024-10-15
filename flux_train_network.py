@@ -139,7 +139,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         return flux_lower
 
     def get_tokenize_strategy(self, args):
-        _, is_schnell, _ = flux_utils.check_flux_state_dict_diffusers_schnell(args.pretrained_model_name_or_path)
+        _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
 
         if args.t5xxl_max_token_length is None:
             if is_schnell:
@@ -188,8 +188,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             # if the text encoders is trained, we need tokenization, so is_partial is True
             return strategy_flux.FluxTextEncoderOutputsCachingStrategy(
                 args.cache_text_encoder_outputs_to_disk,
-                None,
-                False,
+                args.text_encoder_batch_size,
+                args.skip_cache_check,
                 is_partial=self.train_clip_l or self.train_t5xxl,
                 apply_t5_attn_mask=args.apply_t5_attn_mask,
             )
@@ -222,7 +222,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 text_encoders[1].to(weight_dtype)
 
             with accelerator.autocast():
-                dataset.new_cache_text_encoder_outputs(text_encoders, accelerator.is_main_process)
+                dataset.new_cache_text_encoder_outputs(text_encoders, accelerator)
 
             # cache sample prompts
             if args.sample_prompts is not None:

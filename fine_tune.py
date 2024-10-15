@@ -59,7 +59,7 @@ def train(args):
     # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
     if cache_latents:
         latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(
-            False, args.cache_latents_to_disk, args.vae_batch_size, False
+            False, args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
         )
         strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
 
@@ -177,7 +177,7 @@ def train(args):
         vae.requires_grad_(False)
         vae.eval()
 
-        train_dataset_group.new_cache_latents(vae, accelerator.is_main_process)
+        train_dataset_group.new_cache_latents(vae, accelerator)
 
         vae.to("cpu")
         clean_memory_on_device(accelerator.device)

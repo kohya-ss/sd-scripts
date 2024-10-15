@@ -114,7 +114,7 @@ class TextualInversionTrainer:
 
     def get_latents_caching_strategy(self, args):
         latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(
-            True, args.cache_latents_to_disk, args.vae_batch_size, False
+            True, args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
         )
         return latents_caching_strategy
 
@@ -378,7 +378,7 @@ class TextualInversionTrainer:
             vae.requires_grad_(False)
             vae.eval()
 
-            train_dataset_group.new_cache_latents(vae, accelerator.is_main_process)
+            train_dataset_group.new_cache_latents(vae, accelerator)
 
             clean_memory_on_device(accelerator.device)
             accelerator.wait_for_everyone()

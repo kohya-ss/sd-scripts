@@ -325,7 +325,7 @@ class TextEncoderOutputsCachingStrategy:
     def __init__(
         self,
         cache_to_disk: bool,
-        batch_size: int,
+        batch_size: Optional[int],
         skip_disk_cache_validity_check: bool,
         is_partial: bool = False,
         is_weighted: bool = False,
@@ -405,8 +405,13 @@ class LatentsCachingStrategy:
     def batch_size(self):
         return self._batch_size
 
-    def get_image_size_from_disk_cache_path(self, absolute_path: str) -> Tuple[Optional[int], Optional[int]]:
+    @property
+    def cache_suffix(self):
         raise NotImplementedError
+
+    def get_image_size_from_disk_cache_path(self, absolute_path: str, npz_path: str) -> Tuple[Optional[int], Optional[int]]:
+        w, h = os.path.splitext(npz_path)[0].split("_")[-2].split("x")
+        return int(w), int(h)
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
         raise NotImplementedError
