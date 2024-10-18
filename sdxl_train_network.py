@@ -1,4 +1,5 @@
 import argparse
+from typing import List, Optional
 
 import torch
 from accelerate import Accelerator
@@ -172,7 +173,18 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 
         return encoder_hidden_states1, encoder_hidden_states2, pool2
 
-    def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):
+    def call_unet(
+        self,
+        args,
+        accelerator,
+        unet,
+        noisy_latents,
+        timesteps,
+        text_conds,
+        batch,
+        weight_dtype,
+        indices: Optional[List[int]] = None,
+    ):
         noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
         # get size embeddings
@@ -185,6 +197,12 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         encoder_hidden_states1, encoder_hidden_states2, pool2 = text_conds
         vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
         text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim=2).to(weight_dtype)
+
+        if indices is not None and len(indices) > 0:
+            noisy_latents = noisy_latents[indices]
+            timesteps = timesteps[indices]
+            text_embedding = text_embedding[indices]
+            vector_embedding = vector_embedding[indices]
 
         noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
         return noise_pred
