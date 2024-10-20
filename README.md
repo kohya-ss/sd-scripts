@@ -18,8 +18,9 @@ Oct 19, 2024:
   - Define a Dataset subset for the regularization image (`is_reg = true`) with `.toml`. Add `custom_attributes.diff_output_preservation = true`.
     - See [dataset configuration](docs/config_README-en.md) for the regularization dataset.
   - Specify "number of training images x number of repeats >= number of regularization images x number of repeats".
-  - Specify a large value for `--prior_loss_weight` option (not dataset config). The appropriate value is unknown, but try around 10-100. Note that the default is 1.0.
-  - You may want to start with 2/3 to 3/4 of the loss value when DOP is not applied. If it is 1/2, DOP may not be working.
+  - The weights of DOP is specified by `--prior_loss_weight` option (not dataset config). 
+  - The appropriate value is still unknown. For FLUX, according to the comments in the [PR](https://github.com/kohya-ss/sd-scripts/pull/1710), the value may be 1 (thanks to dxqbYD!). For SDXL, a larger value may be needed (10-100 may be good starting points).
+  - It may be good to adjust the value so that the loss is about half to three-quarters of the loss when DOP is not applied.
 ```
 [[datasets.subsets]]
 image_dir = "path/to/image/dir"
@@ -27,6 +28,7 @@ num_repeats = 1
 is_reg = true
 custom_attributes.diff_output_preservation = true # Add this
 ```
+
 
 Oct 13, 2024:
 
