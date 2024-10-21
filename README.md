@@ -11,6 +11,25 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Oct 19, 2024:
+
+- Added an implementation of Differential Output Preservation (temporary name) for SDXL/FLUX.1 LoRA training. SD1/2 is not tested yet. This is an experimental feature. 
+  - A method to make the output of LoRA closer to the output when LoRA is not applied, with captions that do not contain trigger words.
+  - Define a Dataset subset for the regularization image (`is_reg = true`) with `.toml`. Add `custom_attributes.diff_output_preservation = true`.
+    - See [dataset configuration](docs/config_README-en.md) for the regularization dataset.
+  - Specify "number of training images x number of repeats >= number of regularization images x number of repeats".
+  - The weights of DOP is specified by `--prior_loss_weight` option (not dataset config). 
+  - The appropriate value is still unknown. For FLUX, according to the comments in the [PR](https://github.com/kohya-ss/sd-scripts/pull/1710), the value may be 1 (thanks to dxqbYD!). For SDXL, a larger value may be needed (10-100 may be good starting points).
+  - It may be good to adjust the value so that the loss is about half to three-quarters of the loss when DOP is not applied.
+```
+[[datasets.subsets]]
+image_dir = "path/to/image/dir"
+num_repeats = 1
+is_reg = true
+custom_attributes.diff_output_preservation = true # Add this
+```
+
+
 Oct 13, 2024:
 
 - Fixed an issue where it took a long time to load the image size when initializing the dataset, especially when the number of images in the dataset was large.
