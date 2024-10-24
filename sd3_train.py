@@ -1,6 +1,7 @@
 # training with captions
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import math
 import os
@@ -11,6 +12,7 @@ import toml
 from tqdm import tqdm
 
 import torch
+from library import utils
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -38,7 +40,7 @@ from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
 )
-import library.custom_train_functions as custom_train_functions
+from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
 
 # from library.custom_train_functions import (
 #     apply_snr_weight,
@@ -61,22 +63,12 @@ def train(args):
     if not args.skip_cache_check:
         args.skip_cache_check = args.skip_latents_validity_check
 
-    assert (
-        not args.weighted_captions
-    ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
+    # assert (
+    #     not args.weighted_captions
+    # ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
     # assert (
     #     not args.train_text_encoder or not args.cache_text_encoder_outputs
     # ), "cache_text_encoder_outputs is not supported when training text encoder / text encoderを学習するときはcache_text_encoder_outputsはサポートされていません"
-
-    # # training text encoder is not supported
-    # assert (
-    #     not args.train_text_encoder
-    # ), "training text encoder is not supported currently / text encoderの学習は現在サポートされていません"
-
-    # # training without text encoder cache is not supported: because T5XXL must be cached
-    # assert (
-    #     args.cache_text_encoder_outputs
-    # ), "training without text encoder cache is not supported currently / text encoderのキャッシュなしの学習は現在サポートされていません"
 
     assert not args.train_text_encoder or (args.use_t5xxl_cache_only or not args.cache_text_encoder_outputs), (
         "when training text encoder, text encoder outputs must not be cached (except for T5XXL)"
@@ -90,13 +82,13 @@ def train(args):
         )
         args.cache_text_encoder_outputs = True
 
-    # if args.block_lr:
-    #     block_lrs = [float(lr) for lr in args.block_lr.split(",")]
-    #     assert (
-    #         len(block_lrs) == UNET_NUM_BLOCKS_FOR_BLOCK_LR
-    #     ), f"block_lr must have {UNET_NUM_BLOCKS_FOR_BLOCK_LR} values / block_lrは{UNET_NUM_BLOCKS_FOR_BLOCK_LR}個の値を指定してください"
-    # else:
-    #     block_lrs = None
+    if args.train_t5xxl:
+        assert (
+            args.train_text_encoder
+        ), "when training T5XXL, text encoder (CLIP-L/G) must be trained / T5XXLを学習するときはtext encoder (CLIP-L/G)も学習する必要があります"
+        assert (
+            not args.cache_text_encoder_outputs
+        ), "when training T5XXL, t5xxl output must not be cached / T5XXLを学習するときはt5xxlの出力をキャッシュできません"
 
     cache_latents = args.cache_latents
     use_dreambooth_method = args.in_json is None
@@ -110,11 +102,6 @@ def train(args):
             args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
         )
         strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
-
-    # load tokenizer and prepare tokenize strategy
-    sd3_tokenizer = sd3_models.SD3Tokenizer(t5xxl_max_length=args.t5xxl_max_token_length)
-    sd3_tokenize_strategy = strategy_sd3.Sd3TokenizeStrategy(args.t5xxl_max_token_length)
-    strategy_base.TokenizeStrategy.set_strategy(sd3_tokenize_strategy)
 
     # データセットを準備する
     if args.dataset_class is None:
@@ -156,10 +143,10 @@ def train(args):
                     ]
                 }
 
-        blueprint = blueprint_generator.generate(user_config, args, tokenizer=[sd3_tokenizer])
+        blueprint = blueprint_generator.generate(user_config, args)
         train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     else:
-        train_dataset_group = train_util.load_arbitrary_dataset(args, [sd3_tokenizer])
+        train_dataset_group = train_util.load_arbitrary_dataset(args)
 
     current_epoch = Value("i", 0)
     current_step = Value("i", 0)
@@ -205,41 +192,152 @@ def train(args):
 
     # mixed precisionに対応した型を用意しておき適宜castする
     weight_dtype, save_dtype = train_util.prepare_dtype(args)
-    vae_dtype = weight_dtype  # torch.float32 if args.no_half_vae else weight_dtype # SD3 VAE works with fp16
-
-    t5xxl_dtype = weight_dtype
-    if args.t5xxl_dtype is not None:
-        if args.t5xxl_dtype == "fp16":
-            t5xxl_dtype = torch.float16
-        elif args.t5xxl_dtype == "bf16":
-            t5xxl_dtype = torch.bfloat16
-        elif args.t5xxl_dtype == "fp32" or args.t5xxl_dtype == "float":
-            t5xxl_dtype = torch.float32
-        else:
-            raise ValueError(f"unexpected t5xxl_dtype: {args.t5xxl_dtype}")
-    t5xxl_device = accelerator.device if args.t5xxl_device is None else args.t5xxl_device
-
-    clip_dtype = weight_dtype  # if not args.train_text_encoder else None
 
     # モデルを読み込む
-    attn_mode = "xformers" if args.xformers else "torch"
 
-    assert (
-        attn_mode == "torch"
-    ), f"attn_mode {attn_mode} is not supported yet. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
+    # t5xxl_dtype = weight_dtype
+    # if args.t5xxl_dtype is not None:
+    #     if args.t5xxl_dtype == "fp16":
+    #         t5xxl_dtype = torch.float16
+    #     elif args.t5xxl_dtype == "bf16":
+    #         t5xxl_dtype = torch.bfloat16
+    #     elif args.t5xxl_dtype == "fp32" or args.t5xxl_dtype == "float":
+    #         t5xxl_dtype = torch.float32
+    #     else:
+    #         raise ValueError(f"unexpected t5xxl_dtype: {args.t5xxl_dtype}")
+    # t5xxl_device = accelerator.device if args.t5xxl_device is None else args.t5xxl_device
+    # clip_dtype = weight_dtype  # if not args.train_text_encoder else None
 
-    # SD3 state dict may contain multiple models, so we need to load it and extract one by one. annoying.
-    logger.info(f"Loading SD3 models from {args.pretrained_model_name_or_path}")
-    device_to_load = accelerator.device if args.lowram else "cpu"
-    sd3_state_dict = sd3_utils.load_safetensors(
-        args.pretrained_model_name_or_path, device_to_load, args.disable_mmap_load_safetensors
-    )
+    # if clip_l is not specified, the checkpoint must contain clip_l, so we load state dict here
+    # if full_fp16/bf16, model_dtype is casted to fp16/bf16. If not, model_dtype is None (float32).
+    # by loading with model_dtype, we can reduce memory usage.
+    model_dtype = match_mixed_precision(args, weight_dtype)  # None (default) or fp16/bf16 (full_xxxx)
+    if args.clip_l is None:
+        sd3_state_dict = utils.load_safetensors(
+            args.pretrained_model_name_or_path, "cpu", args.disable_mmap_load_safetensors, model_dtype
+        )
+    else:
+        sd3_state_dict = None
+
+    # load tokenizer and prepare tokenize strategy
+    if args.t5xxl_max_token_length is None:
+        t5xxl_max_token_length = 256  # default value for T5XXL
+    else:
+        t5xxl_max_token_length = args.t5xxl_max_token_length
+
+    sd3_tokenize_strategy = strategy_sd3.Sd3TokenizeStrategy(t5xxl_max_token_length)
+    strategy_base.TokenizeStrategy.set_strategy(sd3_tokenize_strategy)
+
+    # load clip_l, clip_g, t5xxl for caching text encoder outputs
+    # clip_l = sd3_train_utils.load_target_model("clip_l", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
+    # clip_g = sd3_train_utils.load_target_model("clip_g", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
+    clip_l = sd3_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", args.disable_mmap_load_safetensors, state_dict=sd3_state_dict)
+    clip_g = sd3_utils.load_clip_g(args.clip_g, weight_dtype, "cpu", args.disable_mmap_load_safetensors, state_dict=sd3_state_dict)
+    t5xxl = sd3_utils.load_t5xxl(args.t5xxl, weight_dtype, "cpu", args.disable_mmap_load_safetensors, state_dict=sd3_state_dict)
+    assert clip_l is not None and clip_g is not None and t5xxl is not None, "clip_l, clip_g, t5xxl must be specified"
+
+    # prepare text encoding strategy
+    text_encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy(args.apply_lg_attn_mask, args.apply_t5_attn_mask)
+    strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
+
+    # 学習を準備する：モデルを適切な状態にする
+    train_clip = False
+    train_t5xxl = False
+
+    if args.train_text_encoder:
+        accelerator.print("enable text encoder training")
+        if args.gradient_checkpointing:
+            clip_l.gradient_checkpointing_enable()
+            clip_g.gradient_checkpointing_enable()
+            if args.train_t5xxl:
+                t5xxl.gradient_checkpointing_enable()
+
+        lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
+        lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
+        lr_t5xxl = args.learning_rate_te3 if args.learning_rate_te3 is not None else args.learning_rate  # 0 means not train
+        train_clip = lr_te1 != 0 or lr_te2 != 0
+        train_t5xxl = lr_t5xxl != 0 and args.train_t5xxl
+
+        clip_l.to(weight_dtype)
+        clip_g.to(weight_dtype)
+        t5xxl.to(weight_dtype)
+        clip_l.requires_grad_(train_clip)
+        clip_g.requires_grad_(train_clip)
+        t5xxl.requires_grad_(train_t5xxl)
+    else:
+        print("disable text encoder training")
+        clip_l.to(weight_dtype)
+        clip_g.to(weight_dtype)
+        t5xxl.to(weight_dtype)
+        clip_l.requires_grad_(False)
+        clip_g.requires_grad_(False)
+        t5xxl.requires_grad_(False)
+        lr_te1 = 0
+        lr_te2 = 0
+        lr_t5xxl = 0
+
+    # cache text encoder outputs
+    sample_prompts_te_outputs = None
+    if args.cache_text_encoder_outputs:
+        clip_l.to(accelerator.device)
+        clip_g.to(accelerator.device)
+        t5xxl.to(accelerator.device)
+        clip_l.eval()
+        clip_g.eval()
+        t5xxl.eval()
+
+        text_encoder_caching_strategy = strategy_sd3.Sd3TextEncoderOutputsCachingStrategy(
+            args.cache_text_encoder_outputs_to_disk,
+            args.text_encoder_batch_size,
+            args.skip_cache_check,
+            train_clip or args.use_t5xxl_cache_only,  # if clip is trained or t5xxl is cached, caching is partial
+            args.apply_lg_attn_mask,
+            args.apply_t5_attn_mask,
+        )
+        strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
+
+        with accelerator.autocast():
+            train_dataset_group.new_cache_text_encoder_outputs([clip_l, clip_g, t5xxl], accelerator)
+
+        # cache sample prompt's embeddings to free text encoder's memory
+        if args.sample_prompts is not None:
+            logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
+            prompts = train_util.load_prompts(args.sample_prompts)
+            sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
+            with accelerator.autocast(), torch.no_grad():
+                for prompt_dict in prompts:
+                    for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
+                        if p not in sample_prompts_te_outputs:
+                            logger.info(f"cache Text Encoder outputs for prompt: {p}")
+                            tokens_and_masks = sd3_tokenize_strategy.tokenize(p)
+                            sample_prompts_te_outputs[p] = text_encoding_strategy.encode_tokens(
+                                sd3_tokenize_strategy,
+                                [clip_l, clip_g, t5xxl],
+                                tokens_and_masks,
+                                args.apply_lg_attn_mask,
+                                args.apply_t5_attn_mask,
+                            )
+
+        accelerator.wait_for_everyone()
+
+        # now we can delete Text Encoders to free memory
+        if args.use_t5xxl_cache_only:
+            clip_l = None
+            clip_g = None
+        t5xxl = None
+
+        clean_memory_on_device(accelerator.device)
 
     # load VAE for caching latents
-    vae: sd3_models.SDVAE = None
+    if sd3_state_dict is None:
+        sd3_state_dict = utils.load_safetensors(
+            args.pretrained_model_name_or_path, "cpu", args.disable_mmap_load_safetensors, model_dtype
+        )
+
+    vae = sd3_utils.load_vae(args.vae, weight_dtype, "cpu", args.disable_mmap_load_safetensors, state_dict=sd3_state_dict)
     if cache_latents:
-        vae = sd3_train_utils.load_target_model("vae", args, sd3_state_dict, accelerator, attn_mode, vae_dtype, device_to_load)
-        vae.to(accelerator.device, dtype=vae_dtype)
+        # vae = sd3_train_utils.load_target_model("vae", args, sd3_state_dict, accelerator, attn_mode, vae_dtype, device_to_load)
+        vae.to(accelerator.device, dtype=weight_dtype)
         vae.requires_grad_(False)
         vae.eval()
 
@@ -250,127 +348,36 @@ def train(args):
 
         accelerator.wait_for_everyone()
 
-    # load clip_l, clip_g, t5xxl for caching text encoder outputs
-    # # models are usually loaded on CPU and moved to GPU later. This is to avoid OOM on GPU0.
-    # mmdit, clip_l, clip_g, t5xxl, vae = sd3_train_utils.load_target_model(
-    #     args, accelerator, attn_mode, weight_dtype, clip_dtype, t5xxl_device, t5xxl_dtype, vae_dtype
-    # )
-    clip_l = sd3_train_utils.load_target_model("clip_l", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
-    clip_g = sd3_train_utils.load_target_model("clip_g", args, sd3_state_dict, accelerator, attn_mode, clip_dtype, device_to_load)
-    assert clip_l is not None, "clip_l is required / clip_lは必須です"
-    assert clip_g is not None, "clip_g is required / clip_gは必須です"
-
-    t5xxl = sd3_train_utils.load_target_model("t5xxl", args, sd3_state_dict, accelerator, attn_mode, t5xxl_dtype, device_to_load)
-    # logit_scale = logit_scale.to(accelerator.device, dtype=weight_dtype)
-
-    # should be deleted after caching text encoder outputs when not training text encoder
-    # this strategy should not be used other than this process
-    text_encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy()
-    strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
-
-    # 学習を準備する：モデルを適切な状態にする
-    train_clip_l = False
-    train_clip_g = False
-    train_t5xxl = False
-
-    if args.train_text_encoder:
-        accelerator.print("enable text encoder training")
-        if args.gradient_checkpointing:
-            clip_l.gradient_checkpointing_enable()
-            clip_g.gradient_checkpointing_enable()
-        lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
-        lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
-        train_clip_l = lr_te1 != 0
-        train_clip_g = lr_te2 != 0
-
-        if not train_clip_l:
-            clip_l.to(weight_dtype)
-        if not train_clip_g:
-            clip_g.to(weight_dtype)
-        clip_l.requires_grad_(train_clip_l)
-        clip_g.requires_grad_(train_clip_g)
-        clip_l.train(train_clip_l)
-        clip_g.train(train_clip_g)
-    else:
-        clip_l.to(weight_dtype)
-        clip_g.to(weight_dtype)
-        clip_l.requires_grad_(False)
-        clip_g.requires_grad_(False)
-        clip_l.eval()
-        clip_g.eval()
-
-    if t5xxl is not None:
-        t5xxl.to(t5xxl_dtype)
-        t5xxl.requires_grad_(False)
-        t5xxl.eval()
-
-    # cache text encoder outputs
-    sample_prompts_te_outputs = None
-    if args.cache_text_encoder_outputs:
-        # Text Encodes are eval and no grad here
-        clip_l.to(accelerator.device)
-        clip_g.to(accelerator.device)
-        if t5xxl is not None:
-            t5xxl.to(t5xxl_device)
-
-        text_encoder_caching_strategy = strategy_sd3.Sd3TextEncoderOutputsCachingStrategy(
-            args.cache_text_encoder_outputs_to_disk,
-            args.text_encoder_batch_size,
-            args.skip_cache_check,
-            train_clip_g or train_clip_l or args.use_t5xxl_cache_only,
-            args.apply_lg_attn_mask,
-            args.apply_t5_attn_mask,
-        )
-        strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
-
-        clip_l.to(accelerator.device, dtype=weight_dtype)
-        clip_g.to(accelerator.device, dtype=weight_dtype)
-        if t5xxl is not None:
-            t5xxl.to(t5xxl_device, dtype=t5xxl_dtype)
-
-        with accelerator.autocast():
-            train_dataset_group.new_cache_text_encoder_outputs([clip_l, clip_g, t5xxl], accelerator)
-
-        # cache sample prompt's embeddings to free text encoder's memory
-        if args.sample_prompts is not None:
-            logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
-            prompts = sd3_train_utils.load_prompts(args.sample_prompts)
-            sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
-            with accelerator.autocast(), torch.no_grad():
-                for prompt_dict in prompts:
-                    for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
-                        if p not in sample_prompts_te_outputs:
-                            logger.info(f"cache Text Encoder outputs for prompt: {p}")
-                            tokens_list = sd3_tokenize_strategy.tokenize(p)
-                            sample_prompts_te_outputs[p] = text_encoding_strategy.encode_tokens(
-                                sd3_tokenize_strategy,
-                                [clip_l, clip_g, t5xxl],
-                                tokens_list,
-                                args.apply_lg_attn_mask,
-                                args.apply_t5_attn_mask,
-                            )
-
-        accelerator.wait_for_everyone()
-
     # load MMDIT
-    # if full_fp16/bf16, model_dtype is casted to fp16/bf16. If not, model_dtype is None (float32).
-    # by loading with model_dtype, we can reduce memory usage.
-    model_dtype = match_mixed_precision(args, weight_dtype)  # None (default) or fp16/bf16 (full_xxxx)
-    mmdit = sd3_train_utils.load_target_model("mmdit", args, sd3_state_dict, accelerator, attn_mode, model_dtype, device_to_load)
+    mmdit = sd3_utils.load_mmdit(
+        sd3_state_dict,
+        model_dtype,
+        "cpu",
+    )
+
+    # attn_mode = "xformers" if args.xformers else "torch"
+    # assert (
+    #     attn_mode == "torch"
+    # ), f"attn_mode {attn_mode} is not supported yet. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
+
+    # SD3 state dict may contain multiple models, so we need to load it and extract one by one. annoying.
+    logger.info(f"Loading SD3 models from {args.pretrained_model_name_or_path}")
+    device_to_load = accelerator.device if args.lowram else "cpu"
+    sd3_state_dict = utils.load_safetensors(args.pretrained_model_name_or_path, device_to_load, args.disable_mmap_load_safetensors)
+
     if args.gradient_checkpointing:
         mmdit.enable_gradient_checkpointing()
 
     train_mmdit = args.learning_rate != 0
     mmdit.requires_grad_(train_mmdit)
     if not train_mmdit:
-        mmdit.to(accelerator.device, dtype=weight_dtype)  # because of mmdie will not be prepared
+        mmdit.to(accelerator.device, dtype=weight_dtype)  # because of mmdit will not be prepared
 
     if not cache_latents:
-        # load VAE here if not cached
-        vae = sd3_train_utils.load_target_model("vae", args, sd3_state_dict, accelerator, attn_mode, vae_dtype, device_to_load)
+        # move to accelerator device
         vae.requires_grad_(False)
         vae.eval()
-        vae.to(accelerator.device, dtype=vae_dtype)
+        vae.to(accelerator.device, dtype=weight_dtype)
 
     mmdit.requires_grad_(train_mmdit)
     if not train_mmdit:
@@ -394,19 +401,24 @@ def train(args):
 
     training_models = []
     params_to_optimize = []
-    # if train_unet:
+    param_names = []
     training_models.append(mmdit)
-    # if block_lrs is None:
     params_to_optimize.append({"params": list(filter(lambda p: p.requires_grad, mmdit.parameters())), "lr": args.learning_rate})
-    # else:
-    #     params_to_optimize.extend(get_block_params_to_optimize(mmdit, block_lrs))
+    param_names.append([n for n, _ in mmdit.named_parameters()])
 
-    # if train_clip_l:
-    #     training_models.append(clip_l)
-    #     params_to_optimize.append({"params": list(clip_l.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
-    # if train_clip_g:
-    #     training_models.append(clip_g)
-    #     params_to_optimize.append({"params": list(clip_g.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
+    if train_clip:
+        if lr_te1 > 0:
+            training_models.append(clip_l)
+            params_to_optimize.append({"params": list(clip_l.parameters()), "lr": args.learning_rate_te1 or args.learning_rate})
+            param_names.append([n for n, _ in clip_l.named_parameters()])
+        if lr_te2 > 0:
+            training_models.append(clip_g)
+            params_to_optimize.append({"params": list(clip_g.parameters()), "lr": args.learning_rate_te2 or args.learning_rate})
+            param_names.append([n for n, _ in clip_g.named_parameters()])
+    if train_t5xxl:
+        training_models.append(t5xxl)
+        params_to_optimize.append({"params": list(t5xxl.parameters()), "lr": args.learning_rate_te3 or args.learning_rate})
+        param_names.append([n for n, _ in t5xxl.named_parameters()])
 
     # calculate number of trainable parameters
     n_params = 0
@@ -414,47 +426,49 @@ def train(args):
         for p in group["params"]:
             n_params += p.numel()
 
-    accelerator.print(f"train mmdit: {train_mmdit}")  # , clip_l: {train_clip_l}, clip_g: {train_clip_g}")
+    accelerator.print(f"train mmdit: {train_mmdit} , clip:{train_clip}, t5xxl:{train_t5xxl}")
     accelerator.print(f"number of models: {len(training_models)}")
     accelerator.print(f"number of trainable parameters: {n_params}")
 
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
-    if args.fused_optimizer_groups:
+    if args.blockwise_fused_optimizers:
         # fused backward pass: https://pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
-        # Instead of creating an optimizer for all parameters as in the tutorial, we create an optimizer for each group of parameters.
+        # Instead of creating an optimizer for all parameters as in the tutorial, we create an optimizer for each block of parameters.
         # This balances memory usage and management complexity.
 
-        # calculate total number of parameters
-        n_total_params = sum(len(params["params"]) for params in params_to_optimize)
-        params_per_group = math.ceil(n_total_params / args.fused_optimizer_groups)
-
-        # split params into groups, keeping the learning rate the same for all params in a group
-        # this will increase the number of groups if the learning rate is different for different params (e.g. U-Net and text encoders)
+        # split params into groups for mmdit. clip_l, clip_g, t5xxl are in each group
         grouped_params = []
-        param_group = []
-        param_group_lr = -1
-        for group in params_to_optimize:
-            lr = group["lr"]
-            for p in group["params"]:
-                # if the learning rate is different for different params, start a new group
-                if lr != param_group_lr:
-                    if param_group:
-                        grouped_params.append({"params": param_group, "lr": param_group_lr})
-                        param_group = []
-                    param_group_lr = lr
+        param_group = {}
+        group = params_to_optimize[0]
+        named_parameters = list(mmdit.named_parameters())
+        assert len(named_parameters) == len(group["params"]), "number of parameters does not match"
+        for p, np in zip(group["params"], named_parameters):
+            # determine target layer and block index for each parameter
+            block_type = "other"  # joint or other
+            if np[0].startswith("joint_blocks"):
+                block_idx = int(np[0].split(".")[1])
+                block_type = "joint"
+            else:
+                block_idx = -1
 
-                param_group.append(p)
+            param_group_key = (block_type, block_idx)
+            if param_group_key not in param_group:
+                param_group[param_group_key] = []
+            param_group[param_group_key].append(p)
 
-                # if the group has enough parameters, start a new group
-                if len(param_group) == params_per_group:
-                    grouped_params.append({"params": param_group, "lr": param_group_lr})
-                    param_group = []
-                    param_group_lr = -1
+        block_types_and_indices = []
+        for param_group_key, param_group in param_group.items():
+            block_types_and_indices.append(param_group_key)
+            grouped_params.append({"params": param_group, "lr": args.learning_rate})
 
-        if param_group:
-            grouped_params.append({"params": param_group, "lr": param_group_lr})
+            num_params = 0
+            for p in param_group:
+                num_params += p.numel()
+            accelerator.print(f"block {param_group_key}: {num_params} parameters")
+
+        grouped_params.extend(params_to_optimize[1:])  # add clip_l, clip_g, t5xxl if they are trained
 
         # prepare optimizers for each group
         optimizers = []
@@ -463,10 +477,15 @@ def train(args):
             optimizers.append(optimizer)
         optimizer = optimizers[0]  # avoid error in the following code
 
-        logger.info(f"using {len(optimizers)} optimizers for fused optimizer groups")
+        logger.info(f"using {len(optimizers)} optimizers for blockwise fused optimizers")
 
+        if train_util.is_schedulefree_optimizer(optimizers[0], args):
+            raise ValueError("Schedule-free optimizer is not supported with blockwise fused optimizers")
+        optimizer_train_fn = lambda: None  # dummy function
+        optimizer_eval_fn = lambda: None  # dummy function
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+        optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -497,7 +516,7 @@ def train(args):
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
     # lr schedulerを用意する
-    if args.fused_optimizer_groups:
+    if args.blockwise_fused_optimizers:
         # prepare lr schedulers for each optimizer
         lr_schedulers = [train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) for optimizer in optimizers]
         lr_scheduler = lr_schedulers[0]  # avoid error in the following code
@@ -511,18 +530,22 @@ def train(args):
         ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
         accelerator.print("enable full fp16 training.")
         mmdit.to(weight_dtype)
-        clip_l.to(weight_dtype)
-        clip_g.to(weight_dtype)
+        if clip_l is not None:
+            clip_l.to(weight_dtype)
+        if clip_g is not None:
+            clip_g.to(weight_dtype)
         if t5xxl is not None:
-            t5xxl.to(weight_dtype)  # TODO check works with fp16 or not
+            t5xxl.to(weight_dtype)
     elif args.full_bf16:
         assert (
             args.mixed_precision == "bf16"
         ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
         accelerator.print("enable full bf16 training.")
         mmdit.to(weight_dtype)
-        clip_l.to(weight_dtype)
-        clip_g.to(weight_dtype)
+        if clip_l is not None:
+            clip_l.to(weight_dtype)
+        if clip_g is not None:
+            clip_g.to(weight_dtype)
         if t5xxl is not None:
             t5xxl.to(weight_dtype)
 
@@ -533,14 +556,7 @@ def train(args):
     #     clip_l.text_model.final_layer_norm.requires_grad_(False)
 
     # TextEncoderの出力をキャッシュするときには、すでに出力を取得済みなのでCPUへ移動する
-    if args.cache_text_encoder_outputs:
-        # move Text Encoders for sampling images. Text Encoder doesn't work on CPU with fp16
-        clip_l.to("cpu", dtype=torch.float32)
-        clip_g.to("cpu", dtype=torch.float32)
-        if t5xxl is not None:
-            t5xxl.to("cpu", dtype=torch.float32)
-        clean_memory_on_device(accelerator.device)
-    else:
+    if not args.cache_text_encoder_outputs:
         # make sure Text Encoders are on GPU
         # TODO support CPU for text encoders
         clip_l.to(accelerator.device)
@@ -548,18 +564,11 @@ def train(args):
         if t5xxl is not None:
             t5xxl.to(accelerator.device)
 
-    # TODO cache sample prompt's embeddings to free text encoder's memory
-    if args.cache_text_encoder_outputs:
-        if not args.save_t5xxl:
-            t5xxl = None  # free memory
     clean_memory_on_device(accelerator.device)
 
     if args.deepspeed:
         ds_model = deepspeed_utils.prepare_deepspeed_model(
-            args,
-            mmdit=mmdit,
-            clip_l=clip_l if train_clip_l else None,
-            clip_g=clip_g if train_clip_g else None,
+            args, mmdit=mmdit, clip_l=clip_l if train_clip else None, clip_g=clip_g if train_clip else None
         )
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -571,10 +580,11 @@ def train(args):
         # acceleratorがなんかよろしくやってくれるらしい
         if train_mmdit:
             mmdit = accelerator.prepare(mmdit)
-        if train_clip_l:
+        if train_clip:
             clip_l = accelerator.prepare(clip_l)
-        if train_clip_g:
             clip_g = accelerator.prepare(clip_g)
+        if train_t5xxl:
+            t5xxl = accelerator.prepare(t5xxl)
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -586,24 +596,110 @@ def train(args):
     # resumeする
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
+    # memory efficient block swapping
+
+    def submit_move_blocks(futures, thread_pool, block_idx_to_cpu, block_idx_to_cuda, blocks, device):
+        def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda, dvc):
+            # print(f"Backward: Move block {bidx_to_cpu} to CPU")
+            block_to_cpu = block_to_cpu.to("cpu", non_blocking=True)
+            torch.cuda.empty_cache()
+
+            block_to_cuda = block_to_cuda.to(dvc, non_blocking=True)
+            torch.cuda.synchronize()
+            return bidx_to_cpu, bidx_to_cuda
+
+        block_to_cpu = blocks[block_idx_to_cpu]
+        block_to_cuda = blocks[block_idx_to_cuda]
+
+        futures[block_idx_to_cuda] = thread_pool.submit(
+            move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_cuda, block_to_cuda, device
+        )
+
+    def wait_blocks_move(block_idx, futures):
+        if block_idx not in futures:
+            return
+        future = futures.pop(block_idx)
+        future.result()
+
     if args.fused_backward_pass:
         # use fused optimizer for backward pass: other optimizers will be supported in the future
         import library.adafactor_fused
 
         library.adafactor_fused.patch_adafactor_fused(optimizer)
-        for param_group in optimizer.param_groups:
-            for parameter in param_group["params"]:
+
+        blocks_to_swap = args.blocks_to_swap
+        num_blocks = len(accelerator.unwrap_model(mmdit).joint_blocks)
+        handled_block_indices = set()
+
+        n = 1  # only asynchronous purpose, no need to increase this number
+        # n = 2
+        # n = max(1, os.cpu_count() // 2)
+        thread_pool = ThreadPoolExecutor(max_workers=n)
+        futures = {}
+
+        for param_group, param_name_group in zip(optimizer.param_groups, param_names):
+            for parameter, param_name in zip(param_group["params"], param_name_group):
                 if parameter.requires_grad:
+                    grad_hook = None
 
-                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
+                    if blocks_to_swap:
+                        is_block = param_name.startswith("double_blocks")
+                        if is_block:
+                            block_idx = int(param_name.split(".")[1])
+                            if block_idx not in handled_block_indices:
+                                # swap following (already backpropagated) block
+                                handled_block_indices.add(block_idx)
 
-                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                                # if n blocks were already backpropagated
+                                num_blocks_propagated = num_blocks - block_idx - 1
+                                swapping = num_blocks_propagated > 0 and num_blocks_propagated <= blocks_to_swap
+                                waiting = block_idx > 0 and block_idx <= blocks_to_swap
+                                if swapping or waiting:
+                                    block_idx_to_cpu = num_blocks - num_blocks_propagated
+                                    block_idx_to_cuda = blocks_to_swap - num_blocks_propagated
+                                    block_idx_to_wait = block_idx - 1
 
-    elif args.fused_optimizer_groups:
+                                    # create swap hook
+                                    def create_swap_grad_hook(
+                                        bidx_to_cpu, bidx_to_cuda, bidx_to_wait, bidx: int, swpng: bool, wtng: bool
+                                    ):
+                                        def __grad_hook(tensor: torch.Tensor):
+                                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                                            optimizer.step_param(tensor, param_group)
+                                            tensor.grad = None
+
+                                            if swpng:
+                                                submit_move_blocks(
+                                                    futures,
+                                                    thread_pool,
+                                                    bidx_to_cpu,
+                                                    bidx_to_cuda,
+                                                    mmdit.joint_blocks,
+                                                    accelerator.device,
+                                                )
+                                            if wtng:
+                                                wait_blocks_move(bidx_to_wait, futures)
+
+                                        return __grad_hook
+
+                                    grad_hook = create_swap_grad_hook(
+                                        block_idx_to_cpu, block_idx_to_cuda, block_idx_to_wait, block_idx, swapping, waiting
+                                    )
+
+                    if grad_hook is None:
+
+                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, param_group)
+                            tensor.grad = None
+
+                        grad_hook = __grad_hook
+
+                    parameter.register_post_accumulate_grad_hook(grad_hook)
+
+    elif args.blockwise_fused_optimizers:
         # prepare for additional optimizers and lr schedulers
         for i in range(1, len(optimizers)):
             optimizers[i] = accelerator.prepare(optimizers[i])
@@ -618,22 +714,59 @@ def train(args):
         num_parameters_per_group = [0] * len(optimizers)
         parameter_optimizer_map = {}
 
+        blocks_to_swap = args.blocks_to_swap
+        num_blocks = len(accelerator.unwrap_model(mmdit).joint_blocks)
+
+        n = 1  # only asynchronous purpose, no need to increase this number
+        # n = max(1, os.cpu_count() // 2)
+        thread_pool = ThreadPoolExecutor(max_workers=n)
+        futures = {}
+
         for opt_idx, optimizer in enumerate(optimizers):
             for param_group in optimizer.param_groups:
                 for parameter in param_group["params"]:
                     if parameter.requires_grad:
+                        block_type, block_idx = block_types_and_indices[opt_idx]
 
-                        def optimizer_hook(parameter: torch.Tensor):
-                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                                accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
+                        def create_optimizer_hook(btype, bidx):
+                            def optimizer_hook(parameter: torch.Tensor):
+                                # print(f"optimizer_hook: {btype}, {bidx}")
+                                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                    accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
 
-                            i = parameter_optimizer_map[parameter]
-                            optimizer_hooked_count[i] += 1
-                            if optimizer_hooked_count[i] == num_parameters_per_group[i]:
-                                optimizers[i].step()
-                                optimizers[i].zero_grad(set_to_none=True)
+                                i = parameter_optimizer_map[parameter]
+                                optimizer_hooked_count[i] += 1
+                                if optimizer_hooked_count[i] == num_parameters_per_group[i]:
+                                    optimizers[i].step()
+                                    optimizers[i].zero_grad(set_to_none=True)
 
-                        parameter.register_post_accumulate_grad_hook(optimizer_hook)
+                                    # swap blocks if necessary
+                                    if blocks_to_swap and btype == "joint":
+                                        num_blocks_propagated = num_blocks - bidx
+
+                                        swapping = num_blocks_propagated > 0 and num_blocks_propagated <= blocks_to_swap
+                                        waiting = bidx > 0 and bidx <= blocks_to_swap
+
+                                        if swapping:
+                                            block_idx_to_cpu = num_blocks - num_blocks_propagated
+                                            block_idx_to_cuda = blocks_to_swap - num_blocks_propagated
+                                            # print(f"Backward: Swap blocks {block_idx_to_cpu} and {block_idx_to_cuda}")
+                                            submit_move_blocks(
+                                                futures,
+                                                thread_pool,
+                                                block_idx_to_cpu,
+                                                block_idx_to_cuda,
+                                                mmdit.joint_blocks,
+                                                accelerator.device,
+                                            )
+
+                                        if waiting:
+                                            block_idx_to_wait = bidx - 1
+                                            wait_blocks_move(block_idx_to_wait, futures)
+
+                            return optimizer_hook
+
+                        parameter.register_post_accumulate_grad_hook(create_optimizer_hook(block_type, block_idx))
                         parameter_optimizer_map[parameter] = opt_idx
                         num_parameters_per_group[opt_idx] += 1
 
@@ -661,16 +794,8 @@ def train(args):
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
-    # noise_scheduler = DDPMScheduler(
-    #     beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
-    # )
-
     noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
     noise_scheduler_copy = copy.deepcopy(noise_scheduler)
-
-    # prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
-    # if args.zero_terminal_snr:
-    #     custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -685,59 +810,12 @@ def train(args):
         )
 
     # For --sample_at_first
+    optimizer_eval_fn()
     sd3_train_utils.sample_images(accelerator, args, 0, global_step, mmdit, vae, [clip_l, clip_g, t5xxl], sample_prompts_te_outputs)
+    optimizer_train_fn()
     if len(accelerator.trackers) > 0:
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
-
-    # following function will be moved to sd3_train_utils
-
-    def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
-        sigmas = noise_scheduler_copy.sigmas.to(device=accelerator.device, dtype=dtype)
-        schedule_timesteps = noise_scheduler_copy.timesteps.to(accelerator.device)
-        timesteps = timesteps.to(accelerator.device)
-        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-
-        sigma = sigmas[step_indices].flatten()
-        while len(sigma.shape) < n_dim:
-            sigma = sigma.unsqueeze(-1)
-        return sigma
-
-    def compute_density_for_timestep_sampling(
-        weighting_scheme: str, batch_size: int, logit_mean: float = None, logit_std: float = None, mode_scale: float = None
-    ):
-        """Compute the density for sampling the timesteps when doing SD3 training.
-
-        Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
-
-        SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
-        """
-        if weighting_scheme == "logit_normal":
-            # See 3.1 in the SD3 paper ($rf/lognorm(0.00,1.00)$).
-            u = torch.normal(mean=logit_mean, std=logit_std, size=(batch_size,), device="cpu")
-            u = torch.nn.functional.sigmoid(u)
-        elif weighting_scheme == "mode":
-            u = torch.rand(size=(batch_size,), device="cpu")
-            u = 1 - u - mode_scale * (torch.cos(math.pi * u / 2) ** 2 - 1 + u)
-        else:
-            u = torch.rand(size=(batch_size,), device="cpu")
-        return u
-
-    def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
-        """Computes loss weighting scheme for SD3 training.
-
-        Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
-
-        SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
-        """
-        if weighting_scheme == "sigma_sqrt":
-            weighting = (sigmas**-2.0).float()
-        elif weighting_scheme == "cosmap":
-            bot = 1 - 2 * sigmas + 2 * sigmas**2
-            weighting = 2 / (math.pi * bot)
-        else:
-            weighting = torch.ones_like(sigmas)
-        return weighting
 
     loss_recorder = train_util.LossRecorder()
     epoch = 0  # avoid error when max_train_steps is 0
@@ -751,16 +829,16 @@ def train(args):
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
 
-            if args.fused_optimizer_groups:
+            if args.blockwise_fused_optimizers:
                 optimizer_hooked_count = {i: 0 for i in range(len(optimizers))}  # reset counter for each step
 
             with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
-                    latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
+                    latents = batch["latents"].to(accelerator.device, dtype=weight_dtype)
                 else:
                     with torch.no_grad():
                         # encode images to latents. images are [-1, 1]
-                        latents = vae.encode(batch["images"].to(vae_dtype)).to(weight_dtype)
+                        latents = vae.encode(batch["images"])
 
                     # NaNが含まれていれば警告を表示し0に置き換える
                     if torch.any(torch.isnan(latents)):
@@ -772,7 +850,7 @@ def train(args):
 
                 text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
                 if text_encoder_outputs_list is not None:
-                    lg_out, t5_out, lg_pooled = text_encoder_outputs_list
+                    lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask = text_encoder_outputs_list
                     if args.use_t5xxl_cache_only:
                         lg_out = None
                         lg_pooled = None
@@ -781,7 +859,7 @@ def train(args):
                     t5_out = None
                     lg_pooled = None
 
-                if lg_out is None or (train_clip_l or train_clip_g):
+                if lg_out is None:
                     # not cached or training, so get from text encoders
                     input_ids_clip_l, input_ids_clip_g, _, l_attn_mask, g_attn_mask, _ = batch["input_ids_list"]
                     with torch.set_grad_enabled(args.train_text_encoder):
@@ -811,21 +889,10 @@ def train(args):
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
 
-                # Sample a random timestep for each image
-                # for weighting schemes where we sample timesteps non-uniformly
-                u = compute_density_for_timestep_sampling(
-                    weighting_scheme=args.weighting_scheme,
-                    batch_size=bsz,
-                    logit_mean=args.logit_mean,
-                    logit_std=args.logit_std,
-                    mode_scale=args.mode_scale,
+                # get noisy model input and timesteps
+                noisy_model_input, timesteps, sigmas = sd3_train_utils.get_noisy_model_input_and_timesteps(
+                    args, noise_scheduler_copy, latents, noise, accelerator.device, weight_dtype
                 )
-                indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
-                timesteps = noise_scheduler_copy.timesteps[indices].to(device=accelerator.device)
-
-                # Add noise according to flow matching.
-                sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=weight_dtype)
-                noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
 
                 # debug: NaN check for all inputs
                 if torch.any(torch.isnan(noisy_model_input)):
@@ -840,6 +907,7 @@ def train(args):
 
                 # call model
                 with accelerator.autocast():
+                    # TODO support attention mask
                     model_pred = mmdit(noisy_model_input, timesteps, context=context, y=lg_pooled)
 
                 # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
@@ -848,21 +916,34 @@ def train(args):
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
-                weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
+                weighting = sd3_train_utils.compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
 
                 # flow matching loss
                 target = latents
 
-                # Compute regular loss. TODO simplify this
-                loss = torch.mean(
-                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    1,
+                # # Compute regular loss. TODO simplify this
+                # loss = torch.mean(
+                #     (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                #     1,
+                # )
+                # calculate loss
+                loss = train_util.conditional_loss(
+                    model_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=None
                 )
+                if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
+                    loss = apply_masked_loss(loss, batch)
+                loss = loss.mean([1, 2, 3])
+
+                if weighting is not None:
+                    loss = loss * weighting
+
+                loss_weights = batch["loss_weights"]  # 各sampleごとのweight
+                loss = loss * loss_weights
                 loss = loss.mean()
 
                 accelerator.backward(loss)
 
-                if not (args.fused_backward_pass or args.fused_optimizer_groups):
+                if not (args.fused_backward_pass or args.blockwise_fused_optimizers):
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                         params_to_clip = []
                         for m in training_models:
@@ -875,7 +956,7 @@ def train(args):
                 else:
                     # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
                     lr_scheduler.step()
-                    if args.fused_optimizer_groups:
+                    if args.blockwise_fused_optimizers:
                         for i in range(1, len(optimizers)):
                             lr_schedulers[i].step()
 
@@ -884,6 +965,7 @@ def train(args):
                 progress_bar.update(1)
                 global_step += 1
 
+                optimizer_eval_fn()
                 sd3_train_utils.sample_images(
                     accelerator, args, None, global_step, mmdit, vae, [clip_l, clip_g, t5xxl], sample_prompts_te_outputs
                 )
@@ -900,12 +982,13 @@ def train(args):
                             epoch,
                             num_train_epochs,
                             global_step,
-                            accelerator.unwrap_model(clip_l) if args.save_clip else None,
-                            accelerator.unwrap_model(clip_g) if args.save_clip else None,
-                            accelerator.unwrap_model(t5xxl) if args.save_t5xxl else None,
-                            accelerator.unwrap_model(mmdit),
+                            accelerator.unwrap_model(clip_l) if train_clip else None,
+                            accelerator.unwrap_model(clip_g) if train_clip else None,
+                            accelerator.unwrap_model(t5xxl) if train_t5xxl else None,
+                            accelerator.unwrap_model(mmdit) if train_mmdit else None,
                             vae,
                         )
+                optimizer_train_fn()
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if len(accelerator.trackers) > 0:
@@ -928,6 +1011,7 @@ def train(args):
 
         accelerator.wait_for_everyone()
 
+        optimizer_eval_fn()
         if args.save_every_n_epochs is not None:
             if accelerator.is_main_process:
                 sd3_train_utils.save_sd3_model_on_epoch_end_or_stepwise(
@@ -938,10 +1022,10 @@ def train(args):
                     epoch,
                     num_train_epochs,
                     global_step,
-                    accelerator.unwrap_model(clip_l) if args.save_clip else None,
-                    accelerator.unwrap_model(clip_g) if args.save_clip else None,
-                    accelerator.unwrap_model(t5xxl) if args.save_t5xxl else None,
-                    accelerator.unwrap_model(mmdit),
+                    accelerator.unwrap_model(clip_l) if train_clip else None,
+                    accelerator.unwrap_model(clip_g) if train_clip else None,
+                    accelerator.unwrap_model(t5xxl) if train_t5xxl else None,
+                    accelerator.unwrap_model(mmdit) if train_mmdit else None,
                     vae,
                 )
 
@@ -958,6 +1042,7 @@ def train(args):
         t5xxl = accelerator.unwrap_model(t5xxl)
 
     accelerator.end_training()
+    optimizer_eval_fn()
 
     if args.save_state or args.save_state_on_train_end:
         train_util.save_state_on_train_end(args, accelerator)
@@ -970,10 +1055,10 @@ def train(args):
             save_dtype,
             epoch,
             global_step,
-            clip_l if args.save_clip else None,
-            clip_g if args.save_clip else None,
-            t5xxl if args.save_t5xxl else None,
-            mmdit,
+            accelerator.unwrap_model(clip_l) if train_clip else None,
+            accelerator.unwrap_model(clip_g) if train_clip else None,
+            accelerator.unwrap_model(t5xxl) if train_t5xxl else None,
+            accelerator.unwrap_model(mmdit) if train_mmdit else None,
             vae,
         )
         logger.info("model saved.")
@@ -991,13 +1076,13 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_saving_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
-    custom_train_functions.add_custom_train_arguments(parser)
+    add_custom_train_arguments(parser)
     sd3_train_utils.add_sd3_training_arguments(parser)
 
     parser.add_argument(
         "--train_text_encoder", action="store_true", help="train text encoder (CLIP-L and G) / text encoderも学習する"
     )
-    # parser.add_argument("--train_t5xxl", action="store_true", help="train T5-XXL / T5-XXLも学習する")
+    parser.add_argument("--train_t5xxl", action="store_true", help="train T5-XXL / T5-XXLも学習する")
     parser.add_argument(
         "--use_t5xxl_cache_only", action="store_true", help="cache T5-XXL outputs only / T5-XXLの出力のみキャッシュする"
     )
@@ -1018,19 +1103,24 @@ def setup_parser() -> argparse.ArgumentParser:
         help="apply attention mask (zero embs) to T5-XXL / T5-XXLにアテンションマスク（ゼロ埋め）を適用する",
     )
 
-    # TE training is disabled temporarily
-    # parser.add_argument(
-    #     "--learning_rate_te1",
-    #     type=float,
-    #     default=None,
-    #     help="learning rate for text encoder 1 (ViT-L) / text encoder 1 (ViT-L)の学習率",
-    # )
-    # parser.add_argument(
-    #     "--learning_rate_te2",
-    #     type=float,
-    #     default=None,
-    #     help="learning rate for text encoder 2 (BiG-G) / text encoder 2 (BiG-G)の学習率",
-    # )
+    parser.add_argument(
+        "--learning_rate_te1",
+        type=float,
+        default=None,
+        help="learning rate for text encoder 1 (ViT-L) / text encoder 1 (ViT-L)の学習率",
+    )
+    parser.add_argument(
+        "--learning_rate_te2",
+        type=float,
+        default=None,
+        help="learning rate for text encoder 2 (BiG-G) / text encoder 2 (BiG-G)の学習率",
+    )
+    parser.add_argument(
+        "--learning_rate_te3",
+        type=float,
+        default=None,
+        help="learning rate for text encoder 3 (T5-XXL) / text encoder 3 (T5-XXL)の学習率",
+    )
 
     # parser.add_argument(
     #     "--diffusers_xformers", action="store_true", help="use xformers by diffusers / Diffusersでxformersを使用する"
@@ -1048,20 +1138,20 @@ def setup_parser() -> argparse.ArgumentParser:
     #     + f"U-Netの各ブロックの学習率、カンマ区切り、{UNET_NUM_BLOCKS_FOR_BLOCK_LR}個の値",
     # )
     parser.add_argument(
+        "--blockwise_fused_optimizers",
+        action="store_true",
+        help="enable blockwise optimizers for fused backward pass and optimizer step / fused backward passとoptimizer step のためブロック単位のoptimizerを有効にする",
+    )
+    parser.add_argument(
         "--fused_optimizer_groups",
         type=int,
         default=None,
-        help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
+        help="[DOES NOT WORK] number of optimizer groups for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizerグループ数",
     )
     parser.add_argument(
         "--skip_latents_validity_check",
         action="store_true",
         help="[Deprecated] use 'skip_cache_check' instead / 代わりに 'skip_cache_check' を使用してください",
-    )
-    parser.add_argument(
-        "--skip_cache_check",
-        action="store_true",
-        help="skip cache (latents and text encoder outputs) check / キャッシュ（latentsとtext encoder outputs）のチェックをスキップする",
     )
     parser.add_argument(
         "--num_last_block_to_freeze",

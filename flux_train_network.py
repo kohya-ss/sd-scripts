@@ -231,7 +231,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 tokenize_strategy: strategy_flux.FluxTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
                 text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-                prompts = sd3_train_utils.load_prompts(args.sample_prompts)
+                prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in prompts:

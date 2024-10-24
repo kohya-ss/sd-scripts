@@ -5967,6 +5967,37 @@ def line_to_prompt_dict(line: str) -> dict:
     return prompt_dict
 
 
+def load_prompts(prompt_file: str) -> List[Dict]:
+    # read prompts
+    if prompt_file.endswith(".txt"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+    elif prompt_file.endswith(".toml"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            data = toml.load(f)
+        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
+    elif prompt_file.endswith(".json"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            prompts = json.load(f)
+
+    # preprocess prompts
+    for i in range(len(prompts)):
+        prompt_dict = prompts[i]
+        if isinstance(prompt_dict, str):
+            from library.train_util import line_to_prompt_dict
+
+            prompt_dict = line_to_prompt_dict(prompt_dict)
+            prompts[i] = prompt_dict
+        assert isinstance(prompt_dict, dict)
+
+        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
+        prompt_dict["enum"] = i
+        prompt_dict.pop("subset", None)
+
+    return prompts
+
+
 def sample_images_common(
     pipe_class,
     accelerator: Accelerator,
