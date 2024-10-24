@@ -369,6 +369,14 @@ def train(args):
     if not train_mmdit:
         mmdit.to(accelerator.device, dtype=weight_dtype)  # because of mmdit will not be prepared
 
+    # block swap
+    is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
+    if is_swapping_blocks:
+        # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
+        # This idea is based on 2kpr's great work. Thank you!
+        logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
+        mmdit.enable_block_swap(args.blocks_to_swap)
+
     if not cache_latents:
         # move to accelerator device
         vae.requires_grad_(False)
@@ -575,7 +583,9 @@ def train(args):
     else:
         # acceleratorがなんかよろしくやってくれるらしい
         if train_mmdit:
-            mmdit = accelerator.prepare(mmdit)
+            mmdit = accelerator.prepare(mmdit, device_placement=[not is_swapping_blocks])
+            if is_swapping_blocks:
+                accelerator.unwrap_model(mmdit).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
         if train_clip:
             clip_l = accelerator.prepare(clip_l)
             clip_g = accelerator.prepare(clip_g)
@@ -600,8 +610,10 @@ def train(args):
             block_to_cpu = block_to_cpu.to("cpu", non_blocking=True)
             torch.cuda.empty_cache()
 
+            # print(f"Backward: Move block {bidx_to_cuda} to CUDA")
             block_to_cuda = block_to_cuda.to(dvc, non_blocking=True)
             torch.cuda.synchronize()
+            # print(f"Backward: Done moving blocks {bidx_to_cpu} and {bidx_to_cuda}")
             return bidx_to_cpu, bidx_to_cuda
 
         block_to_cpu = blocks[block_idx_to_cpu]
@@ -639,7 +651,7 @@ def train(args):
                     grad_hook = None
 
                     if blocks_to_swap:
-                        is_block = param_name.startswith("double_blocks")
+                        is_block = param_name.startswith("joint_blocks")
                         if is_block:
                             block_idx = int(param_name.split(".")[1])
                             if block_idx not in handled_block_indices:
@@ -804,6 +816,9 @@ def train(args):
             config=train_util.get_sanitized_config_or_none(args),
             init_kwargs=init_kwargs,
         )
+
+    if is_swapping_blocks:
+        accelerator.unwrap_model(mmdit).prepare_block_swap_before_forward()
 
     # For --sample_at_first
     optimizer_eval_fn()
