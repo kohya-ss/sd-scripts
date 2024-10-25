@@ -1495,8 +1495,6 @@ def main(args):
     highres_fix = args.highres_fix_scale is not None
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
-    if args.v_parameterization and not args.v2:
-        logger.warning("v_parameterization should be with v2 / v1でv_parameterizationを使用することは想定されていません")
     if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
