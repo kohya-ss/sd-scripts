@@ -761,6 +761,9 @@ class MMDiT(nn.Module):
         self.final_layer = UnPatch(self.hidden_size, patch_size, self.out_channels)
         # self.initialize_weights()
 
+        self.blocks_to_swap = None
+        self.thread_pool: Optional[ThreadPoolExecutor] = None
+
     @property
     def model_type(self):
         return self._model_type

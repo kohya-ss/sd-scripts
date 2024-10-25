@@ -91,7 +91,7 @@ def load_mmdit(
         mmdit = sd3_models.create_sd3_mmdit(params, attn_mode)
 
     logger.info("Loading state dict...")
-    info = sdxl_model_util._load_state_dict_on_device(mmdit, mmdit_sd, device, dtype)
+    info = mmdit.load_state_dict(mmdit_sd, strict=False, assign=True)
     logger.info(f"Loaded MMDiT: {info}")
     return mmdit
 
