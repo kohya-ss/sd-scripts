@@ -96,10 +96,13 @@ def add_v_prediction_like_loss(loss, timesteps, noise_scheduler, v_pred_like_los
     return loss
 
 
-def apply_debiased_estimation(loss, timesteps, noise_scheduler):
+def apply_debiased_estimation(loss, timesteps, noise_scheduler, v_prediction=False):
     snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
     snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
-    weight = 1 / torch.sqrt(snr_t)
+    if v_prediction:
+        weight = 1 / (snr_t + 1)
+    else:
+        weight = 1 / torch.sqrt(snr_t)
     loss = weight * loss
     return loss
 
