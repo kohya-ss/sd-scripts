@@ -4115,10 +4115,6 @@ def verify_training_args(args: argparse.Namespace):
     """
     enable_high_vram(args)
 
-    if args.v_parameterization and not args.v2:
-        logger.warning(
-            "v_parameterization should be with v2 not v1 or sdxl / v1やsdxlでv_parameterizationを使用することは想定されていません"
-        )
     if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
