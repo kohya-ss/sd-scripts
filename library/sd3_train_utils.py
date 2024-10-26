@@ -316,6 +316,8 @@ def do_sample(
     # noise = get_noise(seed, latent).to(device)
     if seed is not None:
         generator = torch.manual_seed(seed)
+    else:
+        generator = None
     noise = (
         torch.randn(latent.size(), dtype=torch.float32, layout=latent.layout, generator=generator, device="cpu")
         .to(latent.dtype)
