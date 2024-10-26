@@ -134,7 +134,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         if args.cache_text_encoder_outputs:
             if self.train_clip and not self.train_t5xxl:
-                return text_encoders[0:2]  # only CLIP-L/CLIP-G is needed for encoding because T5XXL is cached
+                return text_encoders[0:2] + [None]  # only CLIP-L/CLIP-G is needed for encoding because T5XXL is cached
             else:
                 return None  # no text encoders are needed for encoding because both are cached
         else:
