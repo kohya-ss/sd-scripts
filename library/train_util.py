@@ -1615,7 +1615,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
                     image_info.text_encoder_outputs_npz
                 )
-                text_encoder_outputs = [torch.FloatTensor(x) for x in text_encoder_outputs]
             else:
                 tokenization_required = True
             text_encoder_outputs_list.append(text_encoder_outputs)
