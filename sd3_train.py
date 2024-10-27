@@ -69,6 +69,11 @@ def train(args):
     # assert (
     #     not args.train_text_encoder or not args.cache_text_encoder_outputs
     # ), "cache_text_encoder_outputs is not supported when training text encoder / text encoderを学習するときはcache_text_encoder_outputsはサポートされていません"
+    if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
+        logger.warning(
+            "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled / cache_text_encoder_outputs_to_diskが有効になっているため、cache_text_encoder_outputsも有効になります"
+        )
+        args.cache_text_encoder_outputs = True
 
     assert not args.train_text_encoder or (args.use_t5xxl_cache_only or not args.cache_text_encoder_outputs), (
         "when training text encoder, text encoder outputs must not be cached (except for T5XXL)"
@@ -232,7 +237,9 @@ def train(args):
     assert clip_l is not None and clip_g is not None and t5xxl is not None, "clip_l, clip_g, t5xxl must be specified"
 
     # prepare text encoding strategy
-    text_encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy(args.apply_lg_attn_mask, args.apply_t5_attn_mask)
+    text_encoding_strategy = strategy_sd3.Sd3TextEncodingStrategy(
+        args.apply_lg_attn_mask, args.apply_t5_attn_mask, args.clip_l_dropout_rate, args.clip_g_dropout_rate, args.t5_dropout_rate
+    )
     strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
 
     # 学習を準備する：モデルを適切な状態にする
@@ -311,6 +318,7 @@ def train(args):
                                 tokens_and_masks,
                                 args.apply_lg_attn_mask,
                                 args.apply_t5_attn_mask,
+                                enable_dropout=False,
                             )
 
         accelerator.wait_for_everyone()
@@ -863,6 +871,7 @@ def train(args):
 
                 text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
                 if text_encoder_outputs_list is not None:
+                    text_encoder_outputs_list = text_encoding_strategy.drop_cached_text_encoder_outputs(*text_encoder_outputs_list)
                     lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask = text_encoder_outputs_list
                     if args.use_t5xxl_cache_only:
                         lg_out = None
@@ -878,7 +887,7 @@ def train(args):
                 if lg_out is None:
                     # not cached or training, so get from text encoders
                     input_ids_clip_l, input_ids_clip_g, _, l_attn_mask, g_attn_mask, _ = batch["input_ids_list"]
-                    with torch.set_grad_enabled(args.train_text_encoder):
+                    with torch.set_grad_enabled(train_clip):
                         # TODO support weighted captions
                         # text models in sd3_models require "cpu" for input_ids
                         input_ids_clip_l = input_ids_clip_l.to("cpu")
@@ -891,7 +900,7 @@ def train(args):
 
                 if t5_out is None:
                     _, _, input_ids_t5xxl, _, _, t5_attn_mask = batch["input_ids_list"]
-                    with torch.no_grad():
+                    with torch.set_grad_enabled(train_t5xxl):
                         input_ids_t5xxl = input_ids_t5xxl.to("cpu") if t5_out is None else None
                         _, t5_out, _, _, _, t5_attn_mask = text_encoding_strategy.encode_tokens(
                             sd3_tokenize_strategy, [None, None, t5xxl], [None, None, input_ids_t5xxl, None, None, t5_attn_mask]

@@ -214,6 +214,24 @@ def add_sd3_training_arguments(parser: argparse.ArgumentParser):
         action="store_true",
         help="apply attention mask (zero embs) to T5-XXL / T5-XXLにアテンションマスク（ゼロ埋め）を適用する",
     )
+    parser.add_argument(
+        "--clip_l_dropout_rate",
+        type=float,
+        default=0.0,
+        help="Dropout rate for CLIP-L encoder, default is 0.0 / CLIP-Lエンコーダのドロップアウト率、デフォルトは0.0",
+    )
+    parser.add_argument(
+        "--clip_g_dropout_rate",
+        type=float,
+        default=0.0,
+        help="Dropout rate for CLIP-G encoder, default is 0.0 / CLIP-Gエンコーダのドロップアウト率、デフォルトは0.0",
+    )
+    parser.add_argument(
+        "--t5_dropout_rate",
+        type=float,
+        default=0.0,
+        help="Dropout rate for T5 encoder, default is 0.0 / T5エンコーダのドロップアウト率、デフォルトは0.0",
+    )
 
     # copy from Diffusers
     parser.add_argument(
