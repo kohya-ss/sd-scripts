@@ -190,6 +190,7 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     apply_t5_attn_mask=apply_t5_attn_mask_i,
                 )
             else:
+                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
                 info.text_encoder_outputs = (l_pooled_i, t5_out_i, txt_ids_i, t5_attn_mask_i)
 
 

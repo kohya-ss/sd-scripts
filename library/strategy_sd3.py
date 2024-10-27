@@ -89,19 +89,7 @@ class Sd3TextEncodingStrategy(TextEncodingStrategy):
         if apply_t5_attn_mask is None:
             apply_t5_attn_mask = self.apply_t5_attn_mask
 
-        l_tokens, g_tokens, t5_tokens = tokens[:3]
-
-        if len(tokens) > 3:
-            l_attn_mask, g_attn_mask, t5_attn_mask = tokens[3:]
-            if not apply_lg_attn_mask:
-                l_attn_mask = None
-                g_attn_mask = None
-            if not apply_t5_attn_mask:
-                t5_attn_mask = None
-        else:
-            l_attn_mask = None
-            g_attn_mask = None
-            t5_attn_mask = None
+        l_tokens, g_tokens, t5_tokens, l_attn_mask, g_attn_mask, t5_attn_mask = tokens
 
         # dropout: if enable_dropout is False, dropout is not applied. dropout means zeroing out embeddings
 
@@ -109,47 +97,114 @@ class Sd3TextEncodingStrategy(TextEncodingStrategy):
             assert g_tokens is None, "g_tokens must be None if l_tokens is None"
             lg_out = None
             lg_pooled = None
+            l_attn_mask = None
+            g_attn_mask = None
         else:
             assert g_tokens is not None, "g_tokens must not be None if l_tokens is not None"
 
-            drop_l = enable_dropout and (self.l_dropout_rate > 0.0 and random.random() < self.l_dropout_rate)
-            if drop_l:
-                l_pooled = torch.zeros((l_tokens.shape[0], 768), device=clip_l.device, dtype=clip_l.dtype)
-                l_out = torch.zeros((l_tokens.shape[0], l_tokens.shape[1], 768), device=clip_l.device, dtype=clip_l.dtype)
-                if l_attn_mask is not None:
-                    l_attn_mask = torch.zeros_like(l_attn_mask, device=clip_l.device)
-            else:
-                l_attn_mask = l_attn_mask.to(clip_l.device) if l_attn_mask is not None else None
-                prompt_embeds = clip_l(l_tokens.to(clip_l.device), l_attn_mask, output_hidden_states=True)
-                l_pooled = prompt_embeds[0]
-                l_out = prompt_embeds.hidden_states[-2]
+            # drop some members of the batch: we do not call clip_l and clip_g for dropped members
+            batch_size, l_seq_len = l_tokens.shape
+            g_seq_len = g_tokens.shape[1]
 
-            drop_g = enable_dropout and (self.g_dropout_rate > 0.0 and random.random() < self.g_dropout_rate)
-            if drop_g:
-                g_pooled = torch.zeros((g_tokens.shape[0], 1280), device=clip_g.device, dtype=clip_g.dtype)
-                g_out = torch.zeros((g_tokens.shape[0], g_tokens.shape[1], 1280), device=clip_g.device, dtype=clip_g.dtype)
-                if g_attn_mask is not None:
-                    g_attn_mask = torch.zeros_like(g_attn_mask, device=clip_g.device)
-            else:
-                g_attn_mask = g_attn_mask.to(clip_g.device) if g_attn_mask is not None else None
-                prompt_embeds = clip_g(g_tokens.to(clip_g.device), g_attn_mask, output_hidden_states=True)
-                g_pooled = prompt_embeds[0]
-                g_out = prompt_embeds.hidden_states[-2]
+            non_drop_l_indices = []
+            non_drop_g_indices = []
+            for i in range(l_tokens.shape[0]):
+                drop_l = enable_dropout and (self.l_dropout_rate > 0.0 and random.random() < self.l_dropout_rate)
+                drop_g = enable_dropout and (self.g_dropout_rate > 0.0 and random.random() < self.g_dropout_rate)
+                if not drop_l:
+                    non_drop_l_indices.append(i)
+                if not drop_g:
+                    non_drop_g_indices.append(i)
 
-            lg_pooled = torch.cat((l_pooled, g_pooled), dim=-1) if l_tokens is not None else None
+            # filter out dropped members
+            if len(non_drop_l_indices) > 0 and len(non_drop_l_indices) < batch_size:
+                l_tokens = l_tokens[non_drop_l_indices]
+                l_attn_mask = l_attn_mask[non_drop_l_indices]
+            if len(non_drop_g_indices) > 0 and len(non_drop_g_indices) < batch_size:
+                g_tokens = g_tokens[non_drop_g_indices]
+                g_attn_mask = g_attn_mask[non_drop_g_indices]
+
+            # call clip_l for non-dropped members
+            if len(non_drop_l_indices) > 0:
+                nd_l_attn_mask = l_attn_mask.to(clip_l.device)
+                prompt_embeds = clip_l(
+                    l_tokens.to(clip_l.device), nd_l_attn_mask if apply_lg_attn_mask else None, output_hidden_states=True
+                )
+                nd_l_pooled = prompt_embeds[0]
+                nd_l_out = prompt_embeds.hidden_states[-2]
+            if len(non_drop_g_indices) > 0:
+                nd_g_attn_mask = g_attn_mask.to(clip_g.device)
+                prompt_embeds = clip_g(
+                    g_tokens.to(clip_g.device), nd_g_attn_mask if apply_lg_attn_mask else None, output_hidden_states=True
+                )
+                nd_g_pooled = prompt_embeds[0]
+                nd_g_out = prompt_embeds.hidden_states[-2]
+
+            # fill in the dropped members
+            if len(non_drop_l_indices) == batch_size:
+                l_pooled = nd_l_pooled
+                l_out = nd_l_out
+            else:
+                # model output is always float32 because of the models are wrapped with Accelerator
+                l_pooled = torch.zeros((batch_size, 768), device=clip_l.device, dtype=torch.float32)
+                l_out = torch.zeros((batch_size, l_seq_len, 768), device=clip_l.device, dtype=torch.float32)
+                l_attn_mask = torch.zeros((batch_size, l_seq_len), device=clip_l.device, dtype=l_attn_mask.dtype)
+                if len(non_drop_l_indices) > 0:
+                    l_pooled[non_drop_l_indices] = nd_l_pooled
+                    l_out[non_drop_l_indices] = nd_l_out
+                    l_attn_mask[non_drop_l_indices] = nd_l_attn_mask
+
+            if len(non_drop_g_indices) == batch_size:
+                g_pooled = nd_g_pooled
+                g_out = nd_g_out
+            else:
+                g_pooled = torch.zeros((batch_size, 1280), device=clip_g.device, dtype=torch.float32)
+                g_out = torch.zeros((batch_size, g_seq_len, 1280), device=clip_g.device, dtype=torch.float32)
+                g_attn_mask = torch.zeros((batch_size, g_seq_len), device=clip_g.device, dtype=g_attn_mask.dtype)
+                if len(non_drop_g_indices) > 0:
+                    g_pooled[non_drop_g_indices] = nd_g_pooled
+                    g_out[non_drop_g_indices] = nd_g_out
+                    g_attn_mask[non_drop_g_indices] = nd_g_attn_mask
+
+            lg_pooled = torch.cat((l_pooled, g_pooled), dim=-1)
             lg_out = torch.cat([l_out, g_out], dim=-1)
 
         if t5xxl is None or t5_tokens is None:
             t5_out = None
+            t5_attn_mask = None
         else:
-            drop_t5 = enable_dropout and (self.t5_dropout_rate > 0.0 and random.random() < self.t5_dropout_rate)
-            if drop_t5:
-                t5_out = torch.zeros((t5_tokens.shape[0], t5_tokens.shape[1], 4096), device=t5xxl.device, dtype=t5xxl.dtype)
-                if t5_attn_mask is not None:
-                    t5_attn_mask = torch.zeros_like(t5_attn_mask, device=t5xxl.device)
+            # drop some members of the batch: we do not call t5xxl for dropped members
+            batch_size, t5_seq_len = t5_tokens.shape
+            non_drop_t5_indices = []
+            for i in range(t5_tokens.shape[0]):
+                drop_t5 = enable_dropout and (self.t5_dropout_rate > 0.0 and random.random() < self.t5_dropout_rate)
+                if not drop_t5:
+                    non_drop_t5_indices.append(i)
+
+            # filter out dropped members
+            if len(non_drop_t5_indices) > 0 and len(non_drop_t5_indices) < batch_size:
+                t5_tokens = t5_tokens[non_drop_t5_indices]
+                t5_attn_mask = t5_attn_mask[non_drop_t5_indices]
+
+            # call t5xxl for non-dropped members
+            if len(non_drop_t5_indices) > 0:
+                nd_t5_attn_mask = t5_attn_mask.to(t5xxl.device)
+                nd_t5_out, _ = t5xxl(
+                    t5_tokens.to(t5xxl.device),
+                    nd_t5_attn_mask if apply_t5_attn_mask else None,
+                    return_dict=False,
+                    output_hidden_states=True,
+                )
+
+            # fill in the dropped members
+            if len(non_drop_t5_indices) == batch_size:
+                t5_out = nd_t5_out
             else:
-                t5_attn_mask = t5_attn_mask.to(t5xxl.device) if t5_attn_mask is not None else None
-                t5_out, _ = t5xxl(t5_tokens.to(t5xxl.device), t5_attn_mask, return_dict=False, output_hidden_states=True)
+                t5_out = torch.zeros((batch_size, t5_seq_len, 4096), device=t5xxl.device, dtype=torch.float32)
+                t5_attn_mask = torch.zeros((batch_size, t5_seq_len), device=t5xxl.device, dtype=t5_attn_mask.dtype)
+                if len(non_drop_t5_indices) > 0:
+                    t5_out[non_drop_t5_indices] = nd_t5_out
+                    t5_attn_mask[non_drop_t5_indices] = nd_t5_attn_mask
 
         # masks are used for attention masking in transformer
         return [lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask]
@@ -322,6 +377,7 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     apply_t5_attn_mask=apply_t5_attn_mask,
                 )
             else:
+                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
                 info.text_encoder_outputs = (lg_out_i, t5_out_i, lg_pooled_i, l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i)
 
 
