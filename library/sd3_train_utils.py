@@ -364,6 +364,7 @@ def do_sample(
         x_c_nc = torch.cat([x, x], dim=0)
         # print(x_c_nc.shape, timestep.shape, c_crossattn.shape, y.shape)
 
+        mmdit.prepare_block_swap_before_forward()
         model_output = mmdit(x_c_nc, timestep, context=c_crossattn, y=y)
         model_output = model_output.float()
         batched = model_sampling.calculate_denoised(sigma_hat, model_output, x)
@@ -385,6 +386,7 @@ def do_sample(
         x = x + d * dt
         x = x.to(dtype)
 
+    mmdit.prepare_block_swap_before_forward()
     return x
 
 
