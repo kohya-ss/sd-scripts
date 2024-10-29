@@ -428,7 +428,7 @@ class LoRANetwork(torch.nn.Module):
             for filter, in_dim in zip(
                 [
                     "context_embedder",
-                    "t_embedder",
+                    "_t_embedder", # don't use "t_embedder" because it's used in "context_embedder"
                     "x_embedder",
                     "y_embedder",
                     "final_layer_adaLN_modulation",
