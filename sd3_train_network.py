@@ -65,6 +65,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         )
         mmdit = sd3_utils.load_mmdit(state_dict, loading_dtype, "cpu")
         self.model_type = mmdit.model_type
+        mmdit.set_pos_emb_random_crop_rate(args.pos_emb_random_crop_rate)
 
         if args.fp8_base:
             # check dtype of model

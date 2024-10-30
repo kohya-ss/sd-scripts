@@ -353,17 +353,15 @@ def train(args):
         accelerator.wait_for_everyone()
 
     # load MMDIT
-    mmdit = sd3_utils.load_mmdit(
-        sd3_state_dict,
-        model_dtype,
-        "cpu",
-    )
+    mmdit = sd3_utils.load_mmdit(sd3_state_dict, model_dtype, "cpu")
 
     # attn_mode = "xformers" if args.xformers else "torch"
     # assert (
     #     attn_mode == "torch"
     # ), f"attn_mode {attn_mode} is not supported yet. Please use `--sdpa` instead of `--xformers`. / attn_mode {attn_mode} はサポートされていません。`--xformers`の代わりに`--sdpa`を使ってください。"
 
+    mmdit.set_pos_emb_random_crop_rate(args.pos_emb_random_crop_rate)
+    
     if args.gradient_checkpointing:
         mmdit.enable_gradient_checkpointing()
 

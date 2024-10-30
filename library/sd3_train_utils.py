@@ -239,6 +239,13 @@ def add_sd3_training_arguments(parser: argparse.ArgumentParser):
         default=0.0,
         help="Dropout rate for T5 encoder, default is 0.0 / T5エンコーダのドロップアウト率、デフォルトは0.0",
     )
+    parser.add_argument(
+        "--pos_emb_random_crop_rate",
+        type=float,
+        default=0.0,
+        help="Random crop rate for positional embeddings, default is 0.0. Only for SD3.5M"
+        " / 位置埋め込みのランダムクロップ率、デフォルトは0.0。SD3.5M以外では予期しない動作になります",
+    )
 
     # copy from Diffusers
     parser.add_argument(
