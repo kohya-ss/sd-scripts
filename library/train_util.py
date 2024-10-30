@@ -245,7 +245,7 @@ class BucketManager:
             if reso in self.predefined_resos_set:
                 pass
             else:
-                ar_errors = self.predefined_aspect_ratios - aspect_ratio
+                ar_errors = np.log(self.predefined_aspect_ratios) - np.log(aspect_ratio)
                 predefined_bucket_id = np.abs(ar_errors).argmin()  # 当該解像度以外でaspect ratio errorが最も少ないもの
                 reso = self.predefined_resos[predefined_bucket_id]
 
