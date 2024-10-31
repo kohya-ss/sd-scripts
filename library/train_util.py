@@ -2510,6 +2510,9 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         for dataset in self.datasets:
             dataset.verify_bucket_reso_steps(min_steps)
 
+    def get_resolutions(self) -> List[Tuple[int, int]]:
+        return [(dataset.width, dataset.height) for dataset in self.datasets]
+
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
 

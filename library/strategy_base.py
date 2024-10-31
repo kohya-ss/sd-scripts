@@ -518,7 +518,7 @@ class LatentsCachingStrategy:
         self, npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        for SD/SDXL/SD3.0
+        for SD/SDXL
         """
         return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
 

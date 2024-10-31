@@ -246,6 +246,12 @@ def add_sd3_training_arguments(parser: argparse.ArgumentParser):
         help="Random crop rate for positional embeddings, default is 0.0. Only for SD3.5M"
         " / 位置埋め込みのランダムクロップ率、デフォルトは0.0。SD3.5M以外では予期しない動作になります",
     )
+    parser.add_argument(
+        "--enable_scaled_pos_embed",
+        action="store_true",
+        help="Scale position embeddings for each resolution during multi-resolution training. Only for SD3.5M"
+        " / 複数解像度学習時に解像度ごとに位置埋め込みをスケーリングする。SD3.5M以外では予期しない動作になります",
+    )
 
     # copy from Diffusers
     parser.add_argument(
