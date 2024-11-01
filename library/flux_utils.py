@@ -10,38 +10,19 @@ from safetensors import safe_open
 from accelerate import init_empty_weights
 from transformers import CLIPTextModel, CLIPConfig, T5EncoderModel, T5Config
 
-from library import flux_models
-
-from library.utils import setup_logging, MemoryEfficientSafeOpen
+from library.utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
 
+from library import flux_models
+from library.utils import load_safetensors
+
 MODEL_VERSION_FLUX_V1 = "flux1"
 MODEL_NAME_DEV = "dev"
 MODEL_NAME_SCHNELL = "schnell"
-
-
-# temporary copy from sd3_utils TODO refactor
-def load_safetensors(
-    path: str, device: Union[str, torch.device], disable_mmap: bool = False, dtype: Optional[torch.dtype] = torch.float32
-):
-    if disable_mmap:
-        # return safetensors.torch.load(open(path, "rb").read())
-        # use experimental loader
-        logger.info(f"Loading without mmap (experimental)")
-        state_dict = {}
-        with MemoryEfficientSafeOpen(path) as f:
-            for key in f.keys():
-                state_dict[key] = f.get_tensor(key).to(device, dtype=dtype)
-        return state_dict
-    else:
-        try:
-            return load_file(path, device=device)
-        except:
-            return load_file(path)  # prevent device invalid Error
 
 
 def analyze_checkpoint_state(ckpt_path: str) -> Tuple[bool, bool, Tuple[int, int], List[str]]:
@@ -172,8 +153,14 @@ def load_ae(
     return ae
 
 
-def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False) -> CLIPTextModel:
-    logger.info("Building CLIP")
+def load_clip_l(
+    ckpt_path: Optional[str],
+    dtype: torch.dtype,
+    device: Union[str, torch.device],
+    disable_mmap: bool = False,
+    state_dict: Optional[dict] = None,
+) -> CLIPTextModel:
+    logger.info("Building CLIP-L")
     CLIPL_CONFIG = {
         "_name_or_path": "clip-vit-large-patch14/",
         "architectures": ["CLIPModel"],
@@ -266,15 +253,22 @@ def load_clip_l(ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.dev
     with init_empty_weights():
         clip = CLIPTextModel._from_config(config)
 
-    logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+    if state_dict is not None:
+        sd = state_dict
+    else:
+        logger.info(f"Loading state dict from {ckpt_path}")
+        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = clip.load_state_dict(sd, strict=False, assign=True)
-    logger.info(f"Loaded CLIP: {info}")
+    logger.info(f"Loaded CLIP-L: {info}")
     return clip
 
 
 def load_t5xxl(
-    ckpt_path: str, dtype: Optional[torch.dtype], device: Union[str, torch.device], disable_mmap: bool = False
+    ckpt_path: str,
+    dtype: Optional[torch.dtype],
+    device: Union[str, torch.device],
+    disable_mmap: bool = False,
+    state_dict: Optional[dict] = None,
 ) -> T5EncoderModel:
     T5_CONFIG_JSON = """
 {
@@ -314,8 +308,11 @@ def load_t5xxl(
     with init_empty_weights():
         t5xxl = T5EncoderModel._from_config(config)
 
-    logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+    if state_dict is not None:
+        sd = state_dict
+    else:
+        logger.info(f"Loading state dict from {ckpt_path}")
+        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = t5xxl.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded T5xxl: {info}")
     return t5xxl

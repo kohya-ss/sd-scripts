@@ -4,6 +4,8 @@
 # and some module/classes are contributed from KohakuBlueleaf. Thanks for the contribution!
 
 from ast import Tuple
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 import math
 from types import SimpleNamespace
@@ -15,6 +17,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from transformers import CLIPTokenizer, T5TokenizerFast
+
+from library.device_utils import clean_memory_on_device
+
 from .utils import setup_logging
 
 setup_logging()
@@ -35,139 +40,21 @@ except:
     memory_efficient_attention = None
 
 
-# region tokenizer
-class SDTokenizer:
-    def __init__(
-        self, max_length=77, pad_with_end=True, tokenizer=None, has_start_token=True, pad_to_max_length=True, min_length=None
-    ):
-        """
-        サブクラスで各種の設定を行ってる。このクラスはその設定に基づき重み付きのトークン化を行うようだ。
-        Some settings are done in subclasses. This class seems to perform tokenization with weights based on those settings.
-        """
-        self.tokenizer: CLIPTokenizer = tokenizer
-        self.max_length = max_length
-        self.min_length = min_length
-        empty = self.tokenizer("")["input_ids"]
-        if has_start_token:
-            self.tokens_start = 1
-            self.start_token = empty[0]
-            self.end_token = empty[1]
-        else:
-            self.tokens_start = 0
-            self.start_token = None
-            self.end_token = empty[0]
-        self.pad_with_end = pad_with_end
-        self.pad_to_max_length = pad_to_max_length
-        vocab = self.tokenizer.get_vocab()
-        self.inv_vocab = {v: k for k, v in vocab.items()}
-        self.max_word_length = 8
-
-    def tokenize(self, text: Union[str, List[str]]) -> List[torch.Tensor]:
-        """
-        Tokenize the text without weights.
-        """
-        if type(text) == str:
-            text = [text]
-        batch_tokens = self.tokenizer(text, padding="max_length", truncation=True, max_length=self.max_length, return_tensors="pt")
-        # return tokens["input_ids"]
-
-        pad_token = self.end_token if self.pad_with_end else 0
-        for tokens in batch_tokens["input_ids"]:
-            assert tokens[0] == self.start_token, f"tokens[0]: {tokens[0]}, start_token: {self.start_token}"
-
-    def tokenize_with_weights(self, text: str, truncate_to_max_length=True, truncate_length=None):
-        """Tokenize the text, with weight values - presume 1.0 for all and ignore other features here.
-        The details aren't relevant for a reference impl, and weights themselves has weak effect on SD3."""
-        """
-        ja: テキストをトークン化し、重み値を持ちます - すべての値に1.0を仮定し、他の機能を無視します。
-        詳細は参考実装には関係なく、重み自体はSD3に対して弱い影響しかありません。へぇ～
-        """
-        if self.pad_with_end:
-            pad_token = self.end_token
-        else:
-            pad_token = 0
-        batch = []
-        if self.start_token is not None:
-            batch.append((self.start_token, 1.0))
-        to_tokenize = text.replace("\n", " ").split(" ")
-        to_tokenize = [x for x in to_tokenize if x != ""]
-        for word in to_tokenize:
-            batch.extend([(t, 1) for t in self.tokenizer(word)["input_ids"][self.tokens_start : -1]])
-        batch.append((self.end_token, 1.0))
-        print(len(batch), self.max_length, self.min_length)
-        if self.pad_to_max_length:
-            batch.extend([(pad_token, 1.0)] * (self.max_length - len(batch)))
-        if self.min_length is not None and len(batch) < self.min_length:
-            batch.extend([(pad_token, 1.0)] * (self.min_length - len(batch)))
-
-        # truncate to max_length
-        print(
-            f"batch: {batch}, max_length: {self.max_length}, truncate: {truncate_to_max_length}, truncate_length: {truncate_length}"
-        )
-        if truncate_to_max_length and len(batch) > self.max_length:
-            batch = batch[: self.max_length]
-        if truncate_length is not None and len(batch) > truncate_length:
-            batch = batch[:truncate_length]
-
-        return [batch]
-
-
-class T5XXLTokenizer(SDTokenizer):
-    """Wraps the T5 Tokenizer from HF into the SDTokenizer interface"""
-
-    def __init__(self):
-        super().__init__(
-            pad_with_end=False,
-            tokenizer=T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl"),
-            has_start_token=False,
-            pad_to_max_length=False,
-            max_length=99999999,
-            min_length=77,
-        )
-
-
-class SDXLClipGTokenizer(SDTokenizer):
-    def __init__(self, tokenizer):
-        super().__init__(pad_with_end=False, tokenizer=tokenizer)
-
-
-class SD3Tokenizer:
-    def __init__(self, t5xxl=True, t5xxl_max_length: Optional[int] = 256):
-        if t5xxl_max_length is None:
-            t5xxl_max_length = 256
-
-        # TODO cache tokenizer settings locally or hold them in the repo like ComfyUI
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        self.clip_l = SDTokenizer(tokenizer=clip_tokenizer)
-        self.clip_g = SDXLClipGTokenizer(clip_tokenizer)
-        # self.clip_l = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        # self.clip_g = CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k")
-        self.t5xxl = T5XXLTokenizer() if t5xxl else None
-        # t5xxl has 99999999 max length, clip has 77
-        self.t5xxl_max_length = t5xxl_max_length
-
-    def tokenize_with_weights(self, text: str):
-        return (
-            self.clip_l.tokenize_with_weights(text),
-            self.clip_g.tokenize_with_weights(text),
-            (
-                self.t5xxl.tokenize_with_weights(text, truncate_to_max_length=False, truncate_length=self.t5xxl_max_length)
-                if self.t5xxl is not None
-                else None
-            ),
-        )
-
-    def tokenize(self, text: str):
-        return (
-            self.clip_l.tokenize(text),
-            self.clip_g.tokenize(text),
-            (self.t5xxl.tokenize(text) if self.t5xxl is not None else None),
-        )
-
-
-# endregion
-
 # region mmdit
+
+
+@dataclass
+class SD3Params:
+    patch_size: int
+    depth: int
+    num_patches: int
+    pos_embed_max_size: int
+    adm_in_channels: int
+    qk_norm: Optional[str]
+    x_block_self_attn_layers: list[int]
+    context_embedder_in_features: int
+    context_embedder_out_features: int
+    model_type: str
 
 
 def get_2d_sincos_pos_embed(
@@ -199,6 +86,78 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
 
     emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
     return emb
+
+
+def get_scaled_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0, sample_size=64, base_size=16):
+    """
+    This function is contributed by KohakuBlueleaf. Thanks for the contribution!
+
+    Creates scaled 2D sinusoidal positional embeddings that maintain consistent relative positions
+    when the resolution differs from the training resolution.
+
+    Args:
+        embed_dim (int): Dimension of the positional embedding.
+        grid_size (int or tuple): Size of the position grid (H, W). If int, assumes square grid.
+        cls_token (bool): Whether to include class token. Defaults to False.
+        extra_tokens (int): Number of extra tokens (e.g., cls_token). Defaults to 0.
+        sample_size (int): Reference resolution (typically training resolution). Defaults to 64.
+        base_size (int): Base grid size used during training. Defaults to 16.
+
+    Returns:
+        numpy.ndarray: Positional embeddings of shape (H*W, embed_dim) or
+                      (H*W + extra_tokens, embed_dim) if cls_token is True.
+    """
+    # Convert grid_size to tuple if it's an integer
+    if isinstance(grid_size, int):
+        grid_size = (grid_size, grid_size)
+
+    # Create normalized grid coordinates (0 to 1)
+    grid_h = np.arange(grid_size[0], dtype=np.float32) / grid_size[0]
+    grid_w = np.arange(grid_size[1], dtype=np.float32) / grid_size[1]
+
+    # Calculate scaling factors for height and width
+    # This ensures that the central region matches the original resolution's embeddings
+    scale_h = base_size * grid_size[0] / (sample_size)
+    scale_w = base_size * grid_size[1] / (sample_size)
+
+    # Calculate shift values to center the original resolution's embedding region
+    # This ensures that the central sample_size x sample_size region has similar
+    # positional embeddings to the original resolution
+    shift_h = 1 * scale_h * (grid_size[0] - sample_size) / (2 * grid_size[0])
+    shift_w = 1 * scale_w * (grid_size[1] - sample_size) / (2 * grid_size[1])
+
+    # Apply scaling and shifting to create the final grid coordinates
+    grid_h = grid_h * scale_h - shift_h
+    grid_w = grid_w * scale_w - shift_w
+
+    # Create 2D grid using meshgrid (note: w goes first)
+    grid = np.meshgrid(grid_w, grid_h)
+    grid = np.stack(grid, axis=0)
+
+    # # Calculate the starting indices for the central region
+    # # This is used for debugging/visualization of the central region
+    # st_h = (grid_size[0] - sample_size) // 2
+    # st_w = (grid_size[1] - sample_size) // 2
+    # print(grid[:, st_h : st_h + sample_size, st_w : st_w + sample_size])
+
+    # Reshape grid for positional embedding calculation
+    grid = grid.reshape([2, 1, grid_size[1], grid_size[0]])
+
+    # Generate the sinusoidal positional embeddings
+    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
+
+    # Add zeros for extra tokens (e.g., [CLS] token) if required
+    if cls_token and extra_tokens > 0:
+        pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
+
+    return pos_embed
+
+
+# if __name__ == "__main__":
+#     # This is what you get when you load SD3.5 state dict
+#     pos_emb = torch.from_numpy(get_scaled_2d_sincos_pos_embed(
+#         1536, [384, 384], sample_size=64, base_size=16
+#     )).float().unsqueeze(0)
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
@@ -286,10 +245,6 @@ def timestep_embedding(t, dim, max_period=10000):
     return embedding
 
 
-def rmsnorm(x, eps=1e-6):
-    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-
-
 class PatchEmbed(nn.Module):
     def __init__(
         self,
@@ -301,8 +256,9 @@ class PatchEmbed(nn.Module):
         flatten=True,
         bias=True,
         strict_img_size=True,
-        dynamic_img_pad=True,
+        dynamic_img_pad=False,
     ):
+        # dynamic_img_pad and norm is omitted in SD3.5
         super().__init__()
         self.patch_size = patch_size
         self.flatten = flatten
@@ -430,6 +386,10 @@ class Embedder(nn.Module):
 
     def forward(self, x):
         return self.mlp(x)
+
+
+def rmsnorm(x, eps=1e-6):
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
 
 
 class RMSNorm(torch.nn.Module):
@@ -604,53 +564,6 @@ def attention(q, k, v, head_dim, mask=None, scale=None, mode="xformers"):
     return scores
 
 
-class SelfAttention(AttentionLinears):
-    def __init__(self, dim, num_heads=8, mode="xformers"):
-        super().__init__(dim, num_heads, qkv_bias=True, pre_only=False)
-        assert mode in MEMORY_LAYOUTS
-        self.head_dim = dim // num_heads
-        self.attn_mode = mode
-
-    def set_attn_mode(self, mode):
-        self.attn_mode = mode
-
-    def forward(self, x):
-        q, k, v = self.pre_attention(x)
-        attn_score = attention(q, k, v, self.head_dim, mode=self.attn_mode)
-        return self.post_attention(attn_score)
-
-
-class TransformerBlock(nn.Module):
-    def __init__(self, context_size, mode="xformers"):
-        super().__init__()
-        self.context_size = context_size
-        self.norm1 = nn.LayerNorm(context_size, elementwise_affine=False, eps=1e-6)
-        self.attn = SelfAttention(context_size, mode=mode)
-        self.norm2 = nn.LayerNorm(context_size, elementwise_affine=False, eps=1e-6)
-        self.mlp = MLP(
-            in_features=context_size,
-            hidden_features=context_size * 4,
-            act_layer=lambda: nn.GELU(approximate="tanh"),
-        )
-
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
-        return x
-
-
-class Transformer(nn.Module):
-    def __init__(self, context_size, num_layers, mode="xformers"):
-        super().__init__()
-        self.layers = nn.ModuleList([TransformerBlock(context_size, mode) for _ in range(num_layers)])
-        self.norm = nn.LayerNorm(context_size, elementwise_affine=False, eps=1e-6)
-
-    def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return self.norm(x)
-
-
 # DismantledBlock in mmdit.py
 class SingleDiTBlock(nn.Module):
     """
@@ -669,6 +582,7 @@ class SingleDiTBlock(nn.Module):
         scale_mod_only: bool = False,
         swiglu: bool = False,
         qk_norm: Optional[str] = None,
+        x_block_self_attn: bool = False,
         **block_kwargs,
     ):
         super().__init__()
@@ -678,13 +592,14 @@ class SingleDiTBlock(nn.Module):
             self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         else:
             self.norm1 = RMSNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = AttentionLinears(
-            dim=hidden_size,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            pre_only=pre_only,
-            qk_norm=qk_norm,
-        )
+        self.attn = AttentionLinears(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, pre_only=pre_only, qk_norm=qk_norm)
+
+        self.x_block_self_attn = x_block_self_attn
+        if self.x_block_self_attn:
+            assert not pre_only
+            assert not scale_mod_only
+            self.attn2 = AttentionLinears(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, pre_only=False, qk_norm=qk_norm)
+
         if not pre_only:
             if not rmsnorm:
                 self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -705,7 +620,9 @@ class SingleDiTBlock(nn.Module):
                     multiple_of=256,
                 )
         self.scale_mod_only = scale_mod_only
-        if not scale_mod_only:
+        if self.x_block_self_attn:
+            n_mods = 9
+        elif not scale_mod_only:
             n_mods = 6 if not pre_only else 2
         else:
             n_mods = 4 if not pre_only else 1
@@ -715,53 +632,51 @@ class SingleDiTBlock(nn.Module):
     def pre_attention(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         if not self.pre_only:
             if not self.scale_mod_only:
-                (
-                    shift_msa,
-                    scale_msa,
-                    gate_msa,
-                    shift_mlp,
-                    scale_mlp,
-                    gate_mlp,
-                ) = self.adaLN_modulation(
-                    c
-                ).chunk(6, dim=-1)
+                (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) = self.adaLN_modulation(c).chunk(6, dim=-1)
             else:
                 shift_msa = None
                 shift_mlp = None
-                (
-                    scale_msa,
-                    gate_msa,
-                    scale_mlp,
-                    gate_mlp,
-                ) = self.adaLN_modulation(
-                    c
-                ).chunk(4, dim=-1)
+                (scale_msa, gate_msa, scale_mlp, gate_mlp) = self.adaLN_modulation(c).chunk(4, dim=-1)
             qkv = self.attn.pre_attention(modulate(self.norm1(x), shift_msa, scale_msa))
-            return qkv, (
-                x,
-                gate_msa,
-                shift_mlp,
-                scale_mlp,
-                gate_mlp,
-            )
+            return qkv, (x, gate_msa, shift_mlp, scale_mlp, gate_mlp)
         else:
             if not self.scale_mod_only:
-                (
-                    shift_msa,
-                    scale_msa,
-                ) = self.adaLN_modulation(
-                    c
-                ).chunk(2, dim=-1)
+                (shift_msa, scale_msa) = self.adaLN_modulation(c).chunk(2, dim=-1)
             else:
                 shift_msa = None
                 scale_msa = self.adaLN_modulation(c)
             qkv = self.attn.pre_attention(modulate(self.norm1(x), shift_msa, scale_msa))
             return qkv, None
 
+    def pre_attention_x(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        assert self.x_block_self_attn
+        (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_msa2, scale_msa2, gate_msa2) = self.adaLN_modulation(
+            c
+        ).chunk(9, dim=1)
+        x_norm = self.norm1(x)
+        qkv = self.attn.pre_attention(modulate(x_norm, shift_msa, scale_msa))
+        qkv2 = self.attn2.pre_attention(modulate(x_norm, shift_msa2, scale_msa2))
+        return qkv, qkv2, (x, gate_msa, shift_mlp, scale_mlp, gate_mlp, gate_msa2)
+
     def post_attention(self, attn, x, gate_msa, shift_mlp, scale_mlp, gate_mlp):
         assert not self.pre_only
         x = x + gate_msa.unsqueeze(1) * self.attn.post_attention(attn)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        return x
+
+    def post_attention_x(self, attn, attn2, x, gate_msa, shift_mlp, scale_mlp, gate_mlp, gate_msa2, attn1_dropout: float = 0.0):
+        assert not self.pre_only
+        if attn1_dropout > 0.0:
+            # Use torch.bernoulli to implement dropout, only dropout the batch dimension
+            attn1_dropout = torch.bernoulli(torch.full((attn.size(0), 1, 1), 1 - attn1_dropout, device=attn.device))
+            attn_ = gate_msa.unsqueeze(1) * self.attn.post_attention(attn) * attn1_dropout
+        else:
+            attn_ = gate_msa.unsqueeze(1) * self.attn.post_attention(attn)
+        x = x + attn_
+        attn2_ = gate_msa2.unsqueeze(1) * self.attn2.post_attention(attn2)
+        x = x + attn2_
+        mlp_ = gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        x = x + mlp_
         return x
 
 
@@ -770,8 +685,11 @@ class MMDiTBlock(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
         pre_only = kwargs.pop("pre_only")
+        x_block_self_attn = kwargs.pop("x_block_self_attn")
+
         self.context_block = SingleDiTBlock(*args, pre_only=pre_only, **kwargs)
-        self.x_block = SingleDiTBlock(*args, pre_only=False, **kwargs)
+        self.x_block = SingleDiTBlock(*args, pre_only=False, x_block_self_attn=x_block_self_attn, **kwargs)
+
         self.head_dim = self.x_block.attn.head_dim
         self.mode = self.x_block.attn_mode
         self.gradient_checkpointing = False
@@ -781,7 +699,11 @@ class MMDiTBlock(nn.Module):
 
     def _forward(self, context, x, c):
         ctx_qkv, ctx_intermediate = self.context_block.pre_attention(context, c)
-        x_qkv, x_intermediate = self.x_block.pre_attention(x, c)
+
+        if self.x_block.x_block_self_attn:
+            x_qkv, x_qkv2, x_intermediates = self.x_block.pre_attention_x(x, c)
+        else:
+            x_qkv, x_intermediates = self.x_block.pre_attention(x, c)
 
         ctx_len = ctx_qkv[0].size(1)
 
@@ -793,11 +715,18 @@ class MMDiTBlock(nn.Module):
         ctx_attn_out = attn[:, :ctx_len]
         x_attn_out = attn[:, ctx_len:]
 
-        x = self.x_block.post_attention(x_attn_out, *x_intermediate)
+        if self.x_block.x_block_self_attn:
+            x_q2, x_k2, x_v2 = x_qkv2
+            attn2 = attention(x_q2, x_k2, x_v2, self.x_block.attn2.num_heads, mode=self.mode)
+            x = self.x_block.post_attention_x(x_attn_out, attn2, *x_intermediates)
+        else:
+            x = self.x_block.post_attention(x_attn_out, *x_intermediates)
+
         if not self.context_block.pre_only:
             context = self.context_block.post_attention(ctx_attn_out, *ctx_intermediate)
         else:
             context = None
+
         return context, x
 
     def forward(self, *args, **kwargs):
@@ -812,6 +741,9 @@ class MMDiT(nn.Module):
     Diffusion model with a Transformer backbone.
     """
 
+    # prepare pos_embed for latent size * 2
+    POS_EMBED_MAX_RATIO = 1.5
+
     def __init__(
         self,
         input_size: int = 32,
@@ -823,7 +755,8 @@ class MMDiT(nn.Module):
         mlp_ratio: float = 4.0,
         learn_sigma: bool = False,
         adm_in_channels: Optional[int] = None,
-        context_embedder_config: Optional[Dict] = None,
+        context_embedder_in_features: Optional[int] = None,
+        context_embedder_out_features: Optional[int] = None,
         use_checkpoint: bool = False,
         register_length: int = 0,
         attn_mode: str = "torch",
@@ -836,11 +769,15 @@ class MMDiT(nn.Module):
         pos_embed_max_size: Optional[int] = None,
         num_patches=None,
         qk_norm: Optional[str] = None,
+        x_block_self_attn_layers: Optional[list[int]] = [],
         qkv_bias: bool = True,
-        context_processor_layers=None,
-        context_size=4096,
+        pos_emb_random_crop_rate: float = 0.0,
+        use_scaled_pos_embed: bool = False,
+        pos_embed_latent_sizes: Optional[list[int]] = None,
+        model_type: str = "sd3m",
     ):
         super().__init__()
+        self._model_type = model_type
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
         default_out_channels = in_channels * 2 if learn_sigma else in_channels
@@ -849,6 +786,8 @@ class MMDiT(nn.Module):
         self.pos_embed_scaling_factor = pos_embed_scaling_factor
         self.pos_embed_offset = pos_embed_offset
         self.pos_embed_max_size = pos_embed_max_size
+        self.x_block_self_attn_layers = x_block_self_attn_layers
+        self.pos_emb_random_crop_rate = pos_emb_random_crop_rate
         self.gradient_checkpointing = use_checkpoint
 
         # hidden_size = default(hidden_size, 64 * depth)
@@ -859,6 +798,8 @@ class MMDiT(nn.Module):
         num_heads = depth
 
         self.num_heads = num_heads
+
+        self.enable_scaled_pos_embed(use_scaled_pos_embed, pos_embed_latent_sizes)
 
         self.x_embedder = PatchEmbed(
             input_size,
@@ -875,12 +816,11 @@ class MMDiT(nn.Module):
             assert isinstance(adm_in_channels, int)
             self.y_embedder = Embedder(adm_in_channels, self.hidden_size)
 
-        if context_processor_layers is not None:
-            self.context_processor = Transformer(context_size, context_processor_layers, attn_mode)
+        if context_embedder_in_features is not None:
+            self.context_embedder = nn.Linear(context_embedder_in_features, context_embedder_out_features)
         else:
-            self.context_processor = None
+            self.context_embedder = nn.Identity()
 
-        self.context_embedder = nn.Linear(context_size, self.hidden_size)
         self.register_length = register_length
         if self.register_length > 0:
             self.register = nn.Parameter(torch.randn(1, register_length, self.hidden_size))
@@ -910,6 +850,7 @@ class MMDiT(nn.Module):
                     scale_mod_only=scale_mod_only,
                     swiglu=swiglu,
                     qk_norm=qk_norm,
+                    x_block_self_attn=(i in self.x_block_self_attn_layers),
                 )
                 for i in range(depth)
             ]
@@ -920,9 +861,50 @@ class MMDiT(nn.Module):
         self.final_layer = UnPatch(self.hidden_size, patch_size, self.out_channels)
         # self.initialize_weights()
 
+        self.blocks_to_swap = None
+        self.thread_pool: Optional[ThreadPoolExecutor] = None
+
+    def enable_scaled_pos_embed(self, use_scaled_pos_embed: bool, latent_sizes: Optional[list[int]]):
+        self.use_scaled_pos_embed = use_scaled_pos_embed
+
+        if self.use_scaled_pos_embed:
+            # remove pos_embed to free up memory up to 0.4 GB
+            self.pos_embed = None
+
+            # remove duplcates and sort latent sizes in ascending order
+            latent_sizes = list(set(latent_sizes))
+            latent_sizes = sorted(latent_sizes)
+
+            patched_sizes = [latent_size // self.patch_size for latent_size in latent_sizes]
+
+            # calculate value range for each latent area: this is used to determine the pos_emb size from the latent shape
+            max_areas = []
+            for i in range(1, len(patched_sizes)):
+                prev_area = patched_sizes[i - 1] ** 2
+                area = patched_sizes[i] ** 2
+                max_areas.append((prev_area + area) // 2)
+
+            # area of the last latent size, if the latent size exceeds this, error will be raised
+            max_areas.append(int((patched_sizes[-1] * MMDiT.POS_EMBED_MAX_RATIO) ** 2))
+            # print("max_areas", max_areas)
+
+            self.resolution_area_to_latent_size = [(area, latent_size) for area, latent_size in zip(max_areas, patched_sizes)]
+
+            self.resolution_pos_embeds = {}
+            for patched_size in patched_sizes:
+                grid_size = int(patched_size * MMDiT.POS_EMBED_MAX_RATIO)
+                pos_embed = get_scaled_2d_sincos_pos_embed(self.hidden_size, grid_size, sample_size=patched_size)
+                pos_embed = torch.from_numpy(pos_embed).float().unsqueeze(0)
+                self.resolution_pos_embeds[patched_size] = pos_embed
+                # print(f"pos_embed for {patched_size}x{patched_size} latent size: {pos_embed.shape}")
+
+        else:
+            self.resolution_area_to_latent_size = None
+            self.resolution_pos_embeds = None
+
     @property
     def model_type(self):
-        return "m"  # only support medium
+        return self._model_type
 
     @property
     def device(self):
@@ -988,18 +970,27 @@ class MMDiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def cropped_pos_embed(self, h, w, device=None):
+    def set_pos_emb_random_crop_rate(self, rate: float):
+        self.pos_emb_random_crop_rate = rate
+
+    def cropped_pos_embed(self, h, w, device=None, random_crop: bool = False):
         p = self.x_embedder.patch_size
         # patched size
         h = (h + 1) // p
         w = (w + 1) // p
-        if self.pos_embed is None:
+        if self.pos_embed is None:  # should not happen
             return get_2d_sincos_pos_embed_torch(self.hidden_size, w, h, device=device)
         assert self.pos_embed_max_size is not None
         assert h <= self.pos_embed_max_size, (h, self.pos_embed_max_size)
         assert w <= self.pos_embed_max_size, (w, self.pos_embed_max_size)
-        top = (self.pos_embed_max_size - h) // 2
-        left = (self.pos_embed_max_size - w) // 2
+
+        if not random_crop:
+            top = (self.pos_embed_max_size - h) // 2
+            left = (self.pos_embed_max_size - w) // 2
+        else:
+            top = torch.randint(0, self.pos_embed_max_size - h + 1, (1,)).item()
+            left = torch.randint(0, self.pos_embed_max_size - w + 1, (1,)).item()
+
         spatial_pos_embed = self.pos_embed.reshape(
             1,
             self.pos_embed_max_size,
@@ -1009,6 +1000,89 @@ class MMDiT(nn.Module):
         spatial_pos_embed = spatial_pos_embed[:, top : top + h, left : left + w, :]
         spatial_pos_embed = spatial_pos_embed.reshape(1, -1, spatial_pos_embed.shape[-1])
         return spatial_pos_embed
+
+    def cropped_scaled_pos_embed(self, h, w, device=None, dtype=None, random_crop: bool = False):
+        p = self.x_embedder.patch_size
+        # patched size
+        h = (h + 1) // p
+        w = (w + 1) // p
+
+        # select pos_embed size based on area
+        area = h * w
+        patched_size = None
+        for area_, patched_size_ in self.resolution_area_to_latent_size:
+            if area <= area_:
+                patched_size = patched_size_
+                break
+        if patched_size is None:
+            raise ValueError(f"Area {area} is too large for the given latent sizes {self.resolution_area_to_latent_size}.")
+
+        pos_embed = self.resolution_pos_embeds[patched_size]
+        pos_embed_size = round(math.sqrt(pos_embed.shape[1]))
+        if h > pos_embed_size or w > pos_embed_size:
+            # # fallback to normal pos_embed
+            # return self.cropped_pos_embed(h * p, w * p, device=device, random_crop=random_crop)
+            # extend pos_embed size
+            logger.warning(
+                f"Using normal pos_embed for size {h}x{w} as it exceeds the scaled pos_embed size {pos_embed_size}. Image is too tall or wide."
+            )
+            pos_embed_size = max(h, w)
+            pos_embed = get_scaled_2d_sincos_pos_embed(self.hidden_size, pos_embed_size, sample_size=patched_size)
+            pos_embed = torch.from_numpy(pos_embed).float().unsqueeze(0)
+            self.resolution_pos_embeds[patched_size] = pos_embed
+            logger.info(f"Updated pos_embed for size {pos_embed_size}x{pos_embed_size}")
+
+        if not random_crop:
+            top = (pos_embed_size - h) // 2
+            left = (pos_embed_size - w) // 2
+        else:
+            top = torch.randint(0, pos_embed_size - h + 1, (1,)).item()
+            left = torch.randint(0, pos_embed_size - w + 1, (1,)).item()
+
+        if pos_embed.device != device:
+            pos_embed = pos_embed.to(device)
+            # which is better to update device, or transfer every time to device? -> 64x64 emb is 96*96*1536*4=56MB. It's okay to update device.
+            self.resolution_pos_embeds[patched_size] = pos_embed  # update device
+        if pos_embed.dtype != dtype:
+            pos_embed = pos_embed.to(dtype)
+            self.resolution_pos_embeds[patched_size] = pos_embed  # update dtype
+
+        spatial_pos_embed = pos_embed.reshape(1, pos_embed_size, pos_embed_size, pos_embed.shape[-1])
+        spatial_pos_embed = spatial_pos_embed[:, top : top + h, left : left + w, :]
+        spatial_pos_embed = spatial_pos_embed.reshape(1, -1, spatial_pos_embed.shape[-1])
+        # print(
+        #     f"patched size: {h}x{w}, pos_embed size: {pos_embed_size}, pos_embed shape: {pos_embed.shape}, top: {top}, left: {left}"
+        # )
+        return spatial_pos_embed
+
+    def enable_block_swap(self, num_blocks: int):
+        self.blocks_to_swap = num_blocks
+
+        n = 1  # async block swap. 1 is enough
+        self.thread_pool = ThreadPoolExecutor(max_workers=n)
+
+    def move_to_device_except_swap_blocks(self, device: torch.device):
+        # assume model is on cpu
+        if self.blocks_to_swap:
+            save_blocks = self.joint_blocks
+            self.joint_blocks = None
+
+        self.to(device)
+
+        if self.blocks_to_swap:
+            self.joint_blocks = save_blocks
+
+    def prepare_block_swap_before_forward(self):
+        # make: first n blocks are on cuda, and last n blocks are on cpu
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            # raise ValueError("Block swap is not enabled.")
+            return
+        num_blocks = len(self.joint_blocks)
+        for i in range(num_blocks - self.blocks_to_swap):
+            self.joint_blocks[i].to(self.device)
+        for i in range(num_blocks - self.blocks_to_swap, num_blocks):
+            self.joint_blocks[i].to("cpu")
+        clean_memory_on_device(self.device)
 
     def forward(
         self,
@@ -1023,12 +1097,21 @@ class MMDiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N, D) tensor of class labels
         """
-
-        if self.context_processor is not None:
-            context = self.context_processor(context)
+        pos_emb_random_crop = (
+            False if self.pos_emb_random_crop_rate == 0.0 else torch.rand(1).item() < self.pos_emb_random_crop_rate
+        )
 
         B, C, H, W = x.shape
-        x = self.x_embedder(x) + self.cropped_pos_embed(H, W, device=x.device).to(dtype=x.dtype)
+
+        # x = self.x_embedder(x) + self.cropped_pos_embed(H, W, device=x.device, random_crop=pos_emb_random_crop).to(dtype=x.dtype)
+        if not self.use_scaled_pos_embed:
+            pos_embed = self.cropped_pos_embed(H, W, device=x.device, random_crop=pos_emb_random_crop).to(dtype=x.dtype)
+        else:
+            # print(f"Using scaled pos_embed for size {H}x{W}")
+            pos_embed = self.cropped_scaled_pos_embed(H, W, device=x.device, dtype=x.dtype, random_crop=pos_emb_random_crop)
+        x = self.x_embedder(x) + pos_embed
+        del pos_embed
+
         c = self.t_embedder(t, dtype=x.dtype)  # (N, D)
         if y is not None and self.y_embedder is not None:
             y = self.y_embedder(y)  # (N, D)
@@ -1046,28 +1129,71 @@ class MMDiT(nn.Module):
                 1,
             )
 
-        for block in self.joint_blocks:
-            context, x = block(context, x, c)
+        if not self.blocks_to_swap:
+            for block in self.joint_blocks:
+                context, x = block(context, x, c)
+        else:
+            futures = {}
+
+            def submit_move_blocks(block_idx_to_cpu, block_idx_to_cuda):
+                def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda):
+                    # print(f"Moving {bidx_to_cpu} to cpu.")
+                    block_to_cpu.to("cpu", non_blocking=True)
+                    torch.cuda.empty_cache()
+
+                    # print(f"Moving {bidx_to_cuda} to cuda.")
+                    block_to_cuda.to(self.device, non_blocking=True)
+
+                    torch.cuda.synchronize()
+                    # print(f"Block move done. {bidx_to_cpu} to cpu, {bidx_to_cuda} to cuda.")
+                    return block_idx_to_cpu, block_idx_to_cuda
+
+                block_to_cpu = self.joint_blocks[block_idx_to_cpu]
+                block_to_cuda = self.joint_blocks[block_idx_to_cuda]
+                # print(f"Submit move blocks. {block_idx_to_cpu} to cpu, {block_idx_to_cuda} to cuda.")
+                return self.thread_pool.submit(move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_cuda, block_to_cuda)
+
+            def wait_for_blocks_move(block_idx, ftrs):
+                if block_idx not in ftrs:
+                    return
+                # print(f"Waiting for move blocks: {block_idx}")
+                # start_time = time.perf_counter()
+                ftr = ftrs.pop(block_idx)
+                ftr.result()
+                # torch.cuda.synchronize()
+                # print(f"Move blocks took {time.perf_counter() - start_time:.2f} seconds")
+
+            for block_idx, block in enumerate(self.joint_blocks):
+                wait_for_blocks_move(block_idx, futures)
+
+                context, x = block(context, x, c)
+
+                if block_idx < self.blocks_to_swap:
+                    block_idx_to_cpu = block_idx
+                    block_idx_to_cuda = len(self.joint_blocks) - self.blocks_to_swap + block_idx
+                    future = submit_move_blocks(block_idx_to_cpu, block_idx_to_cuda)
+                    futures[block_idx_to_cuda] = future
+
         x = self.final_layer(x, c, H, W)  # Our final layer combined UnPatchify
         return x[:, :, :H, :W]
 
 
-def create_mmdit_sd3_medium_configs(attn_mode: str):
-    # {'patch_size': 2, 'depth': 24, 'num_patches': 36864,
-    # 'pos_embed_max_size': 192, 'adm_in_channels': 2048, 'context_embedder':
-    # {'target': 'torch.nn.Linear', 'params': {'in_features': 4096, 'out_features': 1536}}}
+def create_sd3_mmdit(params: SD3Params, attn_mode: str = "torch") -> MMDiT:
     mmdit = MMDiT(
         input_size=None,
-        pos_embed_max_size=192,
-        patch_size=2,
+        pos_embed_max_size=params.pos_embed_max_size,
+        patch_size=params.patch_size,
         in_channels=16,
-        adm_in_channels=2048,
-        depth=24,
+        adm_in_channels=params.adm_in_channels,
+        context_embedder_in_features=params.context_embedder_in_features,
+        context_embedder_out_features=params.context_embedder_out_features,
+        depth=params.depth,
         mlp_ratio=4,
-        qk_norm=None,
-        num_patches=36864,
-        context_size=4096,
+        qk_norm=params.qk_norm,
+        x_block_self_attn_layers=params.x_block_self_attn_layers,
+        num_patches=params.num_patches,
         attn_mode=attn_mode,
+        model_type=params.model_type,
     )
     return mmdit
 
@@ -1075,7 +1201,6 @@ def create_mmdit_sd3_medium_configs(attn_mode: str):
 # endregion
 
 # region VAE
-# TODO support xformers
 
 VAE_SCALE_FACTOR = 1.5305
 VAE_SHIFT_FACTOR = 0.0609
@@ -1321,760 +1446,5 @@ class SDVAE(torch.nn.Module):
     def process_out(latent):
         return (latent / VAE_SCALE_FACTOR) + VAE_SHIFT_FACTOR
 
-
-class VAEOutput:
-    def __init__(self, latent):
-        self.latent = latent
-
-    @property
-    def latent_dist(self):
-        return self
-
-    def sample(self):
-        return self.latent
-
-
-class VAEWrapper:
-    def __init__(self, vae):
-        self.vae = vae
-
-    @property
-    def device(self):
-        return self.vae.device
-
-    @property
-    def dtype(self):
-        return self.vae.dtype
-
-    # latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
-    def encode(self, image):
-        return VAEOutput(self.vae.encode(image))
-
-
-# endregion
-
-
-# region Text Encoder
-class CLIPAttention(torch.nn.Module):
-    def __init__(self, embed_dim, heads, dtype, device, mode="xformers"):
-        super().__init__()
-        self.heads = heads
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True, dtype=dtype, device=device)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True, dtype=dtype, device=device)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=True, dtype=dtype, device=device)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True, dtype=dtype, device=device)
-        self.attn_mode = mode
-
-    def set_attn_mode(self, mode):
-        self.attn_mode = mode
-
-    def forward(self, x, mask=None):
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-        out = attention(q, k, v, self.heads, mask, mode=self.attn_mode)
-        return self.out_proj(out)
-
-
-ACTIVATIONS = {
-    "quick_gelu": lambda: (lambda a: a * torch.sigmoid(1.702 * a)),
-    # "gelu": torch.nn.functional.gelu,
-    "gelu": lambda: nn.GELU(),
-}
-
-
-class CLIPLayer(torch.nn.Module):
-    def __init__(self, embed_dim, heads, intermediate_size, intermediate_activation, dtype, device):
-        super().__init__()
-        self.layer_norm1 = nn.LayerNorm(embed_dim, dtype=dtype, device=device)
-        self.self_attn = CLIPAttention(embed_dim, heads, dtype, device)
-        self.layer_norm2 = nn.LayerNorm(embed_dim, dtype=dtype, device=device)
-        # # self.mlp = CLIPMLP(embed_dim, intermediate_size, intermediate_activation, dtype, device)
-        # self.mlp = Mlp(
-        #     embed_dim, intermediate_size, embed_dim, act_layer=ACTIVATIONS[intermediate_activation], dtype=dtype, device=device
-        # )
-        self.mlp = MLP(embed_dim, intermediate_size, embed_dim, act_layer=ACTIVATIONS[intermediate_activation])
-        self.mlp.to(device=device, dtype=dtype)
-
-    def forward(self, x, mask=None):
-        x += self.self_attn(self.layer_norm1(x), mask)
-        x += self.mlp(self.layer_norm2(x))
-        return x
-
-
-class CLIPEncoder(torch.nn.Module):
-    def __init__(self, num_layers, embed_dim, heads, intermediate_size, intermediate_activation, dtype, device):
-        super().__init__()
-        self.layers = torch.nn.ModuleList(
-            [CLIPLayer(embed_dim, heads, intermediate_size, intermediate_activation, dtype, device) for i in range(num_layers)]
-        )
-
-    def forward(self, x, mask=None, intermediate_output=None):
-        if intermediate_output is not None:
-            if intermediate_output < 0:
-                intermediate_output = len(self.layers) + intermediate_output
-        intermediate = None
-        for i, l in enumerate(self.layers):
-            x = l(x, mask)
-            if i == intermediate_output:
-                intermediate = x.clone()
-        return x, intermediate
-
-
-class CLIPEmbeddings(torch.nn.Module):
-    def __init__(self, embed_dim, vocab_size=49408, num_positions=77, dtype=None, device=None):
-        super().__init__()
-        self.token_embedding = torch.nn.Embedding(vocab_size, embed_dim, dtype=dtype, device=device)
-        self.position_embedding = torch.nn.Embedding(num_positions, embed_dim, dtype=dtype, device=device)
-
-    def forward(self, input_tokens):
-        return self.token_embedding(input_tokens) + self.position_embedding.weight
-
-
-class CLIPTextModel_(torch.nn.Module):
-    def __init__(self, config_dict, dtype, device):
-        num_layers = config_dict["num_hidden_layers"]
-        embed_dim = config_dict["hidden_size"]
-        heads = config_dict["num_attention_heads"]
-        intermediate_size = config_dict["intermediate_size"]
-        intermediate_activation = config_dict["hidden_act"]
-        super().__init__()
-        self.embeddings = CLIPEmbeddings(embed_dim, dtype=torch.float32, device=device)
-        self.encoder = CLIPEncoder(num_layers, embed_dim, heads, intermediate_size, intermediate_activation, dtype, device)
-        self.final_layer_norm = nn.LayerNorm(embed_dim, dtype=dtype, device=device)
-
-    def forward(self, input_tokens, intermediate_output=None, final_layer_norm_intermediate=True):
-        x = self.embeddings(input_tokens)
-
-        if x.dtype == torch.bfloat16:
-            causal_mask = torch.empty(x.shape[1], x.shape[1], dtype=torch.float32, device=x.device).fill_(float("-inf")).triu_(1)
-            causal_mask = causal_mask.to(dtype=x.dtype)
-        else:
-            causal_mask = torch.empty(x.shape[1], x.shape[1], dtype=x.dtype, device=x.device).fill_(float("-inf")).triu_(1)
-
-        x, i = self.encoder(x, mask=causal_mask, intermediate_output=intermediate_output)
-        x = self.final_layer_norm(x)
-        if i is not None and final_layer_norm_intermediate:
-            i = self.final_layer_norm(i)
-        pooled_output = x[
-            torch.arange(x.shape[0], device=x.device),
-            input_tokens.to(dtype=torch.int, device=x.device).argmax(dim=-1),
-        ]
-        return x, i, pooled_output
-
-
-class CLIPTextModel(torch.nn.Module):
-    def __init__(self, config_dict, dtype, device):
-        super().__init__()
-        self.num_layers = config_dict["num_hidden_layers"]
-        self.text_model = CLIPTextModel_(config_dict, dtype, device)
-        embed_dim = config_dict["hidden_size"]
-        self.text_projection = nn.Linear(embed_dim, embed_dim, bias=False, dtype=dtype, device=device)
-        self.text_projection.weight.copy_(torch.eye(embed_dim))
-        self.dtype = dtype
-
-    def get_input_embeddings(self):
-        return self.text_model.embeddings.token_embedding
-
-    def set_input_embeddings(self, embeddings):
-        self.text_model.embeddings.token_embedding = embeddings
-
-    def forward(self, *args, **kwargs):
-        x = self.text_model(*args, **kwargs)
-        out = self.text_projection(x[2])
-        return (x[0], x[1], out, x[2])
-
-
-class ClipTokenWeightEncoder:
-    # def encode_token_weights(self, token_weight_pairs):
-    #     tokens = list(map(lambda a: a[0], token_weight_pairs[0]))
-    #     out, pooled = self([tokens])
-    #     if pooled is not None:
-    #         first_pooled = pooled[0:1]
-    #     else:
-    #         first_pooled = pooled
-    #     output = [out[0:1]]
-    #     return torch.cat(output, dim=-2), first_pooled
-
-    # fix to support batched inputs
-    # : Union[List[Tuple[torch.Tensor, torch.Tensor]], List[List[Tuple[torch.Tensor, torch.Tensor]]]]
-    def encode_token_weights(self, list_of_token_weight_pairs):
-        has_batch = isinstance(list_of_token_weight_pairs[0][0], list)
-
-        if has_batch:
-            list_of_tokens = []
-            for pairs in list_of_token_weight_pairs:
-                tokens = [a[0] for a in pairs[0]]  # I'm not sure why this is [0]
-                list_of_tokens.append(tokens)
-        else:
-            if isinstance(list_of_token_weight_pairs[0], torch.Tensor):
-                list_of_tokens = [list(list_of_token_weight_pairs[0])]
-            else:
-                list_of_tokens = [[a[0] for a in list_of_token_weight_pairs[0]]]
-
-        out, pooled = self(list_of_tokens)
-        if has_batch:
-            return out, pooled
-        else:
-            if pooled is not None:
-                first_pooled = pooled[0:1]
-            else:
-                first_pooled = pooled
-            output = [out[0:1]]
-            return torch.cat(output, dim=-2), first_pooled
-
-
-class SDClipModel(torch.nn.Module, ClipTokenWeightEncoder):
-    """Uses the CLIP transformer encoder for text (from huggingface)"""
-
-    LAYERS = ["last", "pooled", "hidden"]
-
-    def __init__(
-        self,
-        device="cpu",
-        max_length=77,
-        layer="last",
-        layer_idx=None,
-        textmodel_json_config=None,
-        dtype=None,
-        model_class=CLIPTextModel,
-        special_tokens={"start": 49406, "end": 49407, "pad": 49407},
-        layer_norm_hidden_state=True,
-        return_projected_pooled=True,
-    ):
-        super().__init__()
-        assert layer in self.LAYERS
-        self.transformer = model_class(textmodel_json_config, dtype, device)
-        self.num_layers = self.transformer.num_layers
-        self.max_length = max_length
-        self.transformer = self.transformer.eval()
-        for param in self.parameters():
-            param.requires_grad = False
-        self.layer = layer
-        self.layer_idx = None
-        self.special_tokens = special_tokens
-        self.logit_scale = torch.nn.Parameter(torch.tensor(4.6055))
-        self.layer_norm_hidden_state = layer_norm_hidden_state
-        self.return_projected_pooled = return_projected_pooled
-        if layer == "hidden":
-            assert layer_idx is not None
-            assert abs(layer_idx) < self.num_layers
-            self.set_clip_options({"layer": layer_idx})
-        self.options_default = (self.layer, self.layer_idx, self.return_projected_pooled)
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    @property
-    def dtype(self):
-        return next(self.parameters()).dtype
-
-    def gradient_checkpointing_enable(self):
-        logger.warning("Gradient checkpointing is not supported for this model")
-
-    def set_attn_mode(self, mode):
-        raise NotImplementedError("This model does not support setting the attention mode")
-
-    def set_clip_options(self, options):
-        layer_idx = options.get("layer", self.layer_idx)
-        self.return_projected_pooled = options.get("projected_pooled", self.return_projected_pooled)
-        if layer_idx is None or abs(layer_idx) > self.num_layers:
-            self.layer = "last"
-        else:
-            self.layer = "hidden"
-            self.layer_idx = layer_idx
-
-    def forward(self, tokens):
-        backup_embeds = self.transformer.get_input_embeddings()
-        device = backup_embeds.weight.device
-        tokens = torch.LongTensor(tokens).to(device)
-        outputs = self.transformer(
-            tokens, intermediate_output=self.layer_idx, final_layer_norm_intermediate=self.layer_norm_hidden_state
-        )
-        self.transformer.set_input_embeddings(backup_embeds)
-        if self.layer == "last":
-            z = outputs[0]
-        else:
-            z = outputs[1]
-        pooled_output = None
-        if len(outputs) >= 3:
-            if not self.return_projected_pooled and len(outputs) >= 4 and outputs[3] is not None:
-                pooled_output = outputs[3].float()
-            elif outputs[2] is not None:
-                pooled_output = outputs[2].float()
-        return z.float(), pooled_output
-
-    def set_attn_mode(self, mode):
-        clip_text_model = self.transformer.text_model
-        for layer in clip_text_model.encoder.layers:
-            layer.self_attn.set_attn_mode(mode)
-
-
-class SDXLClipG(SDClipModel):
-    """Wraps the CLIP-G model into the SD-CLIP-Model interface"""
-
-    def __init__(self, config, device="cpu", layer="penultimate", layer_idx=None, dtype=None):
-        if layer == "penultimate":
-            layer = "hidden"
-            layer_idx = -2
-        super().__init__(
-            device=device,
-            layer=layer,
-            layer_idx=layer_idx,
-            textmodel_json_config=config,
-            dtype=dtype,
-            special_tokens={"start": 49406, "end": 49407, "pad": 0},
-            layer_norm_hidden_state=False,
-        )
-
-    def set_attn_mode(self, mode):
-        clip_text_model = self.transformer.text_model
-        for layer in clip_text_model.encoder.layers:
-            layer.self_attn.set_attn_mode(mode)
-
-
-class T5XXLModel(SDClipModel):
-    """Wraps the T5-XXL model into the SD-CLIP-Model interface for convenience"""
-
-    def __init__(self, config, device="cpu", layer="last", layer_idx=None, dtype=None):
-        super().__init__(
-            device=device,
-            layer=layer,
-            layer_idx=layer_idx,
-            textmodel_json_config=config,
-            dtype=dtype,
-            special_tokens={"end": 1, "pad": 0},
-            model_class=T5,
-        )
-
-    def set_attn_mode(self, mode):
-        t5: T5 = self.transformer
-        for t5block in t5.encoder.block:
-            t5block: T5Block
-            t5layer: T5LayerSelfAttention = t5block.layer[0]
-            t5SaSa: T5Attention = t5layer.SelfAttention
-            t5SaSa.set_attn_mode(mode)
-
-
-#################################################################################################
-### T5 implementation, for the T5-XXL text encoder portion, largely pulled from upstream impl
-#################################################################################################
-
-"""
-class T5XXLTokenizer(SDTokenizer):
-    ""Wraps the T5 Tokenizer from HF into the SDTokenizer interface""
-
-    def __init__(self):
-        super().__init__(
-            pad_with_end=False,
-            tokenizer=T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl"),
-            has_start_token=False,
-            pad_to_max_length=False,
-            max_length=99999999,
-            min_length=77,
-        )
-"""
-
-
-class T5LayerNorm(torch.nn.Module):
-    def __init__(self, hidden_size, eps=1e-6, dtype=None, device=None):
-        super().__init__()
-        self.weight = torch.nn.Parameter(torch.ones(hidden_size, dtype=dtype, device=device))
-        self.variance_epsilon = eps
-
-    # def forward(self, x):
-    #     variance = x.pow(2).mean(-1, keepdim=True)
-    #     x = x * torch.rsqrt(variance + self.variance_epsilon)
-    #     return self.weight.to(device=x.device, dtype=x.dtype) * x
-
-    # copy from transformers' T5LayerNorm
-    def forward(self, hidden_states):
-        # T5 uses a layer_norm which only scales and doesn't shift, which is also known as Root Mean
-        # Square Layer Normalization https://arxiv.org/abs/1910.07467 thus variance is calculated
-        # w/o mean and there is no bias. Additionally we want to make sure that the accumulation for
-        # half-precision inputs is done in fp32
-        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-
-        # convert into half-precision if necessary
-        if self.weight.dtype in [torch.float16, torch.bfloat16]:
-            hidden_states = hidden_states.to(self.weight.dtype)
-
-        return self.weight * hidden_states
-
-
-class T5DenseGatedActDense(torch.nn.Module):
-    def __init__(self, model_dim, ff_dim, dtype, device):
-        super().__init__()
-        self.wi_0 = nn.Linear(model_dim, ff_dim, bias=False, dtype=dtype, device=device)
-        self.wi_1 = nn.Linear(model_dim, ff_dim, bias=False, dtype=dtype, device=device)
-        self.wo = nn.Linear(ff_dim, model_dim, bias=False, dtype=dtype, device=device)
-
-    def forward(self, x):
-        hidden_gelu = torch.nn.functional.gelu(self.wi_0(x), approximate="tanh")
-        hidden_linear = self.wi_1(x)
-        x = hidden_gelu * hidden_linear
-        x = self.wo(x)
-        return x
-
-
-class T5LayerFF(torch.nn.Module):
-    def __init__(self, model_dim, ff_dim, dtype, device):
-        super().__init__()
-        self.DenseReluDense = T5DenseGatedActDense(model_dim, ff_dim, dtype, device)
-        self.layer_norm = T5LayerNorm(model_dim, dtype=dtype, device=device)
-
-    def forward(self, x):
-        forwarded_states = self.layer_norm(x)
-        forwarded_states = self.DenseReluDense(forwarded_states)
-        x += forwarded_states
-        return x
-
-
-class T5Attention(torch.nn.Module):
-    def __init__(self, model_dim, inner_dim, num_heads, relative_attention_bias, dtype, device):
-        super().__init__()
-        # Mesh TensorFlow initialization to avoid scaling before softmax
-        self.q = nn.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.k = nn.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.v = nn.Linear(model_dim, inner_dim, bias=False, dtype=dtype, device=device)
-        self.o = nn.Linear(inner_dim, model_dim, bias=False, dtype=dtype, device=device)
-        self.num_heads = num_heads
-        self.relative_attention_bias = None
-        if relative_attention_bias:
-            self.relative_attention_num_buckets = 32
-            self.relative_attention_max_distance = 128
-            self.relative_attention_bias = torch.nn.Embedding(self.relative_attention_num_buckets, self.num_heads, device=device)
-
-        self.attn_mode = "xformers"  # TODO 何とかする
-
-    def set_attn_mode(self, mode):
-        self.attn_mode = mode
-
-    @staticmethod
-    def _relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_distance=128):
-        """
-        Adapted from Mesh Tensorflow:
-        https://github.com/tensorflow/mesh/blob/0cb87fe07da627bf0b7e60475d59f95ed6b5be3d/mesh_tensorflow/transformer/transformer_layers.py#L593
-
-        Translate relative position to a bucket number for relative attention. The relative position is defined as
-        memory_position - query_position, i.e. the distance in tokens from the attending position to the attended-to
-        position. If bidirectional=False, then positive relative positions are invalid. We use smaller buckets for
-        small absolute relative_position and larger buckets for larger absolute relative_positions. All relative
-        positions >=max_distance map to the same bucket. All relative positions <=-max_distance map to the same bucket.
-        This should allow for more graceful generalization to longer sequences than the model has been trained on
-
-        Args:
-            relative_position: an int32 Tensor
-            bidirectional: a boolean - whether the attention is bidirectional
-            num_buckets: an integer
-            max_distance: an integer
-
-        Returns:
-            a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
-        """
-        relative_buckets = 0
-        if bidirectional:
-            num_buckets //= 2
-            relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
-            relative_position = torch.abs(relative_position)
-        else:
-            relative_position = -torch.min(relative_position, torch.zeros_like(relative_position))
-        # now relative_position is in the range [0, inf)
-        # half of the buckets are for exact increments in positions
-        max_exact = num_buckets // 2
-        is_small = relative_position < max_exact
-        # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
-        relative_position_if_large = max_exact + (
-            torch.log(relative_position.float() / max_exact) / math.log(max_distance / max_exact) * (num_buckets - max_exact)
-        ).to(torch.long)
-        relative_position_if_large = torch.min(
-            relative_position_if_large, torch.full_like(relative_position_if_large, num_buckets - 1)
-        )
-        relative_buckets += torch.where(is_small, relative_position, relative_position_if_large)
-        return relative_buckets
-
-    def compute_bias(self, query_length, key_length, device):
-        """Compute binned relative position bias"""
-        context_position = torch.arange(query_length, dtype=torch.long, device=device)[:, None]
-        memory_position = torch.arange(key_length, dtype=torch.long, device=device)[None, :]
-        relative_position = memory_position - context_position  # shape (query_length, key_length)
-        relative_position_bucket = self._relative_position_bucket(
-            relative_position,  # shape (query_length, key_length)
-            bidirectional=True,
-            num_buckets=self.relative_attention_num_buckets,
-            max_distance=self.relative_attention_max_distance,
-        )
-        values = self.relative_attention_bias(relative_position_bucket)  # shape (query_length, key_length, num_heads)
-        values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, query_length, key_length)
-        return values
-
-    def forward(self, x, past_bias=None):
-        q = self.q(x)
-        k = self.k(x)
-        v = self.v(x)
-        if self.relative_attention_bias is not None:
-            past_bias = self.compute_bias(x.shape[1], x.shape[1], x.device)
-        if past_bias is not None:
-            mask = past_bias
-        out = attention(q, k * ((k.shape[-1] / self.num_heads) ** 0.5), v, self.num_heads, mask, mode=self.attn_mode)
-        return self.o(out), past_bias
-
-
-class T5LayerSelfAttention(torch.nn.Module):
-    def __init__(self, model_dim, inner_dim, ff_dim, num_heads, relative_attention_bias, dtype, device):
-        super().__init__()
-        self.SelfAttention = T5Attention(model_dim, inner_dim, num_heads, relative_attention_bias, dtype, device)
-        self.layer_norm = T5LayerNorm(model_dim, dtype=dtype, device=device)
-
-    def forward(self, x, past_bias=None):
-        output, past_bias = self.SelfAttention(self.layer_norm(x), past_bias=past_bias)
-        x += output
-        return x, past_bias
-
-
-class T5Block(torch.nn.Module):
-    def __init__(self, model_dim, inner_dim, ff_dim, num_heads, relative_attention_bias, dtype, device):
-        super().__init__()
-        self.layer = torch.nn.ModuleList()
-        self.layer.append(T5LayerSelfAttention(model_dim, inner_dim, ff_dim, num_heads, relative_attention_bias, dtype, device))
-        self.layer.append(T5LayerFF(model_dim, ff_dim, dtype, device))
-
-    def forward(self, x, past_bias=None):
-        x, past_bias = self.layer[0](x, past_bias)
-
-        # copy from transformers' T5Block
-        # clamp inf values to enable fp16 training
-        if x.dtype == torch.float16:
-            clamp_value = torch.where(
-                torch.isinf(x).any(),
-                torch.finfo(x.dtype).max - 1000,
-                torch.finfo(x.dtype).max,
-            )
-            x = torch.clamp(x, min=-clamp_value, max=clamp_value)
-
-        x = self.layer[-1](x)
-        # clamp inf values to enable fp16 training
-        if x.dtype == torch.float16:
-            clamp_value = torch.where(
-                torch.isinf(x).any(),
-                torch.finfo(x.dtype).max - 1000,
-                torch.finfo(x.dtype).max,
-            )
-            x = torch.clamp(x, min=-clamp_value, max=clamp_value)
-
-        return x, past_bias
-
-
-class T5Stack(torch.nn.Module):
-    def __init__(self, num_layers, model_dim, inner_dim, ff_dim, num_heads, vocab_size, dtype, device):
-        super().__init__()
-        self.embed_tokens = torch.nn.Embedding(vocab_size, model_dim, device=device)
-        self.block = torch.nn.ModuleList(
-            [
-                T5Block(model_dim, inner_dim, ff_dim, num_heads, relative_attention_bias=(i == 0), dtype=dtype, device=device)
-                for i in range(num_layers)
-            ]
-        )
-        self.final_layer_norm = T5LayerNorm(model_dim, dtype=dtype, device=device)
-
-    def forward(self, input_ids, intermediate_output=None, final_layer_norm_intermediate=True):
-        intermediate = None
-        x = self.embed_tokens(input_ids)
-        past_bias = None
-        for i, l in enumerate(self.block):
-            # uncomment to debug layerwise output: fp16 may cause issues
-            # print(i, x.mean(), x.std())
-            x, past_bias = l(x, past_bias)
-            if i == intermediate_output:
-                intermediate = x.clone()
-        # print(x.mean(), x.std())
-        x = self.final_layer_norm(x)
-        if intermediate is not None and final_layer_norm_intermediate:
-            intermediate = self.final_layer_norm(intermediate)
-        # print(x.mean(), x.std())
-        return x, intermediate
-
-
-class T5(torch.nn.Module):
-    def __init__(self, config_dict, dtype, device):
-        super().__init__()
-        self.num_layers = config_dict["num_layers"]
-        self.encoder = T5Stack(
-            self.num_layers,
-            config_dict["d_model"],
-            config_dict["d_model"],
-            config_dict["d_ff"],
-            config_dict["num_heads"],
-            config_dict["vocab_size"],
-            dtype,
-            device,
-        )
-        self.dtype = dtype
-
-    def get_input_embeddings(self):
-        return self.encoder.embed_tokens
-
-    def set_input_embeddings(self, embeddings):
-        self.encoder.embed_tokens = embeddings
-
-    def forward(self, *args, **kwargs):
-        return self.encoder(*args, **kwargs)
-
-
-def create_clip_l(device="cpu", dtype=torch.float32, state_dict: Optional[Dict[str, torch.Tensor]] = None):
-    r"""
-    state_dict is not loaded, but updated with missing keys
-    """
-    CLIPL_CONFIG = {
-        "hidden_act": "quick_gelu",
-        "hidden_size": 768,
-        "intermediate_size": 3072,
-        "num_attention_heads": 12,
-        "num_hidden_layers": 12,
-    }
-    with torch.no_grad():
-        clip_l = SDClipModel(
-            layer="hidden",
-            layer_idx=-2,
-            device=device,
-            dtype=dtype,
-            layer_norm_hidden_state=False,
-            return_projected_pooled=False,
-            textmodel_json_config=CLIPL_CONFIG,
-        )
-        clip_l.gradient_checkpointing_enable()
-    if state_dict is not None:
-        # update state_dict if provided to include logit_scale and text_projection.weight avoid errors
-        if "logit_scale" not in state_dict:
-            state_dict["logit_scale"] = clip_l.logit_scale
-        if "transformer.text_projection.weight" not in state_dict:
-            state_dict["transformer.text_projection.weight"] = clip_l.transformer.text_projection.weight
-    return clip_l
-
-
-def create_clip_g(device="cpu", dtype=torch.float32, state_dict: Optional[Dict[str, torch.Tensor]] = None):
-    r"""
-    state_dict is not loaded, but updated with missing keys
-    """
-    CLIPG_CONFIG = {
-        "hidden_act": "gelu",
-        "hidden_size": 1280,
-        "intermediate_size": 5120,
-        "num_attention_heads": 20,
-        "num_hidden_layers": 32,
-    }
-    with torch.no_grad():
-        clip_g = SDXLClipG(CLIPG_CONFIG, device=device, dtype=dtype)
-    if state_dict is not None:
-        if "logit_scale" not in state_dict:
-            state_dict["logit_scale"] = clip_g.logit_scale
-    return clip_g
-
-
-def create_t5xxl(device="cpu", dtype=torch.float32, state_dict: Optional[Dict[str, torch.Tensor]] = None) -> T5XXLModel:
-    T5_CONFIG = {"d_ff": 10240, "d_model": 4096, "num_heads": 64, "num_layers": 24, "vocab_size": 32128}
-    with torch.no_grad():
-        t5 = T5XXLModel(T5_CONFIG, dtype=dtype, device=device)
-    if state_dict is not None:
-        if "logit_scale" not in state_dict:
-            state_dict["logit_scale"] = t5.logit_scale
-        if "transformer.shared.weight" in state_dict:
-            state_dict.pop("transformer.shared.weight")
-    return t5
-
-
-"""
-    # snippet for using the T5 model from transformers
-    
-    from transformers import T5EncoderModel, T5Config
-    import accelerate
-    import json
-
-    T5_CONFIG_JSON = ""
-{
-  "architectures": [
-    "T5EncoderModel"
-  ],
-  "classifier_dropout": 0.0,
-  "d_ff": 10240,
-  "d_kv": 64,
-  "d_model": 4096,
-  "decoder_start_token_id": 0,
-  "dense_act_fn": "gelu_new",
-  "dropout_rate": 0.1,
-  "eos_token_id": 1,
-  "feed_forward_proj": "gated-gelu",
-  "initializer_factor": 1.0,
-  "is_encoder_decoder": true,
-  "is_gated_act": true,
-  "layer_norm_epsilon": 1e-06,
-  "model_type": "t5",
-  "num_decoder_layers": 24,
-  "num_heads": 64,
-  "num_layers": 24,
-  "output_past": true,
-  "pad_token_id": 0,
-  "relative_attention_max_distance": 128,
-  "relative_attention_num_buckets": 32,
-  "tie_word_embeddings": false,
-  "torch_dtype": "float16",
-  "transformers_version": "4.41.2",
-  "use_cache": true,
-  "vocab_size": 32128
-}
-""
-    config = json.loads(T5_CONFIG_JSON)
-    config = T5Config(**config)
-
-    # model = T5EncoderModel.from_pretrained("stabilityai/stable-diffusion-3-medium-diffusers", subfolder="text_encoder_3")
-    # print(model.config)
-    # # model(**load_model.config)
-
-    # with accelerate.init_empty_weights():
-    model = T5EncoderModel._from_config(config)  # , torch_dtype=dtype)
-    for key in list(state_dict.keys()):
-        if key.startswith("transformer."):
-            new_key = key[len("transformer.") :]
-            state_dict[new_key] = state_dict.pop(key)
-
-    info = model.load_state_dict(state_dict)
-    print(info)
-    model.set_attn_mode = lambda x: None
-    # model.to("cpu")
-
-    _self = model
-
-    def enc(list_of_token_weight_pairs):
-        has_batch = isinstance(list_of_token_weight_pairs[0][0], list)
-
-        if has_batch:
-            list_of_tokens = []
-            for pairs in list_of_token_weight_pairs:
-                tokens = [a[0] for a in pairs[0]]  # I'm not sure why this is [0]
-                list_of_tokens.append(tokens)
-        else:
-            list_of_tokens = [[a[0] for a in list_of_token_weight_pairs[0]]]
-
-        list_of_tokens = np.array(list_of_tokens)
-        list_of_tokens = torch.from_numpy(list_of_tokens).to("cuda", dtype=torch.long)
-        out = _self(list_of_tokens)
-        pooled = None
-        if has_batch:
-            return out, pooled
-        else:
-            if pooled is not None:
-                first_pooled = pooled[0:1]
-            else:
-                first_pooled = pooled
-            return out[0], first_pooled
-            # output = [out[0:1]]
-            # return torch.cat(output, dim=-2), first_pooled
-
-    model.encode_token_weights = enc
-
-    return model
-"""
 
 # endregion

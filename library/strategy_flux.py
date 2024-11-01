@@ -190,6 +190,7 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     apply_t5_attn_mask=apply_t5_attn_mask_i,
                 )
             else:
+                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
                 info.text_encoder_outputs = (l_pooled_i, t5_out_i, txt_ids_i, t5_attn_mask_i)
 
 
@@ -211,7 +212,7 @@ class FluxLatentsCachingStrategy(LatentsCachingStrategy):
         )
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, True)
+        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)
 
     def load_latents_from_disk(
         self, npz_path: str, bucket_reso: Tuple[int, int]
@@ -225,7 +226,7 @@ class FluxLatentsCachingStrategy(LatentsCachingStrategy):
         vae_dtype = vae.dtype
 
         self._default_cache_batch_latents(
-            encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop, True
+            encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop, multi_resolution=True
         )
 
         if not train_util.HIGH_VRAM:

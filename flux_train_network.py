@@ -231,7 +231,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 tokenize_strategy: strategy_flux.FluxTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
                 text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-                prompts = sd3_train_utils.load_prompts(args.sample_prompts)
+                prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in prompts:
@@ -363,7 +363,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
             for t in text_encoder_conds:
-                if t.dtype.is_floating_point:
+                if t is not None and t.dtype.is_floating_point:
                     t.requires_grad_(True)
             img_ids.requires_grad_(True)
             guidance_vec.requires_grad_(True)
