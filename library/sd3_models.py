@@ -871,7 +871,8 @@ class MMDiT(nn.Module):
             # remove pos_embed to free up memory up to 0.4 GB
             self.pos_embed = None
 
-            # sort latent sizes in ascending order
+            # remove duplcates and sort latent sizes in ascending order
+            latent_sizes = list(set(latent_sizes))
             latent_sizes = sorted(latent_sizes)
 
             patched_sizes = [latent_size // self.patch_size for latent_size in latent_sizes]

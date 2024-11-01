@@ -366,6 +366,7 @@ def train(args):
     if args.enable_scaled_pos_embed:
         resolutions = train_dataset_group.get_resolutions()
         latent_sizes = [round(math.sqrt(res[0] * res[1])) // 8 for res in resolutions]  # 8 is stride for latent
+        latent_sizes = list(set(latent_sizes))  # remove duplicates
         logger.info(f"Prepare scaled positional embeddings for resolutions: {resolutions}, sizes: {latent_sizes}")
         mmdit.enable_scaled_pos_embed(True, latent_sizes)
 

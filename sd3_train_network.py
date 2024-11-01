@@ -73,6 +73,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         # set resolutions for positional embeddings
         if args.enable_scaled_pos_embed:
             latent_sizes = [round(math.sqrt(res[0] * res[1])) // 8 for res in self.resolutions]  # 8 is stride for latent
+            latent_sizes = list(set(latent_sizes))  # remove duplicates
             logger.info(f"Prepare scaled positional embeddings for resolutions: {self.resolutions}, sizes: {latent_sizes}")
             mmdit.enable_scaled_pos_embed(True, latent_sizes)
 
