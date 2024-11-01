@@ -29,7 +29,7 @@ init_ipex()
 
 from accelerate.utils import set_seed
 from library import deepspeed_utils, flux_train_utils, flux_utils, strategy_base, strategy_flux
-from library.sd3_train_utils import load_prompts, FlowMatchEulerDiscreteScheduler
+from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 import library.train_util as train_util
 
@@ -241,7 +241,7 @@ def train(args):
 
             text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-            prompts = load_prompts(args.sample_prompts)
+            prompts = train_util.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:

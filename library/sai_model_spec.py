@@ -57,8 +57,8 @@ ARCH_SD_V1 = "stable-diffusion-v1"
 ARCH_SD_V2_512 = "stable-diffusion-v2-512"
 ARCH_SD_V2_768_V = "stable-diffusion-v2-768-v"
 ARCH_SD_XL_V1_BASE = "stable-diffusion-xl-v1-base"
-ARCH_SD3_M = "stable-diffusion-3-medium"
-ARCH_SD3_UNKNOWN = "stable-diffusion-3"
+ARCH_SD3_M = "stable-diffusion-3"  # may be followed by "-m" or "-5-large" etc.
+# ARCH_SD3_UNKNOWN = "stable-diffusion-3"
 ARCH_FLUX_1_DEV = "flux-1-dev"
 ARCH_FLUX_1_UNKNOWN = "flux-1"
 
@@ -140,10 +140,7 @@ def build_metadata(
     if sdxl:
         arch = ARCH_SD_XL_V1_BASE
     elif sd3 is not None:
-        if sd3 == "m":
-            arch = ARCH_SD3_M
-        else:
-            arch = ARCH_SD3_UNKNOWN
+        arch = ARCH_SD3_M + "-" + sd3
     elif flux is not None:
         if flux == "dev":
             arch = ARCH_FLUX_1_DEV

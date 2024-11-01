@@ -1082,6 +1082,10 @@ class BaseDataset(torch.utils.data.Dataset):
                     info.image = info.image.result()  # future to image
             caching_strategy.cache_batch_latents(model, batch, cond.flip_aug, cond.alpha_mask, cond.random_crop)
 
+            # remove image from memory
+            for info in batch:
+                info.image = None
+
         # define ThreadPoolExecutor to load images in parallel
         max_workers = min(os.cpu_count(), len(image_infos))
         max_workers = max(1, max_workers // num_processes)  # consider multi-gpu
@@ -1397,7 +1401,17 @@ class BaseDataset(torch.utils.data.Dataset):
                 )
 
     def get_image_size(self, image_path):
-        return imagesize.get(image_path)
+        # return imagesize.get(image_path)
+        image_size = imagesize.get(image_path)
+        if image_size[0] <= 0:
+            # imagesize doesn't work for some images, so use cv2
+            img = cv2.imread(image_path)
+            if img is not None:
+                image_size = (img.shape[1], img.shape[0])
+            else:
+                logger.warning(f"failed to get image size: {image_path}")
+                image_size = (0, 0)
+        return image_size
 
     def load_image_with_face_info(self, subset: BaseSubset, image_path: str, alpha_mask=False):
         img = load_image(image_path, alpha_mask)
@@ -1615,7 +1629,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
                     image_info.text_encoder_outputs_npz
                 )
-                text_encoder_outputs = [torch.FloatTensor(x) for x in text_encoder_outputs]
             else:
                 tokenization_required = True
             text_encoder_outputs_list.append(text_encoder_outputs)
@@ -2510,6 +2523,9 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def verify_bucket_reso_steps(self, min_steps: int):
         for dataset in self.datasets:
             dataset.verify_bucket_reso_steps(min_steps)
+
+    def get_resolutions(self) -> List[Tuple[int, int]]:
+        return [(dataset.width, dataset.height) for dataset in self.datasets]
 
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
@@ -5967,6 +5983,37 @@ def line_to_prompt_dict(line: str) -> dict:
             logger.error(ex)
 
     return prompt_dict
+
+
+def load_prompts(prompt_file: str) -> List[Dict]:
+    # read prompts
+    if prompt_file.endswith(".txt"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+    elif prompt_file.endswith(".toml"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            data = toml.load(f)
+        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
+    elif prompt_file.endswith(".json"):
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            prompts = json.load(f)
+
+    # preprocess prompts
+    for i in range(len(prompts)):
+        prompt_dict = prompts[i]
+        if isinstance(prompt_dict, str):
+            from library.train_util import line_to_prompt_dict
+
+            prompt_dict = line_to_prompt_dict(prompt_dict)
+            prompts[i] = prompt_dict
+        assert isinstance(prompt_dict, dict)
+
+        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
+        prompt_dict["enum"] = i
+        prompt_dict.pop("subset", None)
+
+    return prompts
 
 
 def sample_images_common(

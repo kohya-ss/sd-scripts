@@ -15,7 +15,6 @@ from PIL import Image
 from safetensors.torch import save_file
 
 from library import flux_models, flux_utils, strategy_base, train_util
-from library.sd3_train_utils import load_prompts
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -70,7 +69,7 @@ def sample_images(
         text_encoders = [accelerator.unwrap_model(te) for te in text_encoders]
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = load_prompts(args.sample_prompts)
+    prompts = train_util.load_prompts(args.sample_prompts)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
