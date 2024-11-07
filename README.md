@@ -787,6 +787,11 @@ Not available yet.
 
 [日本語版READMEはこちら](./README-ja.md)
 
+The development version is in the `dev` branch. Please check the dev branch for the latest changes.
+
+FLUX.1 and SD3/SD3.5 support is done in the `sd3` branch. If you want to train them, please use the sd3 branch.
+
+
 For easier use (GUI and PowerShell scripts etc...), please visit [the repository maintained by bmaltais](https://github.com/bmaltais/kohya_ss). Thanks to @bmaltais!
 
 This repository contains the scripts for:

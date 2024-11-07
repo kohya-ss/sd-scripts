@@ -3,6 +3,10 @@ Stable Diffusionの学習、画像生成、その他のスクリプトを入れ�
 
 [README in English](./README.md) ←更新情報はこちらにあります
 
+開発中のバージョンはdevブランチにあります。最新の変更点はdevブランチをご確認ください。
+
+FLUX.1およびSD3/SD3.5対応はsd3ブランチで行っています。それらの学習を行う場合はsd3ブランチをご利用ください。
+
 GUIやPowerShellスクリプトなど、より使いやすくする機能が[bmaltais氏のリポジトリ](https://github.com/bmaltais/kohya_ss)で提供されています（英語です）のであわせてご覧ください。bmaltais氏に感謝します。
 
 以下のスクリプトがあります。
