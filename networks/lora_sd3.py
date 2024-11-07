@@ -601,7 +601,7 @@ class LoRANetwork(torch.nn.Module):
                 or key.startswith(LoRANetwork.LORA_PREFIX_TEXT_ENCODER_T5)
             ):
                 apply_text_encoder = True
-            elif key.startswith(LoRANetwork.LORA_PREFIX_MMDIT):
+            elif key.startswith(LoRANetwork.LORA_PREFIX_SD3):
                 apply_unet = True
 
         if apply_text_encoder:
