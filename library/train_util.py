@@ -3087,7 +3087,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     )
     parser.add_argument("--seed", type=int, default=None, help="random seed for training / 学習時の乱数のseed")
     parser.add_argument(
-        "--gradient_checkpointing", action="store_true", help="enable gradient checkpointing / grandient checkpointingを有効にする"
+        "--gradient_checkpointing", action="store_true", help="enable gradient checkpointing / gradient checkpointingを有効にする"
     )
     parser.add_argument(
         "--gradient_accumulation_steps",
@@ -5106,6 +5106,7 @@ def sample_images_common(
     tokenizer,
     text_encoder,
     unet,
+    example_tuple=None,
     prompt_replacement=None,
     controlnet=None,
 ):
@@ -5202,7 +5203,18 @@ def sample_images_common(
     if distributed_state.num_processes <= 1:
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
         with torch.no_grad():
+            idx = 0
             for prompt_dict in prompts:
+                if '__caption__' in prompt_dict.get("prompt") and example_tuple:
+                    while example_tuple[1][idx] == '':
+                        idx = (idx + 1) % len(example_tuple[1])
+                        if idx == 0:
+                            break
+                    prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', 'example_tuple[1][idx]') 
+                    prompt_dict["height"] = example_tuple[0].shape[2] * 8
+                    prompt_dict["width"] = example_tuple[0].shape[3] * 8
+                    prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+                    idx = (idx + 1) % len(example_tuple[1])
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                 )
@@ -5232,6 +5244,42 @@ def sample_images_common(
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
+
+def draw_text_on_image(text, max_width, text_color="black"):
+    from PIL import ImageDraw, ImageFont, Image
+    import textwrap
+
+    font = ImageFont.load_default()
+    space_width = font.getbbox(' ')[2]
+    font_size = 20
+    
+    def wrap_text(text, font, max_width):
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        for word in words:
+            test_line = current_line + word + " "
+            if font.getbbox(test_line)[2] <= max_width:
+                current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = word + " "
+        lines.append(current_line)
+        return lines
+
+    lines = wrap_text(text, font, max_width - 10)
+    text_height = sum([font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines]) + 20
+    text_image = Image.new('RGB', (max_width, text_height), 'white')
+    text_draw = ImageDraw.Draw(text_image)
+
+    y_text = 10
+    for line in lines:
+        bbox = text_draw.textbbox((0, 0), line, font=font)
+        height = bbox[3] - bbox[1]
+        text_draw.text((10, y_text), line, font=font, fill=text_color)
+        y_text += font_size
+
+    return text_image
 
 
 def sample_image_inference(
@@ -5306,7 +5354,16 @@ def sample_image_inference(
         torch.cuda.empty_cache()
 
     image = pipeline.latents_to_image(latents)[0]
-
+    if "original_lantent" in prompt_dict:
+        original_latent = prompt_dict.get("original_lantent")
+        original_image = pipeline.latents_to_image(original_latent)[0]
+        text_image = draw_text_on_image(f"caption: {prompt}", image.width * 2)
+        new_image = Image.new('RGB', (original_image.width + image.width, original_image.height + text_image.height))
+        new_image.paste(original_image, (0, text_image.height))
+        new_image.paste(image, (original_image.width, text_image.height))
+        new_image.paste(text_image, (0, 0))
+        image = new_image
+        
     # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
     # but adding 'enum' to the filename should be enough
 
