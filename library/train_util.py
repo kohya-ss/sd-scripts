@@ -1887,7 +1887,7 @@ class DreamBoothDataset(BaseDataset):
 
                     # make image path to npz path mapping
                     npz_paths = glob.glob(os.path.join(subset.image_dir, "*" + strategy.cache_suffix))
-                    npz_paths.sort()
+                    npz_paths.sort(key=lambda item: item.rsplit("_", maxsplit=2)[0])  # sort by name excluding resolution and cache_suffix
                     npz_path_index = 0
 
                     size_set_count = 0
