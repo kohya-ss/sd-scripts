@@ -14,6 +14,15 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Nov 7, 2024:
+
+- The distribution of timesteps during SD3/3.5 training has been adjusted. This applies to both fine-tuning and LoRA training. PR [#1768](https://github.com/kohya-ss/sd-scripts/pull/1768) Thanks to Dango233!
+  - Previously, the side closer to noise was more sampled, but now it is uniform by default. This may improve the problem of difficulty in learning details.
+  - Specifically, the problem of double shifting has been fixed. The default for `--weighting_scheme` has been changed to `uniform` (the previous default was `logit_normal`).
+  - A new option `--training_shift` has been added. The default is 1.0, and all timesteps are sampled uniformly. If less than 1.0, the side closer to the image is more sampled (training more on image details), and if more than 1.0, the side closer to noise is more sampled (training more on overall structure).
+  - The effect of a shift in uniform distribution is shown in the figure below.
+  - ![Figure_1](https://github.com/user-attachments/assets/99a72c67-adfb-4440-81d4-a718985ff350)
+
 Oct 31, 2024:
 
 - Added support for SD3.5L/M training. See [SD3 training](#sd3-training) for details.
@@ -641,6 +650,7 @@ Here are the arguments. The arguments and sample settings are still experimental
 - `--clip_l_dropout_rate`, `--clip_g_dropout_rate` and `--t5_dropout_rate` are the dropout rates for the embeddings of CLIP-L, CLIP-G, and T5XXL, described in [SAI research papre](http://arxiv.org/pdf/2403.03206). The default is 0.0. For LoRA training, it is seems to be better to set 0.0.
 - `--pos_emb_random_crop_rate` is the rate of random cropping of positional embeddings, described in [SD3.5M model card](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium). The default is 0. It is seems to be better to set 0.0 for LoRA training.
 - `--enable_scaled_pos_embed` is to enable the scaled positional embeddings. The default is False. This option is an experimental feature for SD3.5M. Details are described below.
+- `--training_shift` is the shift value for the training distribution of timesteps. The default is 1.0 (uniform distribution, no shift).  If less than 1.0, the side closer to the image is more sampled, and if more than 1.0, the side closer to noise is more sampled. 
 
 Other options are described below.
 
@@ -681,8 +691,12 @@ Other options are described below.
    - Same as FLUX.1 for data preparation.
    - If you train with multiple resolutions, you can enable the scaled positional embeddings with `--enable_scaled_pos_embed`. The default is False. __This option is an experimental feature.__
 
-
-
+6. Weighting scheme and training shift:
+   - The weighting scheme is described in the section 3.1 of the [SD3 paper](https://arxiv.org/abs/2403.03206v1). 
+   - The uniform distribution is the default. If you want to change the distribution, see `--help` for options. 
+   - `--training_shift` is the shift value for the training distribution of timesteps.
+   - The effect of a shift in uniform distribution is shown in the figure below.
+   - ![Figure_1](https://github.com/user-attachments/assets/99a72c67-adfb-4440-81d4-a718985ff350)
 
 Technical details of multi-resolution training for SD3.5M:
 
@@ -775,6 +789,11 @@ Not available yet.
 更新履歴は[ページ末尾](#change-history)に移しました。
 
 [日本語版READMEはこちら](./README-ja.md)
+
+The development version is in the `dev` branch. Please check the dev branch for the latest changes.
+
+FLUX.1 and SD3/SD3.5 support is done in the `sd3` branch. If you want to train them, please use the sd3 branch.
+
 
 For easier use (GUI and PowerShell scripts etc...), please visit [the repository maintained by bmaltais](https://github.com/bmaltais/kohya_ss). Thanks to @bmaltais!
 

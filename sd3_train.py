@@ -811,8 +811,8 @@ def train(args):
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
-    noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    # noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
+    # noise_scheduler_copy = copy.deepcopy(noise_scheduler)
 
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -885,7 +885,9 @@ def train(args):
                 else:
                     with torch.no_grad():
                         # encode images to latents. images are [-1, 1]
-                        latents = vae.encode(batch["images"])
+                        latents = vae.encode(batch["images"].to(vae.device, dtype=vae.dtype)).to(
+                            accelerator.device, dtype=weight_dtype
+                        )
 
                     # NaNが含まれていれば警告を表示し0に置き換える
                     if torch.any(torch.isnan(latents)):
@@ -927,7 +929,7 @@ def train(args):
                 if t5_out is None:
                     _, _, input_ids_t5xxl, _, _, t5_attn_mask = batch["input_ids_list"]
                     with torch.set_grad_enabled(train_t5xxl):
-                        input_ids_t5xxl = input_ids_t5xxl.to("cpu") if t5_out is None else None
+                        input_ids_t5xxl = input_ids_t5xxl.to("cpu")
                         _, t5_out, _, _, _, t5_attn_mask = text_encoding_strategy.encode_tokens(
                             sd3_tokenize_strategy, [None, None, t5xxl], [None, None, input_ids_t5xxl, None, None, t5_attn_mask]
                         )
@@ -938,11 +940,11 @@ def train(args):
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+                # bsz = latents.shape[0]
 
                 # get noisy model input and timesteps
                 noisy_model_input, timesteps, sigmas = sd3_train_utils.get_noisy_model_input_and_timesteps(
-                    args, noise_scheduler_copy, latents, noise, accelerator.device, weight_dtype
+                    args, latents, noise, accelerator.device, weight_dtype
                 )
 
                 # debug: NaN check for all inputs
