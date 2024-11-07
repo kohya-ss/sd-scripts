@@ -811,8 +811,8 @@ def train(args):
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
-    noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    # noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
+    # noise_scheduler_copy = copy.deepcopy(noise_scheduler)
 
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -940,11 +940,11 @@ def train(args):
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+                # bsz = latents.shape[0]
 
                 # get noisy model input and timesteps
                 noisy_model_input, timesteps, sigmas = sd3_train_utils.get_noisy_model_input_and_timesteps(
-                    args, noise_scheduler_copy, latents, noise, accelerator.device, weight_dtype
+                    args, latents, noise, accelerator.device, weight_dtype
                 )
 
                 # debug: NaN check for all inputs
