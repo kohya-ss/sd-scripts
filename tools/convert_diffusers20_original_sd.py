@@ -6,10 +6,8 @@ import torch
 from diffusers import StableDiffusionPipeline
 
 import library.model_util as model_util
-from library.utils import setup_logging
-setup_logging()
-import logging
-logger = logging.getLogger(__name__)
+import library.sdxl_model_util as sdxl_model_util
+
 
 def convert(args):
     # 引数を確認する
@@ -26,20 +24,25 @@ def convert(args):
     is_load_ckpt = os.path.isfile(args.model_to_load)
     is_save_ckpt = len(os.path.splitext(args.model_to_save)[1]) > 0
 
-    assert not is_load_ckpt or args.v1 != args.v2, "v1 or v2 is required to load checkpoint / checkpointの読み込みにはv1/v2指定が必要です"
+    assert not is_load_ckpt or args.sdxl or args.v1 != args.v2, "v1 or v2 is required to load checkpoint / checkpointの読み込みにはv1/v2指定が必要です"
     # assert (
     #     is_save_ckpt or args.reference_model is not None
     # ), f"reference model is required to save as Diffusers / Diffusers形式での保存には参照モデルが必要です"
 
     # モデルを読み込む
     msg = "checkpoint" if is_load_ckpt else ("Diffusers" + (" as fp16" if args.fp16 else ""))
-    logger.info(f"loading {msg}: {args.model_to_load}")
+    print(f"loading {msg}: {args.model_to_load}")
 
     if is_load_ckpt:
         v2_model = args.v2
-        text_encoder, vae, unet = model_util.load_models_from_stable_diffusion_checkpoint(
-            v2_model, args.model_to_load, unet_use_linear_projection_in_v2=args.unet_use_linear_projection
-        )
+        if args.sdxl:
+            text_model1, text_model2, vae, unet, logit_scale, ckpt_info = sdxl_model_util.load_models_from_sdxl_checkpoint(
+                None, args.model_to_load, map_location='cpu',dtype=load_dtype
+            )
+        else:
+            text_encoder, vae, unet = model_util.load_models_from_stable_diffusion_checkpoint(
+                v2_model, args.model_to_load, unet_use_linear_projection_in_v2=args.unet_use_linear_projection
+            )
     else:
         pipe = StableDiffusionPipeline.from_pretrained(
             args.model_to_load, torch_dtype=load_dtype, tokenizer=None, safety_checker=None, variant=args.variant
@@ -51,37 +54,57 @@ def convert(args):
         if args.v1 == args.v2:
             # 自動判定する
             v2_model = unet.config.cross_attention_dim == 1024
-            logger.info("checking model version: model is " + ("v2" if v2_model else "v1"))
+            print("checking model version: model is " + ("v2" if v2_model else "v1"))
         else:
             v2_model = not args.v1
 
     # 変換して保存する
     msg = ("checkpoint" + ("" if save_dtype is None else f" in {save_dtype}")) if is_save_ckpt else "Diffusers"
-    logger.info(f"converting and saving as {msg}: {args.model_to_save}")
+    print(f"converting and saving as {msg}: {args.model_to_save}")
 
     if is_save_ckpt:
         original_model = args.model_to_load if is_load_ckpt else None
-        key_count = model_util.save_stable_diffusion_checkpoint(
-            v2_model,
-            args.model_to_save,
-            text_encoder,
-            unet,
-            original_model,
-            args.epoch,
-            args.global_step,
-            None if args.metadata is None else eval(args.metadata),
-            save_dtype=save_dtype,
-            vae=vae,
-        )
-        logger.info(f"model saved. total converted state_dict keys: {key_count}")
+        if args.sdxl:
+            key_count = sdxl_model_util.save_stable_diffusion_checkpoint(
+                args.model_to_save,
+                text_model1,
+                text_model2,
+                unet,
+                args.epoch,
+                args.global_step,
+                ckpt_info,
+                vae,
+                logit_scale,
+                None if args.metadata is None else eval(args.metadata),
+                save_dtype=save_dtype,
+            )
+        else:
+            key_count = model_util.save_stable_diffusion_checkpoint(
+                v2_model,
+                args.model_to_save,
+                text_encoder,
+                unet,
+                original_model,
+                args.epoch,
+                args.global_step,
+                None if args.metadata is None else eval(args.metadata),
+                save_dtype=save_dtype,
+                vae=vae,
+            )
+        print(f"model saved. total converted state_dict keys: {key_count}")
     else:
-        logger.info(
+        print(
             f"copy scheduler/tokenizer config from: {args.reference_model if args.reference_model is not None else 'default model'}"
         )
-        model_util.save_diffusers_checkpoint(
-            v2_model, args.model_to_save, text_encoder, unet, args.reference_model, vae, args.use_safetensors
-        )
-        logger.info("model saved.")
+        if args.sdxl:
+            sdxl_model_util.save_diffusers_checkpoint(
+                args.model_to_save, text_model1, text_model2, unet, args.reference_model, vae=vae, use_safetensors=args.use_safetensors, save_dtype=save_dtype
+            )
+        else:
+            model_util.save_diffusers_checkpoint(
+                v2_model, args.model_to_save, text_encoder, unet, args.reference_model, vae, args.use_safetensors
+            )
+        print("model saved.")
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -91,6 +114,11 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--v2", action="store_true", help="load v2.0 model (v1 or v2 is required to load checkpoint) / 2.0のモデルを読み込む"
+    )
+    parser.add_argument(
+        "--sdxl",
+        action="store_true",
+        help="load SDXL model (or v1 or v2 is required to load checkpoint) / SDXLのモデルを読み込む",
     )
     parser.add_argument(
         "--unet_use_linear_projection",
