@@ -980,7 +980,7 @@ def get_noisy_model_input_and_timesteps(
     indices = (u * (t_max-t_min) + t_min).long()
     timesteps = indices.to(device=device, dtype=dtype)
 
-    # sigmas according to dlowmatching
+    # sigmas according to flowmatching
     sigmas = timesteps / 1000
     sigmas = sigmas.view(-1,1,1,1)
     noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents
