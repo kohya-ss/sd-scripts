@@ -1,67 +1,70 @@
-# 关于LoRA的学习。
+# 关于LoRA的学习
 
-[LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)（arxiv）、[LoRA](https://github.com/microsoft/LoRA)（github）这是应用于Stable Diffusion“稳定扩散”的内容。
+这是将[LoRA: Large Language Models的低秩适应](https://arxiv.org/abs/2106.09685)（arxiv）、[LoRA](https://github.com/microsoft/LoRA)（github）应用到Stable Diffusion上的内容。
 
-[cloneofsimo先生的代码仓库](https://github.com/cloneofsimo/lora) 我们非常感謝您提供的参考。非常感謝。
+我大量参考了[cloneofsimo先生的仓库](https://github.com/cloneofsimo/lora)，非常感谢。
 
-通常情況下，LoRA只适用于Linear和Kernel大小为1x1的Conv2d，但也可以將其擴展到Kernel大小为3x3的Conv2d。
+通常的LoRA仅应用于Linear和内核大小为1x1的Conv2d，但也可以扩展应用到内核大小为3x3的Conv2d。
 
-Conv2d 3x3的扩展最初是由 [cloneofsimo先生的代码仓库](https://github.com/cloneofsimo/lora) 
-而KohakuBlueleaf先生在[LoCon](https://github.com/KohakuBlueleaf/LoCon)中揭示了其有效性。我们深深地感谢KohakuBlueleaf先生。
+对Conv2d 3x3的扩展是由[cloneofsimo先生](https://github.com/cloneofsimo/lora)首次发布，KohakuBlueleaf先生在他的[LoCon](https://github.com/KohakuBlueleaf/LoCon)中揭示了它的有效性。我深深感谢KohakuBlueleaf先生。
 
-看起来即使在8GB VRAM上也可以勉强运行。
+看起来它在8GB VRAM上也能勉强运行。
 
-请同时查看关于[学习的通用文档](./train_README-zh.md)。
-# 可学习的LoRA 类型
+请同时查看[关于学习的通用文档](./train_README-zh.md)。
 
-支持以下两种类型。以下是本仓库中自定义的名称。
+# 可以学习的LoRA的类型
 
-1. __LoRA-LierLa__：(用于 __Li__ n __e__ a __r__  __La__ yers 的 LoRA，读作 "Liela")
+我们将支持以下两种类型。以下是本仓库内独特的命名。
 
-    适用于 Linear 和卷积层 Conv2d 的 1x1 Kernel 的 LoRA
+1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers，读作“リエラ”)
 
-2. __LoRA-C3Lier__：(用于具有 3x3 Kernel 的卷积层和 __Li__ n __e__ a __r__ 层的 LoRA，读作 "Seria")
+    应用于Linear和内核大小为1x1的Conv2d的LoRA
 
-    除了第一种类型外，还适用于 3x3 Kernel 的 Conv2d 的 LoRA
+2. __LoRA-C3Lier__ : (LoRA for __C__ onvolutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers，读作“セリア”)
 
-与 LoRA-LierLa 相比，LoRA-C3Lier 可能会获得更高的准确性，因为它适用于更多的层。
+    除了1.，还应用于内核大小为3x3的Conv2d的LoRA
 
-在训练时，也可以使用 __DyLoRA__（将在后面介绍）。
+与LoRA-LierLa相比，LoRA-C3Liar由于可以应用于更多的层，因此可能期待更高的精度。
 
-## 请注意与所学模型相关的事项。
+在学习时，也可以使用__DyLoRA__（将在后文讨论）。
 
-LoRA-LierLa可以用于AUTOMATIC1111先生的Web UI LoRA功能。
+## 关于学习模型的注意事项
 
-要使用LoRA-C3Liar并在Web UI中生成，请使用此处的[WebUI用extension](https://github.com/kohya-ss/sd-webui-additional-networks)。
+LoRA-LierLa 可以在AUTOMATIC1111先生的Web UI的LoRA功能中使用。
 
-在此存储库的脚本中，您还可以预先将经过训练的LoRA模型合并到Stable Diffusion模型中。
+要使用LoRA-C3Liar在Web UI中生成，请使用这个[WebUI用extension](https://github.com/kohya-ss/sd-webui-additional-networks)。
 
-请注意，与cloneofsimo先生的存储库以及d8ahazard先生的[Stable-Diffusion-WebUI的Dreambooth扩展](https://github.com/d8ahazard/sd_dreambooth_extension)不兼容，因为它们进行了一些功能扩展（如下文所述）。
+你也可以使用本仓库内的脚本，将学习后的LoRA模型预先合并到Stable Diffusion的模型中。
 
-# 学习步骤
+它与cloneofsimo先生的仓库，以及d8ahazard先生的[Stable-Diffusion-WebUI的Dreambooth Extension](https://github.com/d8ahazard/sd_dreambooth_extension)，在当前阶段是不兼容的。这是因为我们进行了一些功能扩展（将在后文讨论）。
 
-请先参考此存储库的README文件并进行环境设置。
+# 学习的步骤
+
+请先参考这个仓库的README，进行环境准备。
 
 ## 准备数据
 
-请参考 [关于准备学习数据](./train_README-zh.md)。
+请参照[准备学习数据](./train_README-zh.md)。
 
-## 网络训练
+
+
+
+## 执行学习
 
 使用`train_network.py`。
 
-在`train_network.py`中，使用`--network_module`选项指定要训练的模块名称。对于LoRA模块，它应该是`network.lora`，请指定它。
+在`train_network.py`中，通过`--network_module`选项指定学习目标的模块名。对于LoRA，应为`network.lora`，请指定这个。
 
-请注意，学习率应该比通常的DreamBooth或fine tuning要高，建议指定为`1e-4`至`1e-3`左右。
+学习率建议定得比通常的DreamBooth或fine tuning高一些，大约`1e-4`～`1e-3`。
 
-以下是命令行示例。
+以下是一个命令行的例子。
 
 ```
 accelerate launch --num_cpu_threads_per_process 1 train_network.py 
-    --pretrained_model_name_or_path=<.ckpt或.safetensord或Diffusers版模型目录> 
-    --dataset_config=<数据集配置的.toml文件> 
-    --output_dir=<训练过程中的模型输出文件夹>  
-    --output_name=<训练模型输出时的文件名> 
+    --pretrained_model_name_or_path=<.ckpt或者.safetensord或者Diffusers版模型的目录> 
+    --dataset_config=<在数据准备中创建的.toml文件> 
+    --output_dir=<学习后的模型输出的文件夹>  
+    --output_name=<学习后的模型输出时的文件名> 
     --save_model_as=safetensors 
     --prior_loss_weight=1.0 
     --max_train_steps=400 
@@ -75,67 +78,74 @@ accelerate launch --num_cpu_threads_per_process 1 train_network.py
     --network_module=networks.lora
 ```
 
-在这个命令行中，LoRA-LierLa将会被训练。
+在这个命令行中，将学习 LoRA-LierLa。
 
-LoRA的模型将会被保存在通过`--output_dir`选项指定的文件夹中。关于其他选项和优化器等，请参阅[学习的通用文档](./train_README-zh.md)中的“常用选项”。
+LoRA的模型将被保存在由`--output_dir`选项指定的文件夹中。关于其他选项，如优化器等，请参阅[学习的通用文档](./train_README-ja.md)中的“常用选项”。
 
-此外，还可以指定以下选项：
+此外，可以指定以下选项。
 
 * `--network_dim`
-  * 指定LoRA的RANK（例如：`--network_dim=4`）。默认值为4。数值越大表示表现力越强，但需要更多的内存和时间来训练。而且不要盲目增加此数值。
+  * 指定LoRA的RANK（如`--networkdim=4`）。如果省略，默认为4。数量越多，表达力越强，但所需的学习内存和时间也会增加。盲目增加似乎并不好。
 * `--network_alpha`
-  * 指定用于防止下溢并稳定训练的alpha值。默认值为1。如果与`network_dim`指定相同的值，则将获得与以前版本相同的行为。
+  * 为了防止下溢并稳定学习，指定``alpha``值。默认是1。如果指定与`network_dim`相同的值，它将像以前版本一样运行。
 * `--persistent_data_loader_workers`
-  * 在Windows环境中指定可大幅缩短epoch之间的等待时间。
+  * 在Windows环境中指定此选项将大大缩短epoch之间的等待时间。
 * `--max_data_loader_n_workers`
-  * 指定数据读取进程的数量。进程数越多，数据读取速度越快，可以更有效地利用GPU，但会占用主存。默认值为“`8`或`CPU同步执行线程数-1`的最小值”，因此如果主存不足或GPU使用率超过90％，则应将这些数字降低到约`2`或`1`。
+  * 指定数据加载的进程数。进程数越多，数据加载越快，GPU可以更有效地使用，但会消耗主内存。默认为“`8`或`CPU并发线程数-1`的较小值”，如果主内存不足或GPU使用率在90%左右或以上时，请根据这些数字将值减少到`2`或`1`左右。
 * `--network_weights`
-  * 在训练之前读取预训练的LoRA权重，并在此基础上进行进一步的训练。
+  * 在学习前加载预先训练的LoRA的权重，然后从那里继续学习。
 * `--network_train_unet_only`
-  * 仅启用与U-Net相关的LoRA模块。在类似fine tuning的学习中指定此选项可能会很有用。
+  * 只有效U-Net相关的LoRA模块。如果用于类似fine tuning的学习，可能效果良好。
 * `--network_train_text_encoder_only`
-  * 仅启用与Text Encoder相关的LoRA模块。可能会期望Textual Inversion效果。
+  * 只有效Text Encoder相关的LoRA模块。也许可以期待Textual Inversion的效果。
 * `--unet_lr`
-  * 当在U-Net相关的LoRA模块中使用与常规学习率（由`--learning_rate`选项指定）不同的学习率时，应指定此选项。
+  * 当使用与常规学习率（由`--learning_rate`选项指定）不同的学习率来学习与U-Net相关的LoRA模块时，指定此选项。
 * `--text_encoder_lr`
-  * 当在Text Encoder相关的LoRA模块中使用与常规学习率（由`--learning_rate`选项指定）不同的学习率时，应指定此选项。可能最好将Text Encoder的学习率稍微降低（例如5e-5）。
+  * 当使用与常规学习率（由`--learning_rate`选项指定）不同的学习率来学习与Text Encoder相关的LoRA模块时，指定此选项。据说将Text Encoder的学习率设置得稍低一些（如5e-5）可能更好。
 * `--network_args`
-  * 可以指定多个参数。将在下面详细说明。
+  * 可以指定多个参数。下面将进行说明。
 
-当未指定`--network_train_unet_only`和`--network_train_text_encoder_only`时（默认情况），将启用Text Encoder和U-Net的两个LoRA模块。
+当`--network_train_unet_only`和`--network_train_text_encoder_only`两者都未指定时（默认），Text Encoder和U-Net的LoRA模块都将生效。
 
 # 其他的学习方法
 
-## 学习 LoRA-C3Lier
+## 学习LoRA-C3Lier
 
-请使用以下方式
+请在`--network_args`中按以下方式指定。使用`conv_dim`指定Conv2d (3x3)的rank，使用`conv_alpha`指定alpha。
+
+```
+--network_args "conv_dim=4" "conv_alpha=1"
+```
+
+如果省略alpha，默认为1，如下所示。
 
 ```
 --network_args "conv_dim=4"
 ```
 
-DyLoRA是在这篇论文中提出的[DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](​https://arxiv.org/abs/2210.07558)，
-[其官方实现可在这里找到](​https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA)。
+## DyLoRA
 
-根据论文，LoRA的rank并不是越高越好，而是需要根据模型、数据集、任务等因素来寻找合适的rank。使用DyLoRA，可以同时在指定的维度(rank)下学习多种rank的LoRA，从而省去了寻找最佳rank的麻烦。
+DyLoRA是由以下论文提出的。[DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](https://arxiv.org/abs/2210.07558) 官方实现可以在[这里](https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA)找到。
 
-本存储库的实现基于官方实现进行了自定义扩展（因此可能存在缺陷）。
+根据论文，LoRA的rank并非越高越好，需要根据目标模型、数据集和任务寻找适当的rank。使用DyLoRA，你可以在指定的dim(rank)以下的各种rank同时学习LoRA。这可以省去为每个需要寻找最佳rank的麻烦。
 
-### 本存储库DyLoRA的特点
+本仓库的实现是在官方实现的基础上进行了一些自定义扩展（因此可能会存在一些问题）。
 
-DyLoRA训练后的模型文件与LoRA兼容。此外，可以从模型文件中提取多个低于指定维度(rank)的LoRA。
+### 本仓库的DyLoRA的特点
 
-DyLoRA-LierLa和DyLoRA-C3Lier均可训练。
+学习后的DyLoRA模型文件与LoRA兼容。此外，你可以从模型文件中抽取指定dim(rank)以下的多个dim的LoRA。
 
-### 使用DyLoRA进行训练
+你可以学习DyLoRA-LierLa或DyLoRA-C3Lier。
 
-请指定与DyLoRA相对应的`network.dylora`，例如 `--network_module=networks.dylora`。
+### 使用DyLoRA学习
 
-此外，通过 `--network_args` 指定例如`--network_args "unit=4"`的参数。`unit`是划分rank的单位。例如，可以指定为`--network_dim=16 --network_args "unit=4"`。请将`unit`视为可以被`network_dim`整除的值（`network_dim`是`unit`的倍数）。
+请指定DyLoRA对应的`network.dylora`，如下所示`--network_module=networks.dylora`。
 
-如果未指定`unit`，则默认为`unit=1`。
+同时，在`--network_args`中，例如，指定`--network_args "unit=4"`中的`unit`。`unit`是分割rank的单位。例如，你可以指定`--network_dim=16 --network_args "unit=4"`。请将`unit`设置为可以整除`network_dim`的值（`network_dim`是`unit`的倍数）。
 
-以下是示例说明。
+如果不指定`unit`，则视为`unit=1`。
+
+示例如下。
 
 ```
 --network_module=networks.dylora --network_dim=16 --network_args "unit=4"
@@ -143,7 +153,7 @@ DyLoRA-LierLa和DyLoRA-C3Lier均可训练。
 --network_module=networks.dylora --network_dim=32 --network_alpha=16 --network_args "unit=4"
 ```
 
-对于DyLoRA-C3Lier，需要在 `--network_args` 中指定 `conv_dim`，例如 `conv_dim=4`。与普通的LoRA不同，`conv_dim`必须与`network_dim`具有相同的值。以下是一个示例描述：
+对于DyLoRA-C3Lier，你可以在`--network_args`中指定`"conv_dim=4"`这样的`conv_dim`。与常规LoRA不同，`conv_dim`需要与`network_dim`的值相同。示例如下。
 
 ```
 --network_module=networks.dylora --network_dim=16 --network_args "conv_dim=16" "unit=4"
@@ -151,42 +161,43 @@ DyLoRA-LierLa和DyLoRA-C3Lier均可训练。
 --network_module=networks.dylora --network_dim=32 --network_alpha=16 --network_args "conv_dim=32" "conv_alpha=16" "unit=8"
 ```
 
-例如，当使用dim=16、unit=4（如下所述）进行学习时，可以学习和提取4个rank的LoRA，即4、8、12和16。通过在每个提取的模型中生成图像并进行比较，可以选择最佳rank的LoRA。
+例如，如果在dim=16，unit=4（后面会详细说明）下学习，你可以学习并抽取4、8、12、16这4个rank的LoRA。通过使用每个抽取的模型生成图像并进行比较，你可以选择最佳rank的LoRA。
 
-其他选项与普通的LoRA相同。
+其他选项与常规LoRA相同。
 
-*`unit`是本存储库的独有扩展，在DyLoRA中，由于预计相比同维度（rank）的普通LoRA，学习时间更长，因此将分割单位增加。
+※ `unit`是本仓库的自定义扩展，因为在DyLoRA中，与同dim(rank)的常规LoRA相比，学习时间可能会更长，因此我们增加了分割单位。
 
-### 从DyLoRA模型中提取LoRA模型
+### 从DyLoRA模型中抽取LoRA模型
 
-请使用`networks`文件夹中的`extract_lora_from_dylora.py`。指定`unit`单位后，从DyLoRA模型中提取LoRA模型。
+使用`networks`文件夹内的`extract_lora_from_dylora.py`。以指定的`unit`单位，从DyLoRA模型中抽取LoRA模型。
 
-例如，命令行如下：
+命令行示例如下。
 
 ```powershell
 python networks\extract_lora_from_dylora.py --model "foldername/dylora-model.safetensors" --save_to "foldername/dylora-model-split.safetensors" --unit 4
 ```
 
-`--model` 参数用于指定DyLoRA模型文件。`--save_to` 参数用于指定要保存提取的模型的文件名（rank值将附加到文件名中）。`--unit` 参数用于指定DyLoRA训练时的`unit`。 
+在`--model`中，指定DyLoRA模型文件。在`--save_to`中，指定保存抽取模型的文件名（rank的数值会添加到文件名中）。在`--unit`中，指定DyLoRA学习时的`unit`。
 
-## 分层学习率
+## 层级学习率
 
-请参阅PR＃355了解详细信息。
+详情请参阅[PR #355](https://github.com/kohya-ss/sd-scripts/pull/355)。
 
-您可以指定完整模型的25个块的权重。虽然第一个块没有对应的LoRA，但为了与分层LoRA应用等的兼容性，将其设为25个。此外，如果不扩展到conv2d3x3，则某些块中可能不存在LoRA，但为了统一描述，请始终指定25个值。
+SDXL当前不支持。
 
-请在 `--network_args` 中指定以下参数。
+你可以指定全模型的25个块的权重。不存在对应于第一个块的LoRA，但我们为了与层级LoRA应用等的兼容性而设置为25个。此外，即使在不扩展到conv2d3x3的情况下，部分块可能也不存在LoRA，但为了统一描述，我们始终需要指定25个值。
 
-- `down_lr_weight`：指定U-Net down blocks的学习率权重。可以指定以下内容：
-  - 每个块的权重：指定12个数字，例如`"down_lr_weight=0,0,0,0,0,0,1,1,1,1,1,1"`
-  - 从预设中指定：例如`"down_lr_weight=sine"`（使用正弦曲线指定权重）。可以指定sine、cosine、linear、reverse_linear、zeros。另外，添加 `+数字` 时，可以将指定的数字加上（变为0.25〜1.25）。
-- `mid_lr_weight`：指定U-Net mid block的学习率权重。只需指定一个数字，例如 `"mid_lr_weight=0.5"`。
-- `up_lr_weight`：指定U-Net up blocks的学习率权重。与down_lr_weight相同。
-- 省略指定的部分将被视为1.0。另外，如果将权重设为0，则不会创建该块的LoRA模块。
-- `block_lr_zero_threshold`：如果权重小于此值，则不会创建LoRA模块。默认值为0。
+请在`--network_args`中指定以下参数。
 
-### 分层学习率命令行指定示例：
+- `down_lr_weight`：指定U-Net的down blocks的学习率的权重。你可以如下指定。
+  - 每个块的权重：像`"down_lr_weight=0,0,0,0,0,0,1,1,1,1,1,1"`这样指定12个数值。
+  - 从预设指定：像`"down_lr_weight=sine"`这样指定（使用正弦曲线指定权重）。可以指定sine, cosine, linear, reverse_linear, zeros。此外，你可以通过像`"down_lr_weight=cosine+.25"`这样添加 `+数字` 来增加指定的数值（它会变成0.25~1.25）。
+- `mid_lr_weight`：指定U-Net的mid block的学习率的权重。你只需要指定一个数值，像`"mid_lr_weight=0.5"`这样。
+- `up_lr_weight`：指定U-Net的up blocks的学习率的权重。与down_lr_weight相同。
+- 省略的部分将被视为1.0。此外，如果你将权重设置为0，那么该块的LoRA模块将不会创建。
+- `block_lr_zero_threshold`：如果权重低于这个值，LoRA模块将不会创建。默认是0。
 
+### 层级学习率命令行示例:
 
 ```powershell
 --network_args "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5" "mid_lr_weight=2.0" "up_lr_weight=1.5,1.5,1.5,1.5,1.0,1.0,1.0,1.0,0.5,0.5,0.5,0.5"
@@ -194,7 +205,7 @@ python networks\extract_lora_from_dylora.py --model "foldername/dylora-model.saf
 --network_args "block_lr_zero_threshold=0.1" "down_lr_weight=sine+.5" "mid_lr_weight=1.5" "up_lr_weight=cosine+.5"
 ```
 
-###  Hierarchical Learning Rate指定的toml文件示例：
+### 层级学习率toml文件示例:
 
 ```toml
 network_args = [ "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5", "mid_lr_weight=2.0", "up_lr_weight=1.5,1.5,1.5,1.5,1.0,1.0,1.0,1.0,0.5,0.5,0.5,0.5",]
@@ -202,19 +213,18 @@ network_args = [ "down_lr_weight=0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0,1.5,1.5,1.5,1.5
 network_args = [ "block_lr_zero_threshold=0.1", "down_lr_weight=sine+.5", "mid_lr_weight=1.5", "up_lr_weight=cosine+.5", ]
 ```
 
-## 层次结构维度（rank）
+## 层级dim (rank)
 
-您可以指定完整模型的25个块的维度（rank）。与分层学习率一样，某些块可能不存在LoRA，但请始终指定25个值。
+你可以指定全模型的25个块的dim (rank)。与层级学习率类似，部分块可能不存在LoRA，但你需要始终指定25个值。
 
-请在 `--network_args` 中指定以下参数：
+请在`--network_args`中指定以下参数。
 
-- `block_dims`：指定每个块的维度（rank）。指定25个数字，例如 `"block_dims=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"`。
-- `block_alphas`：指定每个块的alpha。与block_dims一样，指定25个数字。如果省略，将使用network_alpha的值。
-- `conv_block_dims`：将LoRA扩展到Conv2d 3x3，并指定每个块的维度（rank）。
-- `conv_block_alphas`：在将LoRA扩展到Conv2d 3x3时指定每个块的alpha。如果省略，将使用conv_alpha的值。
+- `block_dims`：指定每个块的dim (rank)。像`"block_dims=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"`这样指定25个数值。
+- `block_alphas`：指定每个块的alpha。与block_dims一样，你需要指定25个数值。如果省略，将使用network_alpha的值。
+- `conv_block_dims`：扩展LoRA到Conv2d 3x3，并指定每个块的dim (rank)。
+- `conv_block_alphas`：当你扩展LoRA到Conv2d 3x3时，指定每个块的alpha。如果省略，将使用conv_alpha的值。
 
-### 层次结构维度（rank）命令行指定示例：
-
+### 层级dim (rank)命令行示例:
 
 ```powershell
 --network_args "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2"
@@ -224,7 +234,7 @@ network_args = [ "block_lr_zero_threshold=0.1", "down_lr_weight=sine+.5", "mid_l
 --network_args "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2" "block_alphas=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2"
 ```
 
-### 层级别dim(rank) toml文件指定示例：
+### 层级dim (rank)toml文件示例:
 
 ```toml
 network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2",]
@@ -232,14 +242,19 @@ network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,
 network_args = [ "block_dims=2,4,4,4,8,8,8,8,12,12,12,12,16,12,12,12,12,8,8,8,8,4,4,4,2", "block_alphas=2,2,2,2,4,4,4,4,6,6,6,6,8,6,6,6,6,4,4,4,4,2,2,2,2",]
 ```
 
-# Other scripts
-这些是与LoRA相关的脚本，如合并脚本等。
+# 其他脚本
 
-关于合并脚本
-您可以使用merge_lora.py脚本将LoRA的训练结果合并到稳定扩散模型中，也可以将多个LoRA模型合并。
+这是与LoRA相关的合并等脚本集合。
 
-合并到稳定扩散模型中的LoRA模型
-合并后的模型可以像常规的稳定扩散ckpt一样使用。例如，以下是一个命令行示例：
+## 关于合并脚本
+
+你可以使用merge_lora.py将LoRA的学习结果合并到Stable Diffusion的模型中，或者合并多个LoRA模型。
+
+我们为SDXL准备了sdxl_merge_lora.py。选项等是相同的，所以请将以下merge_lora.py替换为阅读。
+
+### 将LoRA模型合并到Stable Diffusion的模型中
+
+合并后的模型可以像常规的Stable Diffusion ckpt一样处理。例如，命令行可能如下所示。
 
 ```
 python networks\merge_lora.py --sd_model ..\model\model.ckpt 
@@ -247,18 +262,17 @@ python networks\merge_lora.py --sd_model ..\model\model.ckpt
     --models ..\lora_train1\last.safetensors --ratios 0.8
 ```
 
-请使用 Stable Diffusion v2.x 模型进行训练并进行合并时，需要指定--v2选项。
+如果你在Stable Diffusion v2.x的模型上进行了学习，并且要将其合并，请指定--v2选项。
 
-使用--sd_model选项指定要合并的 Stable Diffusion 模型文件（仅支持 .ckpt 或 .safetensors 格式，目前不支持 Diffusers）。
+--sd_model选项中，指定要作为合并源的Stable Diffusion模型文件（仅支持.ckpt或.safetensors，目前不支持Diffusers）。
 
-使用--save_to选项指定合并后模型的保存路径（根据扩展名自动判断为 .ckpt 或 .safetensors）。
+在--save_to选项中，指定合并后模型的保存位置（.ckpt或.safetensors，根据扩展名自动判断）。
 
-使用--models选项指定已训练的 LoRA 模型文件，也可以指定多个，然后按顺序进行合并。
+在--models中，指定学习过的LoRA模型文件。可以指定多个，如果是多个，将依次进行合并。
 
-使用--ratios选项以0~1.0的数字指定每个模型的应用率（将多大比例的权重反映到原始模型中）。例如，在接近过度拟合的情况下，降低应用率可能会使结果更好。请指定与模型数量相同的比率。 
+在--ratios中，指定每个模型的适用率（即多少权重反映到原模型中）为0~1.0的数值。例如，如果接近过度学习，降低适用率可能会有所改善。请指定与模型数量相同数量的值。
 
-当指定多个模型时，格式如下：
-
+如果你指定多个，如下所示。
 
 ```
 python networks\merge_lora.py --sd_model ..\model\model.ckpt 
@@ -266,62 +280,69 @@ python networks\merge_lora.py --sd_model ..\model\model.ckpt
     --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors --ratios 0.8 0.5
 ```
 
-### 将多个LoRA模型合并
+### 合并多个LoRA模型
 
-将多个LoRA模型逐个应用于SD模型与将多个LoRA模型合并后再应用于SD模型之间，由于计算顺序的不同，会得到微妙不同的结果。
+如果你指定--concat选项，你可以将多个LoRA简单地组合起来创建一个新的LoRA模型。文件大小（以及dim/rank）将是指定的LoRA的总大小（如果你想在合并时改变dim (rank)，请使用`svd_merge_lora.py`）。
 
-例如，下面是一个命令行示例：
+例如，命令行可能如下所示。
 
 ```
-python networks\merge_lora.py 
+python networks\merge_lora.py --save_precision bf16 
     --save_to ..\lora_train1\model-char1-style1-merged.safetensors 
-    --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors --ratios 0.6 0.4
+    --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors 
+    --ratios 1.0 -1.0 --concat --shuffle
 ```
 
---sd_model选项不需要指定。
+你指定--concat选项。
 
-通过--save_to选项指定合并后的LoRA模型的保存位置（.ckpt或.safetensors，根据扩展名自动识别）。
+另外，添加--shuffle选项以打乱权重。如果不打乱，可以从合并后的LoRA中提取出原始的LoRA，因此在学习复印机等情况下，学习源数据将变得明显。请注意。
 
-通过--models选项指定学习的LoRA模型文件。可以指定三个或更多。
+在--save_to选项中，指定合并后LoRA模型的保存位置（.ckpt或.safetensors，根据扩展名自动判断）。
 
-通过--ratios选项以0~1.0的数字指定每个模型的比率（反映多少权重来自原始模型）。如果将两个模型一对一合并，则比率将是“0.5 0.5”。如果比率为“1.0 1.0”，则总重量将过大，可能会产生不理想的结果。
+在--models中，指定学习过的LoRA模型文件。你可以指定三个或更多。
 
-在v1和v2中学习的LoRA，以及rank（维数）或“alpha”不同的LoRA不能合并。仅包含U-Net的LoRA和包含U-Net+文本编码器的LoRA可以合并，但结果未知。
+在--ratios中，指定每个模型的比率（即多少权重反映到原模型中）为0~1.0的数值。如果你想一对一地合并两个模型，将是「0.5 0.5」。「1.0 1.0」将使总权重过大，结果可能不理想。
+
+你不能合并v1中学习的LoRA和v2中学习的LoRA，也不能合并不同rank（维度数）的LoRA。理论上，你可能可以合并只有U-Net的LoRA和U-Net+Text Encoder的LoRA，但结果是未知的。
 
 ### 其他选项
 
-* 精度
-  * 可以从float、fp16或bf16中选择合并计算时的精度。默认为float以保证精度。如果想减少内存使用量，请指定fp16/bf16。
+* precision
+  * 你可以从float、fp16、bf16中指定合并计算时的精度。如果省略，为了保证精度，将使用float。如果你想减少内存使用，请指定fp16/bf16。
 * save_precision
-  * 可以从float、fp16或bf16中选择在保存模型时的精度。默认与精度相同。
+  * 你可以从float、fp16、bf16中指定模型保存时的精度。如果省略，默认为与precision相同的精度。
 
-## 合并多个维度不同的LoRA模型
+还有其他几个选项，请使用--help来查看。
 
-将多个LoRA近似为一个LoRA（无法完全复制）。使用'svd_merge_lora.py'。例如，以下是命令行的示例。
+## 合并具有不同rank的多个LoRA模型
+
+将多个LoRA近似为一个LoRA（无法完全重现）。使用`svd_merge_lora.py`。例如，命令行可能如下所示。
+
 ```
 python networks\svd_merge_lora.py 
     --save_to ..\lora_train1\model-char1-style1-merged.safetensors 
     --models ..\lora_train1\last.safetensors ..\lora_train2\last.safetensors 
     --ratios 0.6 0.4 --new_rank 32 --device cuda
 ```
-`merge_lora.py`和主要选项相同。以下选项已添加：
+
+这与`merge_lora.py`的主要选项相同。以下选项被添加了。
 
 - `--new_rank`
-  - 指定要创建的LoRA rank。
+  - 指定要创建的LoRA的rank。
 - `--new_conv_rank`
-  - 指定要创建的Conv2d 3x3 LoRA的rank。如果省略，则与`new_rank`相同。
+  - 指定要创建的Conv2d 3x3 LoRA的rank。如果省略，将与`new_rank`相同。
 - `--device`
-  - 如果指定为`--device cuda`，则在GPU上执行计算。处理速度将更快。
+  - 如果指定为`--device cuda`，计算将在GPU上进行。处理会更快。
 
-## 在此存储库中生成图像的脚本中
+## 在本仓库的图像生成脚本中生成
 
-请在`gen_img_diffusers.py`中添加`--network_module`和`--network_weights`选项。其含义与训练时相同。
+请在gen_img_diffusers.py中添加--network_module和--network_weights的选项。它们的意义与学习时相同。
 
-通过`--network_mul`选项，可以指定0~1.0的数字来改变LoRA的应用率。
+通过在--network_mul选项中指定0~1.0的数值，你可以改变LoRA的适用率。
 
-## 请参考以下示例，在Diffusers的pipeline中生成。
+## 在Diffusers的pipeline中生成
 
-所需文件仅为networks/lora.py。请注意，该示例只能在Diffusers版本0.10.2中正常运行。
+请参考以下示例。你只需要networks/lora.py这个文件。Diffusers的版本如果不是0.10.2，可能无法运行。
 
 ```python
 import torch
@@ -386,81 +407,82 @@ with torch.autocast("cuda"):
 image.save(r"by_diffusers..png")
 ```
 
-## 从两个模型的差异中创建LoRA模型。
+## 从两个模型的差异创建LoRA模型
 
-[参考讨论链接](https://github.com/cloneofsimo/lora/discussions/56)這是參考實現的結果。數學公式沒有改變（我並不完全理解，但似乎使用奇異值分解進行了近似）。
+这是根据[这个讨论](https://github.com/cloneofsimo/lora/discussions/56)实施的。我直接使用了公式（虽然我没有完全理解，但似乎在近似中使用了奇异值分解）。
 
-将两个模型（例如微调原始模型和微调后的模型）的差异近似为LoRA。
+它将使用LoRA来近似两个模型（例如，fine tuning的源模型和fine tuning后的模型）的差异。
 
-### 脚本执行方法
+### 脚本的执行方法
 
 请按以下方式指定。
-
 ```
 python networks\extract_lora_from_models.py --model_org base-model.ckpt
     --model_tuned fine-tuned-model.ckpt 
     --save_to lora-weights.safetensors --dim 4
 ```
 
---model_org 选项指定原始的Stable Diffusion模型。如果要应用创建的LoRA模型，则需要指定该模型并将其应用。可以指定.ckpt或.safetensors文件。
+在--model_org选项中，指定原始的Stable Diffusion模型。如果要应用创建的LoRA模型，你将需要指定这个模型来应用。可以指定.ckpt或.safetensors。
 
---model_tuned 选项指定要提取差分的目标Stable Diffusion模型。例如，可以指定经过Fine Tuning或DreamBooth后的模型。可以指定.ckpt或.safetensors文件。
+在--model_tuned选项中，指定要从中提取差异的目标Stable Diffusion模型。例如，你可以指定fine tuning或DreamBooth后的模型。可以指定.ckpt或.safetensors。
 
---save_to 指定LoRA模型的保存路径。--dim指定LoRA的维数。
+在--save_to中，指定LoRA模型的保存位置。在--dim中，指定LoRA的维度数。
 
-生成的LoRA模型可以像已训练的LoRA模型一样使用。
+生成的LoRA模型可以像学习过的LoRA模型一样使用。
 
-当两个模型的文本编码器相同时，LoRA将成为仅包含U-Net的LoRA。
+如果两个模型的Text Encoder相同，LoRA将成为仅U-Net的LoRA。
 
 ### 其他选项
 
 - `--v2`
-  - 如果使用v2.x的稳定扩散模型，请指定此选项。
+  - 如果你使用的是v2.x的Stable Diffusion模型，请指定此选项。
 - `--device`
-  - 指定为 ``--device cuda`` 可在GPU上执行计算。这会使处理速度更快（即使在CPU上也不会太慢，大约快几倍）。
+  - 如果你指定为`--device cuda`，计算将在GPU上进行。处理速度会更快（在CPU上也不会特别慢，最多可能是两到三倍的速度差异）。
 - `--save_precision`
-  - 指定LoRA的保存格式为“float”、“fp16”、“bf16”。如果省略，将使用float。
+  - 你可以从"float", "fp16", "bf16"中指定LoRA的保存格式。如果省略，将默认为float。
 - `--conv_dim`
-  - 指定后，将扩展LoRA的应用范围到Conv2d 3x3。指定Conv2d 3x3的rank。
-  - 
-## 图像大小调整脚本
+  - 如果你指定，LoRA的应用范围将扩展到Conv2d 3x3。指定Conv2d 3x3的rank。
 
-（稍后将整理文件，但现在先在这里写下说明。）
+## 图像重置脚本
 
-在 Aspect Ratio Bucketing 的功能扩展中，现在可以将小图像直接用作教师数据，而无需进行放大。我收到了一个用于前处理的脚本，其中包括将原始教师图像缩小的图像添加到教师数据中可以提高准确性的报告。我整理了这个脚本并加入了感谢 bmaltais 先生。
+（稍后我会整理文档，但目前先在这里说明一下。）
 
-### 执行脚本的方法如下。
-原始图像以及调整大小后的图像将保存到转换目标文件夹中。调整大小后的图像将在文件名中添加“+512x512”之类的调整后的分辨率（与图像大小不同）。小于调整大小后分辨率的图像将不会被放大。
+通过Aspect Ratio Bucketing功能的扩展，现在可以不对小图像进行放大，而是直接使用它们作为训练数据。我收到了报告，称在训练数据中加入原始图像的缩小版本可以提高精度，同时我也收到了预处理脚本，所以我整理并添加了它。感谢bmaltais先生。
+
+### 脚本的执行方法
+
+请按以下方式指定。原始图像和调整大小后的图像将被保存在目标文件夹中。调整大小后的图像的文件名中会附加``+512x512``这样的目标分辨率（这与图像大小不同）。小于调整后分辨率的图像不会被放大。
 
 ```
 python tools\resize_images_to_resolution.py --max_resolution 512x512,384x384,256x256 --save_as_png 
-    --copy_associated_files 源图像文件夹目标文件夹
+    --copy_associated_files 原始图像文件夹 目标文件夹
 ```
 
-在元画像文件夹中的图像文件将被调整大小以达到指定的分辨率（可以指定多个），并保存到目标文件夹中。除图像外的文件将被保留为原样。
+原始图像文件夹中的图像文件将被调整大小，以使其具有与指定的分辨率（可以指定多个）相同的面积，并保存在目标文件夹中。非图像文件将被直接复制。
 
-请使用“--max_resolution”选项指定调整大小后的大小，使其达到指定的面积大小。如果指定多个，则会在每个分辨率上进行调整大小。例如，“512x512，384x384，256x256”将使目标文件夹中的图像变为原始大小和调整大小后的大小×3共计4张图像。
+在``--max_resolution``选项中，请像示例那样指定调整大小后的尺寸。图像将被调整大小，使其面积与该尺寸相匹配。如果你指定多个尺寸，图像将被调整为每个尺寸。如果你指定``512x512,384x384,256x256``，那么目标文件夹中的图像将有总共四张，包括原始大小和三张调整大小后的图像。
 
-如果使用“--save_as_png”选项，则会以PNG格式保存。如果省略，则默认以JPEG格式（quality=100）保存。
+如果你指定``--save_as_png``选项，图像将以png格式保存。如果省略，将以jpeg格式（quality=100）保存。
 
-如果使用“--copy_associated_files”选项，则会将与图像相同的文件名（例如标题等）的文件复制到调整大小后的图像文件的文件名相同的位置，但不包括扩展名。
+如果你指定``--copy_associated_files``选项，与图像具有相同文件名（不包括扩展名，例如caption等）的文件将被复制，其文件名与调整大小后的图像的文件名相同。
+
 
 ### 其他选项
 
 - divisible_by
-  - 将图像中心裁剪到能够被该值整除的大小（分别是垂直和水平的大小），以便调整大小后的图像大小可以被该值整除。
+  - 为了使调整大小后的图像的尺寸（高和宽）可以被这个值整除，它会从图像中心裁剪。
 - interpolation
-  - 指定缩小时的插值方法。可从``area、cubic、lanczos4``中选择，默认为``area``。
+  - 指定缩小时的插值方法。可以从``area, cubic, lanczos4``中选择，默认为``area``。
 
 
-# 追加信息
+# 额外信息
 
-## 与cloneofsimo的代码库的区别
+## 与cloneofsimo先生的仓库的区别
 
-截至2022年12月25日，本代码库将LoRA应用扩展到了Text Encoder的MLP、U-Net的FFN以及Transformer的输入/输出投影中，从而增强了表现力。但是，内存使用量增加了，接近了8GB的限制。
+截至2022/12/25，本仓库已经扩展了LoRA的应用位置，包括Text Encoder的MLP，U-Net的FFN，Transformer的in/out projection，从而提高了表达力。然而，作为代价，内存消耗增加，现在是8GB的极限。
 
-此外，模块交换机制也完全不同。
+此外，模块替换机制完全不同。
 
-## 关于未来的扩展
+## 关于将来扩展
 
-除了LoRA之外，我们还计划添加其他扩展，以支持更多的功能。
+除了LoRA，我们也可以支持其他扩展，所以我计划将它们添加进来。
