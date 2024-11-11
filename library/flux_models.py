@@ -18,6 +18,7 @@ import torch
 from einops import rearrange
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
+from library import custom_offloading_utils
 
 # USE_REENTRANT = True
 
@@ -923,7 +924,8 @@ class Flux(nn.Module):
         self.cpu_offload_checkpointing = False
         self.blocks_to_swap = None
 
-        self.thread_pool: Optional[ThreadPoolExecutor] = None
+        self.offloader_double = None
+        self.offloader_single = None
         self.num_double_blocks = len(self.double_blocks)
         self.num_single_blocks = len(self.single_blocks)
 
@@ -963,16 +965,16 @@ class Flux(nn.Module):
 
         print("FLUX: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int):
+    def enable_block_swap(self, num_blocks: int, device: torch.device):
         self.blocks_to_swap = num_blocks
-        self.double_blocks_to_swap = num_blocks // 2
-        self.single_blocks_to_swap = (num_blocks - self.double_blocks_to_swap) * 2
-        print(
-            f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {self.double_blocks_to_swap}, single blocks: {self.single_blocks_to_swap}."
-        )
+        double_blocks_to_swap = num_blocks // 2
+        single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
 
-        n = 1  # async block swap. 1 is enough
-        self.thread_pool = ThreadPoolExecutor(max_workers=n)
+        self.offloader_double = custom_offloading_utils.ModelOffloader(self.num_double_blocks, double_blocks_to_swap, device)
+        self.offloader_single = custom_offloading_utils.ModelOffloader(self.num_single_blocks, single_blocks_to_swap, device)
+        print(
+            f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
+        )
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
@@ -988,56 +990,11 @@ class Flux(nn.Module):
             self.double_blocks = save_double_blocks
             self.single_blocks = save_single_blocks
 
-    # def get_block_unit(self, index: int):
-    #     if index < len(self.double_blocks):
-    #         return (self.double_blocks[index],)
-    #     else:
-    #         index -= len(self.double_blocks)
-    #         index *= 2
-    #         return self.single_blocks[index], self.single_blocks[index + 1]
-
-    # def get_unit_index(self, is_double: bool, index: int):
-    #     if is_double:
-    #         return index
-    #     else:
-    #         return len(self.double_blocks) + index // 2
-
     def prepare_block_swap_before_forward(self):
-        # # make: first n blocks are on cuda, and last n blocks are on cpu
-        # if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-        #     # raise ValueError("Block swap is not enabled.")
-        #     return
-        # for i in range(self.num_block_units - self.blocks_to_swap):
-        #     for b in self.get_block_unit(i):
-        #         b.to(self.device)
-        # for i in range(self.num_block_units - self.blocks_to_swap, self.num_block_units):
-        #     for b in self.get_block_unit(i):
-        #         b.to("cpu")
-        # clean_memory_on_device(self.device)
-
-        # all blocks are on device, but some weights are on cpu
-        # make first n blocks weights on device, and last n blocks weights on cpu
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            # raise ValueError("Block swap is not enabled.")
             return
-
-        for b in self.double_blocks[0 : self.num_double_blocks - self.double_blocks_to_swap]:
-            b.to(self.device)
-            utils.weighs_to_device(b, self.device)  # make sure weights are on device
-        for b in self.double_blocks[self.num_double_blocks - self.double_blocks_to_swap :]:
-            b.to(self.device)  # move block to device first
-            utils.weighs_to_device(b, "cpu")  # make sure weights are on cpu
-        torch.cuda.synchronize()
-        clean_memory_on_device(self.device)
-
-        for b in self.single_blocks[0 : self.num_single_blocks - self.single_blocks_to_swap]:
-            b.to(self.device)
-            utils.weighs_to_device(b, self.device)  # make sure weights are on device
-        for b in self.single_blocks[self.num_single_blocks - self.single_blocks_to_swap :]:
-            b.to(self.device)  # move block to device first
-            utils.weighs_to_device(b, "cpu")  # make sure weights are on cpu
-        torch.cuda.synchronize()
-        clean_memory_on_device(self.device)
+        self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
+        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
 
     def forward(
         self,
@@ -1073,59 +1030,21 @@ class Flux(nn.Module):
             for block in self.single_blocks:
                 img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
         else:
-            # device = self.device
-
-            def submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda):
-                def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda):
-                    # start_time = time.perf_counter()
-                    # print(f"Moving {bidx_to_cpu} to cpu and {bidx_to_cuda} to cuda.")
-                    utils.swap_weight_devices(block_to_cpu, block_to_cuda)
-                    # print(f"Block move done. {bidx_to_cpu} to cpu, {bidx_to_cuda} to cuda.")
-
-                    # print(f"Move blocks took {time.perf_counter() - start_time:.2f} seconds")
-                    return block_idx_to_cpu, block_idx_to_cuda # , event
-
-                block_to_cpu = blocks[block_idx_to_cpu]
-                block_to_cuda = blocks[block_idx_to_cuda]
-                # print(f"Submit move blocks. {block_idx_to_cpu} to cpu, {block_idx_to_cuda} to cuda.")
-                return self.thread_pool.submit(move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_cuda, block_to_cuda)
-
-            def wait_for_blocks_move(block_idx, ftrs):
-                if block_idx not in ftrs:
-                    return
-                # print(f"Waiting for move blocks: {block_idx}")
-                # start_time = time.perf_counter()
-                ftr = ftrs.pop(block_idx)
-                ftr.result()
-                # print(f"{block_idx} move blocks took {time.perf_counter() - start_time:.2f} seconds")
-
-            double_futures = {}
             for block_idx, block in enumerate(self.double_blocks):
-                # print(f"Double block {block_idx}")
-                wait_for_blocks_move(block_idx, double_futures)
+                self.offloader_double.wait_for_block(block_idx)
 
                 img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
 
-                if block_idx < self.double_blocks_to_swap:
-                    block_idx_to_cpu = block_idx
-                    block_idx_to_cuda = self.num_double_blocks - self.double_blocks_to_swap + block_idx
-                    future = submit_move_blocks(self.double_blocks, block_idx_to_cpu, block_idx_to_cuda)
-                    double_futures[block_idx_to_cuda] = future
+                self.offloader_double.submit_move_blocks(self.double_blocks, block_idx)
 
             img = torch.cat((txt, img), 1)
 
-            single_futures = {}
             for block_idx, block in enumerate(self.single_blocks):
-                # print(f"Single block {block_idx}")
-                wait_for_blocks_move(block_idx, single_futures)
+                self.offloader_single.wait_for_block(block_idx)
 
                 img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
 
-                if block_idx < self.single_blocks_to_swap:
-                    block_idx_to_cpu = block_idx
-                    block_idx_to_cuda = self.num_single_blocks - self.single_blocks_to_swap + block_idx
-                    future = submit_move_blocks(self.single_blocks, block_idx_to_cpu, block_idx_to_cuda)
-                    single_futures[block_idx_to_cuda] = future
+                self.offloader_single.submit_move_blocks(self.single_blocks, block_idx)
 
         img = img[:, txt.shape[1] :, ...]
 
