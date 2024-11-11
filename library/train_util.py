@@ -1404,7 +1404,7 @@ class BaseDataset(torch.utils.data.Dataset):
         # return imagesize.get(image_path)
         image_size = imagesize.get(image_path)
         if image_size[0] <= 0:
-            # imagesize doesn't work for some images, so use cv2
+            # imagesize doesn't work for some images, so use PIL as a fallback
             try:
                 with Image.open(image_path) as img:
                     image_size = img.size
