@@ -14,6 +14,10 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Nov 9, 2024:
+
+- Fixed an issue where the image size could not be obtained when caching latents was enabled and a specific file name existed, causing the latent size to be incorrect. See PR [#1770](https://github.com/kohya-ss/sd-scripts/pull/1770) for details. Thanks to feffy380!
+
 Nov 7, 2024:
 
 - The distribution of timesteps during SD3/3.5 training has been adjusted. This applies to both fine-tuning and LoRA training. PR [#1768](https://github.com/kohya-ss/sd-scripts/pull/1768) Thanks to Dango233!
