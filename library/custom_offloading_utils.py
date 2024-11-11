@@ -183,8 +183,46 @@ class ModelOffloader(Offloader):
     supports forward offloading
     """
 
-    def __init__(self, num_blocks: int, blocks_to_swap: int, device: torch.device, debug: bool = False):
+    def __init__(self, blocks: list[nn.Module], num_blocks: int, blocks_to_swap: int, device: torch.device, debug: bool = False):
         super().__init__(num_blocks, blocks_to_swap, device, debug)
+
+        # register backward hooks
+        self.remove_handles = []
+        for i, block in enumerate(blocks):
+            hook = self.create_backward_hook(blocks, i)
+            if hook is not None:
+                handle = block.register_full_backward_hook(hook)
+                self.remove_handles.append(handle)
+
+    def __del__(self):
+        for handle in self.remove_handles:
+            handle.remove()
+
+    def create_backward_hook(self, blocks: list[nn.Module], block_index: int) -> Optional[callable]:
+        # -1 for 0-based index
+        num_blocks_propagated = self.num_blocks - block_index - 1
+        swapping = num_blocks_propagated > 0 and num_blocks_propagated <= self.blocks_to_swap
+        waiting = block_index > 0 and block_index <= self.blocks_to_swap
+
+        if not swapping and not waiting:
+            return None
+
+        # create  hook
+        block_idx_to_cpu = self.num_blocks - num_blocks_propagated
+        block_idx_to_cuda = self.blocks_to_swap - num_blocks_propagated
+        block_idx_to_wait = block_index - 1
+
+        def backward_hook(module, grad_input, grad_output):
+            if self.debug:
+                print(f"Backward hook for block {block_index}")
+
+            if swapping:
+                self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
+            if waiting:
+                self._wait_blocks_move(block_idx_to_wait)
+            return None
+
+        return backward_hook
 
     def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:

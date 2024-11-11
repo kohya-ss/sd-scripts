@@ -519,7 +519,7 @@ def train(args):
                         num_parameters_per_group[opt_idx] += 1
 
     # add hooks for block swapping: this hook is called after fused_backward_pass hook or blockwise_fused_optimizers hook
-    if is_swapping_blocks:
+    if False: # is_swapping_blocks:
         import library.custom_offloading_utils as custom_offloading_utils
 
         num_double_blocks = len(accelerator.unwrap_model(flux).double_blocks)

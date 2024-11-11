@@ -25,6 +25,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         super().__init__()
         self.sample_prompts_te_outputs = None
         self.is_schnell: Optional[bool] = None
+        self.is_swapping_blocks: bool = False
 
     def assert_extra_args(self, args, train_dataset_group):
         super().assert_extra_args(args, train_dataset_group)
@@ -77,6 +78,12 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         if args.split_mode:
             model = self.prepare_split_model(model, weight_dtype, accelerator)
+
+        self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
+        if self.is_swapping_blocks:
+            # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
+            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
+            model.enable_block_swap(args.blocks_to_swap, accelerator.device)
 
         clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
         clip_l.eval()
@@ -285,6 +292,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
 
         if not args.split_mode:
+            if self.is_swapping_blocks:
+                accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
             flux_train_utils.sample_images(
                 accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
             )
@@ -539,6 +548,19 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 text_encoder.to(te_weight_dtype)  # fp8
                 prepare_fp8(text_encoder, weight_dtype)
 
+    def prepare_unet_with_accelerator(
+        self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
+    ) -> torch.nn.Module:
+        if not self.is_swapping_blocks:
+            return super().prepare_unet_with_accelerator(args, accelerator, unet)
+
+        # if we doesn't swap blocks, we can move the model to device
+        flux: flux_models.Flux = unet
+        flux = accelerator.prepare(flux, device_placement=[not self.is_swapping_blocks])
+        accelerator.unwrap_model(flux).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
+
+        return flux
+
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
@@ -549,6 +571,17 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="[EXPERIMENTAL] use split mode for Flux model, network arg `train_blocks=single` is required"
         + "/[実験的] Fluxモデルの分割モードを使用する。ネットワーク引数`train_blocks=single`が必要",
+    )
+
+    parser.add_argument(
+        "--blocks_to_swap",
+        type=int,
+        default=None,
+        help="[EXPERIMENTAL] "
+        "Sets the number of blocks to swap during the forward and backward passes."
+        "Increasing this number lowers the overall VRAM used during training at the expense of training speed (s/it)."
+        " / 順伝播および逆伝播中にスワップするブロックの数を設定します。"
+        "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
     )
     return parser
 

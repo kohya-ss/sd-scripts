@@ -970,8 +970,12 @@ class Flux(nn.Module):
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
 
-        self.offloader_double = custom_offloading_utils.ModelOffloader(self.num_double_blocks, double_blocks_to_swap, device)
-        self.offloader_single = custom_offloading_utils.ModelOffloader(self.num_single_blocks, single_blocks_to_swap, device)
+        self.offloader_double = custom_offloading_utils.ModelOffloader(
+            self.double_blocks, self.num_double_blocks, double_blocks_to_swap, device #, debug=True
+        )
+        self.offloader_single = custom_offloading_utils.ModelOffloader(
+            self.single_blocks, self.num_single_blocks, single_blocks_to_swap, device #, debug=True
+        )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
         )
