@@ -52,10 +52,23 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.max_token_length is not None:
             logger.warning("max_token_length is not used in Flux training / max_token_lengthはFluxのトレーニングでは使用されません")
 
-        assert not args.split_mode or not args.cpu_offload_checkpointing, (
-            "split_mode and cpu_offload_checkpointing cannot be used together"
-            " / split_modeとcpu_offload_checkpointingは同時に使用できません"
-        )
+        assert (
+            args.blocks_to_swap is None or args.blocks_to_swap == 0
+        ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing / blocks_to_swapはcpu_offload_checkpointingと併用できません"
+
+        # deprecated split_mode option
+        if args.split_mode:
+            if args.blocks_to_swap is not None:
+                logger.warning(
+                    "split_mode is deprecated. Because `--blocks_to_swap` is set, `--split_mode` is ignored."
+                    " / split_modeは非推奨です。`--blocks_to_swap`が設定されているため、`--split_mode`は無視されます。"
+                )
+            else:
+                logger.warning(
+                    "split_mode is deprecated. Please use `--blocks_to_swap` instead. `--blocks_to_swap 18` is automatically set."
+                    " / split_modeは非推奨です。代わりに`--blocks_to_swap`を使用してください。`--blocks_to_swap 18`が自動的に設定されました。"
+                )
+                args.blocks_to_swap = 18  # 18 is safe for most cases
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
@@ -75,9 +88,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 raise ValueError(f"Unsupported fp8 model dtype: {model.dtype}")
             elif model.dtype == torch.float8_e4m3fn:
                 logger.info("Loaded fp8 FLUX model")
+            else:
+                logger.info(
+                    "Cast FLUX model to fp8. This may take a while. You can reduce the time by using fp8 checkpoint."
+                    " / FLUXモデルをfp8に変換しています。これには時間がかかる場合があります。fp8チェックポイントを使用することで時間を短縮できます。"
+                )
+                model.to(torch.float8_e4m3fn)
 
-        if args.split_mode:
-            model = self.prepare_split_model(model, weight_dtype, accelerator)
+        # if args.split_mode:
+        #     model = self.prepare_split_model(model, weight_dtype, accelerator)
 
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
         if self.is_swapping_blocks:
@@ -108,6 +127,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
 
+    """
     def prepare_split_model(self, model, weight_dtype, accelerator):
         from accelerate import init_empty_weights
 
@@ -144,6 +164,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         logger.info("split model prepared")
 
         return flux_lower
+    """
 
     def get_tokenize_strategy(self, args):
         _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
@@ -291,14 +312,12 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         text_encoders = text_encoder  # for compatibility
         text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
 
-        if not args.split_mode:
-            if self.is_swapping_blocks:
-                accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
-            flux_train_utils.sample_images(
-                accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
-            )
-            return
+        flux_train_utils.sample_images(
+            accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
+        )
+        # return
 
+        """
         class FluxUpperLowerWrapper(torch.nn.Module):
             def __init__(self, flux_upper: flux_models.FluxUpper, flux_lower: flux_models.FluxLower, device: torch.device):
                 super().__init__()
@@ -325,6 +344,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             accelerator, args, epoch, global_step, wrapper, ae, text_encoders, self.sample_prompts_te_outputs
         )
         clean_memory_on_device(accelerator.device)
+        """
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
@@ -383,20 +403,21 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
-            if not args.split_mode:
-                # normal forward
-                with accelerator.autocast():
-                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
-                    model_pred = unet(
-                        img=img,
-                        img_ids=img_ids,
-                        txt=t5_out,
-                        txt_ids=txt_ids,
-                        y=l_pooled,
-                        timesteps=timesteps / 1000,
-                        guidance=guidance_vec,
-                        txt_attention_mask=t5_attn_mask,
-                    )
+            # if not args.split_mode:
+            # normal forward
+            with accelerator.autocast():
+                # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
+                model_pred = unet(
+                    img=img,
+                    img_ids=img_ids,
+                    txt=t5_out,
+                    txt_ids=txt_ids,
+                    y=l_pooled,
+                    timesteps=timesteps / 1000,
+                    guidance=guidance_vec,
+                    txt_attention_mask=t5_attn_mask,
+                )
+            """
             else:
                 # split forward to reduce memory usage
                 assert network.train_blocks == "single", "train_blocks must be single for split mode"
@@ -430,6 +451,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     vec.requires_grad_(True)
                     pe.requires_grad_(True)
                     model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
+            """
 
             return model_pred
 
@@ -558,30 +580,23 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         flux: flux_models.Flux = unet
         flux = accelerator.prepare(flux, device_placement=[not self.is_swapping_blocks])
         accelerator.unwrap_model(flux).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
+        accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
 
         return flux
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
+    train_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument(
         "--split_mode",
         action="store_true",
-        help="[EXPERIMENTAL] use split mode for Flux model, network arg `train_blocks=single` is required"
-        + "/[実験的] Fluxモデルの分割モードを使用する。ネットワーク引数`train_blocks=single`が必要",
-    )
-
-    parser.add_argument(
-        "--blocks_to_swap",
-        type=int,
-        default=None,
-        help="[EXPERIMENTAL] "
-        "Sets the number of blocks to swap during the forward and backward passes."
-        "Increasing this number lowers the overall VRAM used during training at the expense of training speed (s/it)."
-        " / 順伝播および逆伝播中にスワップするブロックの数を設定します。"
-        "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
+        # help="[EXPERIMENTAL] use split mode for Flux model, network arg `train_blocks=single` is required"
+        # + "/[実験的] Fluxモデルの分割モードを使用する。ネットワーク引数`train_blocks=single`が必要",
+        help="[Deprecated] This option is deprecated. Please use `--blocks_to_swap` instead."
+        " / このオプションは非推奨です。代わりに`--blocks_to_swap`を使用してください。",
     )
     return parser
 

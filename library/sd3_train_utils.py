@@ -143,27 +143,6 @@ def save_sd3_model_on_epoch_end_or_stepwise(
 
 def add_sd3_training_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
-        "--cache_text_encoder_outputs", action="store_true", help="cache text encoder outputs / text encoderの出力をキャッシュする"
-    )
-    parser.add_argument(
-        "--cache_text_encoder_outputs_to_disk",
-        action="store_true",
-        help="cache text encoder outputs to disk / text encoderの出力をディスクにキャッシュする",
-    )
-    parser.add_argument(
-        "--text_encoder_batch_size",
-        type=int,
-        default=None,
-        help="text encoder batch size (default: None, use dataset's batch size)"
-        + " / text encoderのバッチサイズ（デフォルト: None, データセットのバッチサイズを使用）",
-    )
-    parser.add_argument(
-        "--disable_mmap_load_safetensors",
-        action="store_true",
-        help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
-    )
-
-    parser.add_argument(
         "--clip_l",
         type=str,
         required=False,
@@ -253,32 +232,8 @@ def add_sd3_training_arguments(parser: argparse.ArgumentParser):
         " / 複数解像度学習時に解像度ごとに位置埋め込みをスケーリングする。SD3.5M以外では予期しない動作になります",
     )
 
-    # Dependencies of Diffusers noise sampler has been removed for clarity.
-    parser.add_argument(
-        "--weighting_scheme",
-        type=str,
-        default="uniform",
-        choices=["sigma_sqrt", "logit_normal", "mode", "cosmap", "uniform"],
-        help="weighting scheme for timestep distribution and loss / タイムステップ分布と損失のための重み付けスキーム",
-    )
-    parser.add_argument(
-        "--logit_mean",
-        type=float,
-        default=0.0,
-        help="mean to use when using the `'logit_normal'` weighting scheme for timestep distribution. / タイムステップ分布のために`'logit_normal'`重み付けスキームを使用する場合の平均",
-    )
-    parser.add_argument(
-        "--logit_std",
-        type=float,
-        default=1.0,
-        help="std to use when using the `'logit_normal'` weighting scheme for timestep distribution. / タイムステップ分布のために`'logit_normal'`重み付けスキームを使用する場合のstd",
-    )
-    parser.add_argument(
-        "--mode_scale",
-        type=float,
-        default=1.29,
-        help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`. / モード重み付けスキームのスケール。`'mode'`を`weighting_scheme`として使用する場合のみ有効",
-    )
+    # Dependencies of Diffusers noise sampler has been removed for clarity in training
+
     parser.add_argument(
         "--training_shift",
         type=float,

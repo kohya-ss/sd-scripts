@@ -970,11 +970,16 @@ class Flux(nn.Module):
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
 
+        assert double_blocks_to_swap <= self.num_double_blocks - 2 and single_blocks_to_swap <= self.num_single_blocks - 2, (
+            f"Cannot swap more than {self.num_double_blocks - 2} double blocks and {self.num_single_blocks - 2} single blocks. "
+            f"Requested {double_blocks_to_swap} double blocks and {single_blocks_to_swap} single blocks."
+        )
+
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, self.num_double_blocks, double_blocks_to_swap, device #, debug=True
+            self.double_blocks, self.num_double_blocks, double_blocks_to_swap, device  # , debug=True
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, self.num_single_blocks, single_blocks_to_swap, device #, debug=True
+            self.single_blocks, self.num_single_blocks, single_blocks_to_swap, device  # , debug=True
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
@@ -1061,10 +1066,11 @@ class Flux(nn.Module):
         return img
 
 
+"""
 class FluxUpper(nn.Module):
-    """
+    ""
     Transformer model for flow matching on sequences.
-    """
+    ""
 
     def __init__(self, params: FluxParams):
         super().__init__()
@@ -1168,9 +1174,9 @@ class FluxUpper(nn.Module):
 
 
 class FluxLower(nn.Module):
-    """
+    ""
     Transformer model for flow matching on sequences.
-    """
+    ""
 
     def __init__(self, params: FluxParams):
         super().__init__()
@@ -1228,3 +1234,4 @@ class FluxLower(nn.Module):
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
         return img
+"""

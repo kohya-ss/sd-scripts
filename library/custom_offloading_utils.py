@@ -16,13 +16,29 @@ def synchronize_device(device: torch.device):
         torch.mps.synchronize()
 
 
-def swap_weight_devices(layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
+def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
     weight_swap_jobs = []
-    for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
-        if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
-            weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
+
+    # This is not working for all cases (e.g. SD3), so we need to find the corresponding modules
+    # for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
+    #     print(module_to_cpu.__class__, module_to_cuda.__class__)
+    #     if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
+    #         weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
+
+    modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules()}
+    for module_to_cuda_name, module_to_cuda in layer_to_cuda.named_modules():
+        if hasattr(module_to_cuda, "weight") and module_to_cuda.weight is not None:
+            module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
+            if module_to_cpu is not None and module_to_cpu.weight.shape == module_to_cuda.weight.shape:
+                weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
+            else:
+                if module_to_cuda.weight.data.device.type != device.type:
+                    # print(
+                    #     f"Module {module_to_cuda_name} not found in CPU model or shape mismatch, so not swapping and moving to device"
+                    # )
+                    module_to_cuda.weight.data = module_to_cuda.weight.data.to(device)
 
     torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
 
@@ -92,7 +108,7 @@ class Offloader:
 
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         if self.cuda_available:
-            swap_weight_devices(block_to_cpu, block_to_cuda)
+            swap_weight_devices_cuda(self.device, block_to_cpu, block_to_cuda)
         else:
             swap_weight_devices_no_cuda(self.device, block_to_cpu, block_to_cuda)
 
@@ -130,52 +146,6 @@ class Offloader:
 
         if self.debug:
             print(f"Waited for block {block_idx}: {time.perf_counter()-start_time:.2f}s")
-
-
-class TrainOffloader(Offloader):
-    """
-    supports backward offloading
-    """
-
-    def __init__(self, num_blocks: int, blocks_to_swap: int, device: torch.device, debug: bool = False):
-        super().__init__(num_blocks, blocks_to_swap, device, debug)
-        self.hook_added = set()
-
-    def create_grad_hook(self, blocks: list[nn.Module], block_index: int) -> Optional[callable]:
-        if block_index in self.hook_added:
-            return None
-        self.hook_added.add(block_index)
-
-        # -1 for 0-based index, -1 for current block is not fully backpropagated yet
-        num_blocks_propagated = self.num_blocks - block_index - 2
-        swapping = num_blocks_propagated > 0 and num_blocks_propagated <= self.blocks_to_swap
-        waiting = block_index > 0 and block_index <= self.blocks_to_swap
-
-        if not swapping and not waiting:
-            return None
-
-        # create  hook
-        block_idx_to_cpu = self.num_blocks - num_blocks_propagated
-        block_idx_to_cuda = self.blocks_to_swap - num_blocks_propagated
-        block_idx_to_wait = block_index - 1
-
-        if self.debug:
-            print(
-                f"Backward: Created grad hook for block {block_index} with {block_idx_to_cpu}, {block_idx_to_cuda}, {block_idx_to_wait}"
-            )
-        if swapping:
-
-            def grad_hook(tensor: torch.Tensor):
-                self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
-
-            return grad_hook
-
-        else:
-
-            def grad_hook(tensor: torch.Tensor):
-                self._wait_blocks_move(block_idx_to_wait)
-
-            return grad_hook
 
 
 class ModelOffloader(Offloader):
@@ -227,6 +197,9 @@ class ModelOffloader(Offloader):
     def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
+
+        if self.debug:
+            print("Prepare block devices before forward")
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
             b.to(self.device)
