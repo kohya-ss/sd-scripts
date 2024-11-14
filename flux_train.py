@@ -80,7 +80,9 @@ def train(args):
 
     assert (
         args.blocks_to_swap is None or args.blocks_to_swap == 0
-    ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing / blocks_to_swapはcpu_offload_checkpointingと併用できません"
+    ) or not args.cpu_offload_checkpointing, (
+        "blocks_to_swap is not supported with cpu_offload_checkpointing / blocks_to_swapはcpu_offload_checkpointingと併用できません"
+    )
 
     cache_latents = args.cache_latents
     use_dreambooth_method = args.in_json is None
@@ -480,13 +482,16 @@ def train(args):
             for parameter, param_name in zip(param_group["params"], param_name_group):
                 if parameter.requires_grad:
 
-                    def grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
+                    def create_grad_hook(p_name, p_group):
+                        def grad_hook(tensor: torch.Tensor):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, p_group)
+                            tensor.grad = None
 
-                    parameter.register_post_accumulate_grad_hook(grad_hook)
+                        return grad_hook
+
+                    parameter.register_post_accumulate_grad_hook(create_grad_hook(param_name, param_group))
 
     elif args.blockwise_fused_optimizers:
         # prepare for additional optimizers and lr schedulers

@@ -5913,6 +5913,7 @@ def append_lr_to_logs(logs, lr_scheduler, optimizer_type, including_unet=True):
         names.append("unet")
     names.append("text_encoder1")
     names.append("text_encoder2")
+    names.append("text_encoder3") # SD3
 
     append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names)
 
