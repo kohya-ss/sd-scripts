@@ -164,6 +164,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_masked_loss_arguments(parser)
     config_util.add_config_arguments(parser)
+    train_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
