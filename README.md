@@ -14,7 +14,7 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
-Nov 12, 2024:
+Nov 14, 2024:
 
 - Improved the implementation of block swap and made it available for both FLUX.1 and SD3 LoRA training. See [FLUX.1 LoRA training](#flux1-lora-training) etc. for how to use the new options. Training is possible with about 8-10GB of VRAM.
 - During fine-tuning, the memory usage when specifying the same number of blocks has increased slightly, but the training speed when specifying block swap has been significantly improved.
