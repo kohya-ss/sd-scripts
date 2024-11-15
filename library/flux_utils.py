@@ -153,6 +153,14 @@ def load_ae(
     return ae
 
 
+def load_controlnet(name, device, transformer=None):
+   with torch.device(device):
+       controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params)
+   if transformer is not None:
+       controlnet.load_state_dict(transformer.state_dict(), strict=False)
+   return controlnet    
+
+
 def load_clip_l(
     ckpt_path: Optional[str],
     dtype: torch.dtype,
