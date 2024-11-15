@@ -2,9 +2,10 @@
 
 import os
 import re
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+from safetensors.torch import safe_open, save_file
 import torch
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
@@ -12,12 +13,34 @@ from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjecti
 # TODO remove circular import by moving ImageInfo to a separate file
 # from library.train_util import ImageInfo
 
+from library import utils
 from library.utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def get_compatible_dtypes(dtype: Optional[Union[str, torch.dtype]]) -> List[torch.dtype]:
+    if dtype is None:
+        # all dtypes are acceptable
+        return get_available_dtypes()
+
+    dtype = utils.str_to_dtype(dtype) if isinstance(dtype, str) else dtype
+    compatible_dtypes = [torch.float32]
+    if dtype.itemsize == 1:  # fp8
+        compatible_dtypes.append(torch.bfloat16)
+        compatible_dtypes.append(torch.float16)
+    compatible_dtypes.append(dtype)  # add the specified: bf16, fp16, one of fp8
+    return compatible_dtypes
+
+
+def get_available_dtypes() -> List[torch.dtype]:
+    """
+    Returns the list of available dtypes for latents caching. Higher precision is preferred.
+    """
+    return [torch.float32, torch.bfloat16, torch.float16, torch.float8_e4m3fn, torch.float8_e5m2]
 
 
 class TokenizeStrategy:
@@ -382,10 +405,17 @@ class LatentsCachingStrategy:
 
     _strategy = None  # strategy instance: actual strategy class
 
-    def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
+    def __init__(
+        self, architecture: str, latents_stride: int, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool
+    ) -> None:
+        self._architecture = architecture
+        self._latents_stride = latents_stride
         self._cache_to_disk = cache_to_disk
         self._batch_size = batch_size
         self.skip_disk_cache_validity_check = skip_disk_cache_validity_check
+
+        self.load_version_warning_printed = False
+        self.save_version_warning_printed = False
 
     @classmethod
     def set_strategy(cls, strategy):
@@ -398,6 +428,14 @@ class LatentsCachingStrategy:
         return cls._strategy
 
     @property
+    def architecture(self):
+        return self._architecture
+
+    @property
+    def latents_stride(self):
+        return self._latents_stride
+
+    @property
     def cache_to_disk(self):
         return self._cache_to_disk
 
@@ -407,69 +445,143 @@ class LatentsCachingStrategy:
 
     @property
     def cache_suffix(self):
-        raise NotImplementedError
+        return f"_{self.architecture.lower()}.safetensors"
 
-    def get_image_size_from_disk_cache_path(self, absolute_path: str, npz_path: str) -> Tuple[Optional[int], Optional[int]]:
-        w, h = os.path.splitext(npz_path)[0].split("_")[-2].split("x")
+    def get_image_size_from_disk_cache_path(self, absolute_path: str, cache_path: str) -> Tuple[Optional[int], Optional[int]]:
+        w, h = os.path.splitext(cache_path)[0].rsplit("_", 2)[-2].split("x")
         return int(w), int(h)
 
-    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        raise NotImplementedError
+    def get_latents_cache_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
+        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.cache_suffix
 
     def is_disk_cached_latents_expected(
-        self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool
+        self,
+        bucket_reso: Tuple[int, int],
+        cache_path: str,
+        flip_aug: bool,
+        alpha_mask: bool,
+        preferred_dtype: Optional[Union[str, torch.dtype]],
     ) -> bool:
         raise NotImplementedError
 
     def cache_batch_latents(self, model: Any, batch: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
         raise NotImplementedError
 
+    def get_key_suffix(
+        self,
+        bucket_reso: Optional[Tuple[int, int]] = None,
+        latents_size: Optional[Tuple[int, int]] = None,
+        dtype: Optional[Union[str, torch.dtype]] = None,
+    ) -> str:
+        """
+        if dtype is None, it returns "_32x64" for example.
+        """
+        if latents_size is not None:
+            expected_latents_size = latents_size  # H, W
+        else:
+            # bucket_reso is (W, H)
+            expected_latents_size = (bucket_reso[1] // self.latents_stride, bucket_reso[0] // self.latents_stride)  # H, W
+
+        if dtype is None:
+            dtype_suffix = ""
+        else:
+            dtype_suffix = "_" + utils.dtype_to_normalized_str(dtype)
+
+        # e.g. "_32x64_float16", HxW, dtype
+        key_suffix = f"_{expected_latents_size[0]}x{expected_latents_size[1]}{dtype_suffix}"
+
+        return key_suffix
+
+    def get_compatible_latents_keys(
+        self,
+        keys: set[str],
+        dtype: Union[str, torch.dtype],
+        flip_aug: bool,
+        bucket_reso: Optional[Tuple[int, int]] = None,
+        latents_size: Optional[Tuple[int, int]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        bucket_reso is (W, H), latents_size is (H, W)
+        """
+
+        latents_key = None
+        flipped_latents_key = None
+
+        compatible_dtypes = get_compatible_dtypes(dtype)
+
+        for compat_dtype in compatible_dtypes:
+            key_suffix = self.get_key_suffix(bucket_reso, latents_size, compat_dtype)
+
+            if latents_key is None:
+                latents_key = "latents" + key_suffix
+                if latents_key not in keys:
+                    latents_key = None
+            if flip_aug and flipped_latents_key is None:
+                flipped_latents_key = "latents_flipped" + key_suffix
+                if flipped_latents_key not in keys:
+                    flipped_latents_key = None
+
+            if latents_key is not None and (flipped_latents_key is not None or not flip_aug):
+                break
+
+        return latents_key, flipped_latents_key
+
     def _default_is_disk_cached_latents_expected(
         self,
-        latents_stride: int,
         bucket_reso: Tuple[int, int],
-        npz_path: str,
+        latents_cache_path: str,
         flip_aug: bool,
         alpha_mask: bool,
-        multi_resolution: bool = False,
+        preferred_dtype: Optional[Union[str, torch.dtype]],
     ):
+        # multi_resolution is always enabled for any strategy
         if not self.cache_to_disk:
             return False
-        if not os.path.exists(npz_path):
+        if not os.path.exists(latents_cache_path):
             return False
         if self.skip_disk_cache_validity_check:
             return True
 
-        expected_latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
-
-        # e.g. "_32x64", HxW
-        key_reso_suffix = f"_{expected_latents_size[0]}x{expected_latents_size[1]}" if multi_resolution else ""
+        key_suffix_without_dtype = self.get_key_suffix(bucket_reso=bucket_reso, dtype=None)
 
         try:
-            npz = np.load(npz_path)
-            if "latents" + key_reso_suffix not in npz:
+            # safe_open locks the file, so we cannot use it for checking keys
+            # with safe_open(latents_cache_path, framework="pt") as f:
+            #     keys = f.keys()
+            with utils.MemoryEfficientSafeOpen(latents_cache_path) as f:
+                keys = f.keys()
+
+            if alpha_mask and "alpha_mask" + key_suffix_without_dtype not in keys:
+                # print(f"alpha_mask not found: {latents_cache_path}")
                 return False
-            if flip_aug and "latents_flipped" + key_reso_suffix not in npz:
-                return False
-            if alpha_mask and "alpha_mask" + key_reso_suffix not in npz:
-                return False
+
+            if preferred_dtype is None:
+                # remove dtype suffix from keys, because any dtype is acceptable
+                keys = [key.rsplit("_", 1)[0] for key in keys if not key.endswith(key_suffix_without_dtype)]
+                keys = set(keys)
+                if "latents" + key_suffix_without_dtype not in keys:
+                    # print(f"No preferred: latents {key_suffix_without_dtype} not found: {latents_cache_path}")
+                    return False
+                if flip_aug and "latents_flipped" + key_suffix_without_dtype not in keys:
+                    # print(f"No preferred: latents_flipped {key_suffix_without_dtype} not found: {latents_cache_path}")
+                    return False
+            else:
+                # specific dtype or compatible dtype is required
+                latents_key, flipped_latents_key = self.get_compatible_latents_keys(
+                    keys, preferred_dtype, flip_aug, bucket_reso=bucket_reso
+                )
+                if latents_key is None or (flip_aug and flipped_latents_key is None):
+                    # print(f"Precise dtype not found: {latents_cache_path}")
+                    return False
         except Exception as e:
-            logger.error(f"Error loading file: {npz_path}")
+            logger.error(f"Error loading file: {latents_cache_path}")
             raise e
 
         return True
 
     # TODO remove circular dependency for ImageInfo
     def _default_cache_batch_latents(
-        self,
-        encode_by_vae,
-        vae_device,
-        vae_dtype,
-        image_infos: List,
-        flip_aug: bool,
-        alpha_mask: bool,
-        random_crop: bool,
-        multi_resolution: bool = False,
+        self, encode_by_vae, vae_device, vae_dtype, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool
     ):
         """
         Default implementation for cache_batch_latents. Image loading, VAE, flipping, alpha mask handling are common.
@@ -499,13 +611,8 @@ class LatentsCachingStrategy:
             original_size = original_sizes[i]
             crop_ltrb = crop_ltrbs[i]
 
-            latents_size = latents.shape[1:3]  # H, W
-            key_reso_suffix = f"_{latents_size[0]}x{latents_size[1]}" if multi_resolution else ""  # e.g. "_32x64", HxW
-
             if self.cache_to_disk:
-                self.save_latents_to_disk(
-                    info.latents_npz, latents, original_size, crop_ltrb, flipped_latent, alpha_mask, key_reso_suffix
-                )
+                self.save_latents_to_disk(info.latents_cache_path, latents, original_size, crop_ltrb, flipped_latent, alpha_mask)
             else:
                 info.latents_original_size = original_size
                 info.latents_crop_ltrb = crop_ltrb
@@ -515,56 +622,111 @@ class LatentsCachingStrategy:
                 info.alpha_mask = alpha_mask
 
     def load_latents_from_disk(
-        self, npz_path: str, bucket_reso: Tuple[int, int]
-    ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        for SD/SDXL
-        """
-        return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
+        self, cache_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        raise NotImplementedError
 
     def _default_load_latents_from_disk(
-        self, latents_stride: Optional[int], npz_path: str, bucket_reso: Tuple[int, int]
-    ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-        if latents_stride is None:
-            key_reso_suffix = ""
-        else:
-            latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
-            key_reso_suffix = f"_{latents_size[0]}x{latents_size[1]}"  # e.g. "_32x64", HxW
+        self, cache_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        with safe_open(cache_path, framework="pt") as f:
+            metadata = f.metadata()
+            version = metadata.get("format_version", "0.0.0")
+            major, minor, patch = map(int, version.split("."))
+            if major > 1:  # or (major == 1 and minor > 0):
+                if not self.load_version_warning_printed:
+                    self.load_version_warning_printed = True
+                    logger.warning(
+                        f"Existing latents cache file has a higher version {version} for {cache_path}. This may cause issues."
+                    )
 
-        npz = np.load(npz_path)
-        if "latents" + key_reso_suffix not in npz:
-            raise ValueError(f"latents{key_reso_suffix} not found in {npz_path}")
+            keys = f.keys()
 
-        latents = npz["latents" + key_reso_suffix]
-        original_size = npz["original_size" + key_reso_suffix].tolist()
-        crop_ltrb = npz["crop_ltrb" + key_reso_suffix].tolist()
-        flipped_latents = npz["latents_flipped" + key_reso_suffix] if "latents_flipped" + key_reso_suffix in npz else None
-        alpha_mask = npz["alpha_mask" + key_reso_suffix] if "alpha_mask" + key_reso_suffix in npz else None
+            latents_key, flipped_latents_key = self.get_compatible_latents_keys(keys, None, flip_aug=True, bucket_reso=bucket_reso)
+
+            key_suffix_without_dtype = self.get_key_suffix(bucket_reso=bucket_reso, dtype=None)
+            alpha_mask_key = "alpha_mask" + key_suffix_without_dtype
+
+            latents = f.get_tensor(latents_key)
+            flipped_latents = f.get_tensor(flipped_latents_key) if flipped_latents_key is not None else None
+            alpha_mask = f.get_tensor(alpha_mask_key) if alpha_mask_key in keys else None
+
+            original_size = [int(metadata["width"]), int(metadata["height"])]
+            crop_ltrb = metadata[f"crop_ltrb" + key_suffix_without_dtype]
+            crop_ltrb = list(map(int, crop_ltrb.split(",")))
+
         return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
 
     def save_latents_to_disk(
         self,
-        npz_path,
-        latents_tensor,
-        original_size,
-        crop_ltrb,
-        flipped_latents_tensor=None,
-        alpha_mask=None,
-        key_reso_suffix="",
+        cache_path: str,
+        latents_tensor: torch.Tensor,
+        original_size: Tuple[int, int],
+        crop_ltrb: List[int],
+        flipped_latents_tensor: Optional[torch.Tensor] = None,
+        alpha_mask: Optional[torch.Tensor] = None,
     ):
-        kwargs = {}
+        dtype = latents_tensor.dtype
+        latents_size = latents_tensor.shape[1:3]  # H, W
+        tensor_dict = {}
 
-        if os.path.exists(npz_path):
-            # load existing npz and update it
-            npz = np.load(npz_path)
-            for key in npz.files:
-                kwargs[key] = npz[key]
+        overwrite = False
+        if os.path.exists(cache_path):
+            # load existing safetensors and update it
+            overwrite = True
 
-        kwargs["latents" + key_reso_suffix] = latents_tensor.float().cpu().numpy()
-        kwargs["original_size" + key_reso_suffix] = np.array(original_size)
-        kwargs["crop_ltrb" + key_reso_suffix] = np.array(crop_ltrb)
+            # we cannot use safe_open here because it locks the file
+            # with safe_open(cache_path, framework="pt") as f:
+            with utils.MemoryEfficientSafeOpen(cache_path) as f:
+                metadata = f.metadata()
+                keys = f.keys()
+                for key in keys:
+                    tensor_dict[key] = f.get_tensor(key)
+            assert metadata["architecture"] == self.architecture
+
+            file_version = metadata.get("format_version", "0.0.0")
+            major, minor, patch = map(int, file_version.split("."))
+            if major > 1 or (major == 1 and minor > 0):
+                self.save_version_warning_printed = True
+                logger.warning(
+                    f"Existing latents cache file has a higher version {file_version} for {cache_path}. This may cause issues."
+                )
+        else:
+            metadata = {}
+            metadata["architecture"] = self.architecture
+            metadata["width"] = f"{original_size[0]}"
+            metadata["height"] = f"{original_size[1]}"
+            metadata["format_version"] = "1.0.0"
+
+        metadata[f"crop_ltrb_{latents_size[0]}x{latents_size[1]}"] = ",".join(map(str, crop_ltrb))
+
+        key_suffix = self.get_key_suffix(latents_size=latents_size, dtype=dtype)
+        if latents_tensor is not None:
+            tensor_dict["latents" + key_suffix] = latents_tensor
         if flipped_latents_tensor is not None:
-            kwargs["latents_flipped" + key_reso_suffix] = flipped_latents_tensor.float().cpu().numpy()
+            tensor_dict["latents_flipped" + key_suffix] = flipped_latents_tensor
         if alpha_mask is not None:
-            kwargs["alpha_mask" + key_reso_suffix] = alpha_mask.float().cpu().numpy()
-        np.savez(npz_path, **kwargs)
+            key_suffix_without_dtype = self.get_key_suffix(latents_size=latents_size, dtype=None)
+            tensor_dict["alpha_mask" + key_suffix_without_dtype] = alpha_mask
+
+        # remove lower precision latents if higher precision latents are already cached
+        if overwrite:
+            available_dtypes = get_available_dtypes()
+            available_itemsize = None
+            available_itemsize_flipped = None
+            for dtype in available_dtypes:
+                key_suffix = self.get_key_suffix(latents_size=latents_size, dtype=dtype)
+                if "latents" + key_suffix in tensor_dict:
+                    if available_itemsize is None:
+                        available_itemsize = dtype.itemsize
+                    elif available_itemsize > dtype.itemsize:
+                        # if higher precision latents are already cached, remove lower precision latents
+                        del tensor_dict["latents" + key_suffix]
+
+                if "latents_flipped" + key_suffix in tensor_dict:
+                    if available_itemsize_flipped is None:
+                        available_itemsize_flipped = dtype.itemsize
+                    elif available_itemsize_flipped > dtype.itemsize:
+                        del tensor_dict["latents_flipped" + key_suffix]
+
+        save_file(tensor_dict, cache_path, metadata=metadata)

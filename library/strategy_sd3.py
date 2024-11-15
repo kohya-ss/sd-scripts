@@ -382,29 +382,25 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
 
 
 class Sd3LatentsCachingStrategy(LatentsCachingStrategy):
-    SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
+    ARCHITECTURE_SD3 = "sd3"
 
     def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
+        super().__init__(Sd3LatentsCachingStrategy.ARCHITECTURE_SD3, 8, cache_to_disk, batch_size, skip_disk_cache_validity_check)
 
-    @property
-    def cache_suffix(self) -> str:
-        return Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
-
-    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return (
-            os.path.splitext(absolute_path)[0]
-            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
-        )
-
-    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)
+    def is_disk_cached_latents_expected(
+        self,
+        bucket_reso: Tuple[int, int],
+        cache_path: str,
+        flip_aug: bool,
+        alpha_mask: bool,
+        preferred_dtype: Optional[torch.dtype] = None,
+    ):
+        return self._default_is_disk_cached_latents_expected(bucket_reso, cache_path, flip_aug, alpha_mask, preferred_dtype)
 
     def load_latents_from_disk(
-        self, npz_path: str, bucket_reso: Tuple[int, int]
-    ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-        return self._default_load_latents_from_disk(8, npz_path, bucket_reso)  # support multi-resolution
+        self, cache_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        return self._default_load_latents_from_disk(cache_path, bucket_reso)
 
     # TODO remove circular dependency for ImageInfo
     def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
@@ -412,9 +408,7 @@ class Sd3LatentsCachingStrategy(LatentsCachingStrategy):
         vae_device = vae.device
         vae_dtype = vae.dtype
 
-        self._default_cache_batch_latents(
-            encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop, multi_resolution=True
-        )
+        self._default_cache_batch_latents(encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop)
 
         if not train_util.HIGH_VRAM:
             train_util.clean_memory_on_device(vae.device)

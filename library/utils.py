@@ -189,6 +189,15 @@ def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) 
         raise ValueError(f"Unsupported dtype: {s}")
 
 
+def dtype_to_normalized_str(dtype: Union[str, torch.dtype]) -> str:
+    dtype = str_to_dtype(dtype) if isinstance(dtype, str) else dtype
+
+    # get name of the dtype
+    dtype_name = str(dtype).split(".")[-1]
+
+    return dtype_name
+
+
 def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
     """
     memory efficient save file
@@ -264,8 +273,8 @@ class MemoryEfficientSafeOpen:
     # does not support metadata loading
     def __init__(self, filename):
         self.filename = filename
-        self.header, self.header_size = self._read_header()
         self.file = open(filename, "rb")
+        self.header, self.header_size = self._read_header()
 
     def __enter__(self):
         return self
@@ -275,6 +284,9 @@ class MemoryEfficientSafeOpen:
 
     def keys(self):
         return [k for k in self.header.keys() if k != "__metadata__"]
+
+    def metadata(self) -> Dict[str, str]:
+        return self.header.get("__metadata__", {})
 
     def get_tensor(self, key):
         if key not in self.header:
@@ -293,10 +305,9 @@ class MemoryEfficientSafeOpen:
         return self._deserialize_tensor(tensor_bytes, metadata)
 
     def _read_header(self):
-        with open(self.filename, "rb") as f:
-            header_size = struct.unpack("<Q", f.read(8))[0]
-            header_json = f.read(header_size).decode("utf-8")
-            return json.loads(header_json), header_size
+        header_size = struct.unpack("<Q", self.file.read(8))[0]
+        header_json = self.file.read(header_size).decode("utf-8")
+        return json.loads(header_json), header_size
 
     def _deserialize_tensor(self, tensor_bytes, metadata):
         dtype = self._get_torch_dtype(metadata["dtype"])

@@ -198,7 +198,7 @@ def train(args):
         ae.requires_grad_(False)
         ae.eval()
 
-        train_dataset_group.new_cache_latents(ae, accelerator)
+        train_dataset_group.new_cache_latents(ae, accelerator, args.force_cache_precision)
 
         ae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
