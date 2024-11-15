@@ -153,11 +153,14 @@ def load_ae(
     return ae
 
 
-def load_controlnet(name, device, transformer=None):
-   with torch.device(device):
+def load_controlnet():
+   # TODO
+   is_schnell = False
+   name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
+   with torch.device("meta"):
        controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params)
-   if transformer is not None:
-       controlnet.load_state_dict(transformer.state_dict(), strict=False)
+   # if transformer is not None:
+   #    controlnet.load_state_dict(transformer.state_dict(), strict=False)
    return controlnet    
 
 

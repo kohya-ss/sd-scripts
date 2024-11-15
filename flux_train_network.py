@@ -125,9 +125,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
-        controlnet = flux_utils.load_controlnet()
-        controlnet.train()
-
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model, controlnet
 
     def get_tokenize_strategy(self, args):
