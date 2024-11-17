@@ -157,7 +157,7 @@ def load_controlnet():
    # TODO
    is_schnell = False
    name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
-   with torch.device("meta"):
+   with torch.device("cuda:0"):
        controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params)
    # if transformer is not None:
    #    controlnet.load_state_dict(transformer.state_dict(), strict=False)
