@@ -153,15 +153,22 @@ def load_ae(
     return ae
 
 
-def load_controlnet():
-   # TODO
-   is_schnell = False
-   name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
-   with torch.device("cuda:0"):
-       controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params)
-   # if transformer is not None:
-   #    controlnet.load_state_dict(transformer.state_dict(), strict=False)
-   return controlnet    
+def load_controlnet(
+    ckpt_path: Optional[str], dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+):
+    logger.info("Building ControlNet")
+    # is_diffusers, is_schnell, (num_double_blocks, num_single_blocks), ckpt_paths = analyze_checkpoint_state(ckpt_path)
+    is_schnell = False
+    name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
+    with torch.device("meta"):
+        controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params).to(dtype)
+
+    if ckpt_path is not None:
+        logger.info(f"Loading state dict from {ckpt_path}")
+        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+        info = controlnet.load_state_dict(sd, strict=False, assign=True)
+        logger.info(f"Loaded ControlNet: {info}")
+    return controlnet    
 
 
 def load_clip_l(

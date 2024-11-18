@@ -1142,11 +1142,11 @@ class ControlNetFlux(nn.Module):
         self.num_single_blocks = len(self.single_blocks)
 
         # add ControlNet blocks
-        self.controlnet_blocks_for_double = nn.ModuleList([])
+        self.controlnet_blocks = nn.ModuleList([])
         for _ in range(controlnet_depth):
             controlnet_block = nn.Linear(self.hidden_size, self.hidden_size)
             controlnet_block = zero_module(controlnet_block)
-            self.controlnet_blocks_for_double.append(controlnet_block)
+            self.controlnet_blocks.append(controlnet_block)
         self.controlnet_blocks_for_single = nn.ModuleList([])
         for _ in range(0):  # TODO
             controlnet_block = nn.Linear(self.hidden_size, self.hidden_size)
@@ -1312,7 +1312,7 @@ class ControlNetFlux(nn.Module):
 
         controlnet_block_samples = ()
         controlnet_single_block_samples = ()
-        for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks_for_double):
+        for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks):
             block_sample = controlnet_block(block_sample)
             controlnet_block_samples = controlnet_block_samples + (block_sample,)
         for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks_for_single):
