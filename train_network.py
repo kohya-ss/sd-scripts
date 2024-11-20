@@ -53,7 +53,7 @@ class NetworkTrainer:
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
-        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
+        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, optimizer, keys_scaled=None, mean_norm=None, maximum_norm=None
     ):
         logs = {"loss/current": current_loss, "loss/average": avr_loss}
 
@@ -79,6 +79,12 @@ class NetworkTrainer:
                 logs["lr/d*lr"] = (
                     lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
                 )
+            if (
+                args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower())
+            ):  # tracking d*lr value of unet.
+                logs["lr/d*lr"] = (
+                    optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+                )
         else:
             idx = 0
             if not args.network_train_unet_only:
@@ -90,6 +96,12 @@ class NetworkTrainer:
                 if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
                     logs[f"lr/d*lr/group{i}"] = (
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
+                    )
+                if (
+                    args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower())
+                ):  
+                    logs[f"lr/d*lr/group{i}"] = (
+                        optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
                     )
 
         return logs
@@ -965,7 +977,7 @@ class NetworkTrainer:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
                 if args.logging_dir is not None:
-                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
+                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, optimizer, keys_scaled, mean_norm, maximum_norm)
                     accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:
