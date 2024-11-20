@@ -4100,8 +4100,10 @@ def get_optimizer(args, trainable_params):
             optimizer_class = sf.SGDScheduleFree
             logger.info(f"use SGDScheduleFree optimizer | {optimizer_kwargs}")
         else:
-            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+            optimizer_class = None
+
+        if optimizer_class is not None:
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     if optimizer is None:
         # 任意のoptimizerを使う
