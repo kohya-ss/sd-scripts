@@ -4600,7 +4600,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 def get_optimizer(args, trainable_params):
     # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit, Lion8bit, PagedLion8bit, AdEMAMix8bit, PagedAdEMAMix8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
-
+    
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
         assert (
@@ -4874,6 +4874,7 @@ def get_optimizer(args, trainable_params):
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.endswith("schedulefree".lower()):
+        should_train_optimizer = True
         try:
             import schedulefree as sf
         except ImportError:
@@ -4885,10 +4886,10 @@ def get_optimizer(args, trainable_params):
             optimizer_class = sf.SGDScheduleFree
             logger.info(f"use SGDScheduleFree optimizer | {optimizer_kwargs}")
         else:
-            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-        # make optimizer as train mode: we don't need to call train again, because eval will not be called in training loop
-        optimizer.train()
+            optimizer_class = None
+
+        if optimizer_class is not None:
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     if optimizer is None:
         # 任意のoptimizerを使う
@@ -4989,6 +4990,10 @@ def get_optimizer(args, trainable_params):
     # for logging
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
     optimizer_args = ",".join([f"{k}={v}" for k, v in optimizer_kwargs.items()])
+
+    if hasattr(optimizer, 'train') and callable(optimizer.train):
+        # make optimizer as train mode: we don't need to call train again, because eval will not be called in training loop
+        optimizer.train()
 
     return optimizer_name, optimizer_args, optimizer
 
