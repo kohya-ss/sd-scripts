@@ -237,7 +237,6 @@ def sample_image_inference(
     with accelerator.autocast(), torch.no_grad():
         x = denoise(flux, noise, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=scale, t5_attn_mask=t5_attn_mask, controlnet=controlnet, controlnet_img=controlnet_image)
 
-    # x = x.float()  # TODO: check
     x = flux_utils.unpack_latents(x, packed_latent_height, packed_latent_width)
 
     # latent to image
