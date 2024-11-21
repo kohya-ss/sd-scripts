@@ -116,7 +116,7 @@ class NetworkTrainer:
                     args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
                 ):  
                     logs[f"lr/d*lr/group{i}"] = (
-                        optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+                        optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
                     )
 
         return logs
