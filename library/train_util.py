@@ -379,6 +379,8 @@ class BaseSubset:
         caption_suffix: Optional[str],
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
+        token_decay_min: int,
+        token_decay_step: Union[float, int],
     ) -> None:
         self.image_dir = image_dir
         self.num_repeats = num_repeats
@@ -400,6 +402,8 @@ class BaseSubset:
 
         self.token_warmup_min = token_warmup_min  # step=0におけるタグの数
         self.token_warmup_step = token_warmup_step  # N（N<1ならN*max_train_steps）ステップ目でタグの数が最大になる
+        self.token_decay_min = token_decay_min if token_decay_min is not None else token_warmup_min  # 最小トークン数。指定されていない場合は、ウォームアップの最小トークン数が使用されます。
+        self.token_decay_step = token_decay_step  # トークン数が減少し始めるステップ。1未満の値が指定された場合、max_train_stepsの割合として解釈されます。
 
         self.img_count = 0
 
@@ -430,6 +434,8 @@ class DreamBoothSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        token_decay_min,
+        token_decay_step,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -453,6 +459,8 @@ class DreamBoothSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            token_decay_min,
+            token_decay_step,
         )
 
         self.is_reg = is_reg
@@ -491,6 +499,8 @@ class FineTuningSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        token_decay_min,
+        token_decay_step,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -514,6 +524,8 @@ class FineTuningSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            token_decay_min,
+            token_decay_step,
         )
 
         self.metadata_file = metadata_file
@@ -549,6 +561,8 @@ class ControlNetSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        token_decay_min,
+        token_decay_step,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -572,6 +586,8 @@ class ControlNetSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            token_decay_min,
+            token_decay_step,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
@@ -725,7 +741,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # if caption is multiline, use the first line
                 caption = caption.split("\n")[0]
 
-            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
+            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.token_decay_step > 0 or subset.caption_tag_dropout_rate > 0:
                 fixed_tokens = []
                 flex_tokens = []
                 fixed_suffix_tokens = []
@@ -750,6 +766,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 if subset.token_warmup_step < 1:  # 初回に上書きする
                     subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
+                if subset.token_decay_step < 1:  # 初回に上書きする
+                    subset.token_decay_step = math.floor(subset.token_decay_step * self.max_train_steps)                    
                 if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
                     tokens_len = (
                         math.floor(
@@ -758,7 +776,16 @@ class BaseDataset(torch.utils.data.Dataset):
                         + subset.token_warmup_min
                     )
                     flex_tokens = flex_tokens[:tokens_len]
-
+                if subset.token_decay_step and self.current_step >= subset.token_decay_step and (self.max_train_steps - subset.token_decay_step) > 0:
+                    decay_progress = (self.current_step - subset.token_decay_step) / (self.max_train_steps - subset.token_decay_step)
+                    tokens_len = (
+                        math.floor(
+                            (1 - decay_progress) * (len(flex_tokens) - subset.token_decay_min) 
+                        )
+                        + subset.token_decay_min
+                    )
+                    flex_tokens = flex_tokens[:tokens_len]
+                    
                 def dropout_tags(tokens):
                     if subset.caption_tag_dropout_rate <= 0:
                         return tokens
@@ -963,6 +990,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     subset.caption_dropout_rate > 0
                     or subset.shuffle_caption
                     or subset.token_warmup_step > 0
+                    or subset.token_decay_step > 0
                     or subset.caption_tag_dropout_rate > 0
                 )
                 for subset in self.subsets
@@ -1910,6 +1938,8 @@ class ControlNetDataset(BaseDataset):
                 subset.caption_suffix,
                 subset.token_warmup_min,
                 subset.token_warmup_step,
+                subset.token_decay_min,
+                subset.token_decay_step,
             )
             db_subsets.append(db_subset)
 
@@ -3635,6 +3665,20 @@ def add_dataset_arguments(
         type=float,
         default=0,
         help="tag length reaches maximum on N steps (or N*max_train_steps if N<1) / N（N<1ならN*max_train_steps）ステップでタグ長が最大になる。デフォルトは0（最初から最大）",
+    )
+
+    parser.add_argument(
+        "--token_decay_min",
+        type=int,
+        default=1,
+        help="minimum number of tokens to reduce to during training. If not specified, the value of token_warmup_min will be used / トレーニング中に減少するトークンの最小数。指定されていない場合は、token_warmup_minの値が使用されます。"
+    )
+
+    parser.add_argument(
+        "--token_decay_step",
+        type=float,
+        default=0,
+        help="step at which token reduction begins (or N*max_train_steps if N<1) / トークン数が減少し始めるステップ（N<1の場合はN*max_train_steps）。"
     )
 
     parser.add_argument(
