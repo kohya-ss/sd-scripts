@@ -464,8 +464,8 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
-                timesteps, huber_c = train_util.get_timesteps_and_huber_c(
-                    args, 0, noise_scheduler.config.num_train_timesteps, noise_scheduler, b_size, latents.device
+                timesteps = train_util.get_timesteps(
+                    0, noise_scheduler.config.num_train_timesteps, b_size, latents.device
                 )
 
                 # Add noise to the latents according to the noise magnitude at each timestep
@@ -499,7 +499,7 @@ def train(args):
                     target = noise
 
                 loss = train_util.conditional_loss(
-                    noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                    args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
                 )
                 loss = loss.mean([1, 2, 3])
 
