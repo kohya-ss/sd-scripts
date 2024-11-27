@@ -21,6 +21,41 @@ def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
 
 
+class ImageInfo:
+    def __init__(
+        self, image_key: str, num_repeats: int, captions: Optional[Union[str, list[str]]], is_reg: bool, absolute_path: str
+    ) -> None:
+        self.image_key: str = image_key
+        self.num_repeats: int = num_repeats
+        self.captions: Optional[list[str]] = None if captions is None else ([captions] if isinstance(captions, str) else captions)
+        self.caption_weights: Optional[list[float]] = None  # weights for each caption in sampling
+        self.list_of_tags: Optional[list[str]] = None
+        self.tags_weights: Optional[list[float]] = None
+        self.is_reg: bool = is_reg
+        self.absolute_path: str = absolute_path
+        self.image_size: Tuple[int, int] = None
+        self.resized_size: Tuple[int, int] = None
+        self.bucket_reso: Tuple[int, int] = None
+        self.latents: Optional[torch.Tensor] = None
+        self.latents_flipped: Optional[torch.Tensor] = None
+        self.latents_cache_path: Optional[str] = None  # set in cache_latents
+        self.latents_original_size: Optional[Tuple[int, int]] = None  # original image size, not latents size
+        # crop left top right bottom in original pixel size, not latents size
+        self.latents_crop_ltrb: Optional[Tuple[int, int]] = None
+        self.cond_img_path: Optional[str] = None
+        self.image: Optional[Image.Image] = None  # optional, original PIL Image. None if not the latents is cached
+        self.text_encoder_outputs_cache_path: Optional[str] = None  # set in cache_text_encoder_outputs
+
+        # new
+        self.text_encoder_outputs: Optional[list[list[torch.Tensor]]] = None
+        # old
+        self.text_encoder_outputs1: Optional[torch.Tensor] = None
+        self.text_encoder_outputs2: Optional[torch.Tensor] = None
+        self.text_encoder_pool2: Optional[torch.Tensor] = None
+
+        self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
+
+
 # region Logging
 
 

@@ -83,7 +83,7 @@ import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
 import library.deepspeed_utils as deepspeed_utils
-from library.utils import setup_logging, pil_resize
+from library.utils import setup_logging, pil_resize, ImageInfo
 
 setup_logging()
 import logging
@@ -144,36 +144,6 @@ IMAGE_TRANSFORMS = transforms.Compose(
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3 = "_sd3_te.npz"
-
-
-class ImageInfo:
-    def __init__(self, image_key: str, num_repeats: int, caption: str, is_reg: bool, absolute_path: str) -> None:
-        self.image_key: str = image_key
-        self.num_repeats: int = num_repeats
-        self.caption: str = caption
-        self.is_reg: bool = is_reg
-        self.absolute_path: str = absolute_path
-        self.image_size: Tuple[int, int] = None
-        self.resized_size: Tuple[int, int] = None
-        self.bucket_reso: Tuple[int, int] = None
-        self.latents: Optional[torch.Tensor] = None
-        self.latents_flipped: Optional[torch.Tensor] = None
-        self.latents_cache_path: Optional[str] = None  # set in cache_latents
-        self.latents_original_size: Optional[Tuple[int, int]] = None  # original image size, not latents size
-        # crop left top right bottom in original pixel size, not latents size
-        self.latents_crop_ltrb: Optional[Tuple[int, int]] = None
-        self.cond_img_path: Optional[str] = None
-        self.image: Optional[Image.Image] = None  # optional, original PIL Image
-        self.text_encoder_outputs_npz: Optional[str] = None  # set in cache_text_encoder_outputs
-
-        # new
-        self.text_encoder_outputs: Optional[List[torch.Tensor]] = None
-        # old
-        self.text_encoder_outputs1: Optional[torch.Tensor] = None
-        self.text_encoder_outputs2: Optional[torch.Tensor] = None
-        self.text_encoder_pool2: Optional[torch.Tensor] = None
-
-        self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
 
 
 class BucketManager:
@@ -751,116 +721,111 @@ class BaseDataset(torch.utils.data.Dataset):
     def add_replacement(self, str_from, str_to):
         self.replacements[str_from] = str_to
 
-    def process_caption(self, subset: BaseSubset, caption):
-        # caption に prefix/suffix を付ける
-        if subset.caption_prefix:
-            caption = subset.caption_prefix + " " + caption
-        if subset.caption_suffix:
-            caption = caption + " " + subset.caption_suffix
-
-        # dropoutの決定：tag dropがこのメソッド内にあるのでここで行うのが良い
+    def process_caption(self, subset: BaseSubset, caption: str, tags: Optional[str]) -> str:
+        # drop out caption
         is_drop_out = subset.caption_dropout_rate > 0 and random.random() < subset.caption_dropout_rate
         is_drop_out = (
             is_drop_out
             or subset.caption_dropout_every_n_epochs > 0
             and self.current_epoch % subset.caption_dropout_every_n_epochs == 0
         )
-
         if is_drop_out:
-            caption = ""
-        else:
-            # process wildcards
-            if subset.enable_wildcard:
-                # if caption is multiline, random choice one line
-                if "\n" in caption:
-                    caption = random.choice(caption.split("\n"))
+            return ""
 
-                # wildcard is like '{aaa|bbb|ccc...}'
-                # escape the curly braces like {{ or }}
-                replacer1 = "⦅"
-                replacer2 = "⦆"
-                while replacer1 in caption or replacer2 in caption:
-                    replacer1 += "⦅"
-                    replacer2 += "⦆"
+        # add prefix and suffix for caption
+        # DreamBooth: treated as tags, FineTuning: treated as caption, tags are processed separately
+        if subset.caption_prefix:
+            caption = subset.caption_prefix + " " + caption
+        if subset.caption_suffix:
+            caption = caption + " " + subset.caption_suffix
 
-                caption = caption.replace("{{", replacer1).replace("}}", replacer2)
+        # shuffle tags
+        if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
+            if tags is None and caption is not None:  # DreamBooth method
+                tags = caption
+                caption = ""
 
-                # replace the wildcard
-                def replace_wildcard(match):
-                    return random.choice(match.group(1).split("|"))
+            fixed_tokens = []
+            flex_tokens = []
+            fixed_suffix_tokens = []
+            if hasattr(subset, "keep_tokens_separator") and subset.keep_tokens_separator and subset.keep_tokens_separator in tags:
+                fixed_part, flex_part = tags.split(subset.keep_tokens_separator, 1)
+                if subset.keep_tokens_separator in flex_part:
+                    flex_part, fixed_suffix_part = flex_part.split(subset.keep_tokens_separator, 1)
+                    fixed_suffix_tokens = [t.strip() for t in fixed_suffix_part.split(subset.caption_separator) if t.strip()]
 
-                caption = re.sub(r"\{([^}]+)\}", replace_wildcard, caption)
-
-                # unescape the curly braces
-                caption = caption.replace(replacer1, "{").replace(replacer2, "}")
+                fixed_tokens = [t.strip() for t in fixed_part.split(subset.caption_separator) if t.strip()]
+                flex_tokens = [t.strip() for t in flex_part.split(subset.caption_separator) if t.strip()]
             else:
-                # if caption is multiline, use the first line
-                caption = caption.split("\n")[0]
+                tokens = [t.strip() for t in tags.strip().split(subset.caption_separator)]
+                flex_tokens = tokens[:]
+                if subset.keep_tokens > 0:
+                    fixed_tokens = flex_tokens[: subset.keep_tokens]
+                    flex_tokens = tokens[subset.keep_tokens :]
 
-            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
-                fixed_tokens = []
-                flex_tokens = []
-                fixed_suffix_tokens = []
-                if (
-                    hasattr(subset, "keep_tokens_separator")
-                    and subset.keep_tokens_separator
-                    and subset.keep_tokens_separator in caption
-                ):
-                    fixed_part, flex_part = caption.split(subset.keep_tokens_separator, 1)
-                    if subset.keep_tokens_separator in flex_part:
-                        flex_part, fixed_suffix_part = flex_part.split(subset.keep_tokens_separator, 1)
-                        fixed_suffix_tokens = [t.strip() for t in fixed_suffix_part.split(subset.caption_separator) if t.strip()]
+            if subset.token_warmup_step < 1:  # 初回に上書きする
+                subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
+            if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
+                tokens_len = (
+                    math.floor((self.current_step) * ((len(flex_tokens) - subset.token_warmup_min) / (subset.token_warmup_step)))
+                    + subset.token_warmup_min
+                )
+                flex_tokens = flex_tokens[:tokens_len]
 
-                    fixed_tokens = [t.strip() for t in fixed_part.split(subset.caption_separator) if t.strip()]
-                    flex_tokens = [t.strip() for t in flex_part.split(subset.caption_separator) if t.strip()]
+            def dropout_tags(tokens):
+                if subset.caption_tag_dropout_rate <= 0:
+                    return tokens
+                l = []
+                for token in tokens:
+                    if random.random() >= subset.caption_tag_dropout_rate:
+                        l.append(token)
+                return l
+
+            if subset.shuffle_caption:
+                random.shuffle(flex_tokens)
+
+            flex_tokens = dropout_tags(flex_tokens)
+
+            tags = ", ".join(fixed_tokens + flex_tokens + fixed_suffix_tokens)
+
+        if tags is not None:
+            caption = caption + " " + tags
+
+        # process wildcards
+        if subset.enable_wildcard:
+            # wildcard is like '{aaa|bbb|ccc...}'
+            # escape the curly braces like {{ or }}
+            replacer1 = "⦅"
+            replacer2 = "⦆"
+            while replacer1 in caption or replacer2 in caption:
+                replacer1 += "⦅"
+                replacer2 += "⦆"
+
+            caption = caption.replace("{{", replacer1).replace("}}", replacer2)
+
+            # replace the wildcard
+            def replace_wildcard(match):
+                return random.choice(match.group(1).split("|"))
+
+            caption = re.sub(r"\{([^}]+)\}", replace_wildcard, caption)
+
+            # unescape the curly braces
+            caption = caption.replace(replacer1, "{").replace(replacer2, "}")
+
+        # process secondary separator
+        if subset.secondary_separator:
+            caption = caption.replace(subset.secondary_separator, subset.caption_separator)
+
+        # textual inversion対応
+        for str_from, str_to in self.replacements.items():
+            if str_from == "":
+                # replace all
+                if type(str_to) == list:
+                    caption = random.choice(str_to)
                 else:
-                    tokens = [t.strip() for t in caption.strip().split(subset.caption_separator)]
-                    flex_tokens = tokens[:]
-                    if subset.keep_tokens > 0:
-                        fixed_tokens = flex_tokens[: subset.keep_tokens]
-                        flex_tokens = tokens[subset.keep_tokens :]
-
-                if subset.token_warmup_step < 1:  # 初回に上書きする
-                    subset.token_warmup_step = math.floor(subset.token_warmup_step * self.max_train_steps)
-                if subset.token_warmup_step and self.current_step < subset.token_warmup_step:
-                    tokens_len = (
-                        math.floor(
-                            (self.current_step) * ((len(flex_tokens) - subset.token_warmup_min) / (subset.token_warmup_step))
-                        )
-                        + subset.token_warmup_min
-                    )
-                    flex_tokens = flex_tokens[:tokens_len]
-
-                def dropout_tags(tokens):
-                    if subset.caption_tag_dropout_rate <= 0:
-                        return tokens
-                    l = []
-                    for token in tokens:
-                        if random.random() >= subset.caption_tag_dropout_rate:
-                            l.append(token)
-                    return l
-
-                if subset.shuffle_caption:
-                    random.shuffle(flex_tokens)
-
-                flex_tokens = dropout_tags(flex_tokens)
-
-                caption = ", ".join(fixed_tokens + flex_tokens + fixed_suffix_tokens)
-
-            # process secondary separator
-            if subset.secondary_separator:
-                caption = caption.replace(subset.secondary_separator, subset.caption_separator)
-
-            # textual inversion対応
-            for str_from, str_to in self.replacements.items():
-                if str_from == "":
-                    # replace all
-                    if type(str_to) == list:
-                        caption = random.choice(str_to)
-                    else:
-                        caption = str_to
-                else:
-                    caption = caption.replace(str_from, str_to)
+                    caption = str_to
+            else:
+                caption = caption.replace(str_from, str_to)
 
         return caption
 
@@ -1171,24 +1136,28 @@ class BaseDataset(torch.utils.data.Dataset):
         for i, info in enumerate(tqdm(image_infos)):
             # check disk cache exists and size of text encoder outputs
             if caching_strategy.cache_to_disk:
-                te_out_npz = caching_strategy.get_outputs_npz_path(info.absolute_path)
-                info.text_encoder_outputs_npz = te_out_npz  # set npz filename regardless of cache availability
+                cache_path = caching_strategy.get_cache_path(info.absolute_path)
+                info.text_encoder_outputs_cache_path = cache_path  # set npz filename regardless of cache availability
 
                 # if the modulo of num_processes is not equal to process_index, skip caching
                 # this makes each process cache different text encoder outputs
                 if i % num_processes != process_index:
                     continue
 
-                cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz)
+                cache_available = caching_strategy.is_disk_cached_outputs_expected(cache_path)
                 if cache_available:  # do not add to batch
                     continue
 
-            batch.append(info)
+            for j, caption in enumerate(info.captions):
+                # do not recommend to use tags when caching text encoder outputs
+                if info.list_of_tags is not None and len(info.list_of_tags) > 0:
+                    caption = caption + " " + info.list_of_tags[j % len(info.list_of_tags)]
+                batch.append((info, j, caption))
 
             # if number of data in batch is enough, flush the batch
-            if len(batch) >= batch_size:
-                batches.append(batch)
-                batch = []
+            while len(batch) >= batch_size:
+                batches.append(batch[:batch_size])
+                batch = batch[batch_size:]
 
         if len(batch) > 0:
             batches.append(batch)
@@ -1413,54 +1382,43 @@ class BaseDataset(torch.utils.data.Dataset):
             flippeds.append(flipped)
 
             # captionとtext encoder outputを処理する
-            caption = image_info.caption  # default
-
             tokenization_required = (
                 self.text_encoder_output_caching_strategy is None or self.text_encoder_output_caching_strategy.is_partial
             )
             text_encoder_outputs = None
             input_ids = None
+            caption = ""
 
             if image_info.text_encoder_outputs is not None:
-                # cached
+                # cached on memory
                 text_encoder_outputs = image_info.text_encoder_outputs
-            elif image_info.text_encoder_outputs_npz is not None:
+                if len(text_encoder_outputs) == 1:
+                    text_encoder_outputs = text_encoder_outputs[0]
+                else:
+                    text_encoder_outputs = random.choices(text_encoder_outputs, weights=image_info.caption_weights)[0]
+            elif image_info.text_encoder_outputs_cache_path is not None:
                 # on disk
-                text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
-                    image_info.text_encoder_outputs_npz
+                index = 0
+                if len(image_info.captions) > 1:
+                    index = random.choices(range(len(image_info.captions), weights=image_info.caption_weights))[0]
+                text_encoder_outputs = self.text_encoder_output_caching_strategy.load_from_disk(
+                    image_info.text_encoder_outputs_cache_path, index
                 )
             else:
                 tokenization_required = True
             text_encoder_outputs_list.append(text_encoder_outputs)
 
             if tokenization_required:
-                caption = self.process_caption(subset, image_info.caption)
+                caption = ""
+                tags = None  # None if no tags in dataset metadata or Dreambooth method is used
+                if image_info.captions is not None and len(image_info.captions) > 0:
+                    # captions_weights may be None
+                    caption = random.choices(image_info.captions, weights=image_info.caption_weights)[0]
+                if image_info.list_of_tags is not None and len(image_info.list_of_tags) > 0:
+                    tags = random.choices(image_info.list_of_tags, weights=image_info.tags_weights)[0]
+
+                caption = self.process_caption(subset, caption, tags)
                 input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
-                # if self.XTI_layers:
-                #     caption_layer = []
-                #     for layer in self.XTI_layers:
-                #         token_strings_from = " ".join(self.token_strings)
-                #         token_strings_to = " ".join([f"{x}_{layer}" for x in self.token_strings])
-                #         caption_ = caption.replace(token_strings_from, token_strings_to)
-                #         caption_layer.append(caption_)
-                #     captions.append(caption_layer)
-                # else:
-                #     captions.append(caption)
-
-                # if not self.token_padding_disabled:  # this option might be omitted in future
-                #     # TODO get_input_ids must support SD3
-                #     if self.XTI_layers:
-                #         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
-                #     else:
-                #         token_caption = self.get_input_ids(caption, self.tokenizers[0])
-                #     input_ids_list.append(token_caption)
-
-                #     if len(self.tokenizers) > 1:
-                #         if self.XTI_layers:
-                #             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
-                #         else:
-                #             token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
-                #         input_ids2_list.append(token_caption2)
 
             input_ids_list.append(input_ids)
             captions.append(caption)
@@ -1798,7 +1756,8 @@ class DreamBoothDataset(BaseDataset):
                 num_train_images += subset.num_repeats * len(img_paths)
 
             for img_path, caption, size in zip(img_paths, captions, sizes):
-                info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
+                captions = caption.split("\n")  # empty line is allowed
+                info = ImageInfo(img_path, subset.num_repeats, captions, subset.is_reg, img_path)
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:

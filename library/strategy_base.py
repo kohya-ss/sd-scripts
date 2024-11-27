@@ -10,16 +10,14 @@ import torch
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
 
-# TODO remove circular import by moving ImageInfo to a separate file
-# from library.train_util import ImageInfo
-
-from library import utils
 from library.utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+from library import utils
 
 
 def get_compatible_dtypes(dtype: Optional[Union[str, torch.dtype]]) -> List[torch.dtype]:
@@ -41,6 +39,58 @@ def get_available_dtypes() -> List[torch.dtype]:
     Returns the list of available dtypes for latents caching. Higher precision is preferred.
     """
     return [torch.float32, torch.bfloat16, torch.float16, torch.float8_e4m3fn, torch.float8_e5m2]
+
+
+def remove_lower_precision_values(tensor_dict: Dict[str, torch.Tensor], keys_without_dtype: list[str]) -> None:
+    """
+    Removes lower precision values from tensor_dict.
+    """
+    available_dtypes = get_available_dtypes()
+    available_dtype_suffixes = [f"_{utils.dtype_to_normalized_str(dtype)}" for dtype in available_dtypes]
+
+    for key_without_dtype in keys_without_dtype:
+        available_itemsize = None
+        for dtype, dtype_suffix in zip(available_dtypes, available_dtype_suffixes):
+            key = key_without_dtype + dtype_suffix
+
+            if key in tensor_dict:
+                if available_itemsize is None:
+                    available_itemsize = dtype.itemsize
+                elif available_itemsize > dtype.itemsize:
+                    # if higher precision latents are already cached, remove lower precision latents
+                    del tensor_dict[key]
+
+
+def get_compatible_dtype_keys(
+    dict_keys: set[str], keys_without_dtype: list[str], dtype: Optional[Union[str, torch.dtype]]
+) -> list[Optional[str]]:
+    """
+    Returns the list of keys with the specified dtype or higher precision dtype. If the specified dtype is None, any dtype is acceptable.
+    If the key is not found, it returns None.
+    If the key in dict_keys doesn't have dtype suffix, it is acceptable, because it it long tensor.
+
+    :param dict_keys: set of keys in the dictionary
+    :param keys_without_dtype: list of keys without dtype suffix to check
+    :param dtype: dtype to check, or None for any dtype
+    :return: list of keys with the specified dtype or higher precision dtype. If the key is not found, it returns None for that key.
+    """
+    compatible_dtypes = get_compatible_dtypes(dtype)
+    dtype_suffixes = [f"_{utils.dtype_to_normalized_str(dt)}" for dt in compatible_dtypes]
+
+    available_keys = []
+    for key_without_dtype in keys_without_dtype:
+        available_key = None
+        if key_without_dtype in dict_keys:
+            available_key = key_without_dtype
+        else:
+            for dtype_suffix in dtype_suffixes:
+                key = key_without_dtype + dtype_suffix
+                if key in dict_keys:
+                    available_key = key
+                    break
+        available_keys.append(available_key)
+
+    return available_keys
 
 
 class TokenizeStrategy:
@@ -347,17 +397,26 @@ class TextEncoderOutputsCachingStrategy:
 
     def __init__(
         self,
+        architecture: str,
         cache_to_disk: bool,
         batch_size: Optional[int],
         skip_disk_cache_validity_check: bool,
+        max_token_length: int,
+        masked: bool = False,
         is_partial: bool = False,
         is_weighted: bool = False,
     ) -> None:
+        """
+        max_token_length: maximum token length for the model. Including/excluding starting and ending tokens depends on the model.
+        """
+        self._architecture = architecture
         self._cache_to_disk = cache_to_disk
         self._batch_size = batch_size
         self.skip_disk_cache_validity_check = skip_disk_cache_validity_check
+        self._max_token_length = max_token_length
+        self._masked = masked
         self._is_partial = is_partial
-        self._is_weighted = is_weighted
+        self._is_weighted = is_weighted  # enable weighting by `()` or `[]` in the prompt
 
     @classmethod
     def set_strategy(cls, strategy):
@@ -370,12 +429,29 @@ class TextEncoderOutputsCachingStrategy:
         return cls._strategy
 
     @property
+    def architecture(self):
+        return self._architecture
+
+    @property
+    def max_token_length(self):
+        return self._max_token_length
+
+    @property
+    def masked(self):
+        return self._masked
+
+    @property
     def cache_to_disk(self):
         return self._cache_to_disk
 
     @property
     def batch_size(self):
         return self._batch_size
+
+    @property
+    def cache_suffix(self):
+        suffix_masked = "_m" if self.masked else ""
+        return f"_{self.architecture.lower()}_{self.max_token_length}{suffix_masked}_te.safetensors"
 
     @property
     def is_partial(self):
@@ -385,24 +461,145 @@ class TextEncoderOutputsCachingStrategy:
     def is_weighted(self):
         return self._is_weighted
 
-    def get_outputs_npz_path(self, image_abs_path: str) -> str:
+    def get_cache_path(self, absolute_path: str) -> str:
+        return os.path.splitext(absolute_path)[0] + self.cache_suffix
+
+    def load_from_disk(self, cache_path: str, caption_index: int) -> list[Optional[torch.Tensor]]:
         raise NotImplementedError
 
-    def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+    def load_from_disk_for_keys(self, cache_path: str, caption_index: int, base_keys: list[str]) -> list[Optional[torch.Tensor]]:
+        """
+        get tensors for keys_without_dtype, without dtype suffix. if the key is not found, it returns None.
+        all dtype tensors are returned, because cache validation is done in advance.
+        """
+        with safe_open(cache_path, framework="pt") as f:
+            metadata = f.metadata()
+            version = metadata.get("format_version", "0.0.0")
+            major, minor, patch = map(int, version.split("."))
+            if major > 1:  # or (major == 1 and minor > 0):
+                if not self.load_version_warning_printed:
+                    self.load_version_warning_printed = True
+                    logger.warning(
+                        f"Existing latents cache file has a higher version {version} for {cache_path}. This may cause issues."
+                    )
+
+            dict_keys = f.keys()
+            results = []
+            compatible_keys = self.get_compatible_output_keys(dict_keys, caption_index, base_keys, None)
+            for key in compatible_keys:
+                results.append(f.get_tensor(key) if key is not None else None)
+
+        return results
+
+    def is_disk_cached_outputs_expected(
+        self, cache_path: str, prompts: list[str], preferred_dtype: Optional[Union[str, torch.dtype]]
+    ) -> bool:
         raise NotImplementedError
 
-    def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
-        raise NotImplementedError
+    def get_key_suffix(self, prompt_id: int, dtype: Optional[Union[str, torch.dtype]] = None) -> str:
+        """
+        masked: may be False even if self.masked is True. It is False for some outputs.
+        """
+        key_suffix = f"_{prompt_id}"
+        if dtype is not None and dtype.is_floating_point:  # float tensor only
+            key_suffix += "_" + utils.dtype_to_normalized_str(dtype)
+        return key_suffix
+
+    def get_compatible_output_keys(
+        self, dict_keys: set[str], caption_index: int, base_keys: list[str], dtype: Optional[Union[str, torch.dtype]]
+    ) -> list[Optional[str], Optional[str]]:
+        """
+        returns the list of keys with the specified dtype or higher precision dtype. If the specified dtype is None, any dtype is acceptable.
+        """
+        key_suffix = self.get_key_suffix(caption_index, None)
+        keys_without_dtype = [k + key_suffix for k in base_keys]
+        return get_compatible_dtype_keys(dict_keys, keys_without_dtype, dtype)
+
+    def _default_is_disk_cached_outputs_expected(
+        self,
+        cache_path: str,
+        captions: list[str],
+        base_keys: list[tuple[str, bool]],
+        preferred_dtype: Optional[Union[str, torch.dtype]],
+    ):
+        if not self.cache_to_disk:
+            return False
+        if not os.path.exists(cache_path):
+            return False
+        if self.skip_disk_cache_validity_check:
+            return True
+
+        try:
+            with utils.MemoryEfficientSafeOpen(cache_path) as f:
+                keys = f.keys()
+                metadata = f.metadata()
+
+            # check captions in metadata
+            for i, caption in enumerate(captions):
+                if metadata.get(f"caption{i+1}") != caption:
+                    return False
+
+                compatible_keys = self.get_compatible_output_keys(keys, i, base_keys, preferred_dtype)
+                if any(key is None for key in compatible_keys):
+                    return False
+        except Exception as e:
+            logger.error(f"Error loading file: {cache_path}")
+            raise e
+
+        return True
 
     def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, batch: List
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: list[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: list[tuple[utils.ImageInfo, int, str]],
     ):
         raise NotImplementedError
 
+    def save_outputs_to_disk(self, cache_path: str, caption_index: int, caption: str, keys: list[str], outputs: list[torch.Tensor]):
+        tensor_dict = {}
+
+        overwrite = False
+        if os.path.exists(cache_path):
+            # load existing safetensors and update it
+            overwrite = True
+
+            with utils.MemoryEfficientSafeOpen(cache_path) as f:
+                metadata = f.metadata()
+                keys = f.keys()
+                for key in keys:
+                    tensor_dict[key] = f.get_tensor(key)
+            assert metadata["architecture"] == self.architecture
+
+            file_version = metadata.get("format_version", "0.0.0")
+            major, minor, patch = map(int, file_version.split("."))
+            if major > 1 or (major == 1 and minor > 0):
+                self.save_version_warning_printed = True
+                logger.warning(
+                    f"Existing latents cache file has a higher version {file_version} for {cache_path}. This may cause issues."
+                )
+        else:
+            metadata = {}
+            metadata["architecture"] = self.architecture
+            metadata["format_version"] = "1.0.0"
+
+        metadata[f"caption{caption_index+1}"] = caption
+
+        for key, output in zip(keys, outputs):
+            dtype = output.dtype  # long or one of float
+            key_suffix = self.get_key_suffix(caption_index, dtype)
+            tensor_dict[key + key_suffix] = output
+
+            # remove lower precision latents if higher precision latents are already cached
+            if overwrite:
+                suffix_without_dtype = self.get_key_suffix(caption_index, None)
+                remove_lower_precision_values(tensor_dict, [key + suffix_without_dtype])
+
+        save_file(tensor_dict, cache_path, metadata=metadata)
+
 
 class LatentsCachingStrategy:
-    # TODO commonize utillity functions to this class, such as npz handling etc.
-
     _strategy = None  # strategy instance: actual strategy class
 
     def __init__(
@@ -495,36 +692,22 @@ class LatentsCachingStrategy:
     def get_compatible_latents_keys(
         self,
         keys: set[str],
-        dtype: Union[str, torch.dtype],
+        dtype: Optional[Union[str, torch.dtype]],
         flip_aug: bool,
         bucket_reso: Optional[Tuple[int, int]] = None,
         latents_size: Optional[Tuple[int, int]] = None,
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> list[Optional[str], Optional[str]]:
         """
         bucket_reso is (W, H), latents_size is (H, W)
         """
 
-        latents_key = None
-        flipped_latents_key = None
+        key_suffix = self.get_key_suffix(bucket_reso, latents_size, None)
+        keys_without_dtype = ["latents" + key_suffix]
+        if flip_aug:
+            keys_without_dtype.append("latents_flipped" + key_suffix)
 
-        compatible_dtypes = get_compatible_dtypes(dtype)
-
-        for compat_dtype in compatible_dtypes:
-            key_suffix = self.get_key_suffix(bucket_reso, latents_size, compat_dtype)
-
-            if latents_key is None:
-                latents_key = "latents" + key_suffix
-                if latents_key not in keys:
-                    latents_key = None
-            if flip_aug and flipped_latents_key is None:
-                flipped_latents_key = "latents_flipped" + key_suffix
-                if flipped_latents_key not in keys:
-                    flipped_latents_key = None
-
-            if latents_key is not None and (flipped_latents_key is not None or not flip_aug):
-                break
-
-        return latents_key, flipped_latents_key
+        compatible_keys = get_compatible_dtype_keys(keys, keys_without_dtype, dtype)
+        return compatible_keys if flip_aug else compatible_keys[0] + [None]
 
     def _default_is_disk_cached_latents_expected(
         self,
@@ -555,24 +738,13 @@ class LatentsCachingStrategy:
                 # print(f"alpha_mask not found: {latents_cache_path}")
                 return False
 
-            if preferred_dtype is None:
-                # remove dtype suffix from keys, because any dtype is acceptable
-                keys = [key.rsplit("_", 1)[0] for key in keys if not key.endswith(key_suffix_without_dtype)]
-                keys = set(keys)
-                if "latents" + key_suffix_without_dtype not in keys:
-                    # print(f"No preferred: latents {key_suffix_without_dtype} not found: {latents_cache_path}")
-                    return False
-                if flip_aug and "latents_flipped" + key_suffix_without_dtype not in keys:
-                    # print(f"No preferred: latents_flipped {key_suffix_without_dtype} not found: {latents_cache_path}")
-                    return False
-            else:
-                # specific dtype or compatible dtype is required
-                latents_key, flipped_latents_key = self.get_compatible_latents_keys(
-                    keys, preferred_dtype, flip_aug, bucket_reso=bucket_reso
-                )
-                if latents_key is None or (flip_aug and flipped_latents_key is None):
-                    # print(f"Precise dtype not found: {latents_cache_path}")
-                    return False
+            # preferred_dtype is None if any dtype is acceptable
+            latents_key, flipped_latents_key = self.get_compatible_latents_keys(
+                keys, preferred_dtype, flip_aug, bucket_reso=bucket_reso
+            )
+            if latents_key is None or (flip_aug and flipped_latents_key is None):
+                # print(f"Precise dtype not found: {latents_cache_path}")
+                return False
         except Exception as e:
             logger.error(f"Error loading file: {latents_cache_path}")
             raise e
@@ -581,7 +753,14 @@ class LatentsCachingStrategy:
 
     # TODO remove circular dependency for ImageInfo
     def _default_cache_batch_latents(
-        self, encode_by_vae, vae_device, vae_dtype, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool
+        self,
+        encode_by_vae,
+        vae_device,
+        vae_dtype,
+        image_infos: List[utils.ImageInfo],
+        flip_aug: bool,
+        alpha_mask: bool,
+        random_crop: bool,
     ):
         """
         Default implementation for cache_batch_latents. Image loading, VAE, flipping, alpha mask handling are common.
@@ -711,22 +890,7 @@ class LatentsCachingStrategy:
 
         # remove lower precision latents if higher precision latents are already cached
         if overwrite:
-            available_dtypes = get_available_dtypes()
-            available_itemsize = None
-            available_itemsize_flipped = None
-            for dtype in available_dtypes:
-                key_suffix = self.get_key_suffix(latents_size=latents_size, dtype=dtype)
-                if "latents" + key_suffix in tensor_dict:
-                    if available_itemsize is None:
-                        available_itemsize = dtype.itemsize
-                    elif available_itemsize > dtype.itemsize:
-                        # if higher precision latents are already cached, remove lower precision latents
-                        del tensor_dict["latents" + key_suffix]
-
-                if "latents_flipped" + key_suffix in tensor_dict:
-                    if available_itemsize_flipped is None:
-                        available_itemsize_flipped = dtype.itemsize
-                    elif available_itemsize_flipped > dtype.itemsize:
-                        del tensor_dict["latents_flipped" + key_suffix]
+            suffix_without_dtype = self.get_key_suffix(latents_size=latents_size, dtype=None)
+            remove_lower_precision_values(tensor_dict, ["latents" + suffix_without_dtype, "latents_flipped" + suffix_without_dtype])
 
         save_file(tensor_dict, cache_path, metadata=metadata)

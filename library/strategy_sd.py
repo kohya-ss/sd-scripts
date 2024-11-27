@@ -4,8 +4,6 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 from transformers import CLIPTokenizer
-from library import train_util
-from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy
 from library.utils import setup_logging
 
 setup_logging()
@@ -13,6 +11,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from library import train_util, utils
+from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy
 
 TOKENIZER_ID = "openai/clip-vit-large-patch14"
 V2_STABLE_DIFFUSION_ID = "stabilityai/stable-diffusion-2"  # ここからtokenizerだけ使う v2とv2.1はtokenizer仕様は同じ
@@ -157,8 +157,7 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
     ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
         return self._default_load_latents_from_disk(cache_path, bucket_reso)
 
-    # TODO remove circular dependency for ImageInfo
-    def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
+    def cache_batch_latents(self, vae, image_infos: List[utils.ImageInfo], flip_aug: bool, alpha_mask: bool, random_crop: bool):
         encode_by_vae = lambda img_tensor: vae.encode(img_tensor).latent_dist.sample()
         vae_device = vae.device
         vae_dtype = vae.dtype

@@ -75,6 +75,12 @@ def train(args):
         )
         args.cache_text_encoder_outputs = True
 
+    if args.cache_text_encoder_outputs:
+        assert args.apply_lg_attn_mask == args.apply_t5_attn_mask, (
+            "apply_lg_attn_mask and apply_t5_attn_mask must be the same when caching text encoder outputs"
+            " / text encoderの出力をキャッシュするときにはapply_lg_attn_maskとapply_t5_attn_maskは同じである必要があります"
+        )
+
     assert not args.train_text_encoder or (args.use_t5xxl_cache_only or not args.cache_text_encoder_outputs), (
         "when training text encoder, text encoder outputs must not be cached (except for T5XXL)"
         + " / text encoderの学習時はtext encoderの出力はキャッシュできません（t5xxlのみキャッシュすることは可能です）"
@@ -168,8 +174,8 @@ def train(args):
                     args.text_encoder_batch_size,
                     False,
                     False,
-                    False,
-                    False,
+                    args.t5xxl_max_token_length,
+                    args.apply_lg_attn_mask,
                 )
             )
         train_dataset_group.set_current_strategies()
@@ -278,8 +284,8 @@ def train(args):
             args.text_encoder_batch_size,
             args.skip_cache_check,
             train_clip or args.use_t5xxl_cache_only,  # if clip is trained or t5xxl is cached, caching is partial
+            args.t5xxl_max_token_length,
             args.apply_lg_attn_mask,
-            args.apply_t5_attn_mask,
         )
         strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 

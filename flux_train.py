@@ -151,15 +151,20 @@ def train(args):
 
     _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
     if args.debug_dataset:
-        if args.cache_text_encoder_outputs:
-            strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(
-                strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-                    args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, args.skip_cache_check, False
-                )
-            )
         t5xxl_max_token_length = (
             args.t5xxl_max_token_length if args.t5xxl_max_token_length is not None else (256 if is_schnell else 512)
         )
+        if args.cache_text_encoder_outputs:
+            strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(
+                strategy_flux.FluxTextEncoderOutputsCachingStrategy(
+                    args.cache_text_encoder_outputs_to_disk,
+                    args.text_encoder_batch_size,
+                    args.skip_cache_check,
+                    t5xxl_max_token_length,
+                    args.apply_t5_attn_mask,
+                    False,
+                )
+            )
         strategy_base.TokenizeStrategy.set_strategy(strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length))
 
         train_dataset_group.set_current_strategies()
@@ -236,7 +241,12 @@ def train(args):
         t5xxl.to(accelerator.device)
 
         text_encoder_caching_strategy = strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-            args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, False, False, args.apply_t5_attn_mask
+            args.cache_text_encoder_outputs_to_disk,
+            args.text_encoder_batch_size,
+            args.skip_cache_check,
+            t5xxl_max_token_length,
+            args.apply_t5_attn_mask,
+            False,
         )
         strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 

@@ -4,8 +4,6 @@ from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 import torch
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
-from library.strategy_base import TokenizeStrategy, TextEncodingStrategy, TextEncoderOutputsCachingStrategy
-
 
 from library.utils import setup_logging
 
@@ -14,6 +12,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from library.strategy_base import TokenizeStrategy, TextEncodingStrategy, TextEncoderOutputsCachingStrategy
+from library import utils
 
 TOKENIZER1_PATH = "openai/clip-vit-large-patch14"
 TOKENIZER2_PATH = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
@@ -21,6 +21,9 @@ TOKENIZER2_PATH = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
 
 class SdxlTokenizeStrategy(TokenizeStrategy):
     def __init__(self, max_length: Optional[int], tokenizer_cache_dir: Optional[str] = None) -> None:
+        """
+        max_length: maximum length of the input text, **excluding** the special tokens. None or 150 or 225
+        """
         self.tokenizer1 = self._load_tokenizer(CLIPTokenizer, TOKENIZER1_PATH, tokenizer_cache_dir=tokenizer_cache_dir)
         self.tokenizer2 = self._load_tokenizer(CLIPTokenizer, TOKENIZER2_PATH, tokenizer_cache_dir=tokenizer_cache_dir)
         self.tokenizer2.pad_token_id = 0  # use 0 as pad token for tokenizer2
@@ -220,51 +223,51 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
 
 
 class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
-    SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_te_outputs.npz"
+    ARCHITECTURE_SDXL = "sdxl"
+    KEYS = ["hidden_state1", "hidden_state2", "pool2"]
 
     def __init__(
         self,
         cache_to_disk: bool,
-        batch_size: int,
+        batch_size: Optional[int],
         skip_disk_cache_validity_check: bool,
+        max_token_length: Optional[int] = None,
         is_partial: bool = False,
         is_weighted: bool = False,
     ) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial, is_weighted)
+        """
+        max_token_length: maximum length of the input text, **excluding** the special tokens. None or 150 or 225
+        """
+        max_token_length = max_token_length or 75
+        super().__init__(
+            SdxlTextEncoderOutputsCachingStrategy.ARCHITECTURE_SDXL,
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            is_partial,
+            is_weighted,
+            max_token_length=max_token_length,
+        )
 
-    def get_outputs_npz_path(self, image_abs_path: str) -> str:
-        return os.path.splitext(image_abs_path)[0] + SdxlTextEncoderOutputsCachingStrategy.SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+    def is_disk_cached_outputs_expected(
+        self, cache_path: str, prompts: list[str], preferred_dtype: Optional[Union[str, torch.dtype]]
+    ) -> bool:
+        # SDXL does not support attn mask
+        base_keys = SdxlTextEncoderOutputsCachingStrategy.KEYS
+        return self._default_is_disk_cached_outputs_expected(cache_path, prompts, base_keys, preferred_dtype)
 
-    def is_disk_cached_outputs_expected(self, npz_path: str):
-        if not self.cache_to_disk:
-            return False
-        if not os.path.exists(npz_path):
-            return False
-        if self.skip_disk_cache_validity_check:
-            return True
-
-        try:
-            npz = np.load(npz_path)
-            if "hidden_state1" not in npz or "hidden_state2" not in npz or "pool2" not in npz:
-                return False
-        except Exception as e:
-            logger.error(f"Error loading file: {npz_path}")
-            raise e
-
-        return True
-
-    def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
-        data = np.load(npz_path)
-        hidden_state1 = data["hidden_state1"]
-        hidden_state2 = data["hidden_state2"]
-        pool2 = data["pool2"]
-        return [hidden_state1, hidden_state2, pool2]
+    def load_from_disk(self, cache_path: str, caption_index: int) -> list[Optional[torch.Tensor]]:
+        return self.load_from_disk_for_keys(cache_path, caption_index, SdxlTextEncoderOutputsCachingStrategy.KEYS)
 
     def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: list[tuple[utils.ImageInfo, int, str]],
     ):
         sdxl_text_encoding_strategy = text_encoding_strategy  # type: SdxlTextEncodingStrategy
-        captions = [info.caption for info in infos]
+        captions = [caption for _, _, caption in batch]
 
         if self.is_weighted:
             tokens_list, weights_list = tokenize_strategy.tokenize_with_weights(captions)
@@ -279,28 +282,24 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     tokenize_strategy, models, [tokens1, tokens2]
                 )
 
-        if hidden_state1.dtype == torch.bfloat16:
-            hidden_state1 = hidden_state1.float()
-        if hidden_state2.dtype == torch.bfloat16:
-            hidden_state2 = hidden_state2.float()
-        if pool2.dtype == torch.bfloat16:
-            pool2 = pool2.float()
+        hidden_state1 = hidden_state1.cpu()
+        hidden_state2 = hidden_state2.cpu()
+        pool2 = pool2.cpu()
 
-        hidden_state1 = hidden_state1.cpu().numpy()
-        hidden_state2 = hidden_state2.cpu().numpy()
-        pool2 = pool2.cpu().numpy()
-
-        for i, info in enumerate(infos):
+        for i, (info, caption_index, caption) in enumerate(batch):
             hidden_state1_i = hidden_state1[i]
             hidden_state2_i = hidden_state2[i]
             pool2_i = pool2[i]
 
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    hidden_state1=hidden_state1_i,
-                    hidden_state2=hidden_state2_i,
-                    pool2=pool2_i,
+                self.save_outputs_to_disk(
+                    info.text_encoder_outputs_cache_path,
+                    caption_index,
+                    caption,
+                    SdxlTextEncoderOutputsCachingStrategy.KEYS,
+                    [hidden_state1_i, hidden_state2_i, pool2_i],
                 )
             else:
-                info.text_encoder_outputs = [hidden_state1_i, hidden_state2_i, pool2_i]
+                while len(info.text_encoder_outputs) <= caption_index:
+                    info.text_encoder_outputs.append(None)
+                info.text_encoder_outputs[caption_index] = [hidden_state1_i, hidden_state2_i, pool2_i]
