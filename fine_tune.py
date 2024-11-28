@@ -411,7 +411,7 @@ def train(args):
                     loss = loss.mean()  # mean over batch dimension
                 else:
                     loss = train_util.conditional_loss(
-                        args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
+                        args, noise_pred.float(), target.float(), timesteps, "mean", noise_scheduler
                     )
 
                 accelerator.backward(loss)

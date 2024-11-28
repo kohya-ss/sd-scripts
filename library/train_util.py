@@ -5829,8 +5829,8 @@ def save_sd_model_on_train_end_common(
 
 
 def get_timesteps(min_timestep, max_timestep, b_size, device):
-    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
-    timesteps = timesteps.long()
+    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device="cpu")
+    timesteps = timesteps.long().to(device)
     return timesteps
 
 
@@ -5875,8 +5875,8 @@ def get_huber_threshold(args, timesteps: torch.Tensor, noise_scheduler) -> torch
         alpha = -math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
         result = torch.exp(-alpha * timesteps) * args.huber_scale
     elif args.huber_schedule == "snr":
-        if not hasattr(noise_scheduler, 'alphas_cumprod'):
-            raise NotImplementedError(f"Huber schedule 'snr' is not supported with the current model.")
+        if not hasattr(noise_scheduler, "alphas_cumprod"):
+            raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
         alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.cpu())
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
         result = (1 - args.huber_c) / (1 + sigmas) ** 2 + args.huber_c
