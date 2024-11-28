@@ -84,7 +84,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 args.cache_text_encoder_outputs_to_disk,
                 None,
                 args.skip_cache_check,
-                args.max_tolen_length,
+                args.max_token_length,
                 is_weighted=args.weighted_captions,
             )
         else:
