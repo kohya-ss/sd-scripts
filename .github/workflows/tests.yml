@@ -18,6 +18,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
       - name: Install dependencies
         run: python -m pip install --upgrade pip setuptools wheel
 
@@ -27,11 +28,13 @@ jobs:
         with:
           python-version: '3.x'
           cache: 'pip' # caching pip dependencies
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install dadaptation==3.2 torch==2.4.0 torchvision==0.19.0 accelerate==0.33.0
+          pip install -r requirements.txt
+
       - name: Test with pytest
         run: |
           pip install pytest
