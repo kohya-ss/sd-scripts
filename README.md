@@ -28,6 +28,7 @@ Nov 14, 2024:
   - [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training)
   - [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1)
   - [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training)
+- [FLUX.1 ControlNet training](#flux1-controlnet-training)
 - [FLUX.1 OFT training](#flux1-oft-training)
 - [Inference for FLUX.1 with LoRA model](#inference-for-flux1-with-lora-model)
 - [FLUX.1 fine-tuning](#flux1-fine-tuning)
@@ -244,6 +245,22 @@ example:
 ```
 
 If you specify one of `train_double_block_indices` or `train_single_block_indices`, the other will be trained as usual. 
+
+### FLUX.1 ControlNet training
+We have added a new training script for ControlNet training. The script is flux_train_control_net.py. See --help for options.
+
+Sample command is below. It will work with 80GB VRAM GPUs.
+```
+accelerate launch --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train_control_net.py
+--pretrained_model_name_or_path flux1-dev.safetensors --clip_l clip_l.safetensors --t5xxl t5xxl_fp16.safetensors
+--ae ae.safetensors --save_model_as safetensors --sdpa --persistent_data_loader_workers
+--max_data_loader_n_workers 1 --seed 42 --gradient_checkpointing --mixed_precision bf16
+--optimizer_type adamw8bit --learning_rate 2e-5 
+--highvram --max_train_epochs 1 --save_every_n_steps 1000 --dataset_config dataset.toml
+--output_dir /path/to/output/dir --output_name flux-cn
+--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0 --deepspeed
+```
+
 
 ### FLUX.1 OFT training
 
