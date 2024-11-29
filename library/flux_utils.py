@@ -160,7 +160,7 @@ def load_controlnet(
     # is_diffusers, is_schnell, (num_double_blocks, num_single_blocks), ckpt_paths = analyze_checkpoint_state(ckpt_path)
     is_schnell = False
     name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
-    with torch.device("meta"):
+    with torch.device(device):
         controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params).to(dtype)
 
     if ckpt_path is not None:
