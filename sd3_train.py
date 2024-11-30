@@ -845,7 +845,7 @@ def train(args):
                 # )
                 # calculate loss
                 loss = train_util.conditional_loss(
-                    args, model_pred.float(), target.float(), timesteps, "none", noise_scheduler
+                    args, model_pred.float(), target.float(), timesteps, "none", None
                 )
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
