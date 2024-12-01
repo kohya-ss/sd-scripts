@@ -61,6 +61,7 @@ class NetworkTrainer:
         avr_loss,
         lr_scheduler,
         lr_descriptions,
+        optimizer=None,
         keys_scaled=None,
         mean_norm=None,
         maximum_norm=None,
@@ -93,6 +94,30 @@ class NetworkTrainer:
                 logs[f"lr/d*lr/{lr_desc}"] = (
                     lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                 )
+            if (
+                args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
+            ):  # tracking d*lr value of unet.
+                logs["lr/d*lr"] = (
+                    optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+                )
+        else:
+            idx = 0
+            if not args.network_train_unet_only:
+                logs["lr/textencoder"] = float(lrs[0])
+                idx = 1
+
+            for i in range(idx, len(lrs)):
+                logs[f"lr/group{i}"] = float(lrs[i])
+                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
+                    logs[f"lr/d*lr/group{i}"] = (
+                        lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
+                    )
+                if (
+                    args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
+                ):  
+                    logs[f"lr/d*lr/group{i}"] = (
+                        optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
+                    )
 
         return logs
 
@@ -1279,7 +1304,7 @@ class NetworkTrainer:
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, keys_scaled, mean_norm, maximum_norm
+                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
                     )
                     accelerator.log(logs, step=global_step)
 
