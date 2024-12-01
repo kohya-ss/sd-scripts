@@ -4609,7 +4609,7 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
 def get_optimizer(args, trainable_params):
     # "Optimizer to use: AdamW, AdamW8bit, Lion, SGDNesterov, SGDNesterov8bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit, Lion8bit, PagedLion8bit, AdEMAMix8bit, PagedAdEMAMix8bit, DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, Adafactor"
-    
+
     optimizer_type = args.optimizer_type
     if args.use_8bit_adam:
         assert (
@@ -4883,7 +4883,6 @@ def get_optimizer(args, trainable_params):
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.endswith("schedulefree".lower()):
-        should_train_optimizer = True
         try:
             import schedulefree as sf
         except ImportError:
@@ -5000,8 +4999,8 @@ def get_optimizer(args, trainable_params):
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
     optimizer_args = ",".join([f"{k}={v}" for k, v in optimizer_kwargs.items()])
 
-    if hasattr(optimizer, 'train') and callable(optimizer.train):
-        # make optimizer as train mode: we don't need to call train again, because eval will not be called in training loop
+    if hasattr(optimizer, "train") and callable(optimizer.train):
+        # make optimizer as train mode before training for schedulefree optimizer. the optimizer will be in eval mode in sampling and saving.
         optimizer.train()
 
     return optimizer_name, optimizer_args, optimizer

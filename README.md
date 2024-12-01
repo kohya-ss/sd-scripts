@@ -16,8 +16,10 @@ The command to install PyTorch is as follows:
 
 1 Dec, 2024:
 
-- Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
+- Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See PR [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
   - Specify `--loss_type huber` or `--loss_type smooth_l1` to use it. `--huber_c` and `--huber_scale` are also available.
+
+- [Prodigy + ScheduleFree](https://github.com/LoganBooker/prodigy-plus-schedule-free) is supported. See PR [#1811](https://github.com/kohya-ss/sd-scripts/pull/1811) for details. Thanks to rockerBOO!
 
 Nov 14, 2024:
 
