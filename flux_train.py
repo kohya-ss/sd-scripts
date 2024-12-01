@@ -667,7 +667,7 @@ def train(args):
 
                 # calculate loss
                 loss = train_util.conditional_loss(
-                    args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
+                    args, model_pred.float(), target.float(), timesteps, "none", noise_scheduler
                 )
                 if weighting is not None:
                     loss = loss * weighting
