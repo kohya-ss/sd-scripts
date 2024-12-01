@@ -14,6 +14,11 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+1 Dec, 2024:
+
+- Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
+  - Specify `--loss_type huber` or `--loss_type smooth_l1` to use it. `--huber_c` and `--huber_scale` are also available.
+
 Nov 14, 2024:
 
 - Improved the implementation of block swap and made it available for both FLUX.1 and SD3 LoRA training. See [FLUX.1 LoRA training](#flux1-lora-training) etc. for how to use the new options. Training is possible with about 8-10GB of VRAM.
