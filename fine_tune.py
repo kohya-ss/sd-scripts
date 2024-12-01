@@ -380,7 +380,7 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(
+                noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
                     args, noise_scheduler, latents
                 )
 
@@ -397,7 +397,7 @@ def train(args):
                 if args.min_snr_gamma or args.scale_v_pred_loss_like_noise_pred or args.debiased_estimation_loss:
                     # do not mean over batch dimension for snr weight or scale v-pred loss
                     loss = train_util.conditional_loss(
-                        noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                        args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
                     )
                     loss = loss.mean([1, 2, 3])
 
@@ -411,7 +411,7 @@ def train(args):
                     loss = loss.mean()  # mean over batch dimension
                 else:
                     loss = train_util.conditional_loss(
-                        noise_pred.float(), target.float(), reduction="mean", loss_type=args.loss_type, huber_c=huber_c
+                        args, noise_pred.float(), target.float(), timesteps, "mean", noise_scheduler
                     )
 
                 accelerator.backward(loss)

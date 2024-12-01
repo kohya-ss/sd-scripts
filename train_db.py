@@ -370,7 +370,7 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(
+                noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
                     args, noise_scheduler, latents
                 )
 
@@ -385,7 +385,7 @@ def train(args):
                     target = noise
 
                 loss = train_util.conditional_loss(
-                    noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                    args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
                 )
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
