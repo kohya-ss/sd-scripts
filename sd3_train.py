@@ -675,8 +675,8 @@ def train(args):
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
-    # noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-    # noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    # only used to get timesteps, etc. TODO manage timesteps etc. separately
+    dummy_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
 
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -844,9 +844,7 @@ def train(args):
                 #     1,
                 # )
                 # calculate loss
-                loss = train_util.conditional_loss(
-                    args, model_pred.float(), target.float(), timesteps, "none", None
-                )
+                loss = train_util.conditional_loss(args, model_pred.float(), target.float(), timesteps, "none", dummy_scheduler)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])

@@ -5875,7 +5875,7 @@ def get_huber_threshold(args, timesteps: torch.Tensor, noise_scheduler) -> torch
         alpha = -math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
         result = torch.exp(-alpha * timesteps) * args.huber_scale
     elif args.huber_schedule == "snr":
-        if noise_scheduler is None or not hasattr(noise_scheduler, "alphas_cumprod"):
+        if not hasattr(noise_scheduler, "alphas_cumprod"):
             raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
         alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.cpu())
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
