@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -324,7 +325,9 @@ def train(args):
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(
-            "lllite_control_net_train" if args.log_tracker_name is None else args.log_tracker_name, config=train_util.get_sanitized_config_or_none(args), init_kwargs=init_kwargs
+            "lllite_control_net_train" if args.log_tracker_name is None else args.log_tracker_name,
+            config=train_util.get_sanitized_config_or_none(args),
+            init_kwargs=init_kwargs,
         )
 
     loss_recorder = train_util.LossRecorder()
@@ -426,9 +429,8 @@ def train(args):
                 else:
                     target = noise
 
-                loss = train_util.conditional_loss(
-                    args, noise_pred.float(), target.float(), timesteps, "none", noise_scheduler
-                )
+                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
