@@ -1,4 +1,4 @@
-name: Test with pytet
+name: Test with pytest
 
 on: 
   push:
