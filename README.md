@@ -14,7 +14,15 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
-1 Dec, 2024:
+Dec 2, 2024:
+
+- FLUX.1 ControlNet training is supported. PR [#1813](https://github.com/kohya-ss/sd-scripts/pull/1813). Thanks to minux302!  See PR and [here](#flux1-controlnet-training) for details.
+  - Not fully tested. Feedback is welcome.
+  - 80GB VRAM is required for 1024x1024 resolution, and 48GB VRAM is required for 512x512 resolution.
+  - Currently, it only works in Linux environment (or Windows WSL2) because DeepSpeed is required.
+  - Multi-GPU training is not tested.
+
+Dec 1, 2024:
 
 - Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See PR [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
   - Specify `--loss_type huber` or `--loss_type smooth_l1` to use it. `--huber_c` and `--huber_scale` are also available.

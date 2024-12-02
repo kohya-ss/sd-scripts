@@ -567,7 +567,7 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         "--controlnet",
         type=str,
         default=None,
-        help="path to controlnet (*.sft or *.safetensors) / aeのパス（*.sftまたは*.safetensors）"
+        help="path to controlnet (*.sft or *.safetensors) / controlnetのパス（*.sftまたは*.safetensors）"
     )
     parser.add_argument(
         "--t5xxl_max_token_length",
