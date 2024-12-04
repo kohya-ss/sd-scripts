@@ -61,6 +61,7 @@ class NetworkTrainer:
         avr_loss,
         lr_scheduler,
         lr_descriptions,
+        optimizer=None,
         keys_scaled=None,
         mean_norm=None,
         maximum_norm=None,
@@ -93,6 +94,30 @@ class NetworkTrainer:
                 logs[f"lr/d*lr/{lr_desc}"] = (
                     lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                 )
+            if (
+                args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
+            ):  # tracking d*lr value of unet.
+                logs["lr/d*lr"] = (
+                    optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+                )
+        else:
+            idx = 0
+            if not args.network_train_unet_only:
+                logs["lr/textencoder"] = float(lrs[0])
+                idx = 1
+
+            for i in range(idx, len(lrs)):
+                logs[f"lr/group{i}"] = float(lrs[i])
+                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
+                    logs[f"lr/d*lr/group{i}"] = (
+                        lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
+                    )
+                if (
+                    args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
+                ):  
+                    logs[f"lr/d*lr/group{i}"] = (
+                        optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
+                    )
 
         return logs
 
@@ -192,7 +217,7 @@ class NetworkTrainer:
     ):
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
-        noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -244,7 +269,7 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, huber_c, None
+        return noise_pred, target, timesteps, None
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         if args.min_snr_gamma:
@@ -806,6 +831,7 @@ class NetworkTrainer:
             "ss_ip_noise_gamma_random_strength": args.ip_noise_gamma_random_strength,
             "ss_loss_type": args.loss_type,
             "ss_huber_schedule": args.huber_schedule,
+            "ss_huber_scale": args.huber_scale,
             "ss_huber_c": args.huber_c,
             "ss_fp8_base": bool(args.fp8_base),
             "ss_fp8_base_unet": bool(args.fp8_base_unet),
@@ -1193,7 +1219,7 @@ class NetworkTrainer:
                                     text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
                     # sample noise, call unet, get target
-                    noise_pred, target, timesteps, huber_c, weighting = self.get_noise_pred_and_target(
+                    noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
                         args,
                         accelerator,
                         noise_scheduler,
@@ -1206,9 +1232,8 @@ class NetworkTrainer:
                         train_unet,
                     )
 
-                    loss = train_util.conditional_loss(
-                        noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
-                    )
+                    huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                     if weighting is not None:
                         loss = loss * weighting
                     if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
@@ -1279,7 +1304,7 @@ class NetworkTrainer:
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, keys_scaled, mean_norm, maximum_norm
+                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
                     )
                     accelerator.log(logs, step=global_step)
 

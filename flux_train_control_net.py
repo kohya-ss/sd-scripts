@@ -11,31 +11,36 @@
 # - Per-block fused optimizer instances
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import copy
 import math
 import os
-from multiprocessing import Value
 import time
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Value
 from typing import List, Optional, Tuple, Union
+
 import toml
-
-from tqdm import tqdm
-
 import torch
 import torch.nn as nn
+from tqdm import tqdm
+
 from library import utils
-from library.device_utils import init_ipex, clean_memory_on_device
+from library.device_utils import clean_memory_on_device, init_ipex
 
 init_ipex()
 
 from accelerate.utils import set_seed
-from library import deepspeed_utils, flux_train_utils, flux_utils, strategy_base, strategy_flux
-from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 import library.train_util as train_util
-
-from library.utils import setup_logging, add_logging_arguments
+from library import (
+    deepspeed_utils,
+    flux_train_utils,
+    flux_utils,
+    strategy_base,
+    strategy_flux,
+)
+from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
+from library.utils import add_logging_arguments, setup_logging
 
 setup_logging()
 import logging
@@ -46,10 +51,10 @@ import library.config_util as config_util
 
 # import library.sdxl_train_util as sdxl_train_util
 from library.config_util import (
-    ConfigSanitizer,
     BlueprintGenerator,
+    ConfigSanitizer,
 )
-from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
+from library.custom_train_functions import add_custom_train_arguments, apply_masked_loss
 
 
 def train(args):
@@ -85,7 +90,6 @@ def train(args):
     )
 
     cache_latents = args.cache_latents
-    use_dreambooth_method = args.in_json is None
 
     if args.seed is not None:
         set_seed(args.seed)  # 乱数系列を初期化する
@@ -99,11 +103,11 @@ def train(args):
 
     # データセットを準備する
     if args.dataset_class is None:
-        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
+        blueprint_generator = BlueprintGenerator(ConfigSanitizer(False, False, True, True))
         if args.dataset_config is not None:
             logger.info(f"Load dataset config from {args.dataset_config}")
             user_config = config_util.load_user_config(args.dataset_config)
-            ignored = ["train_data_dir", "in_json"]
+            ignored = ["train_data_dir", "conditioning_data_dir"]
             if any(getattr(args, attr) is not None for attr in ignored):
                 logger.warning(
                     "ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
@@ -111,31 +115,15 @@ def train(args):
                     )
                 )
         else:
-            if use_dreambooth_method:
-                logger.info("Using DreamBooth method.")
-                user_config = {
-                    "datasets": [
-                        {
-                            "subsets": config_util.generate_dreambooth_subsets_config_by_subdirs(
-                                args.train_data_dir, args.reg_data_dir
-                            )
-                        }
-                    ]
-                }
-            else:
-                logger.info("Training with captions.")
-                user_config = {
-                    "datasets": [
-                        {
-                            "subsets": [
-                                {
-                                    "image_dir": args.train_data_dir,
-                                    "metadata_file": args.in_json,
-                                }
-                            ]
-                        }
-                    ]
-                }
+            user_config = {
+                "datasets": [
+                    {
+                        "subsets": config_util.generate_controlnet_subsets_config_by_subdirs(
+                            args.train_data_dir, args.conditioning_data_dir, args.caption_extension
+                        )
+                    }
+                ]
+            }
 
         blueprint = blueprint_generator.generate(user_config, args)
         train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
@@ -151,20 +139,15 @@ def train(args):
 
     _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
     if args.debug_dataset:
-        t5xxl_max_token_length = (
-            args.t5xxl_max_token_length if args.t5xxl_max_token_length is not None else (256 if is_schnell else 512)
-        )
         if args.cache_text_encoder_outputs:
             strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(
                 strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-                    args.cache_text_encoder_outputs_to_disk,
-                    args.text_encoder_batch_size,
-                    args.skip_cache_check,
-                    t5xxl_max_token_length,
-                    args.apply_t5_attn_mask,
-                    False,
+                    args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, args.skip_cache_check, False
                 )
             )
+        t5xxl_max_token_length = (
+            args.t5xxl_max_token_length if args.t5xxl_max_token_length is not None else (256 if is_schnell else 512)
+        )
         strategy_base.TokenizeStrategy.set_strategy(strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length))
 
         train_dataset_group.set_current_strategies()
@@ -203,7 +186,7 @@ def train(args):
         ae.requires_grad_(False)
         ae.eval()
 
-        train_dataset_group.new_cache_latents(ae, accelerator, args.force_cache_precision)
+        train_dataset_group.new_cache_latents(ae, accelerator)
 
         ae.to("cpu")  # if no sampling, vae can be deleted
         clean_memory_on_device(accelerator.device)
@@ -241,12 +224,7 @@ def train(args):
         t5xxl.to(accelerator.device)
 
         text_encoder_caching_strategy = strategy_flux.FluxTextEncoderOutputsCachingStrategy(
-            args.cache_text_encoder_outputs_to_disk,
-            args.text_encoder_batch_size,
-            args.skip_cache_check,
-            t5xxl_max_token_length,
-            args.apply_t5_attn_mask,
-            False,
+            args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, False, False, args.apply_t5_attn_mask
         )
         strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 
@@ -279,14 +257,22 @@ def train(args):
         clean_memory_on_device(accelerator.device)
 
     # load FLUX
-    _, flux = flux_utils.load_flow_model(
+    is_schnell, flux = flux_utils.load_flow_model(
         args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors
     )
+    flux.requires_grad_(False)
+
+    # load controlnet
+    controlnet_dtype = torch.float32 if args.deepspeed else weight_dtype
+    controlnet = flux_utils.load_controlnet(
+        args.controlnet, is_schnell, controlnet_dtype, accelerator.device, args.disable_mmap_load_safetensors
+    )
+    controlnet.train()
 
     if args.gradient_checkpointing:
-        flux.enable_gradient_checkpointing(cpu_offload=args.cpu_offload_checkpointing)
-
-    flux.requires_grad_(True)
+        if not args.deepspeed:
+            flux.enable_gradient_checkpointing(cpu_offload=args.cpu_offload_checkpointing)
+        controlnet.enable_gradient_checkpointing(cpu_offload=args.cpu_offload_checkpointing)
 
     # block swap
 
@@ -312,6 +298,11 @@ def train(args):
         # This idea is based on 2kpr's great work. Thank you!
         logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
         flux.enable_block_swap(args.blocks_to_swap, accelerator.device)
+        flux.move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
+        # ControlNet only has two blocks, so we can keep it on GPU
+        # controlnet.enable_block_swap(args.blocks_to_swap, accelerator.device)
+    else:
+        flux.to(accelerator.device)
 
     if not cache_latents:
         # load VAE here if not cached
@@ -322,8 +313,8 @@ def train(args):
 
     training_models = []
     params_to_optimize = []
-    training_models.append(flux)
-    name_and_params = list(flux.named_parameters())
+    training_models.append(controlnet)
+    name_and_params = list(controlnet.named_parameters())
     # single param group for now
     params_to_optimize.append({"params": [p for _, p in name_and_params], "lr": args.learning_rate})
     param_names = [[n for n, _ in name_and_params]]
@@ -348,7 +339,7 @@ def train(args):
         grouped_params = []
         param_group = {}
         for group in params_to_optimize:
-            named_parameters = list(flux.named_parameters())
+            named_parameters = list(controlnet.named_parameters())
             assert len(named_parameters) == len(group["params"]), "number of parameters does not match"
             for p, np in zip(group["params"], named_parameters):
                 # determine target layer and block index for each parameter
@@ -437,6 +428,7 @@ def train(args):
         ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
         accelerator.print("enable full fp16 training.")
         flux.to(weight_dtype)
+        controlnet.to(weight_dtype)
         if clip_l is not None:
             clip_l.to(weight_dtype)
             t5xxl.to(weight_dtype)  # TODO check works with fp16 or not
@@ -446,6 +438,7 @@ def train(args):
         ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
         accelerator.print("enable full bf16 training.")
         flux.to(weight_dtype)
+        controlnet.to(weight_dtype)
         if clip_l is not None:
             clip_l.to(weight_dtype)
             t5xxl.to(weight_dtype)
@@ -458,7 +451,7 @@ def train(args):
     clean_memory_on_device(accelerator.device)
 
     if args.deepspeed:
-        ds_model = deepspeed_utils.prepare_deepspeed_model(args, mmdit=flux)
+        ds_model = deepspeed_utils.prepare_deepspeed_model(args, mmdit=controlnet)
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             ds_model, optimizer, train_dataloader, lr_scheduler
@@ -468,9 +461,7 @@ def train(args):
     else:
         # accelerator does some magic
         # if we doesn't swap blocks, we can move the model to device
-        flux = accelerator.prepare(flux, device_placement=[not is_swapping_blocks])
-        if is_swapping_blocks:
-            accelerator.unwrap_model(flux).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
+        controlnet = accelerator.prepare(controlnet)  # , device_placement=[not is_swapping_blocks])
         optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -577,11 +568,13 @@ def train(args):
         )
 
     if is_swapping_blocks:
-        accelerator.unwrap_model(flux).prepare_block_swap_before_forward()
+        flux.prepare_block_swap_before_forward()
 
     # For --sample_at_first
     optimizer_eval_fn()
-    flux_train_utils.sample_images(accelerator, args, 0, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs)
+    flux_train_utils.sample_images(
+        accelerator, args, 0, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs, controlnet=controlnet
+    )
     optimizer_train_fn()
     if len(accelerator.trackers) > 0:
         # log empty object to commit the sample images to wandb
@@ -626,8 +619,7 @@ def train(args):
                         text_encoder_conds = text_encoding_strategy.encode_tokens(
                             flux_tokenize_strategy, [clip_l, t5xxl], input_ids, args.apply_t5_attn_mask
                         )
-                        if args.full_fp16:
-                            text_encoder_conds = [c.to(weight_dtype) for c in text_encoder_conds]
+                text_encoder_conds = [c.to(weight_dtype) for c in text_encoder_conds]
 
                 # TODO support some features for noise implemented in get_noise_noisy_latents_and_timesteps
 
@@ -643,10 +635,14 @@ def train(args):
                 # pack latents and get img_ids
                 packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
                 packed_latent_height, packed_latent_width = noisy_model_input.shape[2] // 2, noisy_model_input.shape[3] // 2
-                img_ids = flux_utils.prepare_img_ids(bsz, packed_latent_height, packed_latent_width).to(device=accelerator.device)
+                img_ids = (
+                    flux_utils.prepare_img_ids(bsz, packed_latent_height, packed_latent_width)
+                    .to(device=accelerator.device)
+                    .to(weight_dtype)
+                )
 
                 # get guidance: ensure args.guidance_scale is float
-                guidance_vec = torch.full((bsz,), float(args.guidance_scale), device=accelerator.device)
+                guidance_vec = torch.full((bsz,), float(args.guidance_scale), device=accelerator.device, dtype=weight_dtype)
 
                 # call model
                 l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
@@ -654,6 +650,17 @@ def train(args):
                     t5_attn_mask = None
 
                 with accelerator.autocast():
+                    block_samples, block_single_samples = controlnet(
+                        img=packed_noisy_model_input,
+                        img_ids=img_ids,
+                        controlnet_cond=batch["conditioning_images"].to(accelerator.device).to(weight_dtype),
+                        txt=t5_out,
+                        txt_ids=txt_ids,
+                        y=l_pooled,
+                        timesteps=timesteps / 1000,
+                        guidance=guidance_vec,
+                        txt_attention_mask=t5_attn_mask,
+                    )
                     # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                     model_pred = flux(
                         img=packed_noisy_model_input,
@@ -661,6 +668,8 @@ def train(args):
                         txt=t5_out,
                         txt_ids=txt_ids,
                         y=l_pooled,
+                        block_controlnet_hidden_states=block_samples,
+                        block_controlnet_single_hidden_states=block_single_samples,
                         timesteps=timesteps / 1000,
                         guidance=guidance_vec,
                         txt_attention_mask=t5_attn_mask,
@@ -676,8 +685,9 @@ def train(args):
                 target = noise - latents
 
                 # calculate loss
-                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
-                loss = train_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                loss = train_util.conditional_loss(
+                    model_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=None
+                )
                 if weighting is not None:
                     loss = loss * weighting
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
@@ -715,7 +725,15 @@ def train(args):
 
                 optimizer_eval_fn()
                 flux_train_utils.sample_images(
-                    accelerator, args, None, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs
+                    accelerator,
+                    args,
+                    None,
+                    global_step,
+                    flux,
+                    ae,
+                    [clip_l, t5xxl],
+                    sample_prompts_te_outputs,
+                    controlnet=controlnet,
                 )
 
                 # 指定ステップごとにモデルを保存
@@ -730,7 +748,7 @@ def train(args):
                             epoch,
                             num_train_epochs,
                             global_step,
-                            accelerator.unwrap_model(flux),
+                            accelerator.unwrap_model(controlnet),
                         )
                 optimizer_train_fn()
 
@@ -766,17 +784,17 @@ def train(args):
                     epoch,
                     num_train_epochs,
                     global_step,
-                    accelerator.unwrap_model(flux),
+                    accelerator.unwrap_model(controlnet),
                 )
 
         flux_train_utils.sample_images(
-            accelerator, args, epoch + 1, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs
+            accelerator, args, epoch + 1, global_step, flux, ae, [clip_l, t5xxl], sample_prompts_te_outputs, controlnet=controlnet
         )
         optimizer_train_fn()
 
     is_main_process = accelerator.is_main_process
     # if is_main_process:
-    flux = accelerator.unwrap_model(flux)
+    controlnet = accelerator.unwrap_model(controlnet)
 
     accelerator.end_training()
     optimizer_eval_fn()
@@ -787,7 +805,7 @@ def train(args):
     del accelerator  # この後メモリを使うのでこれは消す
 
     if is_main_process:
-        flux_train_utils.save_flux_model_on_train_end(args, save_dtype, epoch, global_step, flux)
+        flux_train_utils.save_flux_model_on_train_end(args, save_dtype, epoch, global_step, controlnet)
         logger.info("model saved.")
 
 
@@ -796,7 +814,7 @@ def setup_parser() -> argparse.ArgumentParser:
 
     add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)  # TODO split this
-    train_util.add_dataset_arguments(parser, True, True, True)
+    train_util.add_dataset_arguments(parser, False, True, True)
     train_util.add_training_arguments(parser, False)
     train_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)

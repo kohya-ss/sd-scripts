@@ -14,6 +14,26 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+
+Dec 3, 2024:
+
+-`--blocks_to_swap` now works in FLUX.1 ControlNet training. Sample commands for 24GB VRAM and 16GB VRAM are added [here](#flux1-controlnet-training).
+
+Dec 2, 2024:
+
+- FLUX.1 ControlNet training is supported. PR [#1813](https://github.com/kohya-ss/sd-scripts/pull/1813). Thanks to minux302!  See PR and [here](#flux1-controlnet-training) for details.
+  - Not fully tested. Feedback is welcome.
+  - 80GB VRAM is required for 1024x1024 resolution, and 48GB VRAM is required for 512x512 resolution.
+  - Currently, it only works in Linux environment (or Windows WSL2) because DeepSpeed is required.
+  - Multi-GPU training is not tested.
+
+Dec 1, 2024:
+
+- Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See PR [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
+  - Specify `--loss_type huber` or `--loss_type smooth_l1` to use it. `--huber_c` and `--huber_scale` are also available.
+
+- [Prodigy + ScheduleFree](https://github.com/LoganBooker/prodigy-plus-schedule-free) is supported. See PR [#1811](https://github.com/kohya-ss/sd-scripts/pull/1811) for details. Thanks to rockerBOO!
+
 Nov 14, 2024:
 
 - Improved the implementation of block swap and made it available for both FLUX.1 and SD3 LoRA training. See [FLUX.1 LoRA training](#flux1-lora-training) etc. for how to use the new options. Training is possible with about 8-10GB of VRAM.
@@ -28,6 +48,7 @@ Nov 14, 2024:
   - [Key Features for FLUX.1 LoRA training](#key-features-for-flux1-lora-training)
   - [Specify rank for each layer in FLUX.1](#specify-rank-for-each-layer-in-flux1)
   - [Specify blocks to train in FLUX.1 LoRA training](#specify-blocks-to-train-in-flux1-lora-training)
+- [FLUX.1 ControlNet training](#flux1-controlnet-training)
 - [FLUX.1 OFT training](#flux1-oft-training)
 - [Inference for FLUX.1 with LoRA model](#inference-for-flux1-with-lora-model)
 - [FLUX.1 fine-tuning](#flux1-fine-tuning)
@@ -244,6 +265,30 @@ example:
 ```
 
 If you specify one of `train_double_block_indices` or `train_single_block_indices`, the other will be trained as usual. 
+
+### FLUX.1 ControlNet training
+We have added a new training script for ControlNet training. The script is flux_train_control_net.py. See --help for options.
+
+Sample command is below. It will work with 80GB VRAM GPUs.
+```
+accelerate launch --mixed_precision bf16 --num_cpu_threads_per_process 1 flux_train_control_net.py
+--pretrained_model_name_or_path flux1-dev.safetensors --clip_l clip_l.safetensors --t5xxl t5xxl_fp16.safetensors
+--ae ae.safetensors --save_model_as safetensors --sdpa --persistent_data_loader_workers
+--max_data_loader_n_workers 1 --seed 42 --gradient_checkpointing --mixed_precision bf16
+--optimizer_type adamw8bit --learning_rate 2e-5 
+--highvram --max_train_epochs 1 --save_every_n_steps 1000 --dataset_config dataset.toml
+--output_dir /path/to/output/dir --output_name flux-cn
+--timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0 --deepspeed
+```
+
+For 24GB VRAM GPUs, you can train with 16 blocks swapped and caching latents and text encoder outputs with the batch size of 1. Remove `--deepspeed` . Sample command is below. Not fully tested.
+```
+ --blocks_to_swap 16 --cache_latents_to_disk --cache_text_encoder_outputs_to_disk 
+```
+
+The training can be done with 16GB VRAM GPUs with around 30 blocks swapped. 
+
+`--gradient_accumulation_steps` is also available. The default value is 1 (no accumulation), but according to the original PR, 8 is used.
 
 ### FLUX.1 OFT training
 

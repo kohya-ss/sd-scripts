@@ -307,10 +307,12 @@ def train(args):
 
     if args.fused_backward_pass:
         import library.adafactor_fused
+
         library.adafactor_fused.patch_adafactor_fused(optimizer)
         for param_group in optimizer.param_groups:
             for parameter in param_group["params"]:
                 if parameter.requires_grad:
+
                     def __grad_hook(tensor: torch.Tensor, param_group=param_group):
                         if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                             accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
@@ -464,9 +466,7 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
-                timesteps, huber_c = train_util.get_timesteps_and_huber_c(
-                    args, 0, noise_scheduler.config.num_train_timesteps, noise_scheduler, b_size, latents.device
-                )
+                timesteps = train_util.get_timesteps(0, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
@@ -498,9 +498,8 @@ def train(args):
                 else:
                     target = noise
 
-                loss = train_util.conditional_loss(
-                    noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
-                )
+                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight

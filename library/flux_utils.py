@@ -1,14 +1,14 @@
-from dataclasses import replace
 import json
 import os
+from dataclasses import replace
 from typing import List, Optional, Tuple, Union
+
 import einops
 import torch
-
-from safetensors.torch import load_file
-from safetensors import safe_open
 from accelerate import init_empty_weights
-from transformers import CLIPTextModel, CLIPConfig, T5EncoderModel, T5Config
+from safetensors import safe_open
+from safetensors.torch import load_file
+from transformers import CLIPConfig, CLIPTextModel, T5Config, T5EncoderModel
 
 from library.utils import setup_logging
 
@@ -151,6 +151,22 @@ def load_ae(
     info = ae.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded AE: {info}")
     return ae
+
+
+def load_controlnet(
+    ckpt_path: Optional[str], is_schnell: bool, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+):
+    logger.info("Building ControlNet")
+    name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
+    with torch.device(device):
+        controlnet = flux_models.ControlNetFlux(flux_models.configs[name].params).to(dtype)
+
+    if ckpt_path is not None:
+        logger.info(f"Loading state dict from {ckpt_path}")
+        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+        info = controlnet.load_state_dict(sd, strict=False, assign=True)
+        logger.info(f"Loaded ControlNet: {info}")
+    return controlnet    
 
 
 def load_clip_l(
