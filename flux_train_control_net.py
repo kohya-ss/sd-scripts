@@ -265,7 +265,7 @@ def train(args):
     # load controlnet
     controlnet_dtype = torch.float32 if args.deepspeed else weight_dtype
     controlnet = flux_utils.load_controlnet(
-        args.controlnet_model_path, is_schnell, controlnet_dtype, accelerator.device, args.disable_mmap_load_safetensors
+        args.controlnet_model_name_or_path, is_schnell, controlnet_dtype, accelerator.device, args.disable_mmap_load_safetensors
     )
     controlnet.train()
 

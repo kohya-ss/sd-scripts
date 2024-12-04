@@ -221,8 +221,8 @@ def train(args):
 
     controlnet = ControlNetModel.from_unet(unet)
 
-    if args.controlnet_model_path:
-        filename = args.controlnet_model_path
+    if args.controlnet_model_name_or_path:
+        filename = args.controlnet_model_name_or_path
         if os.path.isfile(filename):
             if os.path.splitext(filename)[1] == ".safetensors":
                 state_dict = load_file(filename)
@@ -644,7 +644,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="format to save the model (default is .safetensors) / モデル保存時の形式（デフォルトはsafetensors）",
     )
     parser.add_argument(
-        "--controlnet_model_path",
+        "--controlnet_model_name_or_path",
         type=str,
         default=None,
         help="controlnet model name or path / controlnetのモデル名またはパス",
