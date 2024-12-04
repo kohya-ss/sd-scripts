@@ -201,21 +201,6 @@ def train(args):
     # モデルを読み込む
 
     # t5xxl_dtype = weight_dtype
-    # if args.t5xxl_dtype is not None:
-    #     if args.t5xxl_dtype == "fp16":
-    #         t5xxl_dtype = torch.float16
-    #     elif args.t5xxl_dtype == "bf16":
-    #         t5xxl_dtype = torch.bfloat16
-    #     elif args.t5xxl_dtype == "fp32" or args.t5xxl_dtype == "float":
-    #         t5xxl_dtype = torch.float32
-    #     else:
-    #         raise ValueError(f"unexpected t5xxl_dtype: {args.t5xxl_dtype}")
-    # t5xxl_device = accelerator.device if args.t5xxl_device is None else args.t5xxl_device
-    # clip_dtype = weight_dtype  # if not args.train_text_encoder else None
-
-    # if clip_l is not specified, the checkpoint must contain clip_l, so we load state dict here
-    # if full_fp16/bf16, model_dtype is casted to fp16/bf16. If not, model_dtype is None (float32).
-    # by loading with model_dtype, we can reduce memory usage.
     model_dtype = match_mixed_precision(args, weight_dtype)  # None (default) or fp16/bf16 (full_xxxx)
     if args.clip_l is None:
         sd3_state_dict = utils.load_safetensors(
@@ -384,7 +369,7 @@ def train(args):
         # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
         # This idea is based on 2kpr's great work. Thank you!
         logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-        mmdit.enable_block_swap(args.blocks_to_swap)
+        mmdit.enable_block_swap(args.blocks_to_swap, accelerator.device)
 
     if not cache_latents:
         # move to accelerator device
@@ -611,110 +596,26 @@ def train(args):
     # resumeする
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
-    # memory efficient block swapping
-
-    def submit_move_blocks(futures, thread_pool, block_idx_to_cpu, block_idx_to_cuda, blocks, device):
-        def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda, dvc):
-            # print(f"Backward: Move block {bidx_to_cpu} to CPU")
-            block_to_cpu = block_to_cpu.to("cpu", non_blocking=True)
-            torch.cuda.empty_cache()
-
-            # print(f"Backward: Move block {bidx_to_cuda} to CUDA")
-            block_to_cuda = block_to_cuda.to(dvc, non_blocking=True)
-            torch.cuda.synchronize()
-            # print(f"Backward: Done moving blocks {bidx_to_cpu} and {bidx_to_cuda}")
-            return bidx_to_cpu, bidx_to_cuda
-
-        block_to_cpu = blocks[block_idx_to_cpu]
-        block_to_cuda = blocks[block_idx_to_cuda]
-
-        futures[block_idx_to_cuda] = thread_pool.submit(
-            move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_cuda, block_to_cuda, device
-        )
-
-    def wait_blocks_move(block_idx, futures):
-        if block_idx not in futures:
-            return
-        future = futures.pop(block_idx)
-        future.result()
-
     if args.fused_backward_pass:
         # use fused optimizer for backward pass: other optimizers will be supported in the future
         import library.adafactor_fused
 
         library.adafactor_fused.patch_adafactor_fused(optimizer)
 
-        blocks_to_swap = args.blocks_to_swap
-        num_blocks = len(accelerator.unwrap_model(mmdit).joint_blocks)
-        handled_block_indices = set()
-
-        n = 1  # only asynchronous purpose, no need to increase this number
-        # n = 2
-        # n = max(1, os.cpu_count() // 2)
-        thread_pool = ThreadPoolExecutor(max_workers=n)
-        futures = {}
-
         for param_group, param_name_group in zip(optimizer.param_groups, param_names):
             for parameter, param_name in zip(param_group["params"], param_name_group):
                 if parameter.requires_grad:
-                    grad_hook = None
 
-                    if blocks_to_swap:
-                        is_block = param_name.startswith("joint_blocks")
-                        if is_block:
-                            block_idx = int(param_name.split(".")[1])
-                            if block_idx not in handled_block_indices:
-                                # swap following (already backpropagated) block
-                                handled_block_indices.add(block_idx)
-
-                                # if n blocks were already backpropagated
-                                num_blocks_propagated = num_blocks - block_idx - 1
-                                swapping = num_blocks_propagated > 0 and num_blocks_propagated <= blocks_to_swap
-                                waiting = block_idx > 0 and block_idx <= blocks_to_swap
-                                if swapping or waiting:
-                                    block_idx_to_cpu = num_blocks - num_blocks_propagated
-                                    block_idx_to_cuda = blocks_to_swap - num_blocks_propagated
-                                    block_idx_to_wait = block_idx - 1
-
-                                    # create swap hook
-                                    def create_swap_grad_hook(
-                                        bidx_to_cpu, bidx_to_cuda, bidx_to_wait, bidx: int, swpng: bool, wtng: bool
-                                    ):
-                                        def __grad_hook(tensor: torch.Tensor):
-                                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                                            optimizer.step_param(tensor, param_group)
-                                            tensor.grad = None
-
-                                            if swpng:
-                                                submit_move_blocks(
-                                                    futures,
-                                                    thread_pool,
-                                                    bidx_to_cpu,
-                                                    bidx_to_cuda,
-                                                    mmdit.joint_blocks,
-                                                    accelerator.device,
-                                                )
-                                            if wtng:
-                                                wait_blocks_move(bidx_to_wait, futures)
-
-                                        return __grad_hook
-
-                                    grad_hook = create_swap_grad_hook(
-                                        block_idx_to_cpu, block_idx_to_cuda, block_idx_to_wait, block_idx, swapping, waiting
-                                    )
-
-                    if grad_hook is None:
-
-                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                    def create_grad_hook(p_name, p_group):
+                        def grad_hook(tensor: torch.Tensor):
                             if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                                 accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                            optimizer.step_param(tensor, param_group)
+                            optimizer.step_param(tensor, p_group)
                             tensor.grad = None
 
-                        grad_hook = __grad_hook
+                        return grad_hook
 
-                    parameter.register_post_accumulate_grad_hook(grad_hook)
+                    parameter.register_post_accumulate_grad_hook(create_grad_hook(param_name, param_group))
 
     elif args.blockwise_fused_optimizers:
         # prepare for additional optimizers and lr schedulers
@@ -731,59 +632,22 @@ def train(args):
         num_parameters_per_group = [0] * len(optimizers)
         parameter_optimizer_map = {}
 
-        blocks_to_swap = args.blocks_to_swap
-        num_blocks = len(accelerator.unwrap_model(mmdit).joint_blocks)
-
-        n = 1  # only asynchronous purpose, no need to increase this number
-        # n = max(1, os.cpu_count() // 2)
-        thread_pool = ThreadPoolExecutor(max_workers=n)
-        futures = {}
-
         for opt_idx, optimizer in enumerate(optimizers):
             for param_group in optimizer.param_groups:
                 for parameter in param_group["params"]:
                     if parameter.requires_grad:
-                        block_type, block_idx = block_types_and_indices[opt_idx]
 
-                        def create_optimizer_hook(btype, bidx):
-                            def optimizer_hook(parameter: torch.Tensor):
-                                # print(f"optimizer_hook: {btype}, {bidx}")
-                                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                                    accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
+                        def grad_hook(parameter: torch.Tensor):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
 
-                                i = parameter_optimizer_map[parameter]
-                                optimizer_hooked_count[i] += 1
-                                if optimizer_hooked_count[i] == num_parameters_per_group[i]:
-                                    optimizers[i].step()
-                                    optimizers[i].zero_grad(set_to_none=True)
+                            i = parameter_optimizer_map[parameter]
+                            optimizer_hooked_count[i] += 1
+                            if optimizer_hooked_count[i] == num_parameters_per_group[i]:
+                                optimizers[i].step()
+                                optimizers[i].zero_grad(set_to_none=True)
 
-                                    # swap blocks if necessary
-                                    if blocks_to_swap and btype == "joint":
-                                        num_blocks_propagated = num_blocks - bidx
-
-                                        swapping = num_blocks_propagated > 0 and num_blocks_propagated <= blocks_to_swap
-                                        waiting = bidx > 0 and bidx <= blocks_to_swap
-
-                                        if swapping:
-                                            block_idx_to_cpu = num_blocks - num_blocks_propagated
-                                            block_idx_to_cuda = blocks_to_swap - num_blocks_propagated
-                                            # print(f"Backward: Swap blocks {block_idx_to_cpu} and {block_idx_to_cuda}")
-                                            submit_move_blocks(
-                                                futures,
-                                                thread_pool,
-                                                block_idx_to_cpu,
-                                                block_idx_to_cuda,
-                                                mmdit.joint_blocks,
-                                                accelerator.device,
-                                            )
-
-                                        if waiting:
-                                            block_idx_to_wait = bidx - 1
-                                            wait_blocks_move(block_idx_to_wait, futures)
-
-                            return optimizer_hook
-
-                        parameter.register_post_accumulate_grad_hook(create_optimizer_hook(block_type, block_idx))
+                        parameter.register_post_accumulate_grad_hook(grad_hook)
                         parameter_optimizer_map[parameter] = opt_idx
                         num_parameters_per_group[opt_idx] += 1
 
@@ -811,8 +675,8 @@ def train(args):
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
-    # noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-    # noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    # only used to get timesteps, etc. TODO manage timesteps etc. separately
+    dummy_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
 
     if accelerator.is_main_process:
         init_kwargs = {}
@@ -980,9 +844,8 @@ def train(args):
                 #     1,
                 # )
                 # calculate loss
-                loss = train_util.conditional_loss(
-                    model_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=None
-                )
+                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, dummy_scheduler)
+                loss = train_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])
@@ -1130,6 +993,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     add_custom_train_arguments(parser)
+    train_util.add_dit_training_arguments(parser)
     sd3_train_utils.add_sd3_training_arguments(parser)
 
     parser.add_argument(
@@ -1189,16 +1053,6 @@ def setup_parser() -> argparse.ArgumentParser:
         "--skip_latents_validity_check",
         action="store_true",
         help="[Deprecated] use 'skip_cache_check' instead / 代わりに 'skip_cache_check' を使用してください",
-    )
-    parser.add_argument(
-        "--blocks_to_swap",
-        type=int,
-        default=None,
-        help="[EXPERIMENTAL] "
-        "Sets the number of blocks (~640MB) to swap during the forward and backward passes."
-        "Increasing this number lowers the overall VRAM used during training at the expense of training speed (s/it)."
-        " / 順伝播および逆伝播中にスワップするブロック（約640MB）の数を設定します。"
-        "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
     )
     parser.add_argument(
         "--num_last_block_to_freeze",

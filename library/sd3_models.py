@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from transformers import CLIPTokenizer, T5TokenizerFast
 
+from library import custom_offloading_utils
 from library.device_utils import clean_memory_on_device
 
 from .utils import setup_logging
@@ -862,7 +863,8 @@ class MMDiT(nn.Module):
         # self.initialize_weights()
 
         self.blocks_to_swap = None
-        self.thread_pool: Optional[ThreadPoolExecutor] = None
+        self.offloader = None
+        self.num_blocks = len(self.joint_blocks)
 
     def enable_scaled_pos_embed(self, use_scaled_pos_embed: bool, latent_sizes: Optional[list[int]]):
         self.use_scaled_pos_embed = use_scaled_pos_embed
@@ -1015,22 +1017,35 @@ class MMDiT(nn.Module):
                 patched_size = patched_size_
                 break
         if patched_size is None:
-            raise ValueError(f"Area {area} is too large for the given latent sizes {self.resolution_area_to_latent_size}.")
+            # raise ValueError(f"Area {area} is too large for the given latent sizes {self.resolution_area_to_latent_size}.")
+            # use largest latent size
+            patched_size = self.resolution_area_to_latent_size[-1][1]
 
         pos_embed = self.resolution_pos_embeds[patched_size]
-        pos_embed_size = round(math.sqrt(pos_embed.shape[1]))
+        pos_embed_size = round(math.sqrt(pos_embed.shape[1]))  # max size, patched_size * POS_EMBED_MAX_RATIO
         if h > pos_embed_size or w > pos_embed_size:
             # # fallback to normal pos_embed
             # return self.cropped_pos_embed(h * p, w * p, device=device, random_crop=random_crop)
             # extend pos_embed size
             logger.warning(
-                f"Using normal pos_embed for size {h}x{w} as it exceeds the scaled pos_embed size {pos_embed_size}. Image is too tall or wide."
+                f"Add new pos_embed for size {h}x{w} as it exceeds the scaled pos_embed size {pos_embed_size}. Image is too tall or wide."
             )
-            pos_embed_size = max(h, w)
-            pos_embed = get_scaled_2d_sincos_pos_embed(self.hidden_size, pos_embed_size, sample_size=patched_size)
+            patched_size = max(h, w)
+            grid_size = int(patched_size * MMDiT.POS_EMBED_MAX_RATIO)
+            pos_embed_size = grid_size
+            pos_embed = get_scaled_2d_sincos_pos_embed(self.hidden_size, grid_size, sample_size=patched_size)
             pos_embed = torch.from_numpy(pos_embed).float().unsqueeze(0)
             self.resolution_pos_embeds[patched_size] = pos_embed
-            logger.info(f"Updated pos_embed for size {pos_embed_size}x{pos_embed_size}")
+            logger.info(f"Added pos_embed for size {patched_size}x{patched_size}")
+
+            # print(torch.allclose(pos_embed.to(torch.float32).cpu(), self.pos_embed.to(torch.float32).cpu(), atol=5e-2))
+            # diff = pos_embed.to(torch.float32).cpu() - self.pos_embed.to(torch.float32).cpu()
+            # print(diff.abs().max(), diff.abs().mean())
+
+            # insert to resolution_area_to_latent_size, by adding and sorting
+            area = pos_embed_size**2
+            self.resolution_area_to_latent_size.append((area, patched_size))
+            self.resolution_area_to_latent_size = sorted(self.resolution_area_to_latent_size)
 
         if not random_crop:
             top = (pos_embed_size - h) // 2
@@ -1055,14 +1070,20 @@ class MMDiT(nn.Module):
         # )
         return spatial_pos_embed
 
-    def enable_block_swap(self, num_blocks: int):
+    def enable_block_swap(self, num_blocks: int, device: torch.device):
         self.blocks_to_swap = num_blocks
 
-        n = 1  # async block swap. 1 is enough
-        self.thread_pool = ThreadPoolExecutor(max_workers=n)
+        assert (
+            self.blocks_to_swap <= self.num_blocks - 2
+        ), f"Cannot swap more than {self.num_blocks - 2} blocks. Requested: {self.blocks_to_swap} blocks."
+
+        self.offloader = custom_offloading_utils.ModelOffloader(
+            self.joint_blocks, self.num_blocks, self.blocks_to_swap, device  # , debug=True
+        )
+        print(f"SD3: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {device}.")
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
-        # assume model is on cpu
+        # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
         if self.blocks_to_swap:
             save_blocks = self.joint_blocks
             self.joint_blocks = None
@@ -1073,16 +1094,9 @@ class MMDiT(nn.Module):
             self.joint_blocks = save_blocks
 
     def prepare_block_swap_before_forward(self):
-        # make: first n blocks are on cuda, and last n blocks are on cpu
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            # raise ValueError("Block swap is not enabled.")
             return
-        num_blocks = len(self.joint_blocks)
-        for i in range(num_blocks - self.blocks_to_swap):
-            self.joint_blocks[i].to(self.device)
-        for i in range(num_blocks - self.blocks_to_swap, num_blocks):
-            self.joint_blocks[i].to("cpu")
-        clean_memory_on_device(self.device)
+        self.offloader.prepare_block_devices_before_forward(self.joint_blocks)
 
     def forward(
         self,
@@ -1122,57 +1136,19 @@ class MMDiT(nn.Module):
 
         if self.register_length > 0:
             context = torch.cat(
-                (
-                    einops.repeat(self.register, "1 ... -> b ...", b=x.shape[0]),
-                    default(context, torch.Tensor([]).type_as(x)),
-                ),
-                1,
+                (einops.repeat(self.register, "1 ... -> b ...", b=x.shape[0]), default(context, torch.Tensor([]).type_as(x))), 1
             )
 
         if not self.blocks_to_swap:
             for block in self.joint_blocks:
                 context, x = block(context, x, c)
         else:
-            futures = {}
-
-            def submit_move_blocks(block_idx_to_cpu, block_idx_to_cuda):
-                def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda):
-                    # print(f"Moving {bidx_to_cpu} to cpu.")
-                    block_to_cpu.to("cpu", non_blocking=True)
-                    torch.cuda.empty_cache()
-
-                    # print(f"Moving {bidx_to_cuda} to cuda.")
-                    block_to_cuda.to(self.device, non_blocking=True)
-
-                    torch.cuda.synchronize()
-                    # print(f"Block move done. {bidx_to_cpu} to cpu, {bidx_to_cuda} to cuda.")
-                    return block_idx_to_cpu, block_idx_to_cuda
-
-                block_to_cpu = self.joint_blocks[block_idx_to_cpu]
-                block_to_cuda = self.joint_blocks[block_idx_to_cuda]
-                # print(f"Submit move blocks. {block_idx_to_cpu} to cpu, {block_idx_to_cuda} to cuda.")
-                return self.thread_pool.submit(move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_cuda, block_to_cuda)
-
-            def wait_for_blocks_move(block_idx, ftrs):
-                if block_idx not in ftrs:
-                    return
-                # print(f"Waiting for move blocks: {block_idx}")
-                # start_time = time.perf_counter()
-                ftr = ftrs.pop(block_idx)
-                ftr.result()
-                # torch.cuda.synchronize()
-                # print(f"Move blocks took {time.perf_counter() - start_time:.2f} seconds")
-
             for block_idx, block in enumerate(self.joint_blocks):
-                wait_for_blocks_move(block_idx, futures)
+                self.offloader.wait_for_block(block_idx)
 
                 context, x = block(context, x, c)
 
-                if block_idx < self.blocks_to_swap:
-                    block_idx_to_cpu = block_idx
-                    block_idx_to_cuda = len(self.joint_blocks) - self.blocks_to_swap + block_idx
-                    future = submit_move_blocks(block_idx_to_cpu, block_idx_to_cuda)
-                    futures[block_idx_to_cuda] = future
+                self.offloader.submit_move_blocks(self.joint_blocks, block_idx)
 
         x = self.final_layer(x, c, H, W)  # Our final layer combined UnPatchify
         return x[:, :, :H, :W]
