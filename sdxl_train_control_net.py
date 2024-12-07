@@ -184,12 +184,12 @@ def train(args):
 
     # make control net
     logger.info("make ControlNet")
-    if args.controlnet_model_path:
+    if args.controlnet_model_name_or_path:
         with init_empty_weights():
             control_net = SdxlControlNet()
 
-        logger.info(f"load ControlNet from {args.controlnet_model_path}")
-        filename = args.controlnet_model_path
+        logger.info(f"load ControlNet from {args.controlnet_model_name_or_path}")
+        filename = args.controlnet_model_name_or_path
         if os.path.splitext(filename)[1] == ".safetensors":
             state_dict = load_file(filename)
         else:
@@ -675,7 +675,7 @@ def setup_parser() -> argparse.ArgumentParser:
     sdxl_train_util.add_sdxl_training_arguments(parser)
 
     parser.add_argument(
-        "--controlnet_model_path",
+        "--controlnet_model_name_or_path",
         type=str,
         default=None,
         help="controlnet model name or path / controlnetのモデル名またはパス",
