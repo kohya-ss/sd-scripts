@@ -14,6 +14,8 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Dec 7, 2024:
+- Fixed an issue where the saved model would be corrupted (pos_embed would not be saved) when `--enable_scaled_pos_embed` was specified in `sd3_train.py`.
 
 Dec 3, 2024:
 

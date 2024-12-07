@@ -870,8 +870,10 @@ class MMDiT(nn.Module):
         self.use_scaled_pos_embed = use_scaled_pos_embed
 
         if self.use_scaled_pos_embed:
-            # remove pos_embed to free up memory up to 0.4 GB
-            self.pos_embed = None
+            # # remove pos_embed to free up memory up to 0.4 GB -> this causes error because pos_embed is not saved
+            # self.pos_embed = None
+            # move pos_embed to CPU to free up memory up to 0.4 GB
+            self.pos_embed = self.pos_embed.cpu()
 
             # remove duplicates and sort latent sizes in ascending order
             latent_sizes = list(set(latent_sizes))
