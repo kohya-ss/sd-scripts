@@ -16,7 +16,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import train_util
+from library import dataset_metadata_utils, train_util
 
 
 class ArchiveImageLoader:
@@ -72,7 +72,9 @@ class ArchiveImageLoader:
                     break
 
                 file = self.files[self.image_index]
-                archive_and_image_path = f"{self.archive_paths[self.archive_index]}////{file}"
+                archive_and_image_path = (
+                    f"{self.archive_paths[self.archive_index]}{dataset_metadata_utils.ARCHIVE_PATH_SEPARATOR}{file}"
+                )
                 self.image_index += 1
 
                 def load_image(file, archive: Union[zipfile.ZipFile, tarfile.TarFile]):
@@ -131,29 +133,6 @@ class ImageLoader:
 
         images = [(image_path, future.result()) for image_path, future in images]
         return [(image_path, image, size) for image_path, (image, size) in images]
-
-
-def load_metadata(metadata_file: str):
-    if os.path.exists(metadata_file):
-        logger.info(f"loading metadata file: {metadata_file}")
-        with open(metadata_file, "rt", encoding="utf-8") as f:
-            metadata = json.load(f)
-
-        # version check
-        major, minor, patch = metadata.get("format_version", "0.0.0").split(".")
-        major, minor, patch = int(major), int(minor), int(patch)
-        if major > 1 or (major == 1 and minor > 0):
-            logger.warning(
-                f"metadata format version {major}.{minor}.{patch} is higher than supported version 1.0.0. Some features may not work."
-            )
-
-        if "images" not in metadata:
-            metadata["images"] = {}
-    else:
-        logger.info(f"metadata file not found: {metadata_file}, creating new metadata")
-        metadata = {"format_version": "1.0.0", "images": {}}
-
-    return metadata
 
 
 def add_archive_arguments(parser: argparse.ArgumentParser):

@@ -22,17 +22,16 @@ def fire_in_thread(f, *args, **kwargs):
 
 
 class ImageInfo:
-    def __init__(
-        self, image_key: str, num_repeats: int, captions: Optional[Union[str, list[str]]], is_reg: bool, absolute_path: str
-    ) -> None:
+    def __init__(self, image_key: str, num_repeats: int, is_reg: bool, absolute_path: str) -> None:
         self.image_key: str = image_key
         self.num_repeats: int = num_repeats
-        self.captions: Optional[list[str]] = None if captions is None else ([captions] if isinstance(captions, str) else captions)
+        self.captions: Optional[list[str]] = None
         self.caption_weights: Optional[list[float]] = None  # weights for each caption in sampling
         self.list_of_tags: Optional[list[str]] = None
         self.tags_weights: Optional[list[float]] = None
         self.is_reg: bool = is_reg
         self.absolute_path: str = absolute_path
+        self.latents_cache_dir: Optional[str] = None
         self.image_size: Tuple[int, int] = None
         self.resized_size: Tuple[int, int] = None
         self.bucket_reso: Tuple[int, int] = None
@@ -54,6 +53,28 @@ class ImageInfo:
         self.text_encoder_pool2: Optional[torch.Tensor] = None
 
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
+
+    def __str__(self) -> str:
+        return f"ImageInfo(image_key={self.image_key}, num_repeats={self.num_repeats}, captions={self.captions}, is_reg={self.is_reg}, absolute_path={self.absolute_path})"
+
+    def set_dreambooth_info(self, list_of_tags: list[str]) -> None:
+        self.list_of_tags = list_of_tags
+
+    def set_fine_tuning_info(
+        self,
+        captions: Optional[list[str]],
+        caption_weights: Optional[list[float]],
+        list_of_tags: Optional[list[str]],
+        tags_weights: Optional[list[float]],
+        image_size: Tuple[int, int],
+        latents_cache_dir: Optional[str],
+    ):
+        self.captions = captions
+        self.caption_weights = caption_weights
+        self.list_of_tags = list_of_tags
+        self.tags_weights = tags_weights
+        self.image_size = image_size
+        self.latents_cache_dir = latents_cache_dir
 
 
 # region Logging

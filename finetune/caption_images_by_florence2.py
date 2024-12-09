@@ -14,7 +14,7 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor, AutoModelForCausalLM
 
-from library import device_utils, train_util
+from library import device_utils, train_util, dataset_metadata_utils
 from library.utils import setup_logging
 
 setup_logging()
@@ -91,7 +91,7 @@ def main(args):
 
     # load metadata if needed
     if args.metadata is not None:
-        metadata = tagger_utils.load_metadata(args.metadata)
+        metadata = dataset_metadata_utils.load_metadata(args.metadata, create_new=True)
         images_metadata = metadata["images"]
     else:
         images_metadata = metadata = None

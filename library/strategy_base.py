@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import utils
+from library import dataset_metadata_utils, utils
 
 
 def get_compatible_dtypes(dtype: Optional[Union[str, torch.dtype]]) -> List[torch.dtype]:
@@ -648,8 +648,23 @@ class LatentsCachingStrategy:
         w, h = os.path.splitext(cache_path)[0].rsplit("_", 2)[-2].split("x")
         return int(w), int(h)
 
-    def get_latents_cache_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.cache_suffix
+    def get_latents_cache_path_from_info(self, info: utils.ImageInfo) -> str:
+        return self.get_latents_cache_path(info.absolute_path, info.image_size, info.latents_cache_dir)
+
+    def get_latents_cache_path(
+        self, absolute_path_or_archive_img_path: str, image_size: Tuple[int, int], cache_dir: Optional[str] = None
+    ) -> str:
+        if cache_dir is not None:
+            if dataset_metadata_utils.is_archive_path(absolute_path_or_archive_img_path):
+                inner_path = dataset_metadata_utils.get_inner_path(absolute_path_or_archive_img_path)
+                archive_digest = dataset_metadata_utils.get_archive_digest(absolute_path_or_archive_img_path)
+                cache_file_base = os.path.join(cache_dir, f"{archive_digest}_{inner_path}")
+            else:
+                cache_file_base = os.path.join(cache_dir, os.path.basename(absolute_path_or_archive_img_path))
+        else:
+            cache_file_base = absolute_path_or_archive_img_path
+
+        return os.path.splitext(cache_file_base)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.cache_suffix
 
     def is_disk_cached_latents_expected(
         self,
