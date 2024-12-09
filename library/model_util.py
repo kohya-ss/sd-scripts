@@ -3,19 +3,20 @@
 
 import math
 import os
+
 import torch
-try:
-    import intel_extension_for_pytorch as ipex
-    if torch.xpu.is_available():
-        from library.ipex import ipex_init
-        ipex_init()
-except Exception:
-    pass
+from library.device_utils import init_ipex
+init_ipex()
+
 import diffusers
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPTextConfig, logging
 from diffusers import AutoencoderKL, DDIMScheduler, StableDiffusionPipeline  # , UNet2DConditionModel
 from safetensors.torch import load_file, save_file
 from library.original_unet import UNet2DConditionModel
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 # DiffUsers版StableDiffusionのモデルパラメータ
 NUM_TRAIN_TIMESTEPS = 1000
@@ -571,9 +572,9 @@ def convert_ldm_clip_checkpoint_v1(checkpoint):
         if key.startswith("cond_stage_model.transformer"):
             text_model_dict[key[len("cond_stage_model.transformer.") :]] = checkpoint[key]
 
-    # support checkpoint without position_ids (invalid checkpoint)
-    if "text_model.embeddings.position_ids" not in text_model_dict:
-        text_model_dict["text_model.embeddings.position_ids"] = torch.arange(77).unsqueeze(0)  # 77 is the max length of the text
+    # remove position_ids for newer transformer, which causes error :(
+    if "text_model.embeddings.position_ids" in text_model_dict:
+        text_model_dict.pop("text_model.embeddings.position_ids")
 
     return text_model_dict
 
@@ -947,7 +948,7 @@ def convert_vae_state_dict(vae_state_dict):
     for k, v in new_state_dict.items():
         for weight_name in weights_to_convert:
             if f"mid.attn_1.{weight_name}.weight" in k:
-                # print(f"Reshaping {k} for SD format: shape {v.shape} -> {v.shape} x 1 x 1")
+                # logger.info(f"Reshaping {k} for SD format: shape {v.shape} -> {v.shape} x 1 x 1")
                 new_state_dict[k] = reshape_weight_for_sd(v)
 
     return new_state_dict
@@ -1005,7 +1006,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
 
     unet = UNet2DConditionModel(**unet_config).to(device)
     info = unet.load_state_dict(converted_unet_checkpoint)
-    print("loading u-net:", info)
+    logger.info(f"loading u-net: {info}")
 
     # Convert the VAE model.
     vae_config = create_vae_diffusers_config()
@@ -1013,7 +1014,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
 
     vae = AutoencoderKL(**vae_config).to(device)
     info = vae.load_state_dict(converted_vae_checkpoint)
-    print("loading vae:", info)
+    logger.info(f"loading vae: {info}")
 
     # convert text_model
     if v2:
@@ -1047,7 +1048,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
         # logging.set_verbosity_error()  # don't show annoying warning
         # text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
         # logging.set_verbosity_warning()
-        # print(f"config: {text_model.config}")
+        # logger.info(f"config: {text_model.config}")
         cfg = CLIPTextConfig(
             vocab_size=49408,
             hidden_size=768,
@@ -1070,7 +1071,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
         )
         text_model = CLIPTextModel._from_config(cfg)
         info = text_model.load_state_dict(converted_text_encoder_checkpoint)
-    print("loading text encoder:", info)
+    logger.info(f"loading text encoder: {info}")
 
     return text_model, vae, unet
 
@@ -1145,7 +1146,7 @@ def convert_text_encoder_state_dict_to_sd_v2(checkpoint, make_dummy_weights=Fals
 
     # 最後の層などを捏造するか
     if make_dummy_weights:
-        print("make dummy weights for resblock.23, text_projection and logit scale.")
+        logger.info("make dummy weights for resblock.23, text_projection and logit scale.")
         keys = list(new_sd.keys())
         for key in keys:
             if key.startswith("transformer.resblocks.22."):
@@ -1242,8 +1243,13 @@ def save_diffusers_checkpoint(v2, output_dir, text_encoder, unet, pretrained_mod
     if vae is None:
         vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
 
+    # original U-Net cannot be saved, so we need to convert it to the Diffusers version
+    # TODO this consumes a lot of memory
+    diffusers_unet = diffusers.UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+    diffusers_unet.load_state_dict(unet.state_dict())
+
     pipeline = StableDiffusionPipeline(
-        unet=unet,
+        unet=diffusers_unet,
         text_encoder=text_encoder,
         vae=vae,
         scheduler=scheduler,
@@ -1259,14 +1265,14 @@ VAE_PREFIX = "first_stage_model."
 
 
 def load_vae(vae_id, dtype):
-    print(f"load VAE: {vae_id}")
+    logger.info(f"load VAE: {vae_id}")
     if os.path.isdir(vae_id) or not os.path.isfile(vae_id):
         # Diffusers local/remote
         try:
             vae = AutoencoderKL.from_pretrained(vae_id, subfolder=None, torch_dtype=dtype)
         except EnvironmentError as e:
-            print(f"exception occurs in loading vae: {e}")
-            print("retry with subfolder='vae'")
+            logger.error(f"exception occurs in loading vae: {e}")
+            logger.error("retry with subfolder='vae'")
             vae = AutoencoderKL.from_pretrained(vae_id, subfolder="vae", torch_dtype=dtype)
         return vae
 
@@ -1307,19 +1313,19 @@ def load_vae(vae_id, dtype):
 
 def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64):
     max_width, max_height = max_reso
-    max_area = (max_width // divisible) * (max_height // divisible)
+    max_area = max_width * max_height
 
     resos = set()
 
-    size = int(math.sqrt(max_area)) * divisible
-    resos.add((size, size))
+    width = int(math.sqrt(max_area) // divisible) * divisible
+    resos.add((width, width))
 
-    size = min_size
-    while size <= max_size:
-        width = size
-        height = min(max_size, (max_area // (width // divisible)) * divisible)
-        resos.add((width, height))
-        resos.add((height, width))
+    width = min_size
+    while width <= max_size:
+        height = min(max_size, int((max_area // width) // divisible) * divisible)
+        if height >= min_size:
+            resos.add((width, height))
+            resos.add((height, width))
 
         # # make additional resos
         # if width >= height and width - divisible >= min_size:
@@ -1329,7 +1335,7 @@ def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64)
         #   resos.add((width, height - divisible))
         #   resos.add((height - divisible, width))
 
-        size += divisible
+        width += divisible
 
     resos = list(resos)
     resos.sort()
@@ -1338,13 +1344,13 @@ def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64)
 
 if __name__ == "__main__":
     resos = make_bucket_resolutions((512, 768))
-    print(len(resos))
-    print(resos)
+    logger.info(f"{len(resos)}")
+    logger.info(f"{resos}")
     aspect_ratios = [w / h for w, h in resos]
-    print(aspect_ratios)
+    logger.info(f"{aspect_ratios}")
 
     ars = set()
     for ar in aspect_ratios:
         if ar in ars:
-            print("error! duplicate ar:", ar)
+            logger.error(f"error! duplicate ar: {ar}")
         ars.add(ar)
