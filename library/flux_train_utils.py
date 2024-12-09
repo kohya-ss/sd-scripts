@@ -564,7 +564,7 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument("--ae", type=str, help="path to ae (*.sft or *.safetensors) / aeのパス（*.sftまたは*.safetensors）")
     parser.add_argument(
-        "--controlnet",
+        "--controlnet_model_name_or_path",
         type=str,
         default=None,
         help="path to controlnet (*.sft or *.safetensors) / controlnetのパス（*.sftまたは*.safetensors）"

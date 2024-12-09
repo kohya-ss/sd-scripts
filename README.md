@@ -14,6 +14,15 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Dec 7, 2024:
+
+- The option to specify the model name during ControlNet training was different in each script. It has been unified. Please specify `--controlnet_model_name_or_path`. PR [#1821](https://github.com/kohya-ss/sd-scripts/pull/1821) Thanks to sdbds!
+<!-- 
+Also, the ControlNet training script for SD has been changed from `train_controlnet.py` to `train_control_net.py`.
+  - `train_controlnet.py` is still available, but it will be removed in the future.
+-->
+
+- Fixed an issue where the saved model would be corrupted (pos_embed would not be saved) when `--enable_scaled_pos_embed` was specified in `sd3_train.py`.
 
 Dec 3, 2024:
 
