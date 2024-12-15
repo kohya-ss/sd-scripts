@@ -8,6 +8,7 @@ import torch
 from accelerate import Accelerator
 
 from library.device_utils import clean_memory_on_device, init_ipex
+from library.strategy_flux import move_vision_encoder_to_device
 
 init_ipex()
 
@@ -190,6 +191,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 args.skip_cache_check,
                 is_partial=self.train_clip_l or self.train_t5xxl,
                 apply_t5_attn_mask=args.apply_t5_attn_mask,
+                vision_cond_ratio=args.vision_cond_ratio,
+                redux_path=args.redux_model_path
             )
         else:
             return None
@@ -250,6 +253,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 text_encoders[0].to("cpu")
             logger.info("move t5XXL back to cpu")
             text_encoders[1].to("cpu")
+            move_vision_encoder_to_device("cpu")
             clean_memory_on_device(accelerator.device)
 
             if not args.lowram:
@@ -371,6 +375,14 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
         if not args.apply_t5_attn_mask:
             t5_attn_mask = None
+
+        if args.vision_cond_dropout < 1.0:
+            if random.uniform(0,1) > args.vision_cond_dropout:
+                vision_encoder_conds = batch.get("vision_encoder_outputs_list", None)
+                vis_t5_out, vis_txt_ids = vision_encoder_conds
+                t5_out = vis_t5_out
+                txt_ids = vis_txt_ids
+                t5_attn_mask = None
 
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
             # if not args.split_mode:

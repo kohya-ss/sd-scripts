@@ -617,3 +617,22 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
+
+    parser.add_argument(
+        "--redux_model_path",
+        type=str,
+        help="path to Redux model (*.sft or *.safetensors), should be float16",
+    )
+    parser.add_argument(
+        "--vision_cond_ratio",
+        type=float,
+        default=0.0,
+        help="Ratio of conditioning for Redux embeddings, averaged with text encoder embeddings. Zero disables vision conditioning, maximum is 1.0",
+    )
+
+    parser.add_argument(
+        "--vision_cond_dropout",
+        type=float,
+        default=1.0,
+        help="Probability of dropout for Redux conditioning.",
+    )

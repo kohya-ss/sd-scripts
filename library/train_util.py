@@ -176,6 +176,8 @@ class ImageInfo:
 
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
 
+        self.vision_encoder_outputs: Optional[torch.Tensor] = None
+
 
 class BucketManager:
     def __init__(self, no_upscale, max_reso, min_size, max_size, reso_steps) -> None:
@@ -1497,6 +1499,7 @@ class BaseDataset(torch.utils.data.Dataset):
         target_sizes_hw = []
         flippeds = []  # 変数名が微妙
         text_encoder_outputs_list = []
+        vision_encoder_outputs_list = []
         custom_attributes = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
@@ -1621,6 +1624,9 @@ class BaseDataset(torch.utils.data.Dataset):
             text_encoder_outputs = None
             input_ids = None
 
+            if image_info.vision_encoder_outputs is not None:
+                vision_encoder_outputs_list.append(image_info.vision_encoder_outputs)
+
             if image_info.text_encoder_outputs is not None:
                 # cached
                 text_encoder_outputs = image_info.text_encoder_outputs
@@ -1676,6 +1682,7 @@ class BaseDataset(torch.utils.data.Dataset):
         example["custom_attributes"] = custom_attributes  # may be list of empty dict
         example["loss_weights"] = torch.FloatTensor(loss_weights)
         example["text_encoder_outputs_list"] = none_or_stack_elements(text_encoder_outputs_list, torch.FloatTensor)
+        example["vision_encoder_outputs_list"] = none_or_stack_elements(vision_encoder_outputs_list, torch.FloatTensor)
         example["input_ids_list"] = none_or_stack_elements(input_ids_list, lambda x: x)
 
         # if one of alpha_masks is not None, we need to replace None with ones
