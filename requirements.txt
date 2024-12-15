@@ -9,7 +9,7 @@ pytorch-lightning==1.9.0
 bitsandbytes==0.44.0
 prodigyopt==1.0
 lion-pytorch==0.0.6
-schedulefree==1.2.7
+schedulefree==1.4
 tensorboard
 safetensors==0.4.4
 # gradio==3.16.2
