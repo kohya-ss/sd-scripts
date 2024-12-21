@@ -12,6 +12,7 @@ from tqdm import tqdm
 import torch
 from library import deepspeed_utils, strategy_base
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.signal_handler import SignalHandler
 
 init_ipex()
 
@@ -344,6 +345,7 @@ def train(args):
         accelerator.log({}, step=0)
 
     loss_recorder = train_util.LossRecorder()
+    signal_handler = SignalHandler()
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1
@@ -426,12 +428,13 @@ def train(args):
                 global_step += 1
 
                 train_util.sample_images(
-                    accelerator, args, None, global_step, accelerator.device, vae, tokenize_strategy.tokenizer, text_encoder, unet
+                    accelerator, args, None, global_step, accelerator.device, vae, tokenize_strategy.tokenizer, text_encoder, unet, force_sample=signal_handler.should_sample()
                 )
-
+                signal_handler.reset_sample()
                 # 指定ステップごとにモデルを保存
-                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                if signal_handler.should_save() or (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0):
                     accelerator.wait_for_everyone()
+                    signal_handler.reset_save()
                     if accelerator.is_main_process:
                         src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
                         train_util.save_sd_model_on_epoch_end_or_stepwise(

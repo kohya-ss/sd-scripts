@@ -44,6 +44,7 @@ from library.utils import setup_logging, add_logging_arguments
 
 setup_logging()
 import logging
+from library.signal_handler import SignalHandler
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +180,8 @@ class NetworkTrainer:
             if param.grad is not None:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoder, unet):
-        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet)
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoder, unet, force_sample=False):
+        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet, force_sample=force_sample)
 
     # region SD/SDXL
 
@@ -1131,6 +1132,8 @@ class NetworkTrainer:
 
         clean_memory_on_device(accelerator.device)
 
+        signal_handler = SignalHandler()
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
@@ -1274,12 +1277,13 @@ class NetworkTrainer:
 
                     optimizer_eval_fn()
                     self.sample_images(
-                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet, force_sample=signal_handler.should_sample()
                     )
-
+                    signal_handler.reset_sample()
                     # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                    if signal_handler.should_save() or (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0):
                         accelerator.wait_for_everyone()
+                        signal_handler.reset_save()
                         if accelerator.is_main_process:
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)

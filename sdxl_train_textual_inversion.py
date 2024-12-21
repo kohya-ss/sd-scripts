@@ -74,10 +74,10 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
         return noise_pred
 
     def sample_images(
-        self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoders, unet, prompt_replacement
+        self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoders, unet, prompt_replacement, force_sample=False
     ):
         sdxl_train_util.sample_images(
-            accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoders, unet, prompt_replacement
+            accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoders, unet, prompt_replacement, force_sample=force_sample
         )
 
     def save_weights(self, file, updated_embs, save_dtype, metadata):
