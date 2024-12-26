@@ -1799,11 +1799,16 @@ class DreamBoothDataset(BaseDataset):
         bucket_no_upscale: bool,
         prior_loss_weight: float,
         debug_dataset: bool,
+        is_train: bool,
+        validation_split: float,
+        validation_seed: Optional[int],   
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset)
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
-
+        self.is_train = is_train
+        self.validation_split = validation_split
+        self.validation_seed = validation_seed 
         self.batch_size = batch_size
         self.size = min(self.width, self.height)  # 短いほう
         self.prior_loss_weight = prior_loss_weight
@@ -1878,6 +1883,8 @@ class DreamBoothDataset(BaseDataset):
                 # we may need to check image size and existence of image files, but it takes time, so user should check it before training
             else:
                 img_paths = glob_images(subset.image_dir, "*")
+                if self.validation_split > 0.0:
+                    img_paths = split_train_val(img_paths, self.is_train, self.validation_split, self.validation_seed)
                 sizes = [None] * len(img_paths)
 
                 # new caching: get image size from cache files
@@ -6328,6 +6335,20 @@ def sample_image_inference(
         # not to commit images to avoid inconsistency between training and logging steps
         wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
 
+def split_train_val(paths, is_train, validation_split, validation_seed):
+    if validation_seed is not None:
+        print(f"Using validation seed: {validation_seed}")
+        prevstate = random.getstate()
+        random.seed(validation_seed)
+        random.shuffle(paths)
+        random.setstate(prevstate)
+    else:
+        random.shuffle(paths)
+
+    if is_train:
+        return paths[0:math.ceil(len(paths) * (1 - validation_split))]
+    else:
+        return paths[len(paths) - round(len(paths) * validation_split):]
 
 # endregion
 

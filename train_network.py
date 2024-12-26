@@ -44,6 +44,7 @@ from library.utils import setup_logging, add_logging_arguments
 
 setup_logging()
 import logging
+import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,98 @@ class NetworkTrainer:
     def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
         pass
 
+    def process_val_batch(self, batch, tokenizers, text_encoders, unet, vae, noise_scheduler, vae_dtype, weight_dtype, accelerator, args, tokenize_strategy):
+        total_loss = 0.0
+        timesteps_list = [10, 350, 500, 650, 990]    
+        with torch.no_grad():
+            if "latents" in batch and batch["latents"] is not None:
+                latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
+            else:
+                with torch.no_grad():
+                    # latentに変換
+                    latents = self.encode_images_to_latents(args, accelerator, vae, batch["images"].to(vae_dtype))
+                    latents = latents.to(dtype=weight_dtype)
+
+                    # NaNが含まれていれば警告を表示し0に置き換える
+                    if torch.any(torch.isnan(latents)):
+                        accelerator.print("NaN found in latents, replacing with zeros")
+                        latents = torch.nan_to_num(latents, 0, out=latents)
+
+            latents = self.shift_scale_latents(args, latents)
+
+        text_encoder_conds = []
+        text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
+        if text_encoder_outputs_list is not None:
+            text_encoder_conds = text_encoder_outputs_list  # List of text encoder outputs
+
+        if len(text_encoder_conds) == 0 or text_encoder_conds[0] is None:
+            # TODO this does not work if 'some text_encoders are trained' and 'some are not and not cached'
+            with torch.set_grad_enabled(False), accelerator.autocast():
+                # Get the text embedding for conditioning
+                if args.weighted_captions:
+                    input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch["captions"])
+                    encoded_text_encoder_conds = text_encoding_strategy.encode_tokens_with_weights(
+                        tokenize_strategy,
+                        self.get_models_for_text_encoding(args, accelerator, text_encoders),
+                        input_ids_list,
+                        weights_list,
+                    )
+                else:
+                    input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
+                    encoded_text_encoder_conds = text_encoding_strategy.encode_tokens(
+                        tokenize_strategy,
+                        self.get_models_for_text_encoding(args, accelerator, text_encoders),
+                        input_ids,
+                    )
+                if args.full_fp16:
+                    encoded_text_encoder_conds = [c.to(weight_dtype) for c in encoded_text_encoder_conds]
+
+            # if text_encoder_conds is not cached, use encoded_text_encoder_conds
+            if len(text_encoder_conds) == 0:
+                text_encoder_conds = encoded_text_encoder_conds
+            else:
+                # if encoded_text_encoder_conds is not None, update cached text_encoder_conds
+                for i in range(len(encoded_text_encoder_conds)):
+                    if encoded_text_encoder_conds[i] is not None:
+                        text_encoder_conds[i] = encoded_text_encoder_conds[i]
+
+        # Sample noise, sample a random timestep for each image, and add noise to the latents,
+        # with noise offset and/or multires noise if specified
+        for fixed_timesteps in timesteps_list:
+            with torch.set_grad_enabled(False), accelerator.autocast():
+                noise = torch.randn_like(latents, device=latents.device)
+                b_size = latents.shape[0]
+                timesteps = torch.full((b_size,), fixed_timesteps, dtype=torch.long, device=latents.device)
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+                # Predict the noise residual
+                with accelerator.autocast():
+                    noise_pred = self.call_unet(
+                        args,
+                        accelerator,
+                        unet,
+                        noisy_latents.requires_grad_(False),
+                        timesteps,
+                        text_encoder_conds,
+                        batch,
+                        weight_dtype,
+                    )
+
+                if args.v_parameterization:
+                    # v-parameterization training
+                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    target = noise
+
+                loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                loss = loss.mean([1, 2, 3])
+                loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
+                loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
+                total_loss += loss
+
+        average_loss = total_loss / len(timesteps_list)    
+        return average_loss
+
     # endregion
 
     def train(self, args):
@@ -327,7 +420,6 @@ class NetworkTrainer:
         tokenize_strategy = self.get_tokenize_strategy(args)
         strategy_base.TokenizeStrategy.set_strategy(tokenize_strategy)
         tokenizers = self.get_tokenizers(tokenize_strategy)  # will be removed after sample_image is refactored
-
         # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
         latents_caching_strategy = self.get_latents_caching_strategy(args)
         strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
@@ -373,11 +465,11 @@ class NetworkTrainer:
                     }
 
             blueprint = blueprint_generator.generate(user_config, args)
-            train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+            train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
         else:
             # use arbitrary dataset class
             train_dataset_group = train_util.load_arbitrary_dataset(args)
-
+            val_dataset_group = None 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
@@ -444,7 +536,9 @@ class NetworkTrainer:
             vae.eval()
 
             train_dataset_group.new_cache_latents(vae, accelerator)
-
+            if val_dataset_group is not None:
+                print("Cache validation latents...")
+                val_dataset_group.new_cache_latents(vae, accelerator)
             vae.to("cpu")
             clean_memory_on_device(accelerator.device)
 
@@ -579,6 +673,17 @@ class NetworkTrainer:
             num_workers=n_workers,
             persistent_workers=args.persistent_data_loader_workers,
         )
+
+        val_dataloader = torch.utils.data.DataLoader(
+            val_dataset_group if val_dataset_group is not None else [],
+            shuffle=False,
+            batch_size=1,
+            collate_fn=collator,
+            num_workers=n_workers,
+            persistent_workers=args.persistent_data_loader_workers,
+        )
+
+        cyclic_val_dataloader = itertools.cycle(val_dataloader)
 
         # 学習ステップ数を計算する
         if args.max_train_epochs is not None:
@@ -1064,6 +1169,7 @@ class NetworkTrainer:
             )
 
         loss_recorder = train_util.LossRecorder()
+        val_loss_recorder = train_util.LossRecorder()
         del train_dataset_group
 
         # callback for step start
@@ -1308,11 +1414,31 @@ class NetworkTrainer:
                     )
                     accelerator.log(logs, step=global_step)
 
+                if len(val_dataloader) > 0:
+                    if  (args.validation_every_n_step is not None and global_step % args.validation_every_n_step == 0) or (args.validation_every_n_step is None and step == len(train_dataloader) - 1) or global_step >= args.max_train_steps:
+                        accelerator.print("Validating バリデーション処理...")
+                        total_loss = 0.0
+                        with torch.no_grad():
+                            validation_steps = min(args.max_validation_steps, len(val_dataloader)) if args.max_validation_steps is not None else len(val_dataloader)
+                            for val_step in tqdm(range(validation_steps), desc='Validation Steps'):
+                                batch = next(cyclic_val_dataloader)
+                                loss = self.process_val_batch(batch, tokenizers, text_encoders, unet, vae, noise_scheduler, vae_dtype, weight_dtype, accelerator, args, tokenize_strategy)
+                                total_loss += loss.detach().item()
+                            current_val_loss = total_loss / validation_steps
+                            val_loss_recorder.add(epoch=0, step=global_step, loss=current_val_loss)   
+
+                        if args.logging_dir is not None:
+                            logs = {"loss/current_val_loss": current_val_loss}
+                            accelerator.log(logs, step=global_step)                            
+                            avr_loss: float = val_loss_recorder.moving_average
+                            logs = {"loss/average_val_loss": avr_loss}
+                            accelerator.log(logs, step=global_step)
+
                 if global_step >= args.max_train_steps:
                     break
 
             if len(accelerator.trackers) > 0:
-                logs = {"loss/epoch": loss_recorder.moving_average}
+                logs = {"loss/epoch_average": loss_recorder.moving_average}
                 accelerator.log(logs, step=epoch + 1)
 
             accelerator.wait_for_everyone()
@@ -1496,6 +1622,30 @@ def setup_parser() -> argparse.ArgumentParser:
         help="initial step number including all epochs, 0 means first step (same as not specifying). overwrites initial_epoch."
         + " / 初期ステップ数、全エポックを含むステップ数、0で最初のステップ（未指定時と同じ）。initial_epochを上書きする",
     )
+    parser.add_argument(
+        "--validation_seed",
+        type=int,
+        default=None,
+        help="Validation seed"
+    )
+    parser.add_argument(
+        "--validation_split",
+        type=float,
+        default=0.0,
+        help="Split for validation images out of the training dataset"
+    )    
+    parser.add_argument(
+        "--validation_every_n_step",
+        type=int,
+        default=None,
+        help="Number of train steps for counting validation loss. By default, validation per train epoch is performed"
+    )    
+    parser.add_argument(
+        "--max_validation_steps",
+        type=int,
+        default=None,
+        help="Number of max validation steps for counting validation loss. By default, validation will run entire validation dataset"
+    )    
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")
     # parser.add_argument("--loraplus_text_encoder_lr_ratio", default=None, type=float, help="LoRA+ text encoder learning rate ratio")
