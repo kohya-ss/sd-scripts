@@ -455,7 +455,7 @@ def get_weighted_text_embeddings(
 
 
 # https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2
-def pyramid_noise_like(noise, device, iterations=6, discount=0.4):
+def pyramid_noise_like(noise, device, iterations=6, discount=0.4) -> torch.FloatTensor:
     b, c, w, h = noise.shape  # EDIT: w and h get over-written, rename for a different variant!
     u = torch.nn.Upsample(size=(w, h), mode="bilinear").to(device)
     for i in range(iterations):
@@ -468,7 +468,7 @@ def pyramid_noise_like(noise, device, iterations=6, discount=0.4):
 
 
 # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
+def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale) -> torch.FloatTensor:
     if noise_offset is None:
         return noise
     if adaptive_noise_scale is not None:
@@ -484,7 +484,7 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
     return noise
 
 
-def apply_masked_loss(loss, batch):
+def apply_masked_loss(loss, batch) -> torch.FloatTensor:
     if "conditioning_images" in batch:
         # conditioning image is -1 to 1. we need to convert it to 0 to 1
         mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
