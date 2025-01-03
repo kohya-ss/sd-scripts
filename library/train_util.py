@@ -86,8 +86,6 @@ import library.sai_model_spec as sai_model_spec
 import library.deepspeed_utils as deepspeed_utils
 from library.utils import setup_logging, pil_resize
 
-
-
 setup_logging()
 import logging
 
@@ -1841,8 +1839,6 @@ class DreamBoothDataset(BaseDataset):
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
-        self.validation_split = validation_split
-        self.validation_seed = validation_seed 
         self.batch_size = batch_size
         self.size = min(self.width, self.height)  # 短いほう
         self.prior_loss_weight = prior_loss_weight
