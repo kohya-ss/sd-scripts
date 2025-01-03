@@ -2092,7 +2092,6 @@ class FineTuningDataset(BaseDataset):
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
         debug_dataset: bool,
-        is_train: bool,
         validation_seed: int,
         validation_split: float,
     ) -> None:
@@ -2312,7 +2311,6 @@ class ControlNetDataset(BaseDataset):
     def __init__(
         self,
         subsets: Sequence[ControlNetSubset],
-        is_train: bool,
         batch_size: int,
         resolution,
         network_multiplier: float,
@@ -2362,7 +2360,6 @@ class ControlNetDataset(BaseDataset):
 
         self.dreambooth_dataset_delegate = DreamBoothDataset(
             db_subsets,
-            is_train,
             batch_size,
             resolution,
             network_multiplier,
@@ -2382,7 +2379,6 @@ class ControlNetDataset(BaseDataset):
         self.batch_size = batch_size
         self.num_train_images = self.dreambooth_dataset_delegate.num_train_images
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images        
-        self.is_train = is_train
         self.validation_split = validation_split
         self.validation_seed = validation_seed 
 

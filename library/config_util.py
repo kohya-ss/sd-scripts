@@ -535,7 +535,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                     shuffle_caption: {subset.shuffle_caption}
                     keep_tokens: {subset.keep_tokens}
                     caption_dropout_rate: {subset.caption_dropout_rate}
-                    caption_dropout_every_n_epoches: {subset.caption_dropout_every_n_epochs}
+                    caption_dropout_every_n_epochs: {subset.caption_dropout_every_n_epochs}
                     caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
                     caption_prefix: {subset.caption_prefix}
                     caption_suffix: {subset.caption_suffix}
