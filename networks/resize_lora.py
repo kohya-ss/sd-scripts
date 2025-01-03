@@ -39,12 +39,7 @@ def load_state_dict(file_name, dtype):
     return sd, metadata
 
 
-def save_to_file(file_name, state_dict, dtype, metadata):
-    if dtype is not None:
-        for key in list(state_dict.keys()):
-            if type(state_dict[key]) == torch.Tensor:
-                state_dict[key] = state_dict[key].to(dtype)
-
+def save_to_file(file_name, state_dict, metadata):
     if model_util.is_safetensors(file_name):
         save_file(state_dict, file_name, metadata)
     else:
@@ -349,12 +344,18 @@ def resize(args):
         metadata["ss_network_dim"] = "Dynamic"
         metadata["ss_network_alpha"] = "Dynamic"
 
+    # cast to save_dtype before calculating hashes
+    for key in list(state_dict.keys()):
+        value = state_dict[key]
+        if type(value) == torch.Tensor and value.dtype.is_floating_point and value.dtype != save_dtype:
+            state_dict[key] = value.to(save_dtype)
+
     model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
     metadata["sshs_model_hash"] = model_hash
     metadata["sshs_legacy_hash"] = legacy_hash
 
     logger.info(f"saving model to: {args.save_to}")
-    save_to_file(args.save_to, state_dict, save_dtype, metadata)
+    save_to_file(args.save_to, state_dict, metadata)
 
 
 def setup_parser() -> argparse.ArgumentParser:

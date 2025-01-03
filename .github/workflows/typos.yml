@@ -1,9 +1,11 @@
 ---
-# yamllint disable rule:line-length
 name: Typos
 
-on:  # yamllint disable-line rule:truthy
+on: 
   push:
+    branches:
+      - main
+      - dev
   pull_request:
     types:
       - opened
@@ -16,6 +18,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # https://woodruffw.github.io/zizmor/audits/#artipacked
+          persist-credentials: false
 
       - name: typos-action
-        uses: crate-ci/typos@v1.19.0
+        uses: crate-ci/typos@v1.28.1

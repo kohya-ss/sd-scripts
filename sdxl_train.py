@@ -17,7 +17,7 @@ init_ipex()
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
-from library import deepspeed_utils, sdxl_model_util
+from library import deepspeed_utils, sdxl_model_util, strategy_base, strategy_sd, strategy_sdxl
 
 import library.train_util as train_util
 
@@ -104,8 +104,8 @@ def train(args):
     setup_logging(args, reset=True)
 
     assert (
-        not args.weighted_captions
-    ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
+        not args.weighted_captions or not args.cache_text_encoder_outputs
+    ), "weighted_captions is not supported when caching text encoder outputs / cache_text_encoder_outputsを使うときはweighted_captionsはサポートされていません"
     assert (
         not args.train_text_encoder or not args.cache_text_encoder_outputs
     ), "cache_text_encoder_outputs is not supported when training text encoder / text encoderを学習するときはcache_text_encoder_outputsはサポートされていません"
@@ -124,7 +124,16 @@ def train(args):
     if args.seed is not None:
         set_seed(args.seed)  # 乱数系列を初期化する
 
-    tokenizer1, tokenizer2 = sdxl_train_util.load_tokenizers(args)
+    tokenize_strategy = strategy_sdxl.SdxlTokenizeStrategy(args.max_token_length, args.tokenizer_cache_dir)
+    strategy_base.TokenizeStrategy.set_strategy(tokenize_strategy)
+    tokenizers = [tokenize_strategy.tokenizer1, tokenize_strategy.tokenizer2]  # will be removed in the future
+
+    # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
+    if args.cache_latents:
+        latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(
+            False, args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
+        )
+        strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
 
     # データセットを準備する
     if args.dataset_class is None:
@@ -166,10 +175,10 @@ def train(args):
                     ]
                 }
 
-        blueprint = blueprint_generator.generate(user_config, args, tokenizer=[tokenizer1, tokenizer2])
+        blueprint = blueprint_generator.generate(user_config, args)
         train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     else:
-        train_dataset_group = train_util.load_arbitrary_dataset(args, [tokenizer1, tokenizer2])
+        train_dataset_group = train_util.load_arbitrary_dataset(args)
 
     current_epoch = Value("i", 0)
     current_step = Value("i", 0)
@@ -262,8 +271,9 @@ def train(args):
         vae.to(accelerator.device, dtype=vae_dtype)
         vae.requires_grad_(False)
         vae.eval()
-        with torch.no_grad():
-            train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
+
+        train_dataset_group.new_cache_latents(vae, accelerator)
+
         vae.to("cpu")
         clean_memory_on_device(accelerator.device)
 
@@ -272,9 +282,12 @@ def train(args):
     # 学習を準備する：モデルを適切な状態にする
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
-    train_unet = args.learning_rate > 0
+    train_unet = args.learning_rate != 0
     train_text_encoder1 = False
     train_text_encoder2 = False
+
+    text_encoding_strategy = strategy_sdxl.SdxlTextEncodingStrategy()
+    strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
 
     if args.train_text_encoder:
         # TODO each option for two text encoders?
@@ -284,8 +297,8 @@ def train(args):
             text_encoder2.gradient_checkpointing_enable()
         lr_te1 = args.learning_rate_te1 if args.learning_rate_te1 is not None else args.learning_rate  # 0 means not train
         lr_te2 = args.learning_rate_te2 if args.learning_rate_te2 is not None else args.learning_rate  # 0 means not train
-        train_text_encoder1 = lr_te1 > 0
-        train_text_encoder2 = lr_te2 > 0
+        train_text_encoder1 = lr_te1 != 0
+        train_text_encoder2 = lr_te2 != 0
 
         # caching one text encoder output is not supported
         if not train_text_encoder1:
@@ -307,16 +320,17 @@ def train(args):
         # TextEncoderの出力をキャッシュする
         if args.cache_text_encoder_outputs:
             # Text Encodes are eval and no grad
-            with torch.no_grad(), accelerator.autocast():
-                train_dataset_group.cache_text_encoder_outputs(
-                    (tokenizer1, tokenizer2),
-                    (text_encoder1, text_encoder2),
-                    accelerator.device,
-                    None,
-                    args.cache_text_encoder_outputs_to_disk,
-                    accelerator.is_main_process,
-                )
-            accelerator.wait_for_everyone()
+            text_encoder_output_caching_strategy = strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
+                args.cache_text_encoder_outputs_to_disk, None, False, is_weighted=args.weighted_captions
+            )
+            strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_output_caching_strategy)
+
+            text_encoder1.to(accelerator.device)
+            text_encoder2.to(accelerator.device)
+            with accelerator.autocast():
+                train_dataset_group.new_cache_text_encoder_outputs([text_encoder1, text_encoder2], accelerator)
+
+        accelerator.wait_for_everyone()
 
     if not cache_latents:
         vae.requires_grad_(False)
@@ -345,8 +359,8 @@ def train(args):
 
     # calculate number of trainable parameters
     n_params = 0
-    for params in params_to_optimize:
-        for p in params["params"]:
+    for group in params_to_optimize:
+        for p in group["params"]:
             n_params += p.numel()
 
     accelerator.print(f"train unet: {train_unet}, text_encoder1: {train_text_encoder1}, text_encoder2: {train_text_encoder2}")
@@ -355,9 +369,59 @@ def train(args):
 
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
-    _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
 
-    # dataloaderを準備する
+    if args.fused_optimizer_groups:
+        # fused backward pass: https://pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
+        # Instead of creating an optimizer for all parameters as in the tutorial, we create an optimizer for each group of parameters.
+        # This balances memory usage and management complexity.
+
+        # calculate total number of parameters
+        n_total_params = sum(len(params["params"]) for params in params_to_optimize)
+        params_per_group = math.ceil(n_total_params / args.fused_optimizer_groups)
+
+        # split params into groups, keeping the learning rate the same for all params in a group
+        # this will increase the number of groups if the learning rate is different for different params (e.g. U-Net and text encoders)
+        grouped_params = []
+        param_group = []
+        param_group_lr = -1
+        for group in params_to_optimize:
+            lr = group["lr"]
+            for p in group["params"]:
+                # if the learning rate is different for different params, start a new group
+                if lr != param_group_lr:
+                    if param_group:
+                        grouped_params.append({"params": param_group, "lr": param_group_lr})
+                        param_group = []
+                    param_group_lr = lr
+
+                param_group.append(p)
+
+                # if the group has enough parameters, start a new group
+                if len(param_group) == params_per_group:
+                    grouped_params.append({"params": param_group, "lr": param_group_lr})
+                    param_group = []
+                    param_group_lr = -1
+
+        if param_group:
+            grouped_params.append({"params": param_group, "lr": param_group_lr})
+
+        # prepare optimizers for each group
+        optimizers = []
+        for group in grouped_params:
+            _, _, optimizer = train_util.get_optimizer(args, trainable_params=[group])
+            optimizers.append(optimizer)
+        optimizer = optimizers[0]  # avoid error in the following code
+
+        logger.info(f"using {len(optimizers)} optimizers for fused optimizer groups")
+
+    else:
+        _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+
+    # prepare dataloader
+    # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
+    # some strategies can be None
+    train_dataset_group.set_current_strategies()
+
     # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
     n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
     train_dataloader = torch.utils.data.DataLoader(
@@ -382,7 +446,12 @@ def train(args):
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
     # lr schedulerを用意する
-    lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+    if args.fused_optimizer_groups:
+        # prepare lr schedulers for each optimizer
+        lr_schedulers = [train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) for optimizer in optimizers]
+        lr_scheduler = lr_schedulers[0]  # avoid error in the following code
+    else:
+        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
     if args.full_fp16:
@@ -450,6 +519,57 @@ def train(args):
     # resumeする
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
+    if args.fused_backward_pass:
+        # use fused optimizer for backward pass: other optimizers will be supported in the future
+        import library.adafactor_fused
+
+        library.adafactor_fused.patch_adafactor_fused(optimizer)
+        for param_group in optimizer.param_groups:
+            for parameter in param_group["params"]:
+                if parameter.requires_grad:
+
+                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                        optimizer.step_param(tensor, param_group)
+                        tensor.grad = None
+
+                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+
+    elif args.fused_optimizer_groups:
+        # prepare for additional optimizers and lr schedulers
+        for i in range(1, len(optimizers)):
+            optimizers[i] = accelerator.prepare(optimizers[i])
+            lr_schedulers[i] = accelerator.prepare(lr_schedulers[i])
+
+        # counters are used to determine when to step the optimizer
+        global optimizer_hooked_count
+        global num_parameters_per_group
+        global parameter_optimizer_map
+
+        optimizer_hooked_count = {}
+        num_parameters_per_group = [0] * len(optimizers)
+        parameter_optimizer_map = {}
+
+        for opt_idx, optimizer in enumerate(optimizers):
+            for param_group in optimizer.param_groups:
+                for parameter in param_group["params"]:
+                    if parameter.requires_grad:
+
+                        def optimizer_hook(parameter: torch.Tensor):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(parameter, args.max_grad_norm)
+
+                            i = parameter_optimizer_map[parameter]
+                            optimizer_hooked_count[i] += 1
+                            if optimizer_hooked_count[i] == num_parameters_per_group[i]:
+                                optimizers[i].step()
+                                optimizers[i].zero_grad(set_to_none=True)
+
+                        parameter.register_post_accumulate_grad_hook(optimizer_hook)
+                        parameter_optimizer_map[parameter] = opt_idx
+                        num_parameters_per_group[opt_idx] += 1
+
     # epoch数を計算する
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
@@ -487,12 +607,19 @@ def train(args):
             init_kwargs["wandb"] = {"name": args.wandb_run_name}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
-        accelerator.init_trackers("finetuning" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
+        accelerator.init_trackers(
+            "finetuning" if args.log_tracker_name is None else args.log_tracker_name,
+            config=train_util.get_sanitized_config_or_none(args),
+            init_kwargs=init_kwargs,
+        )
 
     # For --sample_at_first
     sdxl_train_util.sample_images(
-        accelerator, args, 0, global_step, accelerator.device, vae, [tokenizer1, tokenizer2], [text_encoder1, text_encoder2], unet
+        accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, [text_encoder1, text_encoder2], unet
     )
+    if len(accelerator.trackers) > 0:
+        # log empty object to commit the sample images to wandb
+        accelerator.log({}, step=0)
 
     loss_recorder = train_util.LossRecorder()
     for epoch in range(num_train_epochs):
@@ -504,6 +631,10 @@ def train(args):
 
         for step, batch in enumerate(train_dataloader):
             current_step.value = global_step
+
+            if args.fused_optimizer_groups:
+                optimizer_hooked_count = {i: 0 for i in range(len(optimizers))}  # reset counter for each step
+
             with accelerator.accumulate(*training_models):
                 if "latents" in batch and batch["latents"] is not None:
                     latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
@@ -518,57 +649,39 @@ def train(args):
                             latents = torch.nan_to_num(latents, 0, out=latents)
                 latents = latents * sdxl_model_util.VAE_SCALE_FACTOR
 
-                if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
-                    input_ids1 = batch["input_ids"]
-                    input_ids2 = batch["input_ids2"]
+                text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
+                if text_encoder_outputs_list is not None:
+                    # Text Encoder outputs are cached
+                    encoder_hidden_states1, encoder_hidden_states2, pool2 = text_encoder_outputs_list
+                    encoder_hidden_states1 = encoder_hidden_states1.to(accelerator.device, dtype=weight_dtype)
+                    encoder_hidden_states2 = encoder_hidden_states2.to(accelerator.device, dtype=weight_dtype)
+                    pool2 = pool2.to(accelerator.device, dtype=weight_dtype)
+                else:
+                    input_ids1, input_ids2 = batch["input_ids_list"]
                     with torch.set_grad_enabled(args.train_text_encoder):
                         # Get the text embedding for conditioning
-                        # TODO support weighted captions
-                        # if args.weighted_captions:
-                        #     encoder_hidden_states = get_weighted_text_embeddings(
-                        #         tokenizer,
-                        #         text_encoder,
-                        #         batch["captions"],
-                        #         accelerator.device,
-                        #         args.max_token_length // 75 if args.max_token_length else 1,
-                        #         clip_skip=args.clip_skip,
-                        #     )
-                        # else:
-                        input_ids1 = input_ids1.to(accelerator.device)
-                        input_ids2 = input_ids2.to(accelerator.device)
-                        # unwrap_model is fine for models not wrapped by accelerator
-                        encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
-                            args.max_token_length,
-                            input_ids1,
-                            input_ids2,
-                            tokenizer1,
-                            tokenizer2,
-                            text_encoder1,
-                            text_encoder2,
-                            None if not args.full_fp16 else weight_dtype,
-                            accelerator=accelerator,
-                        )
-                else:
-                    encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
-                    encoder_hidden_states2 = batch["text_encoder_outputs2_list"].to(accelerator.device).to(weight_dtype)
-                    pool2 = batch["text_encoder_pool2_list"].to(accelerator.device).to(weight_dtype)
-
-                    # # verify that the text encoder outputs are correct
-                    # ehs1, ehs2, p2 = train_util.get_hidden_states_sdxl(
-                    #     args.max_token_length,
-                    #     batch["input_ids"].to(text_encoder1.device),
-                    #     batch["input_ids2"].to(text_encoder1.device),
-                    #     tokenizer1,
-                    #     tokenizer2,
-                    #     text_encoder1,
-                    #     text_encoder2,
-                    #     None if not args.full_fp16 else weight_dtype,
-                    # )
-                    # b_size = encoder_hidden_states1.shape[0]
-                    # assert ((encoder_hidden_states1.to("cpu") - ehs1.to(dtype=weight_dtype)).abs().max() > 1e-2).sum() <= b_size * 2
-                    # assert ((encoder_hidden_states2.to("cpu") - ehs2.to(dtype=weight_dtype)).abs().max() > 1e-2).sum() <= b_size * 2
-                    # assert ((pool2.to("cpu") - p2.to(dtype=weight_dtype)).abs().max() > 1e-2).sum() <= b_size * 2
-                    # logger.info("text encoder outputs verified")
+                        if args.weighted_captions:
+                            input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch["captions"])
+                            encoder_hidden_states1, encoder_hidden_states2, pool2 = (
+                                text_encoding_strategy.encode_tokens_with_weights(
+                                    tokenize_strategy,
+                                    [text_encoder1, text_encoder2, accelerator.unwrap_model(text_encoder2)],
+                                    input_ids_list,
+                                    weights_list,
+                                )
+                            )
+                        else:
+                            input_ids1 = input_ids1.to(accelerator.device)
+                            input_ids2 = input_ids2.to(accelerator.device)
+                            encoder_hidden_states1, encoder_hidden_states2, pool2 = text_encoding_strategy.encode_tokens(
+                                tokenize_strategy,
+                                [text_encoder1, text_encoder2, accelerator.unwrap_model(text_encoder2)],
+                                [input_ids1, input_ids2],
+                            )
+                        if args.full_fp16:
+                            encoder_hidden_states1 = encoder_hidden_states1.to(weight_dtype)
+                            encoder_hidden_states2 = encoder_hidden_states2.to(weight_dtype)
+                            pool2 = pool2.to(weight_dtype)
 
                 # get size embeddings
                 orig_size = batch["original_sizes_hw"]
@@ -582,7 +695,7 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+                noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
                 noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
@@ -590,8 +703,13 @@ def train(args):
                 with accelerator.autocast():
                     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
 
-                target = noise
+                if args.v_parameterization:
+                    # v-parameterization training
+                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    target = noise
 
+                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
                 if (
                     args.min_snr_gamma
                     or args.scale_v_pred_loss_like_noise_pred
@@ -600,34 +718,42 @@ def train(args):
                     or args.masked_loss
                 ):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
-                    if args.masked_loss:
+                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                    if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
 
                     if args.min_snr_gamma:
-                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
                     if args.scale_v_pred_loss_like_noise_pred:
                         loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                     if args.v_pred_like_loss:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
-                        loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
+                        loss = apply_debiased_estimation(loss, timesteps, noise_scheduler, args.v_parameterization)
 
                     loss = loss.mean()  # mean over batch dimension
                 else:
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="mean", loss_type=args.loss_type, huber_c=huber_c)
+                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "mean", huber_c)
 
                 accelerator.backward(loss)
-                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                    params_to_clip = []
-                    for m in training_models:
-                        params_to_clip.extend(m.parameters())
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+                if not (args.fused_backward_pass or args.fused_optimizer_groups):
+                    if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                        params_to_clip = []
+                        for m in training_models:
+                            params_to_clip.extend(m.parameters())
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+                else:
+                    # optimizer.step() and optimizer.zero_grad() are called in the optimizer hook
+                    lr_scheduler.step()
+                    if args.fused_optimizer_groups:
+                        for i in range(1, len(optimizers)):
+                            lr_schedulers[i].step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -641,7 +767,7 @@ def train(args):
                     global_step,
                     accelerator.device,
                     vae,
-                    [tokenizer1, tokenizer2],
+                    tokenizers,
                     [text_encoder1, text_encoder2],
                     unet,
                 )
@@ -671,7 +797,7 @@ def train(args):
                         )
 
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
-            if args.logging_dir is not None:
+            if len(accelerator.trackers) > 0:
                 logs = {"loss": current_loss}
                 if block_lrs is None:
                     train_util.append_lr_to_logs(logs, lr_scheduler, args.optimizer_type, including_unet=train_unet)
@@ -688,7 +814,7 @@ def train(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if args.logging_dir is not None:
+        if len(accelerator.trackers) > 0:
             logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
@@ -723,7 +849,7 @@ def train(args):
             global_step,
             accelerator.device,
             vae,
-            [tokenizer1, tokenizer2],
+            tokenizers,
             [text_encoder1, text_encoder2],
             unet,
         )
@@ -736,7 +862,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if args.save_state or args.save_state_on_train_end:        
+    if args.save_state or args.save_state_on_train_end:
         train_util.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
@@ -804,6 +930,12 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"learning rates for each block of U-Net, comma-separated, {UNET_NUM_BLOCKS_FOR_BLOCK_LR} values / "
         + f"U-Netの各ブロックの学習率、カンマ区切り、{UNET_NUM_BLOCKS_FOR_BLOCK_LR}個の値",
+    )
+    parser.add_argument(
+        "--fused_optimizer_groups",
+        type=int,
+        default=None,
+        help="number of optimizers for fused backward pass and optimizer step / fused backward passとoptimizer stepのためのoptimizer数",
     )
     return parser
 

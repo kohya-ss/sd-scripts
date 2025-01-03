@@ -118,6 +118,8 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 
 * `batch_size`
     * コマンドライン引数の `--train_batch_size` と同等です。
+* `max_bucket_reso`, `min_bucket_reso`
+    * bucketの最大、最小解像度を指定します。`bucket_reso_steps` で割り切れる必要があります。
 
 これらの設定はデータセットごとに固定です。
 つまり、データセットに所属するサブセットはこれらの設定を共有することになります。

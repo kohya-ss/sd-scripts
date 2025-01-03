@@ -43,8 +43,8 @@ from diffusers import (
 )
 from einops import rearrange
 from tqdm import tqdm
-from torchvision import transforms
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
+from accelerate import init_empty_weights
 import PIL
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
@@ -58,6 +58,7 @@ import tools.original_control_net as original_control_net
 from tools.original_control_net import ControlNetInfo
 from library.original_unet import UNet2DConditionModel, InferUNet2DConditionModel
 from library.sdxl_original_unet import InferSdxlUNet2DConditionModel
+from library.sdxl_original_control_net import SdxlControlNet
 from library.original_unet import FlashAttentionFunction
 from networks.control_net_lllite import ControlNetLLLite
 from library.utils import GradualLatent, EulerAncestralDiscreteSchedulerGL
@@ -86,7 +87,8 @@ CLIP_VISION_MODEL = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
 """
 
 
-def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+# def replace_unet_modules(unet: diffusers.models.unets.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+def replace_unet_modules(unet, mem_eff_attn, xformers, sdpa):
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
 
@@ -351,8 +353,8 @@ class PipelineLike:
             self.token_replacements_list.append({})
 
         # ControlNet
-        self.control_nets: List[ControlNetInfo] = []  # only for SD 1.5
-        self.control_net_lllites: List[ControlNetLLLite] = []
+        self.control_nets: List[Union[ControlNetInfo, Tuple[SdxlControlNet, float]]] = []
+        self.control_net_lllites: List[Tuple[ControlNetLLLite, float]] = []
         self.control_net_enabled = True  # control_netsが空ならTrueでもFalseでもControlNetは動作しない
 
         self.gradual_latent: GradualLatent = None
@@ -541,7 +543,7 @@ class PipelineLike:
             else:
                 text_embeddings = torch.cat([uncond_embeddings, text_embeddings, real_uncond_embeddings])
 
-        if self.control_net_lllites:
+        if self.control_net_lllites or (self.control_nets and self.is_sdxl):
             # ControlNetのhintにguide imageを流用する。ControlNetの場合はControlNet側で行う
             if isinstance(clip_guide_images, PIL.Image.Image):
                 clip_guide_images = [clip_guide_images]
@@ -730,7 +732,12 @@ class PipelineLike:
         num_latent_input = (3 if negative_scale is not None else 2) if do_classifier_free_guidance else 1
 
         if self.control_nets:
-            guided_hints = original_control_net.get_guided_hints(self.control_nets, num_latent_input, batch_size, clip_guide_images)
+            if not self.is_sdxl:
+                guided_hints = original_control_net.get_guided_hints(
+                    self.control_nets, num_latent_input, batch_size, clip_guide_images
+                )
+            else:
+                clip_guide_images = clip_guide_images * 0.5 + 0.5  # [-1, 1] => [0, 1]
             each_control_net_enabled = [self.control_net_enabled] * len(self.control_nets)
 
         if self.control_net_lllites:
@@ -792,7 +799,7 @@ class PipelineLike:
             latent_model_input = latents.repeat((num_latent_input, 1, 1, 1))
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-            # disable ControlNet-LLLite if ratio is set. ControlNet is disabled in ControlNetInfo
+            # disable ControlNet-LLLite or SDXL ControlNet if ratio is set. ControlNet is disabled in ControlNetInfo
             if self.control_net_lllites:
                 for j, ((control_net, ratio), enabled) in enumerate(zip(self.control_net_lllites, each_control_net_enabled)):
                     if not enabled or ratio >= 1.0:
@@ -801,9 +808,16 @@ class PipelineLike:
                         logger.info(f"ControlNetLLLite {j} is disabled (ratio={ratio} at {i} / {len(timesteps)})")
                         control_net.set_cond_image(None)
                         each_control_net_enabled[j] = False
+            if self.control_nets and self.is_sdxl:
+                for j, ((control_net, ratio), enabled) in enumerate(zip(self.control_nets, each_control_net_enabled)):
+                    if not enabled or ratio >= 1.0:
+                        continue
+                    if ratio < i / len(timesteps):
+                        logger.info(f"ControlNet {j} is disabled (ratio={ratio} at {i} / {len(timesteps)})")
+                        each_control_net_enabled[j] = False
 
             # predict the noise residual
-            if self.control_nets and self.control_net_enabled:
+            if self.control_nets and self.control_net_enabled and not self.is_sdxl:
                 if regional_network:
                     num_sub_and_neg_prompts = len(text_embeddings) // batch_size
                     text_emb_last = text_embeddings[num_sub_and_neg_prompts - 2 :: num_sub_and_neg_prompts]  # last subprompt
@@ -822,6 +836,31 @@ class PipelineLike:
                     text_embeddings,
                     text_emb_last,
                 ).sample
+            elif self.control_nets:
+                input_resi_add_list = []
+                mid_add_list = []
+                for (control_net, _), enbld in zip(self.control_nets, each_control_net_enabled):
+                    if not enbld:
+                        continue
+                    input_resi_add, mid_add = control_net(
+                        latent_model_input, t, text_embeddings, vector_embeddings, clip_guide_images
+                    )
+                    input_resi_add_list.append(input_resi_add)
+                    mid_add_list.append(mid_add)
+                if len(input_resi_add_list) == 0:
+                    noise_pred = self.unet(latent_model_input, t, text_embeddings, vector_embeddings)
+                else:
+                    if len(input_resi_add_list) > 1:
+                        # get mean of input_resi_add_list and mid_add_list
+                        input_resi_add_mean = []
+                        for i in range(len(input_resi_add_list[0])):
+                            input_resi_add_mean.append(
+                                torch.mean(torch.stack([input_resi_add_list[j][i] for j in range(len(input_resi_add_list))], dim=0))
+                            )
+                        input_resi_add = input_resi_add_mean
+                        mid_add = torch.mean(torch.stack(mid_add_list), dim=0)
+                        
+                    noise_pred = self.unet(latent_model_input, t, text_embeddings, vector_embeddings, input_resi_add, mid_add)
             elif self.is_sdxl:
                 noise_pred = self.unet(latent_model_input, t, text_embeddings, vector_embeddings)
             else:
@@ -1435,6 +1474,7 @@ class BatchDataBase(NamedTuple):
     clip_prompt: str
     guide_image: Any
     raw_prompt: str
+    file_name: Optional[str]
 
 
 class BatchDataExt(NamedTuple):
@@ -1493,8 +1533,6 @@ def main(args):
     highres_fix = args.highres_fix_scale is not None
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
-    if args.v_parameterization and not args.v2:
-        logger.warning("v_parameterization should be with v2 / v1でv_parameterizationを使用することは想定されていません")
     if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
@@ -1825,16 +1863,37 @@ def main(args):
         upscaler.to(dtype).to(device)
 
     # ControlNetの処理
-    control_nets: List[ControlNetInfo] = []
+    control_nets: List[Union[ControlNetInfo, Tuple[SdxlControlNet, float]]] = []
     if args.control_net_models:
-        for i, model in enumerate(args.control_net_models):
-            prep_type = None if not args.control_net_preps or len(args.control_net_preps) <= i else args.control_net_preps[i]
-            weight = 1.0 if not args.control_net_weights or len(args.control_net_weights) <= i else args.control_net_weights[i]
-            ratio = 1.0 if not args.control_net_ratios or len(args.control_net_ratios) <= i else args.control_net_ratios[i]
+        if not is_sdxl:
+            for i, model in enumerate(args.control_net_models):
+                prep_type = None if not args.control_net_preps or len(args.control_net_preps) <= i else args.control_net_preps[i]
+                weight = 1.0 if not args.control_net_weights or len(args.control_net_weights) <= i else args.control_net_weights[i]
+                ratio = 1.0 if not args.control_net_ratios or len(args.control_net_ratios) <= i else args.control_net_ratios[i]
 
-            ctrl_unet, ctrl_net = original_control_net.load_control_net(args.v2, unet, model)
-            prep = original_control_net.load_preprocess(prep_type)
-            control_nets.append(ControlNetInfo(ctrl_unet, ctrl_net, prep, weight, ratio))
+                ctrl_unet, ctrl_net = original_control_net.load_control_net(args.v2, unet, model)
+                prep = original_control_net.load_preprocess(prep_type)
+                control_nets.append(ControlNetInfo(ctrl_unet, ctrl_net, prep, weight, ratio))
+        else:
+            for i, model_file in enumerate(args.control_net_models):
+                multiplier = (
+                    1.0
+                    if not args.control_net_multipliers or len(args.control_net_multipliers) <= i
+                    else args.control_net_multipliers[i]
+                )
+                ratio = 1.0 if not args.control_net_ratios or len(args.control_net_ratios) <= i else args.control_net_ratios[i]
+
+                logger.info(f"loading SDXL ControlNet: {model_file}")
+                from safetensors.torch import load_file
+
+                state_dict = load_file(model_file)
+
+                logger.info(f"Initializing SDXL ControlNet with multiplier: {multiplier}")
+                with init_empty_weights():
+                    control_net = SdxlControlNet(multiplier=multiplier)
+                control_net.load_state_dict(state_dict)
+                control_net.to(dtype).to(device)
+                control_nets.append((control_net, ratio))
 
     control_net_lllites: List[Tuple[ControlNetLLLite, float]] = []
     if args.control_net_lllite_models:
@@ -2316,7 +2375,7 @@ def main(args):
             # このバッチの情報を取り出す
             (
                 return_latents,
-                (step_first, _, _, _, init_image, mask_image, _, guide_image, _),
+                (step_first, _, _, _, init_image, mask_image, _, guide_image, _, _),
                 (
                     width,
                     height,
@@ -2339,6 +2398,7 @@ def main(args):
             prompts = []
             negative_prompts = []
             raw_prompts = []
+            filenames = []
             start_code = torch.zeros((batch_size, *noise_shape), device=device, dtype=dtype)
             noises = [
                 torch.zeros((batch_size, *noise_shape), device=device, dtype=dtype)
@@ -2371,7 +2431,7 @@ def main(args):
             all_guide_images_are_same = True
             for i, (
                 _,
-                (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt),
+                (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt, filename),
                 _,
             ) in enumerate(batch):
                 prompts.append(prompt)
@@ -2379,6 +2439,7 @@ def main(args):
                 seeds.append(seed)
                 clip_prompts.append(clip_prompt)
                 raw_prompts.append(raw_prompt)
+                filenames.append(filename)
 
                 if init_image is not None:
                     init_images.append(init_image)
@@ -2478,8 +2539,8 @@ def main(args):
             # save image
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
             ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
-                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
+            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt, filename) in enumerate(
+                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts, filenames)
             ):
                 if highres_fix:
                     seed -= 1  # record original seed
@@ -2505,17 +2566,23 @@ def main(args):
                     metadata.add_text("crop-top", str(crop_top))
                     metadata.add_text("crop-left", str(crop_left))
 
-                if args.use_original_file_name and init_images is not None:
-                    if type(init_images) is list:
-                        fln = os.path.splitext(os.path.basename(init_images[i % len(init_images)].filename))[0] + ".png"
-                    else:
-                        fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
-                elif args.sequential_file_name:
-                    fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                if filename is not None:
+                    fln = filename
                 else:
-                    fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
+                    if args.use_original_file_name and init_images is not None:
+                        if type(init_images) is list:
+                            fln = os.path.splitext(os.path.basename(init_images[i % len(init_images)].filename))[0] + ".png"
+                        else:
+                            fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
+                    elif args.sequential_file_name:
+                        fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                    else:
+                        fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
-                image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                if fln.endswith(".webp"):
+                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata, quality=100)  # lossy
+                else:
+                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
 
             if not args.no_preview and not highres_1st and args.interactive:
                 try:
@@ -2562,6 +2629,7 @@ def main(args):
             # repeat prompt
             for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
+                filename = None
 
                 if pi == 0 or len(raw_prompts) > 1:
                     # parse prompt: if prompt is not changed, skip parsing
@@ -2783,6 +2851,12 @@ def main(args):
                                 logger.info(f"gradual latent unsharp params: {gl_unsharp_params}")
                                 continue
 
+                            m = re.match(r"f (.+)", parg, re.IGNORECASE)
+                            if m:  # filename
+                                filename = m.group(1)
+                                logger.info(f"filename: {filename}")
+                                continue
+
                         except ValueError as ex:
                             logger.error(f"Exception in parsing / 解析エラー: {parg}")
                             logger.error(f"{ex}")
@@ -2873,7 +2947,16 @@ def main(args):
                 b1 = BatchData(
                     False,
                     BatchDataBase(
-                        global_step, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt
+                        global_step,
+                        prompt,
+                        negative_prompt,
+                        seed,
+                        init_image,
+                        mask_image,
+                        clip_prompt,
+                        guide_image,
+                        raw_prompt,
+                        filename,
                     ),
                     BatchDataExt(
                         width,
@@ -2916,7 +2999,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    
+
     parser.add_argument(
         "--sdxl", action="store_true", help="load Stable Diffusion XL model / Stable Diffusion XLのモデルを読み込む"
     )
