@@ -1639,7 +1639,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--validation_seed",
         type=int,
         default=None,
-        help="Validation seed / 検証シード"
+        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise / 検証シード"
     )
     parser.add_argument(
         "--validation_split",
