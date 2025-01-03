@@ -21,9 +21,13 @@ ComfyUIのカスタムノードを用意しています。: https://github.com/k
 ## モデルの学習
 
 ### データセットの準備
-通常のdatasetに加え、`conditioning_data_dir` で指定したディレクトリにconditioning imageを格納してください。conditioning imageは学習用画像と同じbasenameを持つ必要があります。また、conditioning imageは学習用画像と同じサイズに自動的にリサイズされます。conditioning imageにはキャプションファイルは不要です。
+DreamBooth 方式の dataset で、`conditioning_data_dir` で指定したディレクトリにconditioning imageを格納してください。
 
-たとえば DreamBooth 方式でキャプションファイルを用いる場合の設定ファイルは以下のようになります。
+（finetuning 方式の dataset はサポートしていません。）
+
+conditioning imageは学習用画像と同じbasenameを持つ必要があります。また、conditioning imageは学習用画像と同じサイズに自動的にリサイズされます。conditioning imageにはキャプションファイルは不要です。
+
+たとえば、キャプションにフォルダ名ではなくキャプションファイルを用いる場合の設定ファイルは以下のようになります。
 
 ```toml
 [[datasets.subsets]]
