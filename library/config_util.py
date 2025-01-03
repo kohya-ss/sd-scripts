@@ -485,7 +485,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
     dataset = dataset_klass(subsets=subsets, **asdict(dataset_blueprint.params))
     datasets.append(dataset)
 
-    val_datasets:List[Union[DreamBoothDataset, FineTuningDataset, ControlNetDataset]] = []
+    val_datasets: List[Union[DreamBoothDataset, FineTuningDataset, ControlNetDataset]] = []
     for dataset_blueprint in dataset_group_blueprint.datasets:
         if dataset_blueprint.params.validation_split <= 0.0:
             continue
@@ -503,7 +503,6 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
         dataset = dataset_klass(subsets=subsets, **asdict(dataset_blueprint.params))
         val_datasets.append(dataset)
 
-    # print info
     def print_info(_datasets):
         info = ""
         for i, dataset in enumerate(_datasets):
@@ -565,7 +564,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
     print_info(datasets)
 
     if len(val_datasets) > 0:
-        print("Validation dataset")
+        logger.info("Validation dataset")
         print_info(val_datasets)
 
     if len(val_datasets) > 0:
@@ -610,7 +609,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                 "  ",
             )
 
-        logger.info(f"{info}")
+        logger.info(info)
 
     # make buckets first because it determines the length of dataset
     # and set the same seed for all datasets

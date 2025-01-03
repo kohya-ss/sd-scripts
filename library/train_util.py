@@ -1833,9 +1833,9 @@ class DreamBoothDataset(BaseDataset):
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
         prior_loss_weight: float,
+        debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],
-        debug_dataset,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset)
 
@@ -2319,9 +2319,9 @@ class ControlNetDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
+        debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],        
-        debug_dataset: float,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset)
 
@@ -2369,9 +2369,9 @@ class ControlNetDataset(BaseDataset):
             bucket_reso_steps,
             bucket_no_upscale,
             1.0,
+            debug_dataset,
             validation_split,
             validation_seed,
-            debug_dataset
         )
 
         # config_util等から参照される値をいれておく（若干微妙なのでなんとかしたい）
