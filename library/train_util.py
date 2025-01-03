@@ -2050,11 +2050,11 @@ class DreamBoothDataset(BaseDataset):
             subset.img_count = len(img_paths)
             self.subsets.append(subset)
 
-        logger.info(f"{num_train_images} images with repeating.")
+        logger.info(f"{num_train_images} train images with repeats.")
 
         self.num_train_images = num_train_images
 
-        logger.info(f"{num_reg_images} reg images.")
+        logger.info(f"{num_reg_images} reg images with repeats.")
         if num_train_images < num_reg_images:
             logger.warning("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
 
