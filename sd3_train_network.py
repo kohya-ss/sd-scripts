@@ -312,6 +312,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        is_train=True
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -339,7 +340,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         # call model
-        with accelerator.autocast():
+        with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
             # TODO support attention mask
             model_pred = unet(noisy_model_input, timesteps, context=context, y=lg_pooled)
 

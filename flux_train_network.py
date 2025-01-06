@@ -339,6 +339,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        is_train=True
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -375,7 +376,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
             # if not args.split_mode:
             # normal forward
-            with accelerator.autocast():
+            with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                 model_pred = unet(
                     img=img,
@@ -420,7 +421,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     intermediate_txt.requires_grad_(True)
                     vec.requires_grad_(True)
                     pe.requires_grad_(True)
-                    model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
+
+                    with torch.set_grad_enabled(is_train and train_unet): 
+                        model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
             """
 
             return model_pred
