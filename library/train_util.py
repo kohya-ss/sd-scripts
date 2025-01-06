@@ -176,7 +176,7 @@ class ImageInfo:
 
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
 
-        self.vision_encoder_outputs: Optional[torch.Tensor] = None
+        self.vision_encoder_outputs: Optional[List[torch.Tensor]] = None
 
 
 class BucketManager:

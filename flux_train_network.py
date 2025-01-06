@@ -191,7 +191,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 args.skip_cache_check,
                 is_partial=self.train_clip_l or self.train_t5xxl,
                 apply_t5_attn_mask=args.apply_t5_attn_mask,
-                vision_cond_ratio=args.vision_cond_ratio,
+                vision_cond_size=args.vision_cond_downsample,
                 redux_path=args.redux_model_path
             )
         else:
@@ -379,10 +379,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if args.vision_cond_dropout < 1.0:
             if random.uniform(0,1) > args.vision_cond_dropout:
                 vision_encoder_conds = batch.get("vision_encoder_outputs_list", None)
-                vis_t5_out, vis_txt_ids = vision_encoder_conds
-                t5_out = vis_t5_out
-                txt_ids = vis_txt_ids
-                t5_attn_mask = None
+                vis_t5_out, vis_txt_ids, vis_attn_mask = vision_encoder_conds
+                t5_out = torch.cat([t5_out, vis_t5_out], dim=1)
+                txt_ids = torch.cat([txt_ids, vis_txt_ids], dim=1)
+                if args.apply_t5_attn_mask:
+                    t5_attn_mask = torch.cat([t5_attn_mask, vis_attn_mask], dim=1)
 
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
             # if not args.split_mode:

@@ -624,10 +624,10 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         help="path to Redux model (*.sft or *.safetensors), should be float16",
     )
     parser.add_argument(
-        "--vision_cond_ratio",
-        type=float,
-        default=0.0,
-        help="Ratio of conditioning for Redux embeddings, averaged with text encoder embeddings. Zero disables vision conditioning, maximum is 1.0",
+        "--vision_cond_downsample",
+        type=int,
+        default=0,
+        help="Downsample Redux tokens to the specified grid size (default is 27). Zero disables this feature.",
     )
 
     parser.add_argument(
