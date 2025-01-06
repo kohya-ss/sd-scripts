@@ -1251,7 +1251,11 @@ class NetworkTrainer:
             # log empty object to commit the sample images to wandb
             accelerator.log({}, step=0)
 
-        validation_steps = min(args.max_validation_steps, len(val_dataloader)) if args.max_validation_steps is not None else len(val_dataloader)
+        validation_steps = (
+            min(args.max_validation_steps, len(val_dataloader)) 
+            if args.max_validation_steps is not None 
+            else len(val_dataloader)
+        )
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
@@ -1689,7 +1693,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--validate_every_n_steps",
         type=int,
         default=None,
-        help="Run validation on validation dataset every N steps if a validation dataset is available / 検証データセットが利用可能な場合は、Nステップごとに検証データセットの検証を実行します"
+        help="Run validation on validation dataset every N steps. By default, validation will only occur every epoch if a validation dataset is available / 検証データセットの検証をNステップごとに実行します。デフォルトでは、検証データセットが利用可能な場合にのみ、検証はエポックごとに実行されます"
     )
     parser.add_argument(
         "--validate_every_n_epochs",
