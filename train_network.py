@@ -1677,7 +1677,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--validation_seed",
         type=int,
         default=None,
-        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise / 検証シード"
+        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise / 検証データセットをシャッフルするための検証シード、それ以外の場合はトレーニング `--seed` を使用する"
     )
     parser.add_argument(
         "--validation_split",
@@ -1689,19 +1689,19 @@ def setup_parser() -> argparse.ArgumentParser:
         "--validate_every_n_steps",
         type=int,
         default=None,
-        help="Run validation dataset every N steps"
+        help="Run validation on validation dataset every N steps if a validation dataset is available / 検証データセットが利用可能な場合は、Nステップごとに検証データセットの検証を実行します"
     )
     parser.add_argument(
         "--validate_every_n_epochs",
         type=int,
         default=None,
-        help="Run validation dataset every N epochs. By default, validation will run every epoch if a validation dataset is available"
+        help="Run validation dataset every N epochs. By default, validation will run every epoch if a validation dataset is available / 検証データセットをNエポックごとに実行します。デフォルトでは、検証データセットが利用可能な場合、検証はエポックごとに実行されます"
     )
     parser.add_argument(
         "--max_validation_steps",
         type=int,
         default=None,
-        help="Number of max validation steps for counting validation loss. By default, validation will run entire validation dataset / 検証データセット全体を検証する場合はNoneを指定する"
+        help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します"
     )
     return parser
 
