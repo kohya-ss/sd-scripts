@@ -481,9 +481,9 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
             subset_klass = FineTuningSubset
             dataset_klass = FineTuningDataset
 
-    subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
-    dataset = dataset_klass(subsets=subsets, is_training_dataset=True, **asdict(dataset_blueprint.params))
-    datasets.append(dataset)
+        subsets = [subset_klass(**asdict(subset_blueprint.params)) for subset_blueprint in dataset_blueprint.subsets]
+        dataset = dataset_klass(subsets=subsets, is_training_dataset=True, **asdict(dataset_blueprint.params))
+        datasets.append(dataset)
 
     val_datasets: List[Union[DreamBoothDataset, FineTuningDataset, ControlNetDataset]] = []
     for dataset_blueprint in dataset_group_blueprint.datasets:

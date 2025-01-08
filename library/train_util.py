@@ -152,11 +152,11 @@ def split_train_val(paths: List[str], is_training_dataset: bool, validation_spli
 
     Shuffle the dataset based on the validation_seed or the current random seed.
     For example if the split of 0.2 of 100 images.
-    [0:79] = 80 training images
+    [0:80] = 80 training images
     [80:] = 20 validation images
     """
     if validation_seed is not None:
-        print(f"Using validation seed: {validation_seed}")
+        logging.info(f"Using validation seed: {validation_seed}")
         prevstate = random.getstate()
         random.seed(validation_seed)
         random.shuffle(paths)
@@ -5900,8 +5900,8 @@ def save_sd_model_on_train_end_common(
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
 
-def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device = torch.device("cpu")) -> torch.Tensor:
-    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device) -> torch.Tensor:
+    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device="cpu")
     timesteps = timesteps.long().to(device)
     return timesteps
 
@@ -5962,23 +5962,6 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
         raise NotImplementedError(f"Unknown Huber loss schedule {args.huber_schedule}!")
 
     return result
-
-
-def get_noisy_latents(args, noise: torch.FloatTensor, noise_scheduler: DDPMScheduler, latents: torch.FloatTensor, timesteps: torch.IntTensor) -> torch.FloatTensor:
-    """
-    Add noise to the latents according to the noise magnitude at each timestep
-    (this is the forward diffusion process)
-    """
-    if args.ip_noise_gamma:
-        if args.ip_noise_gamma_random_strength:
-            strength = torch.rand(1, device=latents.device) * args.ip_noise_gamma
-        else:
-            strength = args.ip_noise_gamma
-        noisy_latents = noise_scheduler.add_noise(latents, noise + strength * torch.randn_like(latents), timesteps)
-    else:
-        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-    return noisy_latents
 
 
 def conditional_loss(

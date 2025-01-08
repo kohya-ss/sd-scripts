@@ -125,10 +125,7 @@ class NetworkTrainer:
         return logs
 
     def assert_extra_args(self, args, train_dataset_group):
-        # train_dataset_group.verify_bucket_reso_steps(64)
-        # TODO: Number of bucket reso steps may differ for each model, so a static number won't work
-        # and prevents models like SD1.5 with 64
-        pass
+        train_dataset_group.verify_bucket_reso_steps(32)
 
     def load_target_model(self, args, weight_dtype, accelerator):
         text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
