@@ -320,9 +320,10 @@ class TextualInversionTrainer:
                     }
 
             blueprint = blueprint_generator.generate(user_config, args)
-            train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+            train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
         else:
             train_dataset_group = train_util.load_arbitrary_dataset(args)
+            val_dataset_group = None
 
         self.assert_extra_args(args, train_dataset_group)
 

@@ -467,7 +467,7 @@ class BlueprintGenerator:
 
         return default_value
 
-def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlueprint):
+def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlueprint) -> Tuple[DatasetGroup, Optional[DatasetGroup]]:
     datasets: List[Union[DreamBoothDataset, FineTuningDataset, ControlNetDataset]] = []
 
     for dataset_blueprint in dataset_group_blueprint.datasets:
