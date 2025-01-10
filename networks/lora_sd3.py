@@ -256,6 +256,7 @@ class LoRANetwork(torch.nn.Module):
         emb_dims: Optional[List[int]] = None,
         train_block_indices: Optional[List[bool]] = None,
         verbose: Optional[bool] = False,
+        rank_stabilized: Optional[bool] = False
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
@@ -404,6 +405,7 @@ class LoRANetwork(torch.nn.Module):
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
                                 split_dims=split_dims,
+                                rank_stabilized=rank_stabilized
                             )
                             loras.append(lora)
 

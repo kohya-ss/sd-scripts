@@ -37,6 +37,7 @@ class LoRAModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        rank_stabilized=False
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -69,7 +70,10 @@ class LoRAModule(torch.nn.Module):
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
-        self.scale = alpha / self.lora_dim
+        rank_factor = self.lora_dim
+        if rank_stabilized:
+            rank_factor = math.sqrt(rank_factor)
+        self.scale = alpha / rank_factor
         self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         # # same as microsoft's
@@ -783,6 +787,7 @@ class LoRANetwork(torch.nn.Module):
         modules_alpha: Optional[Dict[str, int]] = None,
         module_class: Type[object] = LoRAModule,
         varbose: Optional[bool] = False,
+        rank_stabilized: Optional[bool] = False
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -889,6 +894,7 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
+                                rank_stabilized=rank_stabilized
                             )
                             loras.append(lora)
             return loras, skipped

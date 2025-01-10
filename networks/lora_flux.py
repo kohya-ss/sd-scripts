@@ -44,6 +44,7 @@ class LoRAModule(torch.nn.Module):
         rank_dropout=None,
         module_dropout=None,
         split_dims: Optional[List[int]] = None,
+        rank_stabilized: Optional[bool] = False
     ):
         """
         if alpha == 0 or None, alpha is rank (no scaling).
@@ -93,7 +94,10 @@ class LoRAModule(torch.nn.Module):
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
-        self.scale = alpha / self.lora_dim
+        rank_factor = self.lora_dim
+        if rank_stabilized:
+            rank_factor = math.sqrt(rank_factor)
+        self.scale = alpha / rank_factor
         self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         # same as microsoft's
