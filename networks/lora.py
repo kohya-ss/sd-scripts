@@ -1366,7 +1366,7 @@ class LoRANetwork(torch.nn.Module):
             org_module._lora_restored = False
             lora.enabled = False
 
-    def apply_max_norm_regularization(self, max_norm_value, device):
+    def apply_max_norm_regularization(self, max_norm, device, scale_map: dict[str, float]={}):
         downkeys = []
         upkeys = []
         alphakeys = []
@@ -1381,6 +1381,11 @@ class LoRANetwork(torch.nn.Module):
                 alphakeys.append(key.replace("lora_down.weight", "alpha"))
 
         for i in range(len(downkeys)):
+            max_norm_value = max_norm
+            for key in scale_map.keys():
+                if key in downkeys[i]:
+                    max_norm_value = scale_map[key]
+
             down = state_dict[downkeys[i]].to(device)
             up = state_dict[upkeys[i]].to(device)
             alpha = state_dict[alphakeys[i]].to(device)

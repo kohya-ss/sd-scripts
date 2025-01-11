@@ -10,6 +10,8 @@ from multiprocessing import Value
 from typing import Any, List
 import toml
 
+import ast
+
 from tqdm import tqdm
 
 import torch
@@ -1260,8 +1262,9 @@ class NetworkTrainer:
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
+                    scale_map = args.scale_weight_norms_map if args.scale_weight_norms_map else {}
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
-                        args.scale_weight_norms, accelerator.device
+                        args.scale_weight_norms, accelerator.device, scale_map=scale_map
                     )
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
@@ -1355,6 +1358,14 @@ class NetworkTrainer:
             save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
 
             logger.info("model saved.")
+
+def parse_dict(input_str):
+    """Convert string input into a dictionary."""
+    try:
+        # Use ast.literal_eval to safely evaluate the string as a Python literal (dict)
+        return ast.literal_eval(input_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid dictionary format: {input_str}")
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -1456,6 +1467,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "--scale_weight_norms",
         type=float,
         default=None,
+        help="Scale the weight of each key pair to help prevent overtraing via exploding gradients. (1 is a good starting point) / 重みの値をスケーリングして勾配爆発を防ぐ（1が初期値としては適当）",
+    )
+    parser.add_argument(
+        "--scale_weight_norms_map",
+        type=parse_dict,
+        default="{}",
         help="Scale the weight of each key pair to help prevent overtraing via exploding gradients. (1 is a good starting point) / 重みの値をスケーリングして勾配爆発を防ぐ（1が初期値としては適当）",
     )
     parser.add_argument(
