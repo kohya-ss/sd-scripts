@@ -807,6 +807,7 @@ class LoRANetwork(torch.nn.Module):
         self.dropout = dropout
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
+        self.rank_stabilized = rank_stabilized
 
         if modules_dim is not None:
             logger.info(f"create LoRA network from weights")
@@ -1225,7 +1226,10 @@ class LoRANetwork(torch.nn.Module):
             up = state_dict[upkeys[i]].to(device)
             alpha = state_dict[alphakeys[i]].to(device)
             dim = down.shape[0]
-            scale = alpha / dim
+            rank_factor = dim
+            if self.rank_stabilized:
+                rank_factor = math.sqrt(rank_factor)
+            scale = alpha / rank_factor
 
             if up.shape[2:] == (1, 1) and down.shape[2:] == (1, 1):
                 updown = (up.squeeze(2).squeeze(2) @ down.squeeze(2).squeeze(2)).unsqueeze(2).unsqueeze(3)
