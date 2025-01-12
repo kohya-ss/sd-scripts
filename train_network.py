@@ -1418,14 +1418,16 @@ class NetworkTrainer:
 
                         if is_tracking:
                             logs = {
-                                "loss/validation/step/current": current_loss,
+                                "loss/validation/step_current": current_loss,
                                 "val_step": (epoch * validation_steps) + val_step,
                             }
                             accelerator.log(logs, step=global_step)
 
                     if is_tracking:
+                        loss_validation_divergence = val_step_loss_recorder.moving_average - loss_recorder.moving_average
                         logs = {
-                            "loss/validation/step/average": val_step_loss_recorder.moving_average, 
+                            "loss/validation/step_average": val_step_loss_recorder.moving_average, 
+                            "loss/validation/step_divergence": loss_validation_divergence, 
                         }
                         accelerator.log(logs, step=global_step)
                                         
@@ -1485,7 +1487,12 @@ class NetworkTrainer:
 
                 if is_tracking:
                     avr_loss: float = val_epoch_loss_recorder.moving_average
-                    logs = {"loss/validation/epoch_average": avr_loss, "epoch": epoch + 1}
+                    loss_validation_divergence = val_step_loss_recorder.moving_average - avr_loss 
+                    logs = {
+                        "loss/validation/epoch_average": avr_loss, 
+                        "loss/validation/epoch_divergence": loss_validation_divergence, 
+                        "epoch": epoch + 1
+                    }
                     accelerator.log(logs, step=global_step)
 
             # END OF EPOCH
