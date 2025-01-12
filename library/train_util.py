@@ -2055,9 +2055,10 @@ class DreamBoothDataset(BaseDataset):
         num_reg_images = 0
         reg_infos: List[Tuple[ImageInfo, DreamBoothSubset]] = []
         for subset in subsets:
-            if subset.num_repeats < 1:
+            num_repeats = subset.num_repeats if self.is_training_dataset else 1
+            if num_repeats < 1:
                 logger.warning(
-                    f"ignore subset with image_dir='{subset.image_dir}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}"
+                    f"ignore subset with image_dir='{subset.image_dir}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {num_repeats}"
                 )
                 continue
 
@@ -2075,12 +2076,12 @@ class DreamBoothDataset(BaseDataset):
                 continue
 
             if subset.is_reg:
-                num_reg_images += subset.num_repeats * len(img_paths)
+                num_reg_images += num_repeats * len(img_paths)
             else:
-                num_train_images += subset.num_repeats * len(img_paths)
+                num_train_images += num_repeats * len(img_paths)
 
             for img_path, caption, size in zip(img_paths, captions, sizes):
-                info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
+                info = ImageInfo(img_path, num_repeats, caption, subset.is_reg, img_path)
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
