@@ -1385,6 +1385,7 @@ class NetworkTrainer:
                 # VALIDATION PER STEP
                 should_validate_step = (
                     args.validate_every_n_steps is not None 
+                    and global_step != 0 # Skip first step
                     and global_step % args.validate_every_n_steps == 0
                 )
                 if validation_steps > 0 and should_validate_step:
