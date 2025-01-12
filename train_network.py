@@ -1389,8 +1389,6 @@ class NetworkTrainer:
                     and global_step % args.validate_every_n_steps == 0
                 )
                 if accelerator.sync_gradients and validation_steps > 0 and should_validate_step:
-                    accelerator.print("Validating バリデーション処理...")
-
                     val_progress_bar = tqdm(
                         range(validation_steps), smoothing=0, 
                         disable=not accelerator.is_local_main_process, 
@@ -1450,7 +1448,6 @@ class NetworkTrainer:
             )
 
             if should_validate_epoch and len(val_dataloader) > 0:
-                accelerator.print("Validating バリデーション処理...")
                 val_progress_bar = tqdm(
                     range(validation_steps), smoothing=0, 
                     disable=not accelerator.is_local_main_process, 
