@@ -898,6 +898,7 @@ class NetworkTrainer:
 
         accelerator.print("running training / 学習開始")
         accelerator.print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
+        accelerator.print(f"  num validation images * repeats / 学習画像の数×繰り返し回数: {val_dataset_group.num_train_images if val_dataset_group is not None else 0}")
         accelerator.print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
         accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
         accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
@@ -917,6 +918,7 @@ class NetworkTrainer:
             "ss_text_encoder_lr": text_encoder_lr,
             "ss_unet_lr": args.unet_lr,
             "ss_num_train_images": train_dataset_group.num_train_images,
+            "ss_num_validation_images": val_dataset_group.num_train_images if val_dataset_group is not None else 0,
             "ss_num_reg_images": train_dataset_group.num_reg_images,
             "ss_num_batches_per_epoch": len(train_dataloader),
             "ss_num_epochs": num_train_epochs,
@@ -964,6 +966,11 @@ class NetworkTrainer:
             "ss_huber_c": args.huber_c,
             "ss_fp8_base": bool(args.fp8_base),
             "ss_fp8_base_unet": bool(args.fp8_base_unet),
+            "ss_validation_seed": args.validation_seed, 
+            "ss_validation_split": args.validation_split, 
+            "ss_max_validation_steps": args.max_validation_steps, 
+            "ss_validate_every_n_epochs": args.validate_every_n_epochs, 
+            "ss_validate_every_n_steps": args.validate_every_n_steps, 
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
