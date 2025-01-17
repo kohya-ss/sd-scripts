@@ -18,7 +18,7 @@ def main(file):
 
     keys = list(sd.keys())
     for key in keys:
-        if "lora_up" in key or "lora_down" in key:
+        if "lora_up" in key or "lora_down" in key or "lora_A" in key or "lora_B" in key or "oft_" in key:
             values.append((key, sd[key]))
     print(f"number of LoRA modules: {len(values)}")
 

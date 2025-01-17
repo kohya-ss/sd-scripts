@@ -648,7 +648,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
     詳細については各自お調べください。
 
-    任意のスケジューラを使う場合、任意のオプティマイザと同様に、`--scheduler_args`でオプション引数を指定してください。
+    任意のスケジューラを使う場合、任意のオプティマイザと同様に、`--lr_scheduler_args`でオプション引数を指定してください。
 
 ### オプティマイザの指定について
 

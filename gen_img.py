@@ -86,7 +86,8 @@ CLIP_VISION_MODEL = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
 """
 
 
-def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+# def replace_unet_modules(unet: diffusers.models.unets.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+def replace_unet_modules(unet, mem_eff_attn, xformers, sdpa):
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
 
@@ -1435,6 +1436,7 @@ class BatchDataBase(NamedTuple):
     clip_prompt: str
     guide_image: Any
     raw_prompt: str
+    file_name: Optional[str]
 
 
 class BatchDataExt(NamedTuple):
@@ -1493,8 +1495,6 @@ def main(args):
     highres_fix = args.highres_fix_scale is not None
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
-    if args.v_parameterization and not args.v2:
-        logger.warning("v_parameterization should be with v2 / v1でv_parameterizationを使用することは想定されていません")
     if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
@@ -2316,7 +2316,7 @@ def main(args):
             # このバッチの情報を取り出す
             (
                 return_latents,
-                (step_first, _, _, _, init_image, mask_image, _, guide_image, _),
+                (step_first, _, _, _, init_image, mask_image, _, guide_image, _, _),
                 (
                     width,
                     height,
@@ -2339,6 +2339,7 @@ def main(args):
             prompts = []
             negative_prompts = []
             raw_prompts = []
+            filenames = []
             start_code = torch.zeros((batch_size, *noise_shape), device=device, dtype=dtype)
             noises = [
                 torch.zeros((batch_size, *noise_shape), device=device, dtype=dtype)
@@ -2371,7 +2372,7 @@ def main(args):
             all_guide_images_are_same = True
             for i, (
                 _,
-                (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt),
+                (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt, filename),
                 _,
             ) in enumerate(batch):
                 prompts.append(prompt)
@@ -2379,6 +2380,7 @@ def main(args):
                 seeds.append(seed)
                 clip_prompts.append(clip_prompt)
                 raw_prompts.append(raw_prompt)
+                filenames.append(filename)
 
                 if init_image is not None:
                     init_images.append(init_image)
@@ -2478,8 +2480,8 @@ def main(args):
             # save image
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
             ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
-                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
+            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt, filename) in enumerate(
+                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts, filenames)
             ):
                 if highres_fix:
                     seed -= 1  # record original seed
@@ -2505,17 +2507,23 @@ def main(args):
                     metadata.add_text("crop-top", str(crop_top))
                     metadata.add_text("crop-left", str(crop_left))
 
-                if args.use_original_file_name and init_images is not None:
-                    if type(init_images) is list:
-                        fln = os.path.splitext(os.path.basename(init_images[i % len(init_images)].filename))[0] + ".png"
-                    else:
-                        fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
-                elif args.sequential_file_name:
-                    fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                if filename is not None:
+                    fln = filename
                 else:
-                    fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
+                    if args.use_original_file_name and init_images is not None:
+                        if type(init_images) is list:
+                            fln = os.path.splitext(os.path.basename(init_images[i % len(init_images)].filename))[0] + ".png"
+                        else:
+                            fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
+                    elif args.sequential_file_name:
+                        fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                    else:
+                        fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
-                image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                if fln.endswith(".webp"):
+                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata, quality=100)  # lossy
+                else:
+                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
 
             if not args.no_preview and not highres_1st and args.interactive:
                 try:
@@ -2562,6 +2570,7 @@ def main(args):
             # repeat prompt
             for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
+                filename = None
 
                 if pi == 0 or len(raw_prompts) > 1:
                     # parse prompt: if prompt is not changed, skip parsing
@@ -2783,6 +2792,12 @@ def main(args):
                                 logger.info(f"gradual latent unsharp params: {gl_unsharp_params}")
                                 continue
 
+                            m = re.match(r"f (.+)", parg, re.IGNORECASE)
+                            if m:  # filename
+                                filename = m.group(1)
+                                logger.info(f"filename: {filename}")
+                                continue
+
                         except ValueError as ex:
                             logger.error(f"Exception in parsing / 解析エラー: {parg}")
                             logger.error(f"{ex}")
@@ -2873,7 +2888,16 @@ def main(args):
                 b1 = BatchData(
                     False,
                     BatchDataBase(
-                        global_step, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt
+                        global_step,
+                        prompt,
+                        negative_prompt,
+                        seed,
+                        init_image,
+                        mask_image,
+                        clip_prompt,
+                        guide_image,
+                        raw_prompt,
+                        filename,
                     ),
                     BatchDataExt(
                         width,
@@ -2916,7 +2940,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    
+
     parser.add_argument(
         "--sdxl", action="store_true", help="load Stable Diffusion XL model / Stable Diffusion XLのモデルを読み込む"
     )

@@ -96,10 +96,13 @@ def add_v_prediction_like_loss(loss, timesteps, noise_scheduler, v_pred_like_los
     return loss
 
 
-def apply_debiased_estimation(loss, timesteps, noise_scheduler):
+def apply_debiased_estimation(loss, timesteps, noise_scheduler, v_prediction=False):
     snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
     snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
-    weight = 1 / torch.sqrt(snr_t)
+    if v_prediction:
+        weight = 1 / (snr_t + 1)
+    else:
+        weight = 1 / torch.sqrt(snr_t)
     loss = weight * loss
     return loss
 
@@ -480,12 +483,20 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
 
 
 def apply_masked_loss(loss, batch):
-    # mask image is -1 to 1. we need to convert it to 0 to 1
-    mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
+    if "conditioning_images" in batch:
+        # conditioning image is -1 to 1. we need to convert it to 0 to 1
+        mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
+        mask_image = mask_image / 2 + 0.5
+        # print(f"conditioning_image: {mask_image.shape}")
+    elif "alpha_masks" in batch and batch["alpha_masks"] is not None:
+        # alpha mask is 0 to 1
+        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1) # add channel dimension
+        # print(f"mask_image: {mask_image.shape}, {mask_image.mean()}")
+    else:
+        return loss
 
     # resize to the same size as the loss
     mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
-    mask_image = mask_image / 2 + 0.5
     loss = loss * mask_image
     return loss
 
