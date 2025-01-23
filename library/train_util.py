@@ -2893,6 +2893,9 @@ class MinimalDataset(BaseDataset):
         """
         raise NotImplementedError
 
+    def get_resolutions(self) -> List[Tuple[int, int]]:
+        return []
+
 
 def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
     module = ".".join(args.dataset_class.split(".")[:-1])
@@ -6520,4 +6523,7 @@ class LossRecorder:
 
     @property
     def moving_average(self) -> float:
-        return self.loss_total / len(self.loss_list)
+        losses = len(self.loss_list)
+        if losses == 0:
+            return 0
+        return self.loss_total / losses

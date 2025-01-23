@@ -2,7 +2,7 @@ import argparse
 import copy
 import math
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
 from accelerate import Accelerator
@@ -36,8 +36,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
 
-    def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
+    def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
+        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.fp8_base_unet:
@@ -80,6 +80,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 args.blocks_to_swap = 18  # 18 is safe for most cases
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
