@@ -425,6 +425,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
             return model_pred
 
+        flux_utils.bypass_flux_guidance(unet)
+
         model_pred = call_dit(
             img=packed_noisy_model_input,
             img_ids=img_ids,
@@ -438,6 +440,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         # unpack latents
         model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
+
+        flux_utils.restore_flux_guidance(unet)
 
         # apply model prediction type
         model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)

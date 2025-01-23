@@ -20,6 +20,8 @@ from library import device_utils
 from library.device_utils import init_ipex, get_preferred_device
 from networks import oft_flux
 
+from library.flux_utils import bypass_flux_guidance, restore_flux_guidance
+
 init_ipex()
 
 
@@ -150,6 +152,9 @@ def do_sample(
 ):
     logger.info(f"num_steps: {num_steps}")
     timesteps = get_schedule(num_steps, img.shape[1], shift=not is_schnell)
+
+    # bypass guidance module
+    bypass_flux_guidance(model)
 
     # denoise initial noise
     if accelerator:
@@ -364,6 +369,9 @@ def generate_image(
     x = x.permute(0, 2, 3, 1)
     img = Image.fromarray((127.5 * (x + 1.0)).float().cpu().numpy().astype(np.uint8)[0])
 
+    # restore guidance module
+    restore_flux_guidance(model)
+    
     # save image
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
