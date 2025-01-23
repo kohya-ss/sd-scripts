@@ -13,6 +13,7 @@ import math
 import os
 import random
 import re
+import gc
 
 import diffusers
 import numpy as np
@@ -1489,7 +1490,7 @@ def main(args):
         files = glob.glob(args.ckpt)
         if len(files) == 1:
             args.ckpt = files[0]
-
+    gc.collect()
     (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
         args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype
     )
@@ -1657,7 +1658,7 @@ def main(args):
     text_encoder1.eval()
     text_encoder2.eval()
     unet.eval()
-
+    gc.collect()
     # networkを組み込む
     if args.network_module:
         networks = []
