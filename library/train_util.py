@@ -5984,6 +5984,7 @@ def get_my_scheduler(
         scheduler_cls = DPMSolverMultistepScheduler
     elif sample_sampler == "dpmsolver++_2m_lu":
         scheduler_cls = DPMSolverMultistepScheduler
+        sched_init_args["use_lu_lambdas"] = True
     elif sample_sampler == "dpmsolver++_2m_k":
         scheduler_cls = DPMSolverMultistepScheduler
         sched_init_args["use_karras_sigmas"] = True
