@@ -154,7 +154,8 @@ def do_sample(
     timesteps = get_schedule(num_steps, img.shape[1], shift=not is_schnell)
 
     # bypass guidance module
-    bypass_flux_guidance(model)
+    if args.bypass_flux_guidance:
+        bypass_flux_guidance(model)
 
     # denoise initial noise
     if accelerator:
@@ -370,7 +371,8 @@ def generate_image(
     img = Image.fromarray((127.5 * (x + 1.0)).float().cpu().numpy().astype(np.uint8)[0])
 
     # restore guidance module
-    restore_flux_guidance(model)
+    if args.bypass_flux_guidance:
+        restore_flux_guidance(model)
     
     # save image
     output_dir = args.output_dir

@@ -4103,6 +4103,14 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
     )
 
+    # bypass guidance module for flux
+    parser.add_argument(
+        "--bypass_flux_guidance"
+        , action="store_true"
+        , help="bypass flux guidance module for Flex.1-Alpha Training / Flex.1-Alpha トレーニング用バイパス フラックス ガイダンス モジュール"
+    )
+
+
 
 def get_sanitized_config_or_none(args: argparse.Namespace):
     # if `--log_config` is enabled, return args for logging. if not, return None.
