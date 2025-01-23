@@ -122,6 +122,7 @@ def main(args):
             dataset,
             batch_size=1,
             shuffle=False,
+            pin_memory=args.pin_memory,
             num_workers=args.max_data_loader_n_workers,
             collate_fn=collate_fn_remove_corrupted,
             drop_last=False,

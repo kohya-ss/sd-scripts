@@ -281,6 +281,7 @@ def train(args):
         shuffle=True,
         collate_fn=collator,
         num_workers=n_workers,
+        pin_memory=args.pin_memory,
         persistent_workers=args.persistent_data_loader_workers,
     )
 

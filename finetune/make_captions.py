@@ -126,6 +126,7 @@ def main(args):
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.max_data_loader_n_workers,
+            pin_memory=args.pin_memory,
             collate_fn=collate_fn_remove_corrupted,
             drop_last=False,
         )
