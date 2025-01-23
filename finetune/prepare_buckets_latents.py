@@ -225,6 +225,11 @@ def setup_parser() -> argparse.ArgumentParser:
         help="enable image reading by DataLoader with this number of workers (faster) / DataLoaderによる画像読み込みを有効にしてこのワーカー数を適用する（読み込みを高速化）",
     )
     parser.add_argument(
+        "--pin_memory",
+        action="store_true",
+        help="Pin memory for faster GPU loading / GPU の読み込みを高速化するためのピンメモリ",
+    )
+    parser.add_argument(
         "--max_resolution",
         type=str,
         default="512,512",
