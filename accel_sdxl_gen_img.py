@@ -14,6 +14,7 @@ import os
 import random
 import re
 import gc
+import sdxl_train_network
 
 import diffusers
 import numpy as np
@@ -2860,8 +2861,8 @@ def main(args):
 
 
 def setup_parser() -> argparse.ArgumentParser:
-    parser = train_network.setup_parser()
-    sdxl_train_util.add_sdxl_training_arguments(parser)
+    parser = sdxl_train_network.setup_parser()
+    #sdxl_train_util.add_sdxl_training_arguments(parser)
     add_logging_arguments(parser)
 
     parser.add_argument("--prompt", type=str, default=None, help="prompt / プロンプト")
