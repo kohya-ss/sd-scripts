@@ -2820,9 +2820,9 @@ def main(args):
                 if len(batch_data) == args.batch_size:
                     prev_image = process_batch(batch_data, highres_fix)[0]
                     batch_data.clear()
-
-                global_step += 1
                 logger.info(f"Global Step: {global_step}")
+                global_step += 1
+                
 
             prompt_index += 1
 
