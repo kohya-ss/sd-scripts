@@ -2835,6 +2835,8 @@ def main(args):
                 if len(batch_data) == args.batch_size*distributed_state.num_processes:
                     logger.info(f"Collected {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
                     logger.info(f"{batch_data}")
+                    test_split = np.array_split(batch_data, 2)
+                    logger.info(f"{test_split}")
                     batch_data_split = np.array_split(batch_data, distributed_state.num_processes)
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
