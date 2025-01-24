@@ -2828,7 +2828,7 @@ def main(args):
                         logger.info(f"Prompt {i+1}: {batch_data[i].base.prompt}\n{batch_data[i]}")
                         batch_index.append(batch_data[i])
                         if (i+1) % args.batch_size == 0:
-                            batch_data_split.append(batch_index)
+                            batch_data_split.append(batch_index.copy())
                             batch_index.clear()
                     logger.info(f"batch_data_split: {batch_data_split}")
                     with torch.no_grad():
@@ -2855,11 +2855,11 @@ def main(args):
                         test_batch_index.append(batch_data[i])
                         if (i+1) % args.batch_size == 0:
                             logger.info(f"Loading {batch_index}")
-                            batch_data_split.append(batch_index)
+                            batch_data_split.append(batch_index.copy())
                             batch_index.clear()
                         if (i+1) % 4 == 0:
                             logger.info(f"Loading {test_batch_index}")
-                            test_batch_data_split.append(test_batch_index)
+                            test_batch_data_split.append(test_batch_index.copy())
                             test_batch_index.clear()
                     logger.info(f"batch_data_split: {batch_data_split}")
                     for i in range(len(test_batch_data_split)):
@@ -2888,7 +2888,7 @@ def main(args):
                 logger.info(f"Prompt {i+1}: {batch_data[i].base.prompt}\n{batch_data[i]}")
                 batch_index.append(batch_data[i])
                 if (i+1) % args.batch_size == 0:
-                    batch_data_split.append(batch_index)
+                    batch_data_split.append(batch_index.copy())
                     batch_index.clear()
             logger.info(f"{batch_data_split}")
             with torch.no_grad():
