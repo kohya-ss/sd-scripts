@@ -2816,20 +2816,27 @@ def main(args):
                     ),
                 )
                 if len(batch_data) > 0 and batch_data[-1].ext != b1.ext:  # バッチ分割必要？
+                    logger.info(f"When does this run?\n Loaded {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
                     batch_data_split = np.array_split(batch_data, distributed_state.num_processes)
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
-                            logger.info(f"Loading batch of {len(batch_lists)} onto device {distributed_state.device}")
+                            
+                            logger.info(f"Loading batch of {len(batch_list)} prompts onto device {distributed_state.device}:")
+                            for i in range(batch_list):
+                                logger.info(f"Prompt {i}: {batch_list[i].base.prompt}")
                             prev_image = process_batch(batch_list, highres_fix)[0]
                     accelerator.wait_for_everyone()
                     batch_data.clear()
 
                 batch_data.append(b1)
                 if len(batch_data) == args.batch_size*distributed_state.num_processes:
+                    logger.info(f"Collected {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
                     batch_data_split = np.array_split(batch_data, distributed_state.num_processes)
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
-                            logger.info(f"Loading batch of {len(batch_lists)} onto device {distributed_state.device}")
+                            logger.info(f"Loading batch of {len(batch_list)} prompts onto device {distributed_state.device}:")
+                            for i in range(batch_list):
+                                logger.info(f"Prompt {i}: {batch_list[i].base.prompt}")
                             prev_image = process_batch(batch_list, highres_fix)[0]
                     accelerator.wait_for_everyone()
                     batch_data.clear()
@@ -2842,7 +2849,9 @@ def main(args):
             batch_data_split = np.array_split(batch_data, distributed_state.num_processes)
             with torch.no_grad():
                 with distributed_state.split_between_processes(batch_data_split) as batch_list:
-                    logger.info(f"Loading batch of {len(batch_lists)} onto device {distributed_state.device}")
+                    logger.info(f"Loading batch of {len(batch_list)} prompts onto device {distributed_state.device}:")
+                        for i in range(batch_list):
+                            logger.info(f"Prompt {i}: {batch_list[i].base.prompt}")
                     prev_image = process_batch(batch_list, highres_fix)[0]
             accelerator.wait_for_everyone()
             batch_data.clear()
