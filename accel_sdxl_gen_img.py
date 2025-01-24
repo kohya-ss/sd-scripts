@@ -2837,12 +2837,11 @@ def main(args):
                     logger.info(f"{batch_data}")
                     batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
                     batch_index = 0
-                    test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(my_list), 3)]
+                    test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(batch_data), 3)]
                     #test_batch_index = 0
                     for i in range(len(batch_data)):
                         logger.info(f"Prompt {i}: {batch_data[i].base.prompt}\n{batch_data[i]}")
                         batch_data_split[batch_index].append(batch_data[i])
-                        test_batch_data_split[test_batch_index].append(batch_data[i])
                         if i % args.batch_size == 0:
                             batch_index += 1
                     logger.info(f"{batch_data_split}")
@@ -2864,12 +2863,11 @@ def main(args):
         if len(batch_data) > 0:
             batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
             batch_index = 0
-            test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(my_list), 3)]
+            test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(batch_data), 3)]
                     #test_batch_index = 0
             for i in range(len(batch_data)):
                 logger.info(f"Prompt {i}: {batch_data[i].base.prompt}\n{batch_data[i]}")
                 batch_data_split[batch_index].append(batch_data[i])
-                test_batch_data_split[test_batch_index].append(batch_data[i])
                 if i % args.batch_size == 0:
                     batch_index += 1
             logger.info(f"{batch_data_split}")
