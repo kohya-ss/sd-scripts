@@ -2810,7 +2810,9 @@ def main(args):
                         num_sub_prompts,
                     ),
                 )
+                
                 if len(batch_data) > 0 and batch_data[-1].ext != b1.ext:  # バッチ分割必要？
+                    logger.info("Does this run? When number of prompts less than batch?")
                     process_batch(batch_data, highres_fix)
                     batch_data.clear()
 
@@ -2820,6 +2822,7 @@ def main(args):
                     batch_data.clear()
 
                 global_step += 1
+                logger.info(f"Global Step: {global_step}")
 
             prompt_index += 1
 
