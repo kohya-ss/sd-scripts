@@ -2835,9 +2835,21 @@ def main(args):
                 if len(batch_data) == args.batch_size*distributed_state.num_processes:
                     logger.info(f"Collected {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
                     logger.info(f"{batch_data}")
-                    test_split = np.array_split(batch_data, 2)
-                    logger.info(f"{test_split}")
-                    batch_data_split = np.array_split(batch_data, distributed_state.num_processes)
+                    batch_data_split = []
+                    batch_index = 0
+                    test_batch_data_split = []
+                    test_batch_index = 0
+                    for i in len(batch_data):
+                        logger.info(f"Prompt {i}: {batch_data[i].base.prompt}\n{batch_data[i]}")
+                        batch_data_split[batch_index].append(batch_data[i])
+                        test_batch_data_split[test_batch_index].append(batch_data[i])
+                        if i % args.batch_size == 0:
+                            batch_index += 1
+                        if i % 4 == 0:
+                            test_batch_index += 1
+                    logger.info(f"{batch_data_split}")
+                    logger.info(f"{test_batch_data_split}")
+
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
                             logger.info(f"Loading batch of {len(batch_list)} prompts onto device {distributed_state.device}:")
