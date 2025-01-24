@@ -3231,7 +3231,11 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--full_bf16", action="store_true", help="Loading model in bf16"
     )
-
+    parser.add_argument(
+        "--lowram",
+        action="store_true",
+        help="enable low RAM optimization. e.g. load models to VRAM instead of RAM (for machines which have bigger VRAM than RAM such as Colab and Kaggle) / メインメモリが少ない環境向け最適化を有効にする。たとえばVRAMにモデルを読み込む等（ColabやKaggleなどRAMに比べてVRAMが多い環境向け）",
+    )
     # # parser.add_argument(
     #     "--control_net_image_path", type=str, default=None, nargs="*", help="image for ControlNet guidance / ControlNetでガイドに使う画像"
     # )
