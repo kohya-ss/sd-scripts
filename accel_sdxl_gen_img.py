@@ -14,7 +14,6 @@ import os
 import random
 import re
 import gc
-import sdxl_train_network
 
 import diffusers
 import numpy as np
