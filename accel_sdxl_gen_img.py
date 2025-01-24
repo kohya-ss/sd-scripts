@@ -14,6 +14,7 @@ import os
 import random
 import re
 import gc
+from accelerate import PartialState
 
 import diffusers
 import numpy as np
