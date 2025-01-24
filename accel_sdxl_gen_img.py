@@ -2863,7 +2863,7 @@ def main(args):
 def setup_parser() -> argparse.ArgumentParser:
     parser = sdxl_train_network.setup_parser()
     #sdxl_train_util.add_sdxl_training_arguments(parser)
-    add_logging_arguments(parser)
+    #add_logging_arguments(parser)
 
     parser.add_argument("--prompt", type=str, default=None, help="prompt / プロンプト")
     parser.add_argument(
