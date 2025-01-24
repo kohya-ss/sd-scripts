@@ -2835,7 +2835,7 @@ def main(args):
                 if len(batch_data) == args.batch_size*distributed_state.num_processes:
                     logger.info(f"Collected {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
                     logger.info(f"{batch_data}")
-                    batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
+                    batch_data_split = [][] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
                     batch_index = 0
                     test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(batch_data), 3)]
                     #test_batch_index = 0
@@ -2861,7 +2861,7 @@ def main(args):
             prompt_index += 1
 
         if len(batch_data) > 0:
-            batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
+            batch_data_split = [][] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
             batch_index = 0
             test_batch_data_split = [batch_data[i:i+3] for i in range(0, len(batch_data), 3)]
                     #test_batch_index = 0
