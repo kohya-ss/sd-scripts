@@ -2854,10 +2854,12 @@ def main(args):
                         batch_index.append(batch_data[i])
                         test_batch_index.append(batch_data[i])
                         if (i+1) % args.batch_size == 0:
+                            logger.info(f"Loading {batch_index}")
                             batch_data_split.append(batch_index)
                             batch_index.clear()
                         if (i+1) % 4 == 0:
-                            test_batch_data_split.append(batch_index)
+                            logger.info(f"Loading {test_batch_index}")
+                            test_batch_data_split.append(test_batch_index)
                             test_batch_index.clear()
                     logger.info(f"batch_data_split: {batch_data_split}")
                     for i in range(len(test_batch_data_split)):
