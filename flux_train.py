@@ -593,7 +593,7 @@ def train(args):
     # TODO: Get arguments for step_freq values
     # TODO: Get arguments for test_set_count, test_noise_iter
 
-    def calculate_loss(step=step, batch=batch, state=None, accumulate_loss: bool=True, accelerator=accelerator):
+    def calculate_loss(batch, state=None, accumulate_loss: bool=True, accelerator=accelerator):
 
         if state is not None:
             noise, noisy_model_input, timesteps, sigmas = state
@@ -726,7 +726,7 @@ def train(args):
                 val_losses.append(val_loss)
 
             # STANDARD LOSS CALCULATION
-            loss, _ = calculate_loss(step, batch, accumulate_loss=True) # Loss should be accumulated when not running the test/validation samples though
+            loss, _ = calculate_loss(batch, accumulate_loss=True) # Loss should be accumulated when not running the test/validation samples though
 
             # backward
             accelerator.backward(loss)

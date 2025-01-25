@@ -6405,11 +6405,11 @@ def calc_test_val_loss(dataset, loss_func, repeat_count, fixed_states=[], test=T
     losses = []
     for step, batch in enumerate(dataset['batches'] * repeat_count):
         if len(fixed_states) < len(dataset['batches']) * repeat_count: # If accumulating fixed states, calculate state as normal and return
-            loss, state = loss_func(step, batch, None, accumulate_loss=False)
+            loss, state = loss_func(batch, None, accumulate_loss=False)
             fixed_states.append(state)
         else: # Otherwise, recall the stored values and use those instead so the test loss is consistently calculated for each sample
             state = fixed_states[step]
-            loss, _ = loss_func(step, batch, state, accumulate_loss=False)
+            loss, _ = loss_func(batch, state, accumulate_loss=False)
         losses.append(loss.detach().item())                      
     avg_loss = sum(losses) / len(losses)
     logger.info(f'AVERAGE {test_val_ind} LOSS: {avg_loss:.6f}')
