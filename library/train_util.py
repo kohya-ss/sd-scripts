@@ -4103,6 +4103,46 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
     )
 
+    # offloading
+    parser.add_argument(
+        "--test_step_freq",
+        type=int,
+        default=0,
+        help="Frequency of test training error calculation",
+    )
+
+    # offloading
+    parser.add_argument(
+        "--val_step_freq",
+        type=int,
+        default=0,
+        help="Frequency of validation training error calculation",
+    )
+
+    # offloading
+    parser.add_argument(
+        "--test_set_count",
+        type=int,
+        default=5,
+        help="Size of test set for test error calculation.",
+    )
+
+    # offloading
+    parser.add_argument(
+        "--val_set_count",
+        type=int,
+        default=5,
+        help="Size of test set for test error calculation",
+    )
+
+    # offloading
+    parser.add_argument(
+        "--test_val_repeat_count",
+        type=int,
+        default=4,
+        help="Number of noise iterations to use for each training or test error calculation.",
+    )
+
 
 def get_sanitized_config_or_none(args: argparse.Namespace):
     # if `--log_config` is enabled, return args for logging. if not, return None.

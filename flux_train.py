@@ -579,19 +579,8 @@ def train(args):
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
 
-
-    ### PLACEHOLDERS ###
-    test_step_freq = 10
-    val_step_freq = 25
-    test_set_count = 5
-    val_set_count = 5
-    test_val_repeat_count = 2
-
-    logger.warning('CREATING TEST AND VALIDATION SETS')
-    test_set, val_set = train_util.create_test_val_set(train_dataloader, test_set_count, val_set_count)
-
-    # TODO: Get arguments for step_freq values
-    # TODO: Get arguments for test_set_count, test_noise_iter
+    logger.info('CREATING TEST AND VALIDATION SETS')
+    test_set, val_set = train_util.create_test_val_set(train_dataloader, args.test_set_count, args.val_set_count)
 
     def calculate_loss(batch, state=None, accumulate_loss: bool=True, accelerator=accelerator):
 
@@ -713,19 +702,19 @@ def train(args):
             if global_step==0:
                 test_fixed_states = []
                 test_losses       = []
-            if global_step % test_step_freq == 0 and test_step_freq > 0:
-                test_loss, test_fixed_states = train_util.calc_test_val_loss(dataset=test_set, loss_func=calculate_loss, repeat_count=test_val_repeat_count, fixed_states=test_fixed_states, test=True)
+            if global_step % args.test_step_freq == 0 and args.test_step_freq > 0:
+                test_loss, test_fixed_states = train_util.calc_test_val_loss(dataset=test_set, loss_func=calculate_loss, repeat_count=args.test_val_repeat_count, fixed_states=test_fixed_states, test=True)
                 test_losses.append(test_loss)
-                accelerator.log({'test_loss':test_loss}, step=global_step)
+                accelerator.log({'test_loss':test_loss, 'combined/test_relative':test_loss/test_losses[0]}, step=global_step)
 
             # CALCULATE LOSS ON VALIDATION SET AT TEST SET FREQUENCY
             if global_step==0:
                 val_fixed_states = []
                 val_losses       = []
-            if global_step % val_step_freq == 0 and val_step_freq > 0:
-                val_loss, val_fixed_states = train_util.calc_test_val_loss(dataset=val_set, loss_func=calculate_loss, repeat_count=test_val_repeat_count, fixed_states=val_fixed_states, test=False)
+            if global_step % args.val_step_freq == 0 and args.val_step_freq > 0:
+                val_loss, val_fixed_states = train_util.calc_test_val_loss(dataset=val_set, loss_func=calculate_loss, repeat_count=args.test_val_repeat_count, fixed_states=val_fixed_states, test=False)
                 val_losses.append(val_loss)
-                accelerator.log({'val_loss':val_loss}, step=global_step)
+                accelerator.log({'val_loss':val_loss, 'combined/val_relative':val_loss/val_losses[0]}, step=global_step)
 
             # STANDARD LOSS CALCULATION
             loss, _ = calculate_loss(batch, accumulate_loss=True) # Loss should be accumulated when not running the test/validation samples though
