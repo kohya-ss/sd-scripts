@@ -2842,7 +2842,7 @@ def main(args):
                             num_sub_prompts,
                         ),
                     )
-                    batch_data.extend(b1)
+                    batch_data.append(b1)
                     global_step += 1
     
                 prompt_index += 1
