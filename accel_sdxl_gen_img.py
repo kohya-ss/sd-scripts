@@ -2856,7 +2856,7 @@ def main(args):
                         test_batch_data_split = []
                         test_batch_index = []
                         for i in range(len(batch_data)):
-                            logger.info(f"Prompt {i+1}: {batch_data[i].base.prompt}}")
+                            logger.info(f"Prompt {i+1}: {batch_data[i].base.prompt}")
                             batch_index.append(batch_data[i])
                             test_batch_index.append(batch_data[i])
                             if (i+1) % args.batch_size == 0:
