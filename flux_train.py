@@ -716,6 +716,7 @@ def train(args):
             if global_step % test_step_freq == 0 and test_step_freq > 0:
                 test_loss, test_fixed_states = train_util.calc_test_val_loss(dataset=test_set, loss_func=calculate_loss, repeat_count=test_val_repeat_count, fixed_states=test_fixed_states, test=True)
                 test_losses.append(test_loss)
+                accelerator.log({'test_loss':test_loss}, step=global_step)
 
             # CALCULATE LOSS ON VALIDATION SET AT TEST SET FREQUENCY
             if global_step==0:
@@ -724,6 +725,7 @@ def train(args):
             if global_step % val_step_freq == 0 and val_step_freq > 0:
                 val_loss, val_fixed_states = train_util.calc_test_val_loss(dataset=val_set, loss_func=calculate_loss, repeat_count=test_val_repeat_count, fixed_states=val_fixed_states, test=False)
                 val_losses.append(val_loss)
+                accelerator.log({'val_loss':val_loss}, step=global_step)
 
             # STANDARD LOSS CALCULATION
             loss, _ = calculate_loss(batch, accumulate_loss=True) # Loss should be accumulated when not running the test/validation samples though
