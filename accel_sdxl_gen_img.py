@@ -2852,7 +2852,7 @@ def main(args):
         logger.info(f"Total prompts: {len(batch_data)}")
         if len(batch_data) > 0:
             data_loader = get_batches(items=batch_data, batch_size=args.batch_size)
-            logger.info(f"Total batches: {len(batch_data)}")
+            logger.info(f"Total batches: {len(data_loader)}")
             batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
             batch_index = []
             for i in range(len(data_loader)):
@@ -2862,7 +2862,7 @@ def main(args):
                     continue
                 with torch.no_grad():
                     with distributed_state.split_between_processes(batch_data_split) as batch_list:
-                        logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.device}:")
+                        logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.local_process_index}:")
                         logger.info(f"batch_list:")
                         for i in range(len(batch_list[0])):
                             logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[0][i].base.prompt}")
