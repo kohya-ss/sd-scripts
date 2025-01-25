@@ -2846,7 +2846,9 @@ def main(args):
                 prompt_index += 1
                 
         batch_data = gather_object(batch_data)
-        logger.info(f"Total prompts: {len(batch_data)}")
+        for pi in range(distributed_state.num_processes):
+            if pi == distributed_state.local_process_index:
+                logger.info(f"Total prompts: {len(batch_data)} for {distributed_state.local_process_index}")
         if len(batch_data) > 0:
             data_loader = get_batches(items=batch_data, batch_size=args.batch_size)
             logger.info(f"Total batches: {len(data_loader)}")
