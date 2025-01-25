@@ -2454,12 +2454,15 @@ def main(args):
             # sd-dynamic-prompts like variants:
             # count is 1 (not dynamic) or images_per_prompt (no enumeration) or arbitrary (enumeration)
             raw_prompts = []
+            logger.info(f"Total raw prompts before load: {len(raw_prompts)} for {distributed_state.local_process_index}")
             if distributed_state.is_main_process:
                 raw_prompts = handle_dynamic_prompt_variants(raw_prompt, args.images_per_prompt)
             raw_prompts = gather_object(raw_prompts)
             for pi in range(distributed_state.num_processes):
                 if pi == distributed_state.local_process_index:
                     logger.info(f"Total raw prompts: {len(raw_prompts)} for {distributed_state.local_process_index}")
+            if not distributed_state.is_main_process:
+                break
             if distributed_state.is_main_process:
             # repeat prompt
                 for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
