@@ -2434,7 +2434,7 @@ def main(args):
         global_step = 0
         batch_data = []
         logger.info(f"args.interactive: {args.interactive}, (prompt_index: {prompt_index} < len(prompt_list): {len(prompt_list)} and not distributed_state.is_main_process: {not distributed_state.is_main_process})")
-        while args.interactive or (prompt_index < len(prompt_list) and not distributed_state.is_main_process):
+        while args.interactive or (prompt_index < len(prompt_list) and (not distributed_state.is_main_process or distributed_state.num_processes == 1)):
             if len(prompt_list) == 0:
                 # interactive
                 valid = False
