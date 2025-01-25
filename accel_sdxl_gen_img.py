@@ -2853,11 +2853,12 @@ def main(args):
             batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
             batch_index = []
             with distributed_state.split_between_processes(data_loader) as batch_list:
-                logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.local_process_index}:")
-                logger.info(f"batch_list:")
-                for i in range(len(batch_list[0])):
-                    logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[0][i].base.prompt}")
-                prev_image = process_batch(batch_list[0], highres_fix)[0]
+                for j in range(len(batch_list)):
+                    logger.info(f"Loading batch of {len(batch_list[j])} prompts onto device {distributed_state.local_process_index}:")
+                    logger.info(f"batch_list:")
+                        for i in range(len(batch_list[j])):
+                        logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[j][i].base.prompt}")
+                    prev_image = process_batch(batch_list[0], highres_fix)[0]
 
             distributed_state.wait_for_everyone()
             #for i in range(len(data_loader)):
