@@ -2858,7 +2858,7 @@ def main(args):
             for i in range(len(data_loader)):
                 logger.info(f"Loading Batch {i+1} of {len(data_loader)}")
                 batch_data_split.append(data_loader[i])
-                if (i+1) % distributed_state.num_processes != 0 and (i+1) != len(data_loader)
+                if (i+1) % distributed_state.num_processes != 0 and (i+1) != len(data_loader):
                     continue
                 with torch.no_grad():
                     with distributed_state.split_between_processes(batch_data_split) as batch_list:
