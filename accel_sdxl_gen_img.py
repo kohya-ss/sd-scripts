@@ -2447,44 +2447,44 @@ def main(args):
                     raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
 
                 if pi == 0 or len(raw_prompts) > 1:
-                    if distributed_state.is_main_process:
+
                         # parse prompt: if prompt is not changed, skip parsing
-                        width = args.W
-                        height = args.H
-                        original_width = args.original_width
-                        original_height = args.original_height
-                        original_width_negative = args.original_width_negative
-                        original_height_negative = args.original_height_negative
-                        crop_top = args.crop_top
-                        crop_left = args.crop_left
-                        scale = args.scale
-                        negative_scale = args.negative_scale
-                        steps = args.steps
-                        seed = None
-                        seeds = None
-                        strength = 0.8 if args.strength is None else args.strength
-                        negative_prompt = ""
-                        clip_prompt = None
-                        network_muls = None
+                    width = args.W
+                    height = args.H
+                    original_width = args.original_width
+                    original_height = args.original_height
+                    original_width_negative = args.original_width_negative
+                    original_height_negative = args.original_height_negative
+                    crop_top = args.crop_top
+                    crop_left = args.crop_left
+                    scale = args.scale
+                    negative_scale = args.negative_scale
+                    steps = args.steps
+                    seed = None
+                    seeds = None
+                    strength = 0.8 if args.strength is None else args.strength
+                    negative_prompt = ""
+                    clip_prompt = None
+                    network_muls = None
 
                         # Deep Shrink
-                        ds_depth_1 = None  # means no override
-                        ds_timesteps_1 = args.ds_timesteps_1
-                        ds_depth_2 = args.ds_depth_2
-                        ds_timesteps_2 = args.ds_timesteps_2
-                        ds_ratio = args.ds_ratio
+                    ds_depth_1 = None  # means no override
+                    ds_timesteps_1 = args.ds_timesteps_1
+                    ds_depth_2 = args.ds_depth_2
+                    ds_timesteps_2 = args.ds_timesteps_2
+                    ds_ratio = args.ds_ratio
 
                         # Gradual Latent
-                        gl_timesteps = None  # means no override
-                        gl_ratio = args.gradual_latent_ratio
-                        gl_every_n_steps = args.gradual_latent_every_n_steps
-                        gl_ratio_step = args.gradual_latent_ratio_step
-                        gl_s_noise = args.gradual_latent_s_noise
-                        gl_unsharp_params = args.gradual_latent_unsharp_params
+                    gl_timesteps = None  # means no override
+                    gl_ratio = args.gradual_latent_ratio
+                    gl_every_n_steps = args.gradual_latent_every_n_steps
+                    gl_ratio_step = args.gradual_latent_ratio_step
+                    gl_s_noise = args.gradual_latent_s_noise
+                    gl_unsharp_params = args.gradual_latent_unsharp_params
 
-                        prompt_args = raw_prompt.strip().split(" --")
-                        prompt = prompt_args[0]
-                        logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
+                    prompt_args = raw_prompt.strip().split(" --")
+                    prompt = prompt_args[0]
+                    logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
 
                     for parg in prompt_args[1:]:
 
