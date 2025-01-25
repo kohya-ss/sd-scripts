@@ -2858,9 +2858,9 @@ def main(args):
                 for j in range(len(batch_list)):
                     logger.info(f"Loading batch of {len(batch_list[j])} prompts onto device {distributed_state.local_process_index}:")
                     logger.info(f"batch_list:")
-                        for i in range(len(batch_list[j])):
+                    for i in range(len(batch_list[j])):
                         logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[j][i].base.prompt}")
-                    prev_image = process_batch(batch_list[0], highres_fix)[0]
+                    prev_image = process_batch(batch_list[j], highres_fix)[0]
 
             distributed_state.wait_for_everyone()
             #for i in range(len(data_loader)):
