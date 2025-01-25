@@ -2456,8 +2456,6 @@ def main(args):
             raw_prompts = []
             if distributed_state.is_main_process:
                 raw_prompts = handle_dynamic_prompt_variants(raw_prompt, args.images_per_prompt)
-            else:
-                distributed_state.wait_for_everyone()
             raw_prompts = gather_object(raw_prompts)
 
             if distributed_state.is_main_process:
@@ -2846,8 +2844,7 @@ def main(args):
                     global_step += 1
     
                 prompt_index += 1
-            else:
-                distributed_state.wait_for_everyone()
+        distributed_state.wait_for_everyone()        
         batch_data = gather_object(batch_data)
         logger.info(f"Total prompts: {len(batch_data)}")
         if len(batch_data) > 0:
