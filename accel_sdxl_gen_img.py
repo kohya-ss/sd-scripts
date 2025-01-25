@@ -20,7 +20,7 @@ import diffusers
 import numpy as np
 
 import torch
-from library.device_utils import init_ipex, clean_memory, get_preferred_device
+from library.device_utils import init_ipex, clean_memory, get_preferred_device, clean_memory_on_device
 init_ipex()
 
 import torchvision
@@ -1499,11 +1499,13 @@ def main(args):
             args.ckpt = files[0]
     #device = get_preferred_device()
     logger.info(f"preferred device: {device}")
+    clean_memory_on_device(device)
     model_dtype = sdxl_train_util.match_mixed_precision(args, dtype)
     (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
         args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype, device if args.lowram else "cpu", model_dtype
     )
     unet: InferSdxlUNet2DConditionModel = InferSdxlUNet2DConditionModel(unet)
+    distributed_state.wait_for_everyone()
 
     # xformers、Hypernetwork対応
     if not args.diffusers_xformers:
@@ -1828,6 +1830,7 @@ def main(args):
     )
     pipe.set_control_nets(control_nets)
     logger.info(f"pipeline on {device} is ready.")
+    distributed_state.wait_for_everyone()
 
     if args.diffusers_xformers:
         pipe.enable_xformers_memory_efficient_attention()
@@ -2834,12 +2837,10 @@ def main(args):
                             if (i+1) % args.batch_size == 0:
                                 batch_data_split.append(batch_index.copy())
                                 batch_index.clear()
-                    if distributed_state.is_main_process:
-                        logger.info(f"batch_data_split: {batch_data_split}")
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
                             logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.device}:")
-                            logger.info(f"batch_list: {batch_list}")
+                            logger.info(f"batch_list:")
                             for i in range(len(batch_list[0])):
                                 logger.info(f"Prompt {i+1}: {batch_list[0][i].base.prompt}")
                             prev_image = process_batch(batch_list[0], highres_fix)[0]
@@ -2851,7 +2852,6 @@ def main(args):
                 if len(batch_data) == args.batch_size*distributed_state.num_processes:
                     if distributed_state.is_main_process:
                         logger.info(f"Collected {len(batch_data)} prompts for {distributed_state.num_processes} devices.")
-                        logger.info(f"{batch_data}")
                         batch_data_split = [] #[batch_data[i:i+3] for i in range(0, len(my_list), 3)]
                         batch_index = []
                         test_batch_data_split = []
@@ -2861,23 +2861,20 @@ def main(args):
                             batch_index.append(batch_data[i])
                             test_batch_index.append(batch_data[i])
                             if (i+1) % args.batch_size == 0:
-                                logger.info(f"Loading {batch_index}")
                                 batch_data_split.append(batch_index.copy())
                                 batch_index.clear()
                             if (i+1) % 4 == 0:
-                                logger.info(f"Loading {test_batch_index}")
                                 test_batch_data_split.append(test_batch_index.copy())
                                 test_batch_index.clear()
-                        logger.info(f"batch_data_split: {batch_data_split}")
                         for i in range(len(test_batch_data_split)):
-                            logger.info(f"test_batch_data_split[{i}]: {test_batch_data_split[i]}")
+                            logger.info(f"test_batch_data_split[{i}]:")
                             for j in range(len(test_batch_data_split[i])):
                                 logger.info(f"Prompt {j}: {test_batch_data_split[i][j].base.prompt}")
 
                     with torch.no_grad():
                         with distributed_state.split_between_processes(batch_data_split) as batch_list:
                             logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.device}:")
-                            logger.info(f"batch_list: {batch_list}")
+                            logger.info(f"batch_list:")
                             for i in range(len(batch_list[0])):
                                 logger.info(f"Prompt {i+1}: {batch_list[0][i].base.prompt}")
                             prev_image = process_batch(batch_list[0], highres_fix)[0]
