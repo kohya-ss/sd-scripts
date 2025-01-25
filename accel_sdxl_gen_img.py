@@ -2556,7 +2556,7 @@ def main(args):
                                 logger.info(f"scale: {scale}")
                                 continue
 
-                             m = re.match(r"nl ([\d\.]+|none|None)", parg, re.IGNORECASE)
+                            m = re.match(r"nl ([\d\.]+|none|None)", parg, re.IGNORECASE)
                             if m:  # negative scale
                                 if m.group(1).lower() == "none":
                                     negative_scale = None
