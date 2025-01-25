@@ -583,9 +583,6 @@ def train(args):
     test_set, val_set = train_util.create_test_val_set(train_dataloader, args.test_set_count, args.val_set_count)
 
     def calculate_loss(batch, state=None, accumulate_loss: bool=True, accelerator=accelerator):
-
-        if state is not None:
-            noise, noisy_model_input, timesteps, sigmas = state
         
         with accelerator.accumulate(*training_models) if accumulate_loss else nullcontext(): # Only utilize the accumulate context if loss is marked to be accumulated, otherwise, just use a null context. This avoids the test and validation samples impacting the training.
             if "latents" in batch and batch["latents"] is not None:
@@ -626,6 +623,8 @@ def train(args):
                 noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
                     args, noise_scheduler_copy, latents, noise, accelerator.device, weight_dtype
                 )
+            else:
+                noise, noisy_model_input, timesteps, sigmas = state
 
             # pack latents and get img_ids
             packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
