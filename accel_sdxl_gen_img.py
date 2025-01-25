@@ -2856,7 +2856,7 @@ def main(args):
             batch_index = []
             with distributed_state.split_between_processes(data_loader) as batch_list:
                 for j in range(len(batch_list)):
-                    logger.info(f"Loading batch of {len(batch_list[j])} prompts onto device {distributed_state.local_process_index}:")
+                    logger.info(f"Loading batch {j}/{len(batch_list)} of {len(batch_list[j])} prompts onto device {distributed_state.local_process_index}:")
                     logger.info(f"batch_list:")
                     for i in range(len(batch_list[j])):
                         logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[j][i].base.prompt}")
