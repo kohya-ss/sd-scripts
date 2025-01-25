@@ -2844,7 +2844,7 @@ def main(args):
                     global_step += 1
     
                 prompt_index += 1
-        distributed_state.wait_for_everyone()        
+                
         batch_data = gather_object(batch_data)
         logger.info(f"Total prompts: {len(batch_data)}")
         if len(batch_data) > 0:
