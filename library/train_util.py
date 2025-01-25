@@ -6398,3 +6398,30 @@ class LossRecorder:
     @property
     def moving_average(self) -> float:
         return self.loss_total / len(self.loss_list)
+
+def calc_test_val_loss(dataset, loss_func, repeat_count, fixed_states=[], test=True):
+    test_val_ind = 'TEST' if test else 'VALIDATION'
+    # logger.warning(f'CALCULATING {test_val_ind} LOSS')
+    losses = []
+    for step, batch in enumerate(dataset['batches'] * repeat_count):
+        if len(fixed_states) < len(dataset['batches']) * repeat_count: # If accumulating fixed states, calculate state as normal and return
+            loss, state = loss_func(step, batch, None, accumulate_loss=False)
+            fixed_states.append(state)
+        else: # Otherwise, recall the stored values and use those instead so the test loss is consistently calculated for each sample
+            state = fixed_states[step]
+            loss, _ = loss_func(step, batch, state, accumulate_loss=False)
+        losses.append(loss.detach().item())                      
+    avg_loss = sum(losses) / len(losses)
+    logger.info(f'AVERAGE {test_val_ind} LOSS: {avg_loss:.6f}')
+    return avg_loss, fixed_states
+
+def create_test_val_set(dataloader, test_set_count, val_set_count):
+        test_set = test_set = {'steps':list(range(test_set_count)), 'batches':[]}
+        val_set  = {'steps':list(range(test_set_count,test_set_count+val_set_count)), 'batches':[]}
+        for step, batch in enumerate(dataloader):
+            if step in test_set['steps']:
+                test_set['batches'].append(batch)
+            if step in val_set['steps']:
+                val_set['batches'].append(batch)
+            if step >= test_set_count + val_set_count:
+                return test_set, val_set
