@@ -339,15 +339,18 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        state=None
     ):
-        # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
 
-        # get noisy model input and timesteps
-        noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
-            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
-        )
+        if state is None:
+            # get noisy model input and timesteps
+            noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
+                args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
+            )
+        else:
+            noisy_model_input, timesteps, sigmas, noise = state
 
         # pack latents and get img_ids
         packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
@@ -477,7 +480,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 )
                 target[diff_output_pr_indices] = model_pred_prior.to(target.dtype)
 
-        return model_pred, target, timesteps, weighting
+        state = (noisy_model_input, timesteps, sigmas, noise)
+        return model_pred, target, timesteps, weighting, state
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         return loss

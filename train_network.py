@@ -9,6 +9,7 @@ import json
 from multiprocessing import Value
 from typing import Any, List
 import toml
+from contextlib import nullcontext
 
 from tqdm import tqdm
 
@@ -214,10 +215,14 @@ class NetworkTrainer:
         network,
         weight_dtype,
         train_unet,
+        state=None
     ):
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
-        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+        if state==None:
+            noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+        else:
+            noise, noisy_latents, timesteps = state
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -269,7 +274,9 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        state = (noise, noisy_latents, timesteps)
+
+        return noise_pred, target, timesteps, None, state
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         if args.min_snr_gamma:
@@ -571,6 +578,9 @@ class NetworkTrainer:
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
 
+        # ***********************************
+        # DATALOADER CREATED HERE
+        # ***********************************
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset_group,
             batch_size=1,
@@ -1131,26 +1141,11 @@ class NetworkTrainer:
 
         clean_memory_on_device(accelerator.device)
 
-        for epoch in range(epoch_to_start, num_train_epochs):
-            accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
-            current_epoch.value = epoch + 1
-
-            metadata["ss_epoch"] = str(epoch + 1)
-
-            accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
-
-            skipped_dataloader = None
-            if initial_step > 0:
-                skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
-                initial_step = 1
-
-            for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                current_step.value = global_step
-                if initial_step > 0:
-                    initial_step -= 1
-                    continue
-
-                with accelerator.accumulate(training_model):
+        def calculate_loss(batch, state=None, accumulate_loss: bool=True, accelerator=accelerator, args=args):
+                # ***********************************
+                # ACCELERATOR CONTEXT BEGINS HERE
+                # ***********************************
+                with accelerator.accumulate(training_model) if accumulate_loss else nullcontext():
                     on_step_start_for_network(text_encoder, unet)
 
                     # temporary, for batch processing
@@ -1182,6 +1177,9 @@ class NetworkTrainer:
                         # print(f"set multiplier: {multipliers}")
                         accelerator.unwrap_model(network).set_multiplier(multipliers)
 
+                    # ***********************************
+                    # START TEXT ENCODER CONDITIONING
+                    # ***********************************
                     text_encoder_conds = []
                     text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
                     if text_encoder_outputs_list is not None:
@@ -1217,9 +1215,12 @@ class NetworkTrainer:
                             for i in range(len(encoded_text_encoder_conds)):
                                 if encoded_text_encoder_conds[i] is not None:
                                     text_encoder_conds[i] = encoded_text_encoder_conds[i]
+                    # ***********************************
+                    # END TEXT ENCODER CONDITIONING
+                    # ***********************************
 
                     # sample noise, call unet, get target
-                    noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+                    noise_pred, target, timesteps, weighting, state = self.get_noise_pred_and_target(
                         args,
                         accelerator,
                         noise_scheduler,
@@ -1230,8 +1231,12 @@ class NetworkTrainer:
                         network,
                         weight_dtype,
                         train_unet,
+                        state
                     )
 
+                    # ***********************************
+                    # LOSS CALCULATION HAPPENS HERE
+                    # ***********************************
                     huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
                     loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                     if weighting is not None:
@@ -1248,16 +1253,72 @@ class NetworkTrainer:
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
-                    accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        if args.max_grad_norm != 0.0:
-                            params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
-                            accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    return loss, state
+                    # ***********************************
+                    # END LOSS CALCULATION
+                    # ***********************************
 
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
+
+        logger.info('CREATING TEST AND VALIDATION SETS')
+        test_set, val_set = train_util.create_test_val_set(train_dataloader, args.test_set_count, args.val_set_count)
+
+        # ***********************************
+        # TRAINING LOOP STARTS HERE
+        # ***********************************
+        for epoch in range(epoch_to_start, num_train_epochs):
+            accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
+            current_epoch.value = epoch + 1
+
+            metadata["ss_epoch"] = str(epoch + 1)
+
+            accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
+
+            skipped_dataloader = None
+            if initial_step > 0:
+                skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
+                initial_step = 1
+
+            for step, batch in enumerate(skipped_dataloader or train_dataloader):
+                if step in val_set['steps']: # Skip validation steps, don't increment global step
+                    logger.warning('SKIPPING BATCH IN VALIDATION SET')
+                    continue
+
+                current_step.value = global_step
+                if initial_step > 0:
+                    initial_step -= 1
+                    continue
+                
+                # CALCULATE LOSS ON TEST SET AT TEST SET FREQUENCY
+                if global_step==0:
+                    test_fixed_states = []
+                    test_losses       = []
+                if global_step % args.test_step_freq == 0 and args.test_step_freq > 0:
+                    test_loss, test_fixed_states = train_util.calc_test_val_loss(dataset=test_set, loss_func=calculate_loss, repeat_count=args.test_val_repeat_count, fixed_states=test_fixed_states, test=True)
+                    test_losses.append(test_loss)
+                    accelerator.log({'test_loss':test_loss, 'combined/test_relative':test_loss/test_losses[0]}, step=global_step)
+
+                # CALCULATE LOSS ON VALIDATION SET AT TEST SET FREQUENCY
+                if global_step==0:
+                    val_fixed_states = []
+                    val_losses       = []
+                if global_step % args.val_step_freq == 0 and args.val_step_freq > 0:
+                    val_loss, val_fixed_states = train_util.calc_test_val_loss(dataset=val_set, loss_func=calculate_loss, repeat_count=args.test_val_repeat_count, fixed_states=val_fixed_states, test=False)
+                    val_losses.append(val_loss)
+                    accelerator.log({'val_loss':val_loss, 'combined/val_relative':val_loss/val_losses[0]}, step=global_step)
+
+
+                loss, _ = calculate_loss(batch=batch, state=None, accumulate_loss=True)
+
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+                    if args.max_grad_norm != 0.0:
+                        params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
