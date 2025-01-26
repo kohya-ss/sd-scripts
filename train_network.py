@@ -1163,6 +1163,18 @@ class NetworkTrainer:
                 args.max_train_steps > initial_step
             ), f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
 
+        if args.validate_every_n_steps is not None:
+            validation_steps = (
+                min(args.max_validation_steps, len(val_dataloader)) 
+                if args.max_validation_steps is not None 
+                else len(val_dataloader)
+            )
+            val_progress_bar = tqdm(
+                range(validation_steps), smoothing=0, 
+                disable=not accelerator.is_local_main_process, 
+                desc="validation steps"
+            )
+
         progress_bar = tqdm(
             range(args.max_train_steps - initial_step), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps"
         )
@@ -1246,12 +1258,6 @@ class NetworkTrainer:
         if is_tracking:
             # log empty object to commit the sample images to wandb
             accelerator.log({}, step=0)
-
-        validation_steps = (
-            min(args.max_validation_steps, len(val_dataloader)) 
-            if args.max_validation_steps is not None 
-            else len(val_dataloader)
-        )
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
@@ -1391,11 +1397,7 @@ class NetworkTrainer:
                     and (global_step - 1) % args.validate_every_n_steps == 0 # Note: Should use global step - 1 since the global step is incremented prior to this being run
                 )
                 if accelerator.sync_gradients and should_validate_step:
-                    val_progress_bar = tqdm(
-                        range(validation_steps), smoothing=0, 
-                        disable=not accelerator.is_local_main_process, 
-                        desc="validation steps"
-                    )
+                    val_progress_bar.reset()
                     for val_step, batch in enumerate(val_dataloader):
                         if val_step >= validation_steps:
                             break
@@ -1452,12 +1454,7 @@ class NetworkTrainer:
             )
 
             if should_validate_epoch and len(val_dataloader) > 0:
-                val_progress_bar = tqdm(
-                    range(validation_steps), smoothing=0, 
-                    disable=not accelerator.is_local_main_process, 
-                    desc="epoch validation steps"
-                )
-
+                val_progress_bar.reset()
                 for val_step, batch in enumerate(val_dataloader):
                     if val_step >= validation_steps:
                         break
