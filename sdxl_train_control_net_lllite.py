@@ -123,7 +123,7 @@ def train(args):
         }
 
     blueprint = blueprint_generator.generate(user_config, args)
-    train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+    train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
 
     current_epoch = Value("i", 0)
     current_step = Value("i", 0)

@@ -116,10 +116,11 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                 }
 
         blueprint = blueprint_generator.generate(user_config, args)
-        train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+        train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     else:
         # use arbitrary dataset class
         train_dataset_group = train_util.load_arbitrary_dataset(args)
+        val_dataset_group = None
 
     # acceleratorを準備する
     logger.info("prepare accelerator")

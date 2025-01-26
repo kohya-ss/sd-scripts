@@ -2,7 +2,7 @@ import argparse
 import copy
 import math
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
 from accelerate import Accelerator
@@ -36,8 +36,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
 
-    def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
+    def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
+        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.fp8_base_unet:
@@ -80,6 +80,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 args.blocks_to_swap = 18  # 18 is safe for most cases
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
@@ -339,6 +341,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        is_train=True
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -375,7 +378,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
             # if not args.split_mode:
             # normal forward
-            with accelerator.autocast():
+            with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                 model_pred = unet(
                     img=img,
@@ -420,7 +423,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     intermediate_txt.requires_grad_(True)
                     vec.requires_grad_(True)
                     pe.requires_grad_(True)
-                    model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
+
+                    with torch.set_grad_enabled(is_train and train_unet): 
+                        model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
             """
 
             return model_pred
