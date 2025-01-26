@@ -1282,9 +1282,10 @@ class NetworkTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                if step in val_set['steps']: # Skip validation steps, don't increment global step
-                    logger.warning('SKIPPING BATCH IN VALIDATION SET')
-                    continue
+                if args.val_step_freq > 0:
+                    if step in val_set['steps']: # Skip validation steps, don't increment global step
+                        logger.warning('SKIPPING BATCH IN VALIDATION SET')
+                        continue
 
                 current_step.value = global_step
                 if initial_step > 0:

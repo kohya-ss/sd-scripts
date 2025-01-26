@@ -691,9 +691,10 @@ def train(args):
             m.train()
 
         for step, batch in enumerate(train_dataloader):
-            if step in val_set['steps']: # Skip validation steps, don't increment global step
-                logger.warning('SKIPPING BATCH IN VALIDATION SET')
-                continue
+            if args.val_step_freq > 0:
+                if step in val_set['steps']: # Skip validation steps, don't increment global step
+                    logger.warning('SKIPPING BATCH IN VALIDATION SET')
+                    continue
 
             current_step.value = global_step
 
