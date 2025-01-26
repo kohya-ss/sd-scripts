@@ -1386,11 +1386,11 @@ class NetworkTrainer:
 
                 # VALIDATION PER STEP
                 should_validate_step = (
-                    args.validate_every_n_steps is not None 
-                    and global_step != 0 # Skip first step
-                    and global_step % args.validate_every_n_steps == 0
+                    args.validate_every_n_steps is not None
+                    and args.validation_at_start is not None
+                    and (global_step - 1) % args.validate_every_n_steps == 0 # Note: Should use global step - 1 since the global step is incremented prior to this being run
                 )
-                if accelerator.sync_gradients and validation_steps > 0 and should_validate_step:
+                if accelerator.sync_gradients and should_validate_step:
                     val_progress_bar = tqdm(
                         range(validation_steps), smoothing=0, 
                         disable=not accelerator.is_local_main_process, 
@@ -1721,6 +1721,11 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します"
+    )
+    parser.add_argument(
+        "--validation_at_start",
+        action="store_true",
+        help="Calculate validation loss at run start"
     )
     return parser
 
