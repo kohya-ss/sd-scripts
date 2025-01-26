@@ -1387,7 +1387,7 @@ class NetworkTrainer:
                 # VALIDATION PER STEP
                 should_validate_step = (
                     args.validate_every_n_steps is not None
-                    and args.validation_at_start is not None
+                    and args.validation_at_start
                     and (global_step - 1) % args.validate_every_n_steps == 0 # Note: Should use global step - 1 since the global step is incremented prior to this being run
                 )
                 if accelerator.sync_gradients and should_validate_step:
