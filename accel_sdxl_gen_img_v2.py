@@ -2417,6 +2417,9 @@ def main(args):
                 else:
                     fln = f"im_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
+                logger.info(f"Saving Image: {fln}:\nPrompt: {prompt}")
+                if negative_prompt is not None:
+                    logger.info(f"Negative Prompt: {negative_prompt}\n")
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
 
             if not args.no_preview and not highres_1st and args.interactive:
