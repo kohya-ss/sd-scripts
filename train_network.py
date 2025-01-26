@@ -1389,6 +1389,7 @@ class NetworkTrainer:
                         maximum_norm
                     )
                     accelerator.log(logs, step=global_step)
+                
 
                 # VALIDATION PER STEP
                 should_validate_step = (
@@ -1396,7 +1397,9 @@ class NetworkTrainer:
                     and args.validation_at_start
                     and (global_step - 1) % args.validate_every_n_steps == 0 # Note: Should use global step - 1 since the global step is incremented prior to this being run
                 )
-                if accelerator.sync_gradients and should_validate_step:
+
+                # Break out validation processing so that it does not need to be repeated
+                def process_validation():
                     val_progress_bar.reset()
                     for val_step, batch in enumerate(val_dataloader):
                         if val_step >= validation_steps:
@@ -1442,6 +1445,10 @@ class NetworkTrainer:
                             "loss/validation/step_divergence": loss_validation_divergence, 
                         }
                         accelerator.log(logs, step=global_step)
+                    # END VALIDATION PROCESSING
+
+                if accelerator.sync_gradients and should_validate_step:
+                    process_validation()
                                         
                 if global_step >= args.max_train_steps:
                     break
@@ -1454,54 +1461,7 @@ class NetworkTrainer:
             )
 
             if should_validate_epoch and len(val_dataloader) > 0:
-                val_progress_bar.reset()
-                for val_step, batch in enumerate(val_dataloader):
-                    if val_step >= validation_steps:
-                        break
-
-                    # temporary, for batch processing
-                    self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
-
-                    loss = self.process_batch(
-                        batch, 
-                        text_encoders, 
-                        unet, 
-                        network, 
-                        vae, 
-                        noise_scheduler, 
-                        vae_dtype, 
-                        weight_dtype, 
-                        accelerator, 
-                        args, 
-                        text_encoding_strategy, 
-                        tokenize_strategy, 
-                        is_train=False,
-                        train_text_encoder=False, 
-                        train_unet=False
-                    )
-
-                    current_loss = loss.detach().item()
-                    val_epoch_loss_recorder.add(epoch=epoch, step=val_step, loss=current_loss)
-                    val_progress_bar.update(1)
-                    val_progress_bar.set_postfix({ "val_epoch_avg_loss": val_epoch_loss_recorder.moving_average })
-
-                    if is_tracking:
-                        logs = {
-                            "loss/validation/epoch_current": current_loss, 
-                            "epoch": epoch + 1, 
-                            "val_step": (epoch * validation_steps) + val_step
-                        }
-                        accelerator.log(logs, step=global_step)
-
-                if is_tracking:
-                    avr_loss: float = val_epoch_loss_recorder.moving_average
-                    loss_validation_divergence = val_step_loss_recorder.moving_average - avr_loss 
-                    logs = {
-                        "loss/validation/epoch_average": avr_loss, 
-                        "loss/validation/epoch_divergence": loss_validation_divergence, 
-                        "epoch": epoch + 1
-                    }
-                    accelerator.log(logs, step=global_step)
+                process_validation()
 
             # END OF EPOCH
             if is_tracking:
