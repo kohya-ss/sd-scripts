@@ -1482,6 +1482,7 @@ class BatchDataExt(NamedTuple):
 
 class BatchData(NamedTuple):
     return_latents: bool
+    global_count: int
     base: BatchDataBase
     ext: BatchDataExt
 
@@ -2127,7 +2128,7 @@ def main(args):
 
                 logger.info("process 1st stage")
                 batch_1st = []
-                for _, base, ext in batch:
+                for _, global_count, base, ext in batch:
 
                     def scale_and_round(x):
                         if x is None:
@@ -2164,7 +2165,7 @@ def main(args):
                         ext.network_muls,
                         ext.num_sub_prompts,
                     )
-                    batch_1st.append(BatchData(is_1st_latent, base, ext_1st))
+                    batch_1st.append(BatchData(is_1st_latent, global_count, base, ext_1st))
 
                 pipe.set_enable_control_net(True)  # 1st stageではControlNetを有効にする
                 images_1st = process_batch(batch_1st, True, True)
@@ -2206,7 +2207,7 @@ def main(args):
 
                 batch_2nd = []
                 for i, (bd, image) in enumerate(zip(batch, images_1st)):
-                    bd_2nd = BatchData(False, BatchDataBase(*bd.base[0:3], bd.base.seed + 1, image, None, *bd.base[6:]), bd.ext)
+                    bd_2nd = BatchData(False, bd.global_count, BatchDataBase(*bd.base[0:3], bd.base.seed + 1, image, None, *bd.base[6:]), bd.ext)
                     batch_2nd.append(bd_2nd)
                 batch = batch_2nd
 
@@ -2216,6 +2217,7 @@ def main(args):
             # このバッチの情報を取り出す
             (
                 return_latents,
+                _,
                 (step_first, _, _, _, init_image, mask_image, _, guide_image, _),
                 (
                     width,
@@ -2236,6 +2238,7 @@ def main(args):
             ) = batch[0]
             noise_shape = (LATENT_CHANNELS, height // DOWNSAMPLING_FACTOR, width // DOWNSAMPLING_FACTOR)
 
+            global_counter = []
             prompts = []
             negative_prompts = []
             raw_prompts = []
@@ -2271,9 +2274,11 @@ def main(args):
             all_guide_images_are_same = True
             for i, (
                 _,
+                globalcount,
                 (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt),
                 _,
             ) in enumerate(batch):
+                global_counter.append(globalcount)
                 prompts.append(prompt)
                 negative_prompts.append(negative_prompt)
                 seeds.append(seed)
@@ -2376,8 +2381,8 @@ def main(args):
             # save image
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
             ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
-                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
+            for i, (image, globalcount, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
+                zip(images, global_counter, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
             ):
                 if highres_fix:
                     seed -= 1  # record original seed
@@ -2408,9 +2413,9 @@ def main(args):
                     else:
                         fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
                 elif args.sequential_file_name:
-                    fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                    fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                 else:
-                    fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
+                    fln = f"im_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
 
@@ -2817,6 +2822,7 @@ def main(args):
 
                 b1 = BatchData(
                     False,
+                    global_step,
                     BatchDataBase(
                         global_step, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt
                     ),
