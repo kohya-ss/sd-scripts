@@ -5,7 +5,7 @@ import bisect
 import math
 import random
 from typing import Any, Dict, List, Mapping, Optional, Union
-from diffusers import UNet2DConditionModel
+from diffusers import UNet2DConditionModel, Transformer2DModel
 import numpy as np
 from tqdm import tqdm
 from transformers import CLIPTextModel
@@ -240,7 +240,7 @@ class LoRAModule(torch.nn.Module):
 
 # Create network from weights for inference, weights are not loaded here
 def create_network_from_weights(
-    text_encoder: Union[CLIPTextModel, List[CLIPTextModel]], unet: UNet2DConditionModel, weights_sd: Dict, multiplier: float = 1.0
+    text_encoder: Union[CLIPTextModel, List[CLIPTextModel]], unet: Union[UNet2DConditionModel,Transformer2DModel], weights_sd: Dict, multiplier: float = 1.0
 ):
     # get dim/alpha mapping
     modules_dim = {}
@@ -276,9 +276,10 @@ def merge_lora_weights(pipe, weights_sd: Dict, multiplier: float = 1.0):
 
 # block weightや学習に対応しない簡易版 / simple version without block weight and training
 class LoRANetwork(torch.nn.Module):
-    UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
+
+    UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"] # -- NOTE: Transformer2D is indentical in PixArt and SD
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP", "T5Attention", "T5Stack"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
@@ -289,7 +290,7 @@ class LoRANetwork(torch.nn.Module):
     def __init__(
         self,
         text_encoder: Union[List[CLIPTextModel], CLIPTextModel],
-        unet: UNet2DConditionModel,
+        unet: Union[UNet2DConditionModel,Transformer2DModel], # -- again, unet or dit(transformer)
         multiplier: float = 1.0,
         modules_dim: Optional[Dict[str, int]] = None,
         modules_alpha: Optional[Dict[str, int]] = None,
@@ -301,13 +302,15 @@ class LoRANetwork(torch.nn.Module):
         logger.info("create LoRA network from weights")
 
         # convert SDXL Stability AI's U-Net modules to Diffusers
+        # -- no special things for PixArt, as it searches the conversion map
+        # -- and it will just skip non-matches
         converted = self.convert_unet_modules(modules_dim, modules_alpha)
         if converted:
             logger.info(f"converted {converted} Stability AI's U-Net LoRA modules to Diffusers (SDXL)")
 
         # create module instances
         def create_modules(
-            is_unet: bool,
+            is_unet: bool, # -- don't really care here
             text_encoder_idx: Optional[int],  # None, 1, 2
             root_module: torch.nn.Module,
             target_replace_modules: List[torch.nn.Module],
@@ -323,7 +326,7 @@ class LoRANetwork(torch.nn.Module):
             )
             loras = []
             skipped = []
-            for name, module in root_module.named_modules():
+            for name, module in [root_module, root_module.named_modules()]: # -- root_module can be toplevel transformer
                 if module.__class__.__name__ in target_replace_modules:
                     for child_name, child_module in module.named_modules():
                         is_linear = (
@@ -480,7 +483,7 @@ if __name__ == "__main__":
     # sample code to use LoRANetwork
     import os
     import argparse
-    from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
+    from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, PixArtSigmaPipeline
     import torch
 
     device = get_preferred_device()
@@ -489,6 +492,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_id", type=str, default=None, help="model id for huggingface")
     parser.add_argument("--lora_weights", type=str, default=None, help="path to LoRA weights")
     parser.add_argument("--sdxl", action="store_true", help="use SDXL model")
+    parser.add_argument("--pixart", action="store_true", help="use PixArt model")
     parser.add_argument("--prompt", type=str, default="A photo of cat", help="prompt text")
     parser.add_argument("--negative_prompt", type=str, default="", help="negative prompt text")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
@@ -502,6 +506,8 @@ if __name__ == "__main__":
     if args.sdxl:
         # use_safetensors=True does not work with 0.18.2
         pipe = StableDiffusionXLPipeline.from_pretrained(args.model_id, variant="fp16", torch_dtype=torch.float16)
+    elif args.pixart:
+        pipe = PixArtSigmaPipeline.from_pretrained(args.model_id, variant="fp16", torch_dtype=torch.float16)
     else:
         pipe = StableDiffusionPipeline.from_pretrained(args.model_id, variant="fp16", torch_dtype=torch.float16)
     pipe.to(device)
@@ -520,7 +526,7 @@ if __name__ == "__main__":
 
     # create by LoRA weights and load weights
     logger.info(f"create LoRA network")
-    lora_network: LoRANetwork = create_network_from_weights(text_encoders, pipe.unet, lora_sd, multiplier=1.0)
+    lora_network: LoRANetwork = create_network_from_weights(text_encoders, pipe.transformer if args.pixart else pipe.unet, lora_sd, multiplier=1.0)
 
     logger.info(f"load LoRA network weights")
     lora_network.load_state_dict(lora_sd)
@@ -534,7 +540,7 @@ if __name__ == "__main__":
             state_dict[k] = v.detach().cpu()
         return state_dict
 
-    org_unet_sd = pipe.unet.state_dict()
+    org_unet_sd = pipe.transformer.state_dict() if args.pixart else pipe.unet.state_dict()
     detach_and_move_to_cpu(org_unet_sd)
 
     org_text_encoder_sd = pipe.text_encoder.state_dict()
@@ -596,7 +602,10 @@ if __name__ == "__main__":
 
     # restore original weights
     logger.info(f"restore original weights")
-    pipe.unet.load_state_dict(org_unet_sd)
+    if args.pixart:
+        pipe.unet.load_state_dict(org_unet_sd)
+    else:
+        pipe.transformer.load_state_dict(org_unet_sd)
     pipe.text_encoder.load_state_dict(org_text_encoder_sd)
     if args.sdxl:
         pipe.text_encoder_2.load_state_dict(org_text_encoder_2_sd)

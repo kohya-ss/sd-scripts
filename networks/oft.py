@@ -244,7 +244,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
 
 class OFTNetwork(torch.nn.Module):
     UNET_TARGET_REPLACE_MODULE_ATTN_ONLY = ["CrossAttention"]
-    UNET_TARGET_REPLACE_MODULE_ALL_LINEAR = ["Transformer2DModel"]
+    UNET_TARGET_REPLACE_MODULE_ALL_LINEAR = ["Transformer2DModel", "PixArtMSBlock"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
     OFT_PREFIX_UNET = "oft_unet"  # これ変えないほうがいいかな
 

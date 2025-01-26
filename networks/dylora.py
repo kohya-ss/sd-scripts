@@ -266,9 +266,11 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
 
 
 class DyLoRANetwork(torch.nn.Module):
-    UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
+
+    UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel","PixArtMSBlock"] # -- NOTE: just adding PA blocks to unet for simplicity
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP", "T5Attention", "T5Stack"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 

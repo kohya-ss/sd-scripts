@@ -9,7 +9,7 @@ from accelerate.utils import set_seed
 import torch
 from tqdm import tqdm
 
-from library import config_util
+from library import config_util, pixart_train_util
 from library import train_util
 from library import sdxl_train_util
 from library.config_util import (
@@ -32,8 +32,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 
     # できるだけ準備はしておくが今のところSDXLのみしか動かない
     assert (
-        args.sdxl
-    ), "cache_text_encoder_outputs_to_disk is only available for SDXL / cache_text_encoder_outputs_to_diskはSDXLのみ利用可能です"
+        args.sdxl or args.pixart
+    ), "cache_text_encoder_outputs_to_disk is only available for SDXL and PixArt / cache_text_encoder_outputs_to_diskはSDXL,PixArtのみ利用可能です"
 
     use_dreambooth_method = args.in_json is None
 
@@ -44,6 +44,9 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     if args.sdxl:
         tokenizer1, tokenizer2 = sdxl_train_util.load_tokenizers(args)
         tokenizers = [tokenizer1, tokenizer2]
+    elif args.pixart:
+        tokenizer,_ = pixart_train_util.load_tokenizers(args)
+        tokenizers = [tokenizer]
     else:
         tokenizer = train_util.load_tokenizer(args)
         tokenizers = [tokenizer]
@@ -111,6 +114,9 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     if args.sdxl:
         (_, text_encoder1, text_encoder2, _, _, _, _) = sdxl_train_util.load_target_model(args, accelerator, "sdxl", weight_dtype)
         text_encoders = [text_encoder1, text_encoder2]
+    elif args.pixart:
+        (_, text_encoder, _, _, _) = pixart_train_util.load_target_model(args, accelerator, "sigma", weight_dtype)
+        text_encoders = [text_encoder]
     else:
         text_encoder1, _, _, _ = train_util.load_target_model(args, weight_dtype, accelerator)
         text_encoders = [text_encoder1]
@@ -141,29 +147,40 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     # データ取得のためのループ
     for batch in tqdm(train_dataloader):
         absolute_paths = batch["absolute_paths"]
+        # these are lists or lists of Nones
         input_ids1_list = batch["input_ids1_list"]
         input_ids2_list = batch["input_ids2_list"]
+        attention_masks1_list = batch["attention_masks1_list"]
 
         image_infos = []
-        for absolute_path, input_ids1, input_ids2 in zip(absolute_paths, input_ids1_list, input_ids2_list):
+        for absolute_path, input_ids1, input_ids2, attention_mask1 in zip(absolute_paths, input_ids1_list, input_ids2_list, attention_masks1_list):
             image_info = train_util.ImageInfo(absolute_path, 1, "dummy", False, absolute_path)
             image_info.text_encoder_outputs_npz = os.path.splitext(absolute_path)[0] + train_util.TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX
-            image_info
 
             if args.skip_existing:
                 if os.path.exists(image_info.text_encoder_outputs_npz):
                     logger.warning(f"Skipping {image_info.text_encoder_outputs_npz} because it already exists.")
                     continue
-                
+
             image_info.input_ids1 = input_ids1
             image_info.input_ids2 = input_ids2
+            image_info.attention_mask1 = attention_mask1
             image_infos.append(image_info)
 
         if len(image_infos) > 0:
+            is_sdxl = input_ids2_list[0] is not None
             b_input_ids1 = torch.stack([image_info.input_ids1 for image_info in image_infos])
-            b_input_ids2 = torch.stack([image_info.input_ids2 for image_info in image_infos])
+            b_input_ids2 = None
+            if is_sdxl:
+                b_input_ids2 = torch.stack([image_info.input_ids2 for image_info in image_infos])
+                b_input_ids = [b_input_ids1, b_input_ids2]
+                b_attention_mask1 = None
+            else:
+                b_attention_mask1 = torch.stack([image_info.attention_mask1 for image_info in image_infos])
+                b_input_ids = [b_input_ids1]
+            
             train_util.cache_batch_text_encoder_outputs(
-                image_infos, tokenizers, text_encoders, args.max_token_length, True, b_input_ids1, b_input_ids2, weight_dtype
+                image_infos, tokenizers, text_encoders, args.max_token_length, True, b_input_ids, weight_dtype, is_sdxl, b_attention_mask1
             )
 
     accelerator.wait_for_everyone()
@@ -180,6 +197,8 @@ def setup_parser() -> argparse.ArgumentParser:
     config_util.add_config_arguments(parser)
     sdxl_train_util.add_sdxl_training_arguments(parser)
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
+    parser.add_argument("--pixart", action="store_true", help="Use PixArt model / PixArtモデルを使用する")
+    parser.add_argument("--load_t5_in_4bit", action="store_true", help="Load T5 in 4bit quantization to save VRAM and speed up things at small precision loss")
     parser.add_argument(
         "--skip_existing",
         action="store_true",

@@ -31,6 +31,7 @@ from io import BytesIO
 import toml
 
 from tqdm import tqdm
+import library.pixart_train_util as pixart_train_util
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
@@ -161,6 +162,8 @@ class ImageInfo:
         # SDXL, optional
         self.text_encoder_outputs_npz: Optional[str] = None
         self.text_encoder_outputs1: Optional[torch.Tensor] = None
+        self.attention_masks1: Optional[torch.Tensor] = None
+        self.prompt_attention_masks1: Optional[torch.Tensor] = None
         self.text_encoder_outputs2: Optional[torch.Tensor] = None
         self.text_encoder_pool2: Optional[torch.Tensor] = None
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
@@ -597,7 +600,7 @@ class ControlNetSubset(BaseSubset):
             return NotImplemented
         return self.image_dir == other.image_dir and self.conditioning_data_dir == other.conditioning_data_dir
 
-
+has_warned_about_mask = False
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -610,6 +613,7 @@ class BaseDataset(torch.utils.data.Dataset):
         super().__init__()
 
         self.tokenizers = tokenizer if isinstance(tokenizer, list) else [tokenizer]
+        self.is_sdxl = len(self.tokenizers) == 2
 
         self.max_token_length = max_token_length
         # width/height is used when enable_bucket==False
@@ -839,55 +843,79 @@ class BaseDataset(torch.utils.data.Dataset):
                     caption = caption.replace(str_from, str_to)
 
         return caption
-
-    def get_input_ids(self, caption, tokenizer=None):
+    
+    def get_input_ids_pixart(self, caption, tokenizer=None):
         if tokenizer is None:
             tokenizer = self.tokenizers[0]
 
-        input_ids = tokenizer(
+        tokenized = tokenizer(
             caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
-        ).input_ids
+        )
 
-        if self.tokenizer_max_length > tokenizer.model_max_length:
-            input_ids = input_ids.squeeze(0)
-            iids_list = []
-            if tokenizer.pad_token_id == tokenizer.eos_token_id:
-                # v1
-                # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
-                # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
-                for i in range(
-                    1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
-                ):  # (1, 152, 75)
-                    ids_chunk = (
-                        input_ids[0].unsqueeze(0),
-                        input_ids[i : i + tokenizer.model_max_length - 2],
-                        input_ids[-1].unsqueeze(0),
-                    )
-                    ids_chunk = torch.cat(ids_chunk)
-                    iids_list.append(ids_chunk)
-            else:
-                # v2 or SDXL
-                # 77以上の時は "<BOS> .... <EOS> <PAD> <PAD>..." でトータル227とかになっているので、"<BOS>...<EOS> <PAD> <PAD> ..."の三連に変換する
-                for i in range(1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2):
-                    ids_chunk = (
-                        input_ids[0].unsqueeze(0),  # BOS
-                        input_ids[i : i + tokenizer.model_max_length - 2],
-                        input_ids[-1].unsqueeze(0),
-                    )  # PAD or EOS
-                    ids_chunk = torch.cat(ids_chunk)
+        input_ids = tokenized.input_ids
+        attention_mask = tokenized.attention_mask
 
-                    # 末尾が <EOS> <PAD> または <PAD> <PAD> の場合は、何もしなくてよい
-                    # 末尾が x <PAD/EOS> の場合は末尾を <EOS> に変える（x <EOS> なら結果的に変化なし）
-                    if ids_chunk[-2] != tokenizer.eos_token_id and ids_chunk[-2] != tokenizer.pad_token_id:
-                        ids_chunk[-1] = tokenizer.eos_token_id
-                    # 先頭が <BOS> <PAD> ... の場合は <BOS> <EOS> <PAD> ... に変える
-                    if ids_chunk[1] == tokenizer.pad_token_id:
-                        ids_chunk[1] = tokenizer.eos_token_id
+        if self.tokenizer_max_length > tokenizer.model_max_length and attention_mask is not None:
+            if not has_warned_about_mask:
+                print('WARNING: attention mask extension is not tried on LLMs yet. The tokenization will just be truncated.')
 
-                    iids_list.append(ids_chunk)
+        return input_ids, attention_mask
 
-            input_ids = torch.stack(iids_list)  # 3,77
-        return input_ids
+    def get_input_ids(self, caption, tokenizer=None):
+
+        if tokenizer is None:
+            tokenizer = self.tokenizers[0]
+
+        if not self.is_sdxl: # pixart
+            input_ids, attention_mask = self.get_input_ids_pixart(caption, tokenizer)
+
+            return input_ids, attention_mask
+        else:
+
+            input_ids = tokenizer(
+                caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
+            ).input_ids
+
+            if self.tokenizer_max_length > tokenizer.model_max_length:
+                input_ids = input_ids.squeeze(0)
+                iids_list = []
+                if tokenizer.pad_token_id == tokenizer.eos_token_id:
+                    # v1
+                    # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
+                    # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
+                    for i in range(
+                        1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
+                    ):  # (1, 152, 75)
+                        ids_chunk = (
+                            input_ids[0].unsqueeze(0),
+                            input_ids[i : i + tokenizer.model_max_length - 2],
+                            input_ids[-1].unsqueeze(0),
+                        )
+                        ids_chunk = torch.cat(ids_chunk)
+                        iids_list.append(ids_chunk)
+                else:
+                    # v2 or SDXL
+                    # 77以上の時は "<BOS> .... <EOS> <PAD> <PAD>..." でトータル227とかになっているので、"<BOS>...<EOS> <PAD> <PAD> ..."の三連に変換する
+                    for i in range(1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2):
+                        ids_chunk = (
+                            input_ids[0].unsqueeze(0),  # BOS
+                            input_ids[i : i + tokenizer.model_max_length - 2],
+                            input_ids[-1].unsqueeze(0),
+                        )  # PAD or EOS
+                        ids_chunk = torch.cat(ids_chunk)
+
+                        # 末尾が <EOS> <PAD> または <PAD> <PAD> の場合は、何もしなくてよい
+                        # 末尾が x <PAD/EOS> の場合は末尾を <EOS> に変える（x <EOS> なら結果的に変化なし）
+                        if ids_chunk[-2] != tokenizer.eos_token_id and ids_chunk[-2] != tokenizer.pad_token_id:
+                            ids_chunk[-1] = tokenizer.eos_token_id
+                        # 先頭が <BOS> <PAD> ... の場合は <BOS> <EOS> <PAD> ... に変える
+                        if ids_chunk[1] == tokenizer.pad_token_id:
+                            ids_chunk[1] = tokenizer.eos_token_id
+
+                        iids_list.append(ids_chunk)
+
+                input_ids = torch.stack(iids_list)  # 3,77
+            return input_ids, None
 
     def register_image(self, info: ImageInfo, subset: BaseSubset):
         self.image_data[info.image_key] = info
@@ -1098,7 +1126,7 @@ class BaseDataset(torch.utils.data.Dataset):
     def cache_text_encoder_outputs(
         self, tokenizers, text_encoders, device, weight_dtype, cache_to_disk=False, is_main_process=True
     ):
-        assert len(tokenizers) == 2, "only support SDXL"
+        is_sdxl = len(tokenizers) == 2 # TODO: generalize
 
         # latentsのキャッシュと同様に、ディスクへのキャッシュに対応する
         # またマルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
@@ -1134,9 +1162,13 @@ class BaseDataset(torch.utils.data.Dataset):
         batch = []
         batches = []
         for info in image_infos_to_cache:
-            input_ids1 = self.get_input_ids(info.caption, tokenizers[0])
-            input_ids2 = self.get_input_ids(info.caption, tokenizers[1])
-            batch.append((info, input_ids1, input_ids2))
+            input_ids_pairs = []
+            attention_mask_pairs = []
+            for tokenizer in tokenizers:
+                input_ids, attention_mask = self.get_input_ids(info.caption, tokenizer)
+                input_ids_pairs.append(input_ids)
+                attention_mask_pairs.append(attention_mask)
+            batch.append((info, input_ids_pairs, attention_mask_pairs))
 
             if len(batch) >= self.batch_size:
                 batches.append(batch)
@@ -1148,11 +1180,18 @@ class BaseDataset(torch.utils.data.Dataset):
         # iterate batches: call text encoder and cache outputs for memory or disk
         logger.info("caching text encoder outputs...")
         for batch in tqdm(batches):
-            infos, input_ids1, input_ids2 = zip(*batch)
-            input_ids1 = torch.stack(input_ids1, dim=0)
-            input_ids2 = torch.stack(input_ids2, dim=0)
+            infos, input_ids_pairs_old, attention_mask_pairs_old = zip(*batch)
+            input_ids_pairs = []
+            attention_mask_pairs = []
+            for input_ids in input_ids_pairs_old:
+                input_ids = torch.stack(input_ids, dim=0)
+                input_ids_pairs.append(input_ids)
+            if attention_mask_pairs_old[0] is not None:
+                for attention_mask in attention_mask_pairs_old:
+                    attention_mask = torch.stack(attention_mask, dim=0)
+                    attention_mask_pairs.append(attention_mask)
             cache_batch_text_encoder_outputs(
-                infos, tokenizers, text_encoders, self.max_token_length, cache_to_disk, input_ids1, input_ids2, weight_dtype
+                infos, tokenizers, text_encoders, self.max_token_length, cache_to_disk, input_ids_pairs, weight_dtype, is_sdxl, attention_mask_pairs if attention_mask_pairs_old[0] is not None else None
             )
 
     def get_image_size(self, image_path):
@@ -1235,6 +1274,8 @@ class BaseDataset(torch.utils.data.Dataset):
         captions = []
         input_ids_list = []
         input_ids2_list = []
+        attention_masks_list = []
+        prompt_attention_masks_list = []
         latents_list = []
         alpha_mask_list = []
         images = []
@@ -1357,18 +1398,28 @@ class BaseDataset(torch.utils.data.Dataset):
 
             # captionとtext encoder outputを処理する
             caption = image_info.caption  # default
-            if image_info.text_encoder_outputs1 is not None:
+            if image_info.prompt_attention_masks1 is not None:
+                # pixart
+                text_encoder_outputs1_list.append(image_info.text_encoder_outputs1)
+                prompt_attention_masks_list.append(image_info.prompt_attention_masks1)
+                captions.append(caption)
+            elif image_info.text_encoder_outputs1 is not None:
+                #sdxl
                 text_encoder_outputs1_list.append(image_info.text_encoder_outputs1)
                 text_encoder_outputs2_list.append(image_info.text_encoder_outputs2)
                 text_encoder_pool2_list.append(image_info.text_encoder_pool2)
                 captions.append(caption)
             elif image_info.text_encoder_outputs_npz is not None:
-                text_encoder_outputs1, text_encoder_outputs2, text_encoder_pool2 = load_text_encoder_outputs_from_disk(
+                text_encoder_outputs1, text_encoder_outputs2, text_encoder_pool2, prompt_attention_mask1 = load_text_encoder_outputs_from_disk(
                     image_info.text_encoder_outputs_npz
                 )
                 text_encoder_outputs1_list.append(text_encoder_outputs1)
-                text_encoder_outputs2_list.append(text_encoder_outputs2)
-                text_encoder_pool2_list.append(text_encoder_pool2)
+                if prompt_attention_mask1 is not None:
+                    # pixart
+                    prompt_attention_masks_list.append(prompt_attention_mask1)
+                else:
+                    text_encoder_outputs2_list.append(text_encoder_outputs2)
+                    text_encoder_pool2_list.append(text_encoder_pool2)
                 captions.append(caption)
             else:
                 caption = self.process_caption(subset, image_info.caption)
@@ -1385,12 +1436,14 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 if not self.token_padding_disabled:  # this option might be omitted in future
                     if self.XTI_layers:
-                        token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
+                        token_caption, attention_mask = self.get_input_ids(caption_layer, self.tokenizers[0])
                     else:
-                        token_caption = self.get_input_ids(caption, self.tokenizers[0])
+                        token_caption, attention_mask = self.get_input_ids(caption, self.tokenizers[0])
                     input_ids_list.append(token_caption)
+                    if attention_mask is not None:
+                        attention_masks_list.append(attention_mask)
 
-                    if len(self.tokenizers) > 1:
+                    if len(self.tokenizers) > 1: # sdxl only for now
                         if self.XTI_layers:
                             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
                         else:
@@ -1402,29 +1455,39 @@ class BaseDataset(torch.utils.data.Dataset):
 
         if len(text_encoder_outputs1_list) == 0:
             if self.token_padding_disabled:
-                # padding=True means pad in the batch
-                example["input_ids"] = self.tokenizer[0](captions, padding=True, truncation=True, return_tensors="pt").input_ids
                 if len(self.tokenizers) > 1:
+                    # padding=True means pad in the batch
+                    example["input_ids"] = self.tokenizer[0](captions, padding=True, truncation=True, return_tensors="pt").input_ids
                     example["input_ids2"] = self.tokenizer[1](
                         captions, padding=True, truncation=True, return_tensors="pt"
                     ).input_ids
                 else:
+                    # Pixart
+                    tokenized = self.tokenizer[0](
+                        captions, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
+                    )
+
+                    example["input_ids"] = tokenized.input_ids
+                    example["attention_mask"] = tokenized.attention_mask
                     example["input_ids2"] = None
             else:
                 example["input_ids"] = torch.stack(input_ids_list)
                 example["input_ids2"] = torch.stack(input_ids2_list) if len(self.tokenizers) > 1 else None
+                example["attention_mask"] = torch.stack(attention_masks_list) if len(attention_masks_list) > 1 else None
             example["text_encoder_outputs1_list"] = None
             example["text_encoder_outputs2_list"] = None
             example["text_encoder_pool2_list"] = None
+            example["prompt_attention_masks_list"] = None
         else:
             example["input_ids"] = None
             example["input_ids2"] = None
             # # for assertion
             # example["input_ids"] = torch.stack([self.get_input_ids(cap, self.tokenizers[0]) for cap in captions])
             # example["input_ids2"] = torch.stack([self.get_input_ids(cap, self.tokenizers[1]) for cap in captions])
-            example["text_encoder_outputs1_list"] = torch.stack(text_encoder_outputs1_list)
-            example["text_encoder_outputs2_list"] = torch.stack(text_encoder_outputs2_list)
-            example["text_encoder_pool2_list"] = torch.stack(text_encoder_pool2_list)
+            example["text_encoder_outputs1_list"] = torch.stack(text_encoder_outputs1_list) if len(prompt_attention_masks_list) > 0 else None
+            example["prompt_attention_masks_list"] = torch.stack(prompt_attention_masks_list) if len(prompt_attention_masks_list) > 0 else None
+            example["text_encoder_outputs2_list"] = torch.stack(text_encoder_outputs2_list) if len(text_encoder_outputs2_list) > 0 else None
+            example["text_encoder_pool2_list"] = torch.stack(text_encoder_pool2_list) if len(text_encoder_pool2_list) > 0 else None
 
         # if one of alpha_masks is not None, we need to replace None with ones
         none_or_not = [x is None for x in alpha_mask_list]
@@ -1468,6 +1531,7 @@ class BaseDataset(torch.utils.data.Dataset):
         captions = []
         images = []
         input_ids1_list = []
+        attention_masks1_list = []
         input_ids2_list = []
         absolute_paths = []
         resized_sizes = []
@@ -1499,17 +1563,20 @@ class BaseDataset(torch.utils.data.Dataset):
             else:
                 image = None
 
+            input_ids2 = None
+            attention_mask1 = None
             if self.caching_mode == "text":
-                input_ids1 = self.get_input_ids(caption, self.tokenizers[0])
-                input_ids2 = self.get_input_ids(caption, self.tokenizers[1])
+                input_ids1, attention_mask1 = self.get_input_ids(caption, self.tokenizers[0])
+                if len(self.tokenizers) > 0:
+                    input_ids2, _ = self.get_input_ids(caption, self.tokenizers[1])
             else:
                 input_ids1 = None
-                input_ids2 = None
 
             captions.append(caption)
             images.append(image)
             input_ids1_list.append(input_ids1)
             input_ids2_list.append(input_ids2)
+            attention_masks1_list.append(attention_mask1)
             absolute_paths.append(image_info.absolute_path)
             resized_sizes.append(image_info.resized_size)
 
@@ -1522,6 +1589,7 @@ class BaseDataset(torch.utils.data.Dataset):
         example["captions"] = captions
         example["input_ids1_list"] = input_ids1_list
         example["input_ids2_list"] = input_ids2_list
+        example["attention_masks1_list"] = attention_masks1_list
         example["absolute_paths"] = absolute_paths
         example["resized_sizes"] = resized_sizes
         example["flip_aug"] = flip_aug
@@ -2611,52 +2679,77 @@ def cache_batch_latents(
 
 
 def cache_batch_text_encoder_outputs(
-    image_infos, tokenizers, text_encoders, max_token_length, cache_to_disk, input_ids1, input_ids2, dtype
+    image_infos, tokenizers, text_encoders, max_token_length, cache_to_disk, input_ids_pairs, dtype, is_sdxl, attention_masks
 ):
-    input_ids1 = input_ids1.to(text_encoders[0].device)
-    input_ids2 = input_ids2.to(text_encoders[1].device)
+    for i, (input_ids, text_encoder) in enumerate(zip(input_ids_pairs, text_encoders)):
+        input_ids_pairs[i] = input_ids.to(text_encoder.device)
 
     with torch.no_grad():
-        b_hidden_state1, b_hidden_state2, b_pool2 = get_hidden_states_sdxl(
-            max_token_length,
-            input_ids1,
-            input_ids2,
-            tokenizers[0],
-            tokenizers[1],
-            text_encoders[0],
-            text_encoders[1],
-            dtype,
+        if is_sdxl:
+            b_hidden_state1, b_hidden_state2, b_pool2 = get_hidden_states_sdxl(
+                max_token_length,
+                input_ids_pairs[0],
+                input_ids_pairs[1],
+                tokenizers[0],
+                tokenizers[1],
+                text_encoders[0],
+                text_encoders[1],
+                dtype,
+            )
+            # ここでcpuに移動しておかないと、上書きされてしまう
+            b_hidden_state1 = b_hidden_state1.detach().to("cpu")  # b,n*75+2,768
+            b_hidden_state2 = b_hidden_state2.detach().to("cpu")  # b,n*75+2,1280
+            b_pool2 = b_pool2.detach().to("cpu")  # b,1280
+
+            for info, hidden_state1, hidden_state2, pool2 in zip(image_infos, b_hidden_state1, b_hidden_state2, b_pool2):
+                if cache_to_disk:
+                    save_text_encoder_outputs_to_disk(info.text_encoder_outputs_npz, hidden_states=[hidden_state1, hidden_state2], pool2=pool2, attention_masks=None)
+                else:
+                    info.text_encoder_outputs1 = hidden_state1
+                    info.text_encoder_outputs2 = hidden_state2
+                    info.text_encoder_pool2 = pool2
+        else: # pixart
+            b_hidden_state, prompt_attention_mask = pixart_train_util.get_hidden_states_pixart(
+                max_token_length,
+                input_ids_pairs[0],
+                attention_masks[0],
+                tokenizers[0],
+                text_encoders[0],
+                dtype
+            )
+            b_hidden_state = b_hidden_state.detach().to("cpu")  #  b,???,???
+            prompt_attention_mask = prompt_attention_mask.detach().to("cpu")  #  b,???,???
+        
+            for info, hidden_state, attention_mask in zip(image_infos, b_hidden_state, prompt_attention_mask):
+                if cache_to_disk:
+                    save_text_encoder_outputs_to_disk(info.text_encoder_outputs_npz, hidden_states=[hidden_state], attention_masks=[attention_mask])
+                else:
+                    info.text_encoder_outputs1 = hidden_state
+                    info.attention_mask1 = attention_mask
+
+
+def save_text_encoder_outputs_to_disk(npz_path, hidden_states, pool2=None, attention_masks=None):
+    if attention_masks is None: # sdxl
+        np.savez(
+            npz_path,
+            hidden_state1=hidden_states[0].cpu().float().numpy(),
+            hidden_state2=hidden_states[1].cpu().float().numpy(),
+            pool2=pool2.cpu().float().numpy(),
         )
-
-        # ここでcpuに移動しておかないと、上書きされてしまう
-        b_hidden_state1 = b_hidden_state1.detach().to("cpu")  # b,n*75+2,768
-        b_hidden_state2 = b_hidden_state2.detach().to("cpu")  # b,n*75+2,1280
-        b_pool2 = b_pool2.detach().to("cpu")  # b,1280
-
-    for info, hidden_state1, hidden_state2, pool2 in zip(image_infos, b_hidden_state1, b_hidden_state2, b_pool2):
-        if cache_to_disk:
-            save_text_encoder_outputs_to_disk(info.text_encoder_outputs_npz, hidden_state1, hidden_state2, pool2)
-        else:
-            info.text_encoder_outputs1 = hidden_state1
-            info.text_encoder_outputs2 = hidden_state2
-            info.text_encoder_pool2 = pool2
-
-
-def save_text_encoder_outputs_to_disk(npz_path, hidden_state1, hidden_state2, pool2):
-    np.savez(
-        npz_path,
-        hidden_state1=hidden_state1.cpu().float().numpy(),
-        hidden_state2=hidden_state2.cpu().float().numpy(),
-        pool2=pool2.cpu().float().numpy(),
-    )
-
+    else:
+        np.savez(
+            npz_path,
+            hidden_state1=hidden_states[0].cpu().float().numpy(),
+            attention_mask1=attention_masks[0].cpu().float().numpy()
+        )
 
 def load_text_encoder_outputs_from_disk(npz_path):
     with np.load(npz_path) as f:
         hidden_state1 = torch.from_numpy(f["hidden_state1"])
         hidden_state2 = torch.from_numpy(f["hidden_state2"]) if "hidden_state2" in f else None
+        attention_mask1 = torch.from_numpy(f["attention_mask1"]) if "attention_mask1" in f else None
         pool2 = torch.from_numpy(f["pool2"]) if "pool2" in f else None
-    return hidden_state1, hidden_state2, pool2
+    return hidden_state1, hidden_state2, pool2, attention_mask1
 
 
 # endregion
@@ -3251,8 +3344,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--max_token_length",
         type=int,
         default=None,
-        choices=[None, 150, 225],
-        help="max token length of text encoder (default for 75, 150 or 225) / text encoderのトークンの最大長（未指定で75、150または225が指定可）",
+        choices=[None, 150, 225, 300],
+        help="max token length of text encoder (default for 75, 150, 225 or 300) / text encoderのトークンの最大長（未指定で75、150または225が指定可）",
     )
     parser.add_argument(
         "--mem_eff_attn",
