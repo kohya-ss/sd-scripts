@@ -19,7 +19,7 @@ Jan 25, 2025:
 - `train_network.py`, `sdxl_train_network.py`, `flux_train_network.py`, and `sd3_train_network.py` now support validation loss. PR [#1864](https://github.com/kohya-ss/sd-scripts/pull/1864) Thank you to rockerBOO!
   - For details on how to set it up, please refer to the PR. The documentation will be updated as needed.
   - It will be added to other scripts as well.
-  - As a current limitation, validation loss is not supported when `--block_to_swap` is specified.
+  - As a current limitation, validation loss is not supported when `--block_to_swap` is specified, or when schedule-free optimizer is used.
 
 Dec 15, 2024:
 
