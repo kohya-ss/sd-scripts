@@ -2403,6 +2403,7 @@ class ControlNetDataset(BaseDataset):
 
         self.dreambooth_dataset_delegate = DreamBoothDataset(
             db_subsets,
+            True,
             batch_size,
             resolution,
             network_multiplier,
