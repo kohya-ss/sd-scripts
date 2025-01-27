@@ -2467,8 +2467,12 @@ def main(args):
             # repeat prompt
             for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
-                if pi == 0: # or len(raw_prompts) > 1:
-
+                prompt_args = raw_prompt.strip().split(" --")
+                prompt = prompt_args[0]
+                if pi == 0 or len(raw_prompts) > 1:
+                    logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
+                
+                if pi == 0:
                         # parse prompt: if prompt is not changed, skip parsing
                     width = args.W
                     height = args.H
@@ -2502,10 +2506,6 @@ def main(args):
                     gl_ratio_step = args.gradual_latent_ratio_step
                     gl_s_noise = args.gradual_latent_s_noise
                     gl_unsharp_params = args.gradual_latent_unsharp_params
-
-                    prompt_args = raw_prompt.strip().split(" --")
-                    prompt = prompt_args[0]
-                    logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
 
                     for parg in prompt_args[1:]:
 
