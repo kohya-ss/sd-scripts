@@ -446,6 +446,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
                 prepare_fp8(text_encoder, weight_dtype)
 
     def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
+        # TODO consider validation
         # drop cached text encoder outputs
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
         if text_encoder_outputs_list is not None:
