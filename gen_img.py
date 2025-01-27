@@ -2835,7 +2835,7 @@ def main(args):
                 # prepare seed
                 if seeds is not None:  # given in prompt
                     # num_images_per_promptが多い場合は足りなくなるので、足りない分は前のを使う
-                    # Previous implementation may result in unexpected behaiviour when number of seeds is lesss than number of repeats. Last seed is taken for rest of repeated prompts
+                    # Previous implementation may result in unexpected behaviour when number of seeds is lesss than number of repeats. Last seed is taken for rest of repeated prompts
                     if len(seeds) > 1:
                         seed = seeds.pop(0)
                     elif len(seeds)  == 1:
