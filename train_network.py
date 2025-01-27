@@ -233,7 +233,7 @@ class NetworkTrainer:
                 t.requires_grad_(True)
 
         # Predict the noise residual
-        with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
+        with torch.set_grad_enabled(is_train), accelerator.autocast():
             noise_pred = self.call_unet(
                 args,
                 accelerator,
