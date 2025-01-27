@@ -2415,7 +2415,7 @@ def main(args):
                 elif args.sequential_file_name:
                     fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                 else:
-                    fln = f"im_{ts_str}_{globalcount:02d}_{highres_prefix}{i:03d}_{seed}.png"
+                    fln = f"im_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
                 logger.info(f"Saving Image: {fln}:\nPrompt: {prompt}")
                 if negative_prompt is not None:
