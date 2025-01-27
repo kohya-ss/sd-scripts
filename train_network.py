@@ -219,16 +219,11 @@ class NetworkTrainer:
         network,
         weight_dtype,
         train_unet,
-        is_train=True,
-        state=None
+        is_train=True
     ):
-        if state is None:
-            # Sample noise, sample a random timestep for each image, and add noise to the latents,
-            # with noise offset and/or multires noise if specified
-            noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
-            state = (noise, noisy_latents, timesteps)
-        else:
-            noise, noisy_latents, timesteps = state
+        # Sample noise, sample a random timestep for each image, and add noise to the latents,
+        # with noise offset and/or multires noise if specified
+        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -280,7 +275,7 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None, state
+        return noise_pred, target, timesteps, None
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -335,8 +330,7 @@ class NetworkTrainer:
         tokenize_strategy: strategy_base.TokenizeStrategy, 
         is_train=True, 
         train_text_encoder=True, 
-        train_unet=True,
-        state=None
+        train_unet=True
     ) -> torch.Tensor:
         """
         Process a batch for the network
@@ -392,7 +386,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting, state = self.get_noise_pred_and_target(
+        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -403,8 +397,7 @@ class NetworkTrainer:
             network,
             weight_dtype,
             train_unet,
-            is_train=is_train,
-            state=state
+            is_train=is_train
         )
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
@@ -420,7 +413,7 @@ class NetworkTrainer:
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-        return loss.mean(), state
+        return loss.mean()
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1171,17 +1164,13 @@ class NetworkTrainer:
             ), f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
 
         if args.validate_every_n_steps is not None:
-            # TODO: REMOVE HARDCODED TIMESTEP ITERATION COUNT
-            TIMESTEP_ITERATION_COUNT = 4
-
             validation_steps = (
                 min(args.max_validation_steps, len(val_dataloader)) 
                 if args.max_validation_steps is not None 
                 else len(val_dataloader)
             )
-            logger.warning(f"VALIDATION STEPS: {validation_steps}")
             val_progress_bar = tqdm(
-                range(TIMESTEP_ITERATION_COUNT * validation_steps), smoothing=0, 
+                range(validation_steps), smoothing=0, 
                 disable=not accelerator.is_local_main_process, 
                 desc="validation steps"
             )
@@ -1286,8 +1275,6 @@ class NetworkTrainer:
             param_3rd = params_itr.__next__()
             logger.info(f"text_encoder [{i}] dtype: {param_3rd.dtype}, device: {t_enc.device}")
 
-        tracking_states = []
-
         clean_memory_on_device(accelerator.device)
 
         for epoch in range(epoch_to_start, num_train_epochs):
@@ -1316,7 +1303,7 @@ class NetworkTrainer:
                     # temporary, for batch processing
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
 
-                    loss, _ = self.process_batch(
+                    loss = self.process_batch(
                         batch, 
                         text_encoders, 
                         unet, 
@@ -1331,8 +1318,7 @@ class NetworkTrainer:
                         tokenize_strategy, 
                         is_train=True, 
                         train_text_encoder=train_text_encoder, 
-                        train_unet=train_unet,
-                        state=None
+                        train_unet=train_unet
                     )
 
                     accelerator.backward(loss)
@@ -1411,76 +1397,46 @@ class NetworkTrainer:
                     and args.validation_at_start
                     and (global_step - 1) % args.validate_every_n_steps == 0 # Note: Should use global step - 1 since the global step is incremented prior to this being run
                 )
-                
+
                 # Break out validation processing so that it does not need to be repeated
                 def process_validation():
                     val_progress_bar.reset()
-                    
                     for val_step, batch in enumerate(val_dataloader):
-                        if len(tracking_states) < len(val_dataloader):
-                            batch['states'] = []
-                        for t_step in range(TIMESTEP_ITERATION_COUNT):
-                            if val_step >= validation_steps:
-                                break
+                        if val_step >= validation_steps:
+                            break
 
-                            # temporary, for batch processing
-                            self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
+                        # temporary, for batch processing
+                        self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
 
-                            if len(tracking_states) < len(val_dataloader):
-                                loss, state = self.process_batch(
-                                    batch, 
-                                    text_encoders, 
-                                    unet, 
-                                    network, 
-                                    vae, 
-                                    noise_scheduler, 
-                                    vae_dtype, 
-                                    weight_dtype, 
-                                    accelerator, 
-                                    args, 
-                                    text_encoding_strategy, 
-                                    tokenize_strategy, 
-                                    is_train=False,
-                                    train_text_encoder=False, 
-                                    train_unet=False,
-                                    state=None
-                                )
-                                batch['states'].append(state)
-                                # logger.warning(f'BATCH STATE COUNT: {len(batch["states"])}')
-                            else:
-                                loss, state = self.process_batch(
-                                    batch, 
-                                    text_encoders, 
-                                    unet, 
-                                    network, 
-                                    vae, 
-                                    noise_scheduler, 
-                                    vae_dtype, 
-                                    weight_dtype, 
-                                    accelerator, 
-                                    args, 
-                                    text_encoding_strategy, 
-                                    tokenize_strategy, 
-                                    is_train=False,
-                                    train_text_encoder=False, 
-                                    train_unet=False,
-                                    state=tracking_states[val_step][t_step] 
-                                )
-                                # logger.warning(f'TRACKING STATE COUNT: {len(tracking_states[val_step])}')
-                            current_loss = loss.detach().item()
-                            val_step_loss_recorder.add(epoch=epoch, step=val_step, loss=current_loss)
-                            val_progress_bar.update(1)
-                            val_progress_bar.set_postfix({ "val_avg_loss": val_step_loss_recorder.moving_average })
+                        loss = self.process_batch(
+                            batch, 
+                            text_encoders, 
+                            unet, 
+                            network, 
+                            vae, 
+                            noise_scheduler, 
+                            vae_dtype, 
+                            weight_dtype, 
+                            accelerator, 
+                            args, 
+                            text_encoding_strategy, 
+                            tokenize_strategy, 
+                            is_train=False,
+                            train_text_encoder=False, 
+                            train_unet=False
+                        )
 
-                            if is_tracking:
-                                logs = {
-                                    "loss/validation/step_current": current_loss,
-                                    "val_step": (epoch * validation_steps) + val_step,
-                                }
-                                accelerator.log(logs, step=global_step)
-                                
-                        if len(tracking_states) < len(val_dataloader):
-                            tracking_states.append(batch['states'])
+                        current_loss = loss.detach().item()
+                        val_step_loss_recorder.add(epoch=epoch, step=val_step, loss=current_loss)
+                        val_progress_bar.update(1)
+                        val_progress_bar.set_postfix({ "val_avg_loss": val_step_loss_recorder.moving_average })
+
+                        if is_tracking:
+                            logs = {
+                                "loss/validation/step_current": current_loss,
+                                "val_step": (epoch * validation_steps) + val_step,
+                            }
+                            accelerator.log(logs, step=global_step)
 
                     if is_tracking:
                         loss_validation_divergence = val_step_loss_recorder.moving_average - loss_recorder.moving_average
@@ -1489,13 +1445,11 @@ class NetworkTrainer:
                             "loss/validation/step_divergence": loss_validation_divergence, 
                         }
                         accelerator.log(logs, step=global_step)
-
-                    return
                     # END VALIDATION PROCESSING
 
                 if accelerator.sync_gradients and should_validate_step:
-                        process_validation()
-
+                    process_validation()
+                                        
                 if global_step >= args.max_train_steps:
                     break
 
