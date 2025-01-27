@@ -2835,8 +2835,12 @@ def main(args):
                 # prepare seed
                 if seeds is not None:  # given in prompt
                     # num_images_per_promptが多い場合は足りなくなるので、足りない分は前のを使う
-                    if len(seeds) > 0:
+                    # Previous implementation may result in unexpected behaiviour when number of seeds is lesss than number of repeats. Last seed is taken for rest of repeated prompts
+                    if len(seeds) > 1:
                         seed = seeds.pop(0)
+                    elif len(seeds)  == 1:
+                        seed = seeds.pop(0)
+                        seeds = None
                 else:
                     if args.iter_same_seed:
                         seed = iter_seed
@@ -2847,6 +2851,7 @@ def main(args):
                     seed = seed_random.randint(0, 2**32 - 1)
                 if args.interactive:
                     logger.info(f"seed: {seed}")
+                # logger.info(f"seed: {seed}") #debugging logger. Uncomment to verify if expected seed is added correctly.
 
                 # prepare init image, guide image and mask
                 init_image = mask_image = guide_image = None
