@@ -2467,7 +2467,7 @@ def main(args):
             # repeat prompt
             for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
-                if pi == 0 # or len(raw_prompts) > 1:
+                if pi == 0: # or len(raw_prompts) > 1:
 
                         # parse prompt: if prompt is not changed, skip parsing
                     width = args.W
