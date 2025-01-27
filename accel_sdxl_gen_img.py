@@ -2469,6 +2469,18 @@ def main(args):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
                 prompt_args = raw_prompt.strip().split(" --")
                 prompt = prompt_args[0]
+                for parg in prompt_args[1:]:
+
+                    try:
+                        m = re.match(r"n (.+)", parg, re.IGNORECASE)
+                        if m:  # negative prompt
+                            negative_prompt = m.group(1)
+                            logger.info(f"negative prompt: {negative_prompt}")
+                            break
+
+                    except ValueError as ex:
+                        logger.error(f"Exception in parsing / 解析エラー: {parg}")
+                        logger.error(f"{ex}")
                 if pi == 0 or len(raw_prompts) > 1:
                     logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
                 
@@ -2589,12 +2601,6 @@ def main(args):
                             if m:  # strength
                                 strength = float(m.group(1))
                                 logger.info(f"strength: {strength}")
-                                continue
-
-                            m = re.match(r"n (.+)", parg, re.IGNORECASE)
-                            if m:  # negative prompt
-                                negative_prompt = m.group(1)
-                                logger.info(f"negative prompt: {negative_prompt}")
                                 continue
 
                             m = re.match(r"c (.+)", parg, re.IGNORECASE)
