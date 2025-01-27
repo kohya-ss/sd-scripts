@@ -2782,8 +2782,7 @@ def main(args):
 
                 if seed is None:
                     seed = random.randint(0, 0x7FFFFFFF)
-                if args.interactive:
-                    logger.info(f"seed: {seed}")
+                logger.info(f"seed: {seed}")
 
                 # prepare init image, guide image and mask
                 init_image = mask_image = guide_image = None
@@ -2859,7 +2858,7 @@ def main(args):
                     logger.info(f"Loading batch {j+1}/{len(batch_list)} of {len(batch_list[j])} prompts onto device {distributed_state.local_process_index}:")
                     logger.info(f"batch_list:")
                     for i in range(len(batch_list[j])):
-                        logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[j][i].base.prompt}\nNegative Prompt: {batch_list[j][i].base.negative_prompt}")
+                        logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[j][i].base.prompt}\nNegative Prompt: {batch_list[j][i].base.negative_prompt}\nSeed: {batch_list[j][i].base.seed}")
                     prev_image = process_batch(batch_list[j], highres_fix)[0]
 
             distributed_state.wait_for_everyone()
