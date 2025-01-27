@@ -376,9 +376,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
-            # if not args.split_mode:
-            # normal forward
-            with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
+            # grad is enabled even if unet is not in train mode, because Text Encoder is in train mode
+            with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                 model_pred = unet(
                     img=img,
@@ -390,44 +389,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     guidance=guidance_vec,
                     txt_attention_mask=t5_attn_mask,
                 )
-            """
-            else:
-                # split forward to reduce memory usage
-                assert network.train_blocks == "single", "train_blocks must be single for split mode"
-                with accelerator.autocast():
-                    # move flux lower to cpu, and then move flux upper to gpu
-                    unet.to("cpu")
-                    clean_memory_on_device(accelerator.device)
-                    self.flux_upper.to(accelerator.device)
-
-                    # upper model does not require grad
-                    with torch.no_grad():
-                        intermediate_img, intermediate_txt, vec, pe = self.flux_upper(
-                            img=packed_noisy_model_input,
-                            img_ids=img_ids,
-                            txt=t5_out,
-                            txt_ids=txt_ids,
-                            y=l_pooled,
-                            timesteps=timesteps / 1000,
-                            guidance=guidance_vec,
-                            txt_attention_mask=t5_attn_mask,
-                        )
-
-                    # move flux upper back to cpu, and then move flux lower to gpu
-                    self.flux_upper.to("cpu")
-                    clean_memory_on_device(accelerator.device)
-                    unet.to(accelerator.device)
-
-                    # lower model requires grad
-                    intermediate_img.requires_grad_(True)
-                    intermediate_txt.requires_grad_(True)
-                    vec.requires_grad_(True)
-                    pe.requires_grad_(True)
-
-                    with torch.set_grad_enabled(is_train and train_unet): 
-                        model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
-            """
-
             return model_pred
 
         model_pred = call_dit(

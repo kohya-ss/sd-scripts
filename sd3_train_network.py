@@ -345,7 +345,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         # call model
-        with torch.set_grad_enabled(is_train and train_unet), accelerator.autocast():
+        with torch.set_grad_enabled(is_train), accelerator.autocast():
             # TODO support attention mask
             model_pred = unet(noisy_model_input, timesteps, context=context, y=lg_pooled)
 
