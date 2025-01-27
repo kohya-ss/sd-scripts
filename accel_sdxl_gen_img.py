@@ -2768,6 +2768,8 @@ def main(args):
                     # 数が足りないなら前のをそのまま使う
                     if len(seeds) > 0:
                         seed = seeds.pop(0)
+                        if len(seeds) == 1:
+                            seeds = None
                 else:
                     if predefined_seeds is not None:
                         if len(predefined_seeds) > 0:
