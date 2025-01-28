@@ -20,7 +20,7 @@ voluptuous==0.13.1
 huggingface-hub==0.24.5
 # for Image utils
 imagesize==1.4.1
-numpy<=2.0
+numpy<2.0
 # for BLIP captioning
 # requests==2.28.2
 # timm==0.6.12

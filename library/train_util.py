@@ -445,11 +445,11 @@ class BaseSubset:
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
-        preference: bool,
-        preference_caption_prefix: Optional[str],
-        preference_caption_suffix: Optional[str],
-        non_preference_caption_prefix: Optional[str],
-        non_preference_caption_suffix: Optional[str],
+        preference: bool = False,
+        preference_caption_prefix: Optional[str] = None,
+        preference_caption_suffix: Optional[str] = None,
+        non_preference_caption_prefix: Optional[str] = None,
+        non_preference_caption_suffix: Optional[str] = None,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
@@ -516,11 +516,11 @@ class DreamBoothSubset(BaseSubset):
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
-        preference: bool,
-        preference_caption_prefix,
-        preference_caption_suffix,
-        non_preference_caption_prefix,
-        non_preference_caption_suffix,
+        preference: bool = False,
+        preference_caption_prefix: Optional[str] = None,
+        preference_caption_suffix: Optional[str] = None,
+        non_preference_caption_prefix: Optional[str] = None,
+        non_preference_caption_suffix: Optional[str] = None,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -548,11 +548,11 @@ class DreamBoothSubset(BaseSubset):
             custom_attributes=custom_attributes,
             validation_seed=validation_seed,
             validation_split=validation_split,
-            preference,
-            preference_caption_prefix,
-            preference_caption_suffix,
-            non_preference_caption_prefix,
-            non_preference_caption_suffix,
+            preference=preference,
+            preference_caption_prefix=preference_caption_prefix,
+            preference_caption_suffix=preference_caption_suffix,
+            non_preference_caption_prefix=non_preference_caption_prefix,
+            non_preference_caption_suffix=non_preference_caption_suffix,
         )
 
         self.is_reg = is_reg
@@ -660,11 +660,11 @@ class ControlNetSubset(BaseSubset):
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
-        preference,
-        preference_caption_prefix,
-        preference_caption_suffix,
-        non_preference_caption_prefix,
-        non_preference_caption_suffix
+        preference: bool = False,
+        preference_caption_prefix: Optional[str] = None,
+        preference_caption_suffix: Optional[str] = None,
+        non_preference_caption_prefix: Optional[str] = None,
+        non_preference_caption_suffix: Optional[str] = None,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -692,11 +692,11 @@ class ControlNetSubset(BaseSubset):
             custom_attributes=custom_attributes,
             validation_seed=validation_seed,
             validation_split=validation_split,
-            preference,
-            preference_caption_prefix,
-            preference_caption_suffix,
-            non_preference_caption_prefix,
-            non_preference_caption_suffix,
+            preference=preference,
+            preference_caption_prefix=preference_caption_prefix,
+            preference_caption_suffix=preference_caption_suffix,
+            non_preference_caption_prefix=non_preference_caption_prefix,
+            non_preference_caption_suffix=non_preference_caption_suffix,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
