@@ -2870,7 +2870,7 @@ def main(args):
                     templist.append(batch_data[index])
                 split_into_batches = get_batches(items=templist, batch_size=args.batch_size)
                 if(len(split_into_batches) % distributed_state.num_processes != 0):
-                    #Distributes last round of batches across available processes if last round of batches less than availble processes and there is more than one prompt in the last batch
+                    #Distributes last round of batches across available processes if last round of batches less than available processes and there is more than one prompt in the last batch
                     sublist = []
                     for j in range(len(split_into_batches) % distributed_state.num_processes):
                         if len(split_into_batches) > 1 :
