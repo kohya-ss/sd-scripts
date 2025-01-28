@@ -100,9 +100,7 @@ class NetworkTrainer:
             if (
                 args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
             ):  # tracking d*lr value of unet.
-                logs["lr/d*lr"] = (
-                    optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
-                )
+                logs["lr/d*lr"] = optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
         else:
             idx = 0
             if not args.network_train_unet_only:
@@ -115,16 +113,17 @@ class NetworkTrainer:
                     logs[f"lr/d*lr/group{i}"] = (
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
-                if (
-                    args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
-                ):
-                    logs[f"lr/d*lr/group{i}"] = (
-                        optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
-                    )
+                if args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None:
+                    logs[f"lr/d*lr/group{i}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
 
         return logs
 
-    def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
+    def assert_extra_args(
+        self,
+        args,
+        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
+        val_dataset_group: Optional[train_util.DatasetGroup],
+    ):
         train_dataset_group.verify_bucket_reso_steps(64)
         if val_dataset_group is not None:
             val_dataset_group.verify_bucket_reso_steps(64)
@@ -219,7 +218,7 @@ class NetworkTrainer:
         network,
         weight_dtype,
         train_unet,
-        is_train=True
+        is_train=True,
     ):
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
@@ -315,22 +314,22 @@ class NetworkTrainer:
     # endregion
 
     def process_batch(
-        self, 
-        batch, 
-        text_encoders, 
-        unet, 
-        network, 
-        vae, 
-        noise_scheduler, 
-        vae_dtype, 
-        weight_dtype, 
-        accelerator, 
-        args, 
-        text_encoding_strategy: strategy_base.TextEncodingStrategy, 
-        tokenize_strategy: strategy_base.TokenizeStrategy, 
-        is_train=True, 
-        train_text_encoder=True, 
-        train_unet=True
+        self,
+        batch,
+        text_encoders,
+        unet,
+        network,
+        vae,
+        noise_scheduler,
+        vae_dtype,
+        weight_dtype,
+        accelerator,
+        args,
+        text_encoding_strategy: strategy_base.TextEncodingStrategy,
+        tokenize_strategy: strategy_base.TokenizeStrategy,
+        is_train=True,
+        train_text_encoder=True,
+        train_unet=True,
     ) -> torch.Tensor:
         """
         Process a batch for the network
@@ -397,7 +396,7 @@ class NetworkTrainer:
             network,
             weight_dtype,
             train_unet,
-            is_train=is_train
+            is_train=is_train,
         )
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
@@ -484,7 +483,7 @@ class NetworkTrainer:
         else:
             # use arbitrary dataset class
             train_dataset_group = train_util.load_arbitrary_dataset(args)
-            val_dataset_group = None # placeholder until validation dataset supported for arbitrary
+            val_dataset_group = None  # placeholder until validation dataset supported for arbitrary
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
@@ -701,7 +700,7 @@ class NetworkTrainer:
             num_workers=n_workers,
             persistent_workers=args.persistent_data_loader_workers,
         )
-        
+
         val_dataloader = torch.utils.data.DataLoader(
             val_dataset_group if val_dataset_group is not None else [],
             shuffle=False,
@@ -900,7 +899,9 @@ class NetworkTrainer:
 
         accelerator.print("running training / 学習開始")
         accelerator.print(f"  num train images * repeats / 学習画像の数×繰り返し回数: {train_dataset_group.num_train_images}")
-        accelerator.print(f"  num validation images * repeats / 学習画像の数×繰り返し回数: {val_dataset_group.num_train_images if val_dataset_group is not None else 0}")
+        accelerator.print(
+            f"  num validation images * repeats / 学習画像の数×繰り返し回数: {val_dataset_group.num_train_images if val_dataset_group is not None else 0}"
+        )
         accelerator.print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
         accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
         accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
@@ -968,11 +969,11 @@ class NetworkTrainer:
             "ss_huber_c": args.huber_c,
             "ss_fp8_base": bool(args.fp8_base),
             "ss_fp8_base_unet": bool(args.fp8_base_unet),
-            "ss_validation_seed": args.validation_seed, 
-            "ss_validation_split": args.validation_split, 
-            "ss_max_validation_steps": args.max_validation_steps, 
-            "ss_validate_every_n_epochs": args.validate_every_n_epochs, 
-            "ss_validate_every_n_steps": args.validate_every_n_steps, 
+            "ss_validation_seed": args.validation_seed,
+            "ss_validation_split": args.validation_split,
+            "ss_max_validation_steps": args.max_validation_steps,
+            "ss_validate_every_n_epochs": args.validate_every_n_epochs,
+            "ss_validate_every_n_steps": args.validate_every_n_steps,
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1248,9 +1249,7 @@ class NetworkTrainer:
             accelerator.log({}, step=0)
 
         validation_steps = (
-            min(args.max_validation_steps, len(val_dataloader)) 
-            if args.max_validation_steps is not None 
-            else len(val_dataloader)
+            min(args.max_validation_steps, len(val_dataloader)) if args.max_validation_steps is not None else len(val_dataloader)
         )
 
         # training loop
@@ -1298,103 +1297,98 @@ class NetworkTrainer:
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
 
                     loss = self.process_batch(
-                        batch, 
-                        text_encoders, 
-                        unet, 
-                        network, 
-                        vae, 
-                        noise_scheduler, 
-                        vae_dtype, 
-                        weight_dtype, 
-                        accelerator, 
-                        args, 
-                        text_encoding_strategy, 
-                        tokenize_strategy, 
-                        is_train=True, 
-                        train_text_encoder=train_text_encoder, 
-                        train_unet=train_unet
+                        batch,
+                        text_encoders,
+                        unet,
+                        network,
+                        vae,
+                        noise_scheduler,
+                        vae_dtype,
+                        weight_dtype,
+                        accelerator,
+                        args,
+                        text_encoding_strategy,
+                        tokenize_strategy,
+                        is_train=True,
+                        train_text_encoder=train_text_encoder,
+                        train_unet=train_unet,
                     )
 
                     accelerator.backward(loss)
+
+                    # Checks if the accelerator has performed an optimization step behind the scenes
                     if accelerator.sync_gradients:
                         self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                         if args.max_grad_norm != 0.0:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
+                        max_mean_logs = {}
+                        if args.scale_weight_norms:
+                            keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
+                                args.scale_weight_norms, accelerator.device
+                            )
+                            max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
+                        else:
+                            keys_scaled, mean_norm, maximum_norm = None, None, None
+
+                        current_loss = loss.detach().item()
+                        loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+                        avr_loss: float = loss_recorder.moving_average
+                        logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+                        progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                        progress_bar.update(1)
+                        global_step += 1
+
+                        if is_tracking:
+                            logs = self.generate_step_logs(
+                                args,
+                                current_loss,
+                                avr_loss,
+                                lr_scheduler,
+                                lr_descriptions,
+                                optimizer,
+                                keys_scaled,
+                                mean_norm,
+                                maximum_norm,
+                            )
+                            accelerator.log(logs, step=global_step)
+
+                        optimizer_eval_fn()
+                        self.sample_images(
+                            accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                        )
+
+                        # 指定ステップごとにモデルを保存
+                        if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                            accelerator.wait_for_everyone()
+                            if accelerator.is_main_process:
+                                ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+                                save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
+
+                                if args.save_state:
+                                    train_util.save_and_remove_state_stepwise(args, accelerator, global_step)
+
+                                remove_step_no = train_util.get_remove_step_no(args, global_step)
+                                if remove_step_no is not None:
+                                    remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
+                                    remove_model(remove_ckpt_name)
+                        optimizer_train_fn()
+
+
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                if args.scale_weight_norms:
-                    keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
-                        args.scale_weight_norms, accelerator.device
-                    )
-                    max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
-                else:
-                    keys_scaled, mean_norm, maximum_norm = None, None, None
-
-                # Checks if the accelerator has performed an optimization step behind the scenes
-                if accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    global_step += 1
-
-                    optimizer_eval_fn()
-                    self.sample_images(
-                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
-                    )
-
-                    # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
-                        accelerator.wait_for_everyone()
-                        if accelerator.is_main_process:
-                            ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
-                            save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
-
-                            if args.save_state:
-                                train_util.save_and_remove_state_stepwise(args, accelerator, global_step)
-
-                            remove_step_no = train_util.get_remove_step_no(args, global_step)
-                            if remove_step_no is not None:
-                                remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
-                                remove_model(remove_ckpt_name)
-                    optimizer_train_fn()
-
-                current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
-                avr_loss: float = loss_recorder.moving_average
-                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
-
-                if args.scale_weight_norms:
-                    progress_bar.set_postfix(**{**max_mean_logs, **logs})
-
-
-                if is_tracking:
-                    logs = self.generate_step_logs(
-                        args, 
-                        current_loss, 
-                        avr_loss, 
-                        lr_scheduler, 
-                        lr_descriptions, 
-                        optimizer, 
-                        keys_scaled, 
-                        mean_norm, 
-                        maximum_norm
-                    )
-                    accelerator.log(logs, step=global_step)
-
                 # VALIDATION PER STEP
                 should_validate_step = (
-                    args.validate_every_n_steps is not None 
-                    and global_step != 0 # Skip first step
+                    args.validate_every_n_steps is not None
+                    and global_step != 0  # Skip first step
                     and global_step % args.validate_every_n_steps == 0
                 )
                 if accelerator.sync_gradients and validation_steps > 0 and should_validate_step:
                     val_progress_bar = tqdm(
-                        range(validation_steps), smoothing=0, 
-                        disable=not accelerator.is_local_main_process, 
-                        desc="validation steps"
+                        range(validation_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="validation steps"
                     )
                     for val_step, batch in enumerate(val_dataloader):
                         if val_step >= validation_steps:
@@ -1404,27 +1398,27 @@ class NetworkTrainer:
                         self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
 
                         loss = self.process_batch(
-                            batch, 
-                            text_encoders, 
-                            unet, 
-                            network, 
-                            vae, 
-                            noise_scheduler, 
-                            vae_dtype, 
-                            weight_dtype, 
-                            accelerator, 
-                            args, 
-                            text_encoding_strategy, 
-                            tokenize_strategy, 
+                            batch,
+                            text_encoders,
+                            unet,
+                            network,
+                            vae,
+                            noise_scheduler,
+                            vae_dtype,
+                            weight_dtype,
+                            accelerator,
+                            args,
+                            text_encoding_strategy,
+                            tokenize_strategy,
                             is_train=False,
-                            train_text_encoder=False, 
-                            train_unet=False
+                            train_text_encoder=False,
+                            train_unet=False,
                         )
 
                         current_loss = loss.detach().item()
                         val_step_loss_recorder.add(epoch=epoch, step=val_step, loss=current_loss)
                         val_progress_bar.update(1)
-                        val_progress_bar.set_postfix({ "val_avg_loss": val_step_loss_recorder.moving_average })
+                        val_progress_bar.set_postfix({"val_avg_loss": val_step_loss_recorder.moving_average})
 
                         if is_tracking:
                             logs = {
@@ -1436,26 +1430,25 @@ class NetworkTrainer:
                     if is_tracking:
                         loss_validation_divergence = val_step_loss_recorder.moving_average - loss_recorder.moving_average
                         logs = {
-                            "loss/validation/step_average": val_step_loss_recorder.moving_average, 
-                            "loss/validation/step_divergence": loss_validation_divergence, 
+                            "loss/validation/step_average": val_step_loss_recorder.moving_average,
+                            "loss/validation/step_divergence": loss_validation_divergence,
                         }
                         accelerator.log(logs, step=global_step)
-                                        
+
                 if global_step >= args.max_train_steps:
                     break
 
             # EPOCH VALIDATION
             should_validate_epoch = (
-                (epoch + 1) % args.validate_every_n_epochs == 0 
-                if args.validate_every_n_epochs is not None 
-                else True
+                (epoch + 1) % args.validate_every_n_epochs == 0 if args.validate_every_n_epochs is not None else True
             )
 
             if should_validate_epoch and len(val_dataloader) > 0:
                 val_progress_bar = tqdm(
-                    range(validation_steps), smoothing=0, 
-                    disable=not accelerator.is_local_main_process, 
-                    desc="epoch validation steps"
+                    range(validation_steps),
+                    smoothing=0,
+                    disable=not accelerator.is_local_main_process,
+                    desc="epoch validation steps",
                 )
 
                 for val_step, batch in enumerate(val_dataloader):
@@ -1466,43 +1459,43 @@ class NetworkTrainer:
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
 
                     loss = self.process_batch(
-                        batch, 
-                        text_encoders, 
-                        unet, 
-                        network, 
-                        vae, 
-                        noise_scheduler, 
-                        vae_dtype, 
-                        weight_dtype, 
-                        accelerator, 
-                        args, 
-                        text_encoding_strategy, 
-                        tokenize_strategy, 
+                        batch,
+                        text_encoders,
+                        unet,
+                        network,
+                        vae,
+                        noise_scheduler,
+                        vae_dtype,
+                        weight_dtype,
+                        accelerator,
+                        args,
+                        text_encoding_strategy,
+                        tokenize_strategy,
                         is_train=False,
-                        train_text_encoder=False, 
-                        train_unet=False
+                        train_text_encoder=False,
+                        train_unet=False,
                     )
 
                     current_loss = loss.detach().item()
                     val_epoch_loss_recorder.add(epoch=epoch, step=val_step, loss=current_loss)
                     val_progress_bar.update(1)
-                    val_progress_bar.set_postfix({ "val_epoch_avg_loss": val_epoch_loss_recorder.moving_average })
+                    val_progress_bar.set_postfix({"val_epoch_avg_loss": val_epoch_loss_recorder.moving_average})
 
                     if is_tracking:
                         logs = {
-                            "loss/validation/epoch_current": current_loss, 
-                            "epoch": epoch + 1, 
-                            "val_step": (epoch * validation_steps) + val_step
+                            "loss/validation/epoch_current": current_loss,
+                            "epoch": epoch + 1,
+                            "val_step": (epoch * validation_steps) + val_step,
                         }
                         accelerator.log(logs, step=global_step)
 
                 if is_tracking:
                     avr_loss: float = val_epoch_loss_recorder.moving_average
-                    loss_validation_divergence = val_step_loss_recorder.moving_average - avr_loss 
+                    loss_validation_divergence = val_step_loss_recorder.moving_average - avr_loss
                     logs = {
-                        "loss/validation/epoch_average": avr_loss, 
-                        "loss/validation/epoch_divergence": loss_validation_divergence, 
-                        "epoch": epoch + 1
+                        "loss/validation/epoch_average": avr_loss,
+                        "loss/validation/epoch_divergence": loss_validation_divergence,
+                        "epoch": epoch + 1,
                     }
                     accelerator.log(logs, step=global_step)
 
@@ -1510,7 +1503,7 @@ class NetworkTrainer:
             if is_tracking:
                 logs = {"loss/epoch_average": loss_recorder.moving_average, "epoch": epoch + 1}
                 accelerator.log(logs, step=global_step)
-                    
+
             accelerator.wait_for_everyone()
 
             # 指定エポックごとにモデルを保存
@@ -1696,31 +1689,31 @@ def setup_parser() -> argparse.ArgumentParser:
         "--validation_seed",
         type=int,
         default=None,
-        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise / 検証データセットをシャッフルするための検証シード、それ以外の場合はトレーニング `--seed` を使用する"
+        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise / 検証データセットをシャッフルするための検証シード、それ以外の場合はトレーニング `--seed` を使用する",
     )
     parser.add_argument(
         "--validation_split",
         type=float,
         default=0.0,
-        help="Split for validation images out of the training dataset / 学習画像から検証画像に分割する割合"
+        help="Split for validation images out of the training dataset / 学習画像から検証画像に分割する割合",
     )
     parser.add_argument(
         "--validate_every_n_steps",
         type=int,
         default=None,
-        help="Run validation on validation dataset every N steps. By default, validation will only occur every epoch if a validation dataset is available / 検証データセットの検証をNステップごとに実行します。デフォルトでは、検証データセットが利用可能な場合にのみ、検証はエポックごとに実行されます"
+        help="Run validation on validation dataset every N steps. By default, validation will only occur every epoch if a validation dataset is available / 検証データセットの検証をNステップごとに実行します。デフォルトでは、検証データセットが利用可能な場合にのみ、検証はエポックごとに実行されます",
     )
     parser.add_argument(
         "--validate_every_n_epochs",
         type=int,
         default=None,
-        help="Run validation dataset every N epochs. By default, validation will run every epoch if a validation dataset is available / 検証データセットをNエポックごとに実行します。デフォルトでは、検証データセットが利用可能な場合、検証はエポックごとに実行されます"
+        help="Run validation dataset every N epochs. By default, validation will run every epoch if a validation dataset is available / 検証データセットをNエポックごとに実行します。デフォルトでは、検証データセットが利用可能な場合、検証はエポックごとに実行されます",
     )
     parser.add_argument(
         "--max_validation_steps",
         type=int,
         default=None,
-        help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します"
+        help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
     )
     return parser
 
