@@ -660,6 +660,11 @@ class ControlNetSubset(BaseSubset):
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
+        preference,
+        preference_caption_prefix,
+        preference_caption_suffix,
+        non_preference_caption_prefix,
+        non_preference_caption_suffix
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -687,6 +692,11 @@ class ControlNetSubset(BaseSubset):
             custom_attributes=custom_attributes,
             validation_seed=validation_seed,
             validation_split=validation_split,
+            preference,
+            preference_caption_prefix,
+            preference_caption_suffix,
+            non_preference_caption_prefix,
+            non_preference_caption_suffix,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
@@ -2508,7 +2518,11 @@ class ControlNetDataset(BaseDataset):
                 subset.caption_suffix,
                 subset.token_warmup_min,
                 subset.token_warmup_step,
-                subset.preference
+                subset.preference,
+                subset.preference_caption_prefix,
+                subset.preference_caption_suffix,
+                subset.non_preference_caption_prefix,
+                subset.non_preference_caption_suffix,
             )
             db_subsets.append(db_subset)
 
