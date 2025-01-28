@@ -1316,10 +1316,6 @@ class NetworkTrainer:
 
                     accelerator.backward(loss)
 
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
-
                     # Checks if the accelerator has performed an optimization step behind the scenes
                     if accelerator.sync_gradients:
                         self.all_reduce_network(accelerator, network)  # sync DDP grad manually
@@ -1378,6 +1374,11 @@ class NetworkTrainer:
                                     remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                     remove_model(remove_ckpt_name)
                         optimizer_train_fn()
+
+
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
 
                 # VALIDATION PER STEP
                 should_validate_step = (
