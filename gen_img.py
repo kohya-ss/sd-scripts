@@ -2811,7 +2811,8 @@ def main(args):
 
                 # override filename to add index number if more than one image per prompt
                 if filename is not None and (args.images_per_prompt >  1 or len(raw_prompts) > 1):
-                    filename = filename + "_%s" % pi
+                    fileext = os.path.splitext(filename)
+                    filename = fileext[0] + "_%s" + fileext[1] % pi
                     
                 # override Deep Shrink    
                 if ds_depth_1 is not None:
