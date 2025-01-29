@@ -1492,6 +1492,8 @@ def main(args):
     else:
         dtype = torch.float32
 
+    device = get_preferred_device()
+    
     highres_fix = args.highres_fix_scale is not None
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
@@ -1521,9 +1523,10 @@ def main(args):
     if is_sdxl:
         if args.clip_skip is None:
             args.clip_skip = 2
-
+            
+        model_dtype = sdxl_train_util.match_mixed_precision(args, dtype)
         (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
-            args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype
+            args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype, device, model_dtype
         )
         unet: InferSdxlUNet2DConditionModel = InferSdxlUNet2DConditionModel(unet)
         text_encoders = [text_encoder1, text_encoder2]
@@ -3386,6 +3389,10 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="unsharp mask parameters for Gradual Latent: ksize, sigma, strength, target-x (1 means True). `3,0.5,0.5,1` or `3,1.0,1.0,0` is recommended /"
         + " Gradual Latentのunsharp maskのパラメータ: ksize, sigma, strength, target-x. `3,0.5,0.5,1` または `3,1.0,1.0,0` が推奨",
+    )
+    parser.add_argument("--full_fp16", action="store_true", help="Loading model in fp16")
+    parser.add_argument(
+        "--full_bf16", action="store_true", help="Loading model in bf16"
     )
 
     # # parser.add_argument(
