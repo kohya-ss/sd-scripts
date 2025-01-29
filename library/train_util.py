@@ -5506,6 +5506,7 @@ def sample_images_common(
     os.makedirs(save_dir, exist_ok=True)
 
     # preprocess prompts
+    idx = 0
     for i in range(len(prompts)):
         prompt_dict = prompts[i]
         if isinstance(prompt_dict, str):
@@ -5538,7 +5539,6 @@ def sample_images_common(
     if distributed_state.num_processes <= 1:
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
         with torch.no_grad():
-            idx = 0
             for prompt_dict in prompts:
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
