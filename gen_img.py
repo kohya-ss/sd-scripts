@@ -2802,7 +2802,6 @@ def main(args):
                             m = re.match(r"f (.+)", parg, re.IGNORECASE)
                             if m:  # filename
                                 filename = m.group(1)
-                                logger.info(f"filename: {filename}")
                                 continue
 
                         except ValueError as ex:
@@ -2813,6 +2812,7 @@ def main(args):
                 if filename is not None and (args.images_per_prompt >  1 or len(raw_prompts) > 1):
                     fileext = os.path.splitext(filename)
                     filename = fileext[0] + "_%s" % pi + fileext[1]
+                    logger.info(f"filename: {filename}")
                     
                 # override Deep Shrink    
                 if ds_depth_1 is not None:
