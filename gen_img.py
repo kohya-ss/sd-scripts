@@ -1752,7 +1752,7 @@ def main(args):
         logger.info(f"network_merge: {network_merge}")
 
         for i, network_module in enumerate(args.network_module):
-            logger.info("import network module: {network_module}")
+            logger.info(f"import network module: {network_module}")
             imported_module = importlib.import_module(network_module)
 
             network_mul = 1.0 if args.network_mul is None or len(args.network_mul) <= i else args.network_mul[i]
