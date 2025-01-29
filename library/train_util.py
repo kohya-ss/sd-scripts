@@ -5512,10 +5512,20 @@ def sample_images_common(
             prompt_dict = line_to_prompt_dict(prompt_dict)
             prompts[i] = prompt_dict
         assert isinstance(prompt_dict, dict)
+        if '__caption__' in prompts[i].get("prompt") and example_tuple:
+            while example_tuple[1][idx] == '':
+                idx = (idx + 1) % len(example_tuple[1])
+                if idx == 0:
+                    break
+                prompts[i]["prompt"] = prompt_dict.get("prompt").replace('__caption__', 'example_tuple[1][idx]') 
+                prompts[i]["height"] = example_tuple[0].shape[2] * 8
+                prompts[i]["width"] = example_tuple[0].shape[3] * 8
+                prompts[i]["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+                idx = (idx + 1) % len(example_tuple[1])
+        prompts[i]["enum"] = i
+        prompts[i].pop("subset", None)
+    # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
 
-        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
-        prompt_dict["enum"] = i
-        prompt_dict.pop("subset", None)
 
     # save random state to restore later
     rng_state = torch.get_rng_state()
@@ -5530,16 +5540,6 @@ def sample_images_common(
         with torch.no_grad():
             idx = 0
             for prompt_dict in prompts:
-                if '__caption__' in prompt_dict.get("prompt") and example_tuple:
-                    while example_tuple[1][idx] == '':
-                        idx = (idx + 1) % len(example_tuple[1])
-                        if idx == 0:
-                            break
-                    prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', 'example_tuple[1][idx]') 
-                    prompt_dict["height"] = example_tuple[0].shape[2] * 8
-                    prompt_dict["width"] = example_tuple[0].shape[3] * 8
-                    prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
-                    idx = (idx + 1) % len(example_tuple[1])
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                 )
