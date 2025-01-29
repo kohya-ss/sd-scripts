@@ -740,6 +740,7 @@ def train(args):
 
                 accelerator.backward(loss)
 
+
                 if not (args.fused_backward_pass or args.fused_optimizer_groups):
                     if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                         params_to_clip = []
@@ -757,6 +758,8 @@ def train(args):
                         for i in range(1, len(optimizers)):
                             lr_schedulers[i].step()
 
+
+            example_tuple = (latents, batch["captions"])
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -772,6 +775,7 @@ def train(args):
                     [tokenizer1, tokenizer2],
                     [text_encoder1, text_encoder2],
                     unet,
+                    example_tuple,
                 )
 
                 # 指定ステップごとにモデルを保存
@@ -854,6 +858,7 @@ def train(args):
             [tokenizer1, tokenizer2],
             [text_encoder1, text_encoder2],
             unet,
+            example_tuple,
         )
 
     is_main_process = accelerator.is_main_process

@@ -404,14 +404,14 @@ def train(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-
+            example_tuple = (latents, batch["captions"])
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
 
                 train_util.sample_images(
-                    accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet
+                    accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple
                 )
 
                 # 指定ステップごとにモデルを保存
@@ -474,7 +474,7 @@ def train(args):
                     vae,
                 )
 
-        train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+        train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
 
     is_main_process = accelerator.is_main_process
     if is_main_process:
