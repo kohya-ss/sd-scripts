@@ -5557,8 +5557,8 @@ def sample_images_common(
             with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
                 for prompt_dict in prompt_dict_lists[0]:
                     if prompt_dict["prompt"] == '__caption__':
-                    logger.info("No training prompts loaded, skipping '__caption__' prompt.")
-                    continue
+                        logger.info("No training prompts loaded, skipping '__caption__' prompt.")
+                        continue
                     sample_image_inference(
                         accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                     )
