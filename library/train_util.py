@@ -5515,7 +5515,7 @@ def sample_images_common(
         assert isinstance(prompt_dict, dict)
         
         if '__caption__' in prompt_dict.get("prompt") and example_tuple:
-            logger.info(f"Original prompt: {prompt_dict.get("prompt")}")
+            logger.info(f"Original prompt: {prompt_dict.get('prompt')}")
             while example_tuple[1][idx] == '':
                 idx = (idx + 1) % len(example_tuple[1])
                 if idx == 0:
@@ -5528,7 +5528,7 @@ def sample_images_common(
         prompt_dict["enum"] = i
         prompt_dict.pop("subset", None)
         prompts[i] = prompt_dict
-        logger.info(f"Current prompt: {prompts[i].get("prompt")}")
+        logger.info(f"Current prompt: {prompts[i].get('prompt')}")
         
     # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
 
