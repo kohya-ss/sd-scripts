@@ -5520,7 +5520,7 @@ def sample_images_common(
         
         if '__caption__' in prompt_dict.get("prompt") and example_tuple:
             logger.info(f"Original prompt: {prompt_dict.get('prompt')}")
-            if len(example_tuple[1] > 1:
+            if len(example_tuple[1]) > 1:
                 while example_tuple[1][idx] == '':
                     idx = (idx + 1) % len(example_tuple[1])
                     if idx == 0:
