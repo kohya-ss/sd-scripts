@@ -5513,18 +5513,23 @@ def sample_images_common(
             prompt_dict = line_to_prompt_dict(prompt_dict)
             prompts[i] = prompt_dict
         assert isinstance(prompt_dict, dict)
-        if '__caption__' in prompts[i].get("prompt") and example_tuple:
+        
+        if '__caption__' in prompt_dict.get("prompt") and example_tuple:
+            logger.info(f"Original prompt: {prompt_dict.get("prompt")}")
             while example_tuple[1][idx] == '':
                 idx = (idx + 1) % len(example_tuple[1])
                 if idx == 0:
                     break
-                prompts[i]["prompt"] = prompt_dict.get("prompt").replace('__caption__', example_tuple[1][idx]) 
-                prompts[i]["height"] = example_tuple[0].shape[2] * 8
-                prompts[i]["width"] = example_tuple[0].shape[3] * 8
-                prompts[i]["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+                prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]') 
+                prompt_dict["height"] = example_tuple[0].shape[2] * 8
+                prompt_dict["width"] = example_tuple[0].shape[3] * 8
+                prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
                 idx = (idx + 1) % len(example_tuple[1])
-        prompts[i]["enum"] = i
-        prompts[i].pop("subset", None)
+        prompt_dict["enum"] = i
+        prompt_dict.pop("subset", None)
+        prompts[i] = prompt_dict
+        logger.info(f"Current prompt: {prompts[i].get("prompt")}")
+        
     # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
 
 
