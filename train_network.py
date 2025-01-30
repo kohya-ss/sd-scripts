@@ -1023,7 +1023,6 @@ class NetworkTrainer:
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 example_tuple = (latents, batch["captions"])
-                logger.info(f"Example tuple: {example_tuple}")
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
