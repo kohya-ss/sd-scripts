@@ -5520,7 +5520,7 @@ def sample_images_common(
                 idx = (idx + 1) % len(example_tuple[1])
                 if idx == 0:
                     break
-                prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]') 
+                prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]}') 
                 prompt_dict["height"] = example_tuple[0].shape[2] * 8
                 prompt_dict["width"] = example_tuple[0].shape[3] * 8
                 prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
