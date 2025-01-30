@@ -2677,7 +2677,9 @@ def main(args):
                             if m:  # seed
                                 if pi > 0 and len(raw_prompts) > 1: #Bypass od 2nd loop for dynamic prompts
                                     continue
-                                seeds = [int(float(d)) for d in m.group(1).split(",")]
+                                logger.info(f"{m}")
+                                seeds = m.group(1).split(",")
+                                seeds = [int(d.strip()) for d in seeds]
                                 logger.info(f"seeds: {seeds}")
                                 continue
 
