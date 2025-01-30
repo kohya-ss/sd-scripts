@@ -5516,17 +5516,23 @@ def sample_images_common(
         
         if '__caption__' in prompt_dict.get("prompt") and example_tuple:
             logger.info(f"Original prompt: {prompt_dict.get('prompt')}")
-            logger.info(f"Example tuple: {example_tuple}")
-            while example_tuple[1][idx] == '':
-                idx = (idx + 1) % len(example_tuple[1])
-                if idx == 0:
-                    break
-                prompt_dict["prompt"] = f"{example_tuple[1][idx]}"
-                logger.info(f"Replacement prompt: {example_tuple[1][idx]}")
+            if len(example_tuple[1] > 1:
+                while example_tuple[1][idx] == '':
+                    idx = (idx + 1) % len(example_tuple[1])
+                    if idx == 0:
+                        break
+                    prompt_dict["prompt"] = f"{example_tuple[1][idx]}"
+                    logger.info(f"Replacement prompt: {example_tuple[1][idx]}")
+                    prompt_dict["height"] = example_tuple[0].shape[2] * 8
+                    prompt_dict["width"] = example_tuple[0].shape[3] * 8
+                    prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+                    idx = (idx + 1) % len(example_tuple[1])
+            else:
+                prompt_dict["prompt"] = f"{example_tuple[1]}"
+                logger.info(f"Replacement prompt: {example_tuple[1]}")
                 prompt_dict["height"] = example_tuple[0].shape[2] * 8
                 prompt_dict["width"] = example_tuple[0].shape[3] * 8
-                prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
-                idx = (idx + 1) % len(example_tuple[1])
+                prompt_dict["original_lantent"] = example_tuple[0].unsqueeze(0)
         prompt_dict["enum"] = i
         prompt_dict.pop("subset", None)
         prompts[i] = prompt_dict
