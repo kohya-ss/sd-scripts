@@ -5507,6 +5507,10 @@ def sample_images_common(
 
     # preprocess prompts
     idx = 0
+    if example_tuple:
+        logger.info(f"len(example_tuple): {len(example_tuple)}")
+        logger.info(f"len(example_tuple[0]): {len(example_tuple[0])}")
+        logger.info(f"len(example_tuple[1]): {len(example_tuple[1])}")
     for i in range(len(prompts)):
         prompt_dict = prompts[i]
         if isinstance(prompt_dict, str):
