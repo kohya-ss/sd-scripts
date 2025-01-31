@@ -2579,13 +2579,14 @@ def main(args):
                                 logger.info(f"steps: {steps}")
                                 continue
 
-                            m = re.match(r"d ([\d,]+)", parg, re.IGNORECASE)
+                            m = re.match(r"d ([-?\d,]+)", parg, re.IGNORECASE)
                             if m:  # seed
                                 if pi > 0 and len(raw_prompts) > 1: #Bypass on 2nd loop for dynamic prompts
                                     continue
                                 logger.info(f"{m}")
                                 seeds = m.group(1).split(",")
-                                seeds = [int(float(d.strip())) for d in seeds]
+                                
+                                seeds = [int(d) for d in seeds]
                                 logger.info(f"seeds: {seeds}")
                                 continue
 
@@ -2783,12 +2784,12 @@ def main(args):
                 if seeds is not None:  # given in prompt
                     # 数が足りないなら前のをそのまま使う
                     if len(seeds) > 1:
-                        seed = seeds.pop(0)
+                        seed = abs(seeds.pop(0))
                     elif len(seeds) == 1:
                         if seeds[0] == -1:
                             seeds = None
                         else:
-                            seed = seeds.pop(0)
+                            seed = abs(seeds.pop(0))
                         
                         
                 else:
