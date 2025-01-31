@@ -5697,6 +5697,10 @@ def sample_image_inference(
 
     image = pipeline.latents_to_image(latents)[0]
     if "original_lantent" in prompt_dict:
+        if torch.cuda.is_available():
+            with torch.cuda.device(torch.cuda.current_device()):
+                torch.cuda.empty_cache()
+        
         original_latent = prompt_dict.get("original_lantent")
         original_image = pipeline.latents_to_image(original_latent)[0]
         text_image = draw_text_on_image(f"caption: {prompt}", image.width * 2)
