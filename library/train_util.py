@@ -28,6 +28,7 @@ import random
 import hashlib
 import subprocess
 from io import BytesIO
+from accelerate.utils import gather_object
 import toml
 
 from tqdm import tqdm
