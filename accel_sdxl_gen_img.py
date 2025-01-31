@@ -2382,7 +2382,8 @@ def main(args):
 
             # save image
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
-            ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
+            ds_str = time.strftime("%Y%m%d", time.localtime())
+            ts_str = time.strftime("%H%M%S", time.localtime())
             for i, (image, globalcount, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
                 zip(images, global_counter, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
             ):
@@ -2417,7 +2418,7 @@ def main(args):
                 elif args.sequential_file_name:
                     fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                 else:
-                    fln = f"im_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
+                    fln = f"im_{ds_str}_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
                 logger.info(f"Saving Image: {fln}:\nPrompt: {prompt}")
                 if negative_prompt is not None:
