@@ -2583,9 +2583,7 @@ def main(args):
                             if m:  # seed
                                 if pi > 0 and len(raw_prompts) > 1: #Bypass on 2nd loop for dynamic prompts
                                     continue
-                                logger.info(f"{m}")
                                 seeds = m.group(1).split(",")
-                                
                                 seeds = [int(d) for d in seeds]
                                 logger.info(f"seeds: {seeds}")
                                 continue
@@ -2787,7 +2785,7 @@ def main(args):
                         seed = abs(seeds.pop(0))
                     elif len(seeds) == 1:
                         if seeds[0] == -1:
-                            logger.error("predefined seeds are exhausted")
+                            logger.error("predefined seeds in prompt are exhausted")
                             seeds = None
                             seed = None
                         else:
