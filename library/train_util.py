@@ -5530,7 +5530,7 @@ def sample_images_common(
                     if idx == 0:
                         break
                 prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]}')
-                logger.info(f"Replacement prompt: {prompt_dict["prompt"]}")
+                logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
                 prompt_dict["height"] = example_tuple[0].shape[2] * 8
                 logger.info(f"Original Image Height: {prompt_dict["height"]}")
                 prompt_dict["width"] = example_tuple[0].shape[3] * 8
