@@ -2787,7 +2787,9 @@ def main(args):
                         seed = abs(seeds.pop(0))
                     elif len(seeds) == 1:
                         if seeds[0] == -1:
+                            logger.error("predefined seeds are exhausted")
                             seeds = None
+                            seed = None
                         else:
                             seed = abs(seeds.pop(0))
                         
