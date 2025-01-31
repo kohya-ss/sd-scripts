@@ -5532,9 +5532,9 @@ def sample_images_common(
                 prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]}')
                 logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
                 prompt_dict["height"] = example_tuple[0].shape[2] * 8
-                logger.info(f"Original Image Height: {prompt_dict["height"]}")
+                logger.info(f"Original Image Height: {prompt_dict['height']}")
                 prompt_dict["width"] = example_tuple[0].shape[3] * 8
-                logger.info(f"Original Image Width: {prompt_dict["width"]}")
+                logger.info(f"Original Image Width: {prompt_dict['width']}")
                 prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
                 idx = (idx + 1) % len(example_tuple[1])
     
