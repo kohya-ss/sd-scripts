@@ -5556,23 +5556,18 @@ def sample_images_common(
 
     if distributed_state.num_processes > 1 and distributed_state.is_main_process:
         per_process_prompts = []  # list of lists
+        # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
+        # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
         for i in range(distributed_state.num_processes):
             per_process_prompts.append(prompts[i :: distributed_state.num_processes])
         prompts = []
+        # Flattening prompts for simplicity
         for prompt in per_process_prompts:
             prompts.extend(prompt)
     distributed_state.wait_for_everyone()
     per_process_prompts = gather_object(prompts)
     prompts = []
-    for prompt in per_process_prompts:
-        prompts.extend(prompt)
-    
-            
-
-        # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
-        # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
-        
-
+               
     with torch.no_grad():
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
             for prompt_dict in prompt_dict_lists:
