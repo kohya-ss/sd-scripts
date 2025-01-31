@@ -5566,8 +5566,7 @@ def sample_images_common(
         for prompt in per_process_prompts:
             prompts.extend(prompt)
     distributed_state.wait_for_everyone()
-    per_process_prompts = gather_object(prompts)
-    prompts = []
+    prompts = gather_object(prompts)
                
     with torch.no_grad():
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
