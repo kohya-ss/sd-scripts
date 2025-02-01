@@ -2907,7 +2907,7 @@ def main(args):
                 temp_list = []
                 for ext_batch in batch_separated_list:
                     for i in range(distributed_state.num_processes):
-                        templist.append(ext_batch[i :: distributed_state.num_processes])
+                        temp_list.append(ext_batch[i :: distributed_state.num_processes])
                     logger.info(f"templist: {len(temp_list)}")
                 batch_separated_list = []
                 for sub_batch_list in temp_list:
