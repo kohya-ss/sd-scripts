@@ -2897,14 +2897,18 @@ def main(args):
                     split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(device)])
                 batch_separated_list.append(split_into_batches)
                 if distributed_state.num_processes > 1:
+                    logger.info(f"batch_separated_list: {len(batch_separated_list)}")
                     templist = []
                     for i in range(distributed_state.num_processes):
                         templist.append(batch_separated_list[i :: distributed_state.num_processes])
+                    logger.info(f"templist: {len(templist)}")
                     batch_separated_list = []
                     for sub_batch_list in templist:
                         batch_separated_list.extend(sub_batch_list)
+                        logger.info(f"batch_separated_list: {len(batch_separated_list)}")
         distributed_state.wait_for_everyone()
         batch_data = gather_object(batch_separated_list)
+        logger.info(f"batch_data: {len(batch_data)}")
         del extinfo
         
         if len(batch_data) > 0:
