@@ -2898,8 +2898,8 @@ def main(args):
                             elif len(split_into_batches) == 1 :
                                 sublist.extend(split_into_batches.pop(-1))
                                 listofbatches = []
-                        n, m = divmod(len(sublist), device)
-                        split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(device)])
+                        n, m = divmod(len(sublist), distributed_state.num_processes)
+                        split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(distributed_state.num_processes)])
                     batch_separated_list.append(split_into_batches)
                     logger.info(f"batch_separated_list line 2901: {len(batch_separated_list)}, {distributed_state.num_processes}")
                     if distributed_state.num_processes > 1:
