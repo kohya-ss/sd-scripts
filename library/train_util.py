@@ -5511,9 +5511,10 @@ def sample_images_common(
     
 
     # preprocess prompts
+        
+    save_dir = args.output_dir + "/sample"
     if distributed_state.is_main_process:
         #Create output folder and preprocess prompts on main process only.
-        save_dir = args.output_dir + "/sample"
         os.makedirs(save_dir, exist_ok=True)
         idx = 0
         for i in range(len(prompts)):
