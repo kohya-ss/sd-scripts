@@ -4714,7 +4714,7 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
-            logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
+            logger.info(f"loading model for process {accelerator.state.local_process_index+1}/{accelerator.state.num_processes}")
 
             text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
                 args,
