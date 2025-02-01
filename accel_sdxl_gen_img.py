@@ -1846,8 +1846,8 @@ def main(args):
     pipe.set_control_nets(control_nets)
     logger.info(f"pipeline on {device} is ready.")
     distributed_state.wait_for_everyone()
-    pipes = gather_object([pipe])
-    unets = gather_object([unet])
+    #pipes = gather_object([pipe])
+    #unets = gather_object([unet])
 
     if args.diffusers_xformers:
         pipe.enable_xformers_memory_efficient_attention()
