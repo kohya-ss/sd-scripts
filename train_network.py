@@ -1024,7 +1024,7 @@ class NetworkTrainer:
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 # Collecting latents and caption lists from all processes
-                all_latents = gather_object(latents)
+                all_latents = gather_object([latents])
                 all_captions =  gather_object(batch["captions"])
                 logger.info(f"latents: {latents}")
                 logger.info(f"all_latents: {all_latents}")
