@@ -1026,7 +1026,8 @@ class NetworkTrainer:
                 # Collecting latents and caption lists from all processes
                 all_latents = gather_object(latents)
                 all_captions =  gather_object(batch["captions"])
-                logger.log(f"all_latents: {all_latents}")
+                logger.info(f"latents: {latents}")
+                logger.info(f"all_latents: {all_latents}")
                 example_tuple = (all_latents, all_captions)
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
