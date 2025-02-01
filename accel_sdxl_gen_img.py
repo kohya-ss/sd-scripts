@@ -2915,12 +2915,12 @@ def main(args):
                     logger.info(f"batch_separated_list: {len(batch_separated_list)}")
                     logger.info(f"sub_batch_list: {len(sub_batch_list)}")
         distributed_state.wait_for_everyone()
-        batch_data = gather_object(batch_separated_list)
+        batch_separated_list = gather_object(batch_separated_list)
         logger.info(f"batch_data line 2911: {len(batch_data)}")
         del extinfo
         
-        if len(batch_data) > 0:
-            for batch_list in batch_data:
+        if len(batch_separated_list) > 0:
+            for batch_list in batch_separated_list:
                 with distributed_state.split_between_processes(batch_list) as batches:
                     for j in range(len(batches)):
                         logger.info(f"\nLoading batch {j+1}/{len(batches)} of {len(batches[j])} prompts onto device {distributed_state.local_process_index}:")
