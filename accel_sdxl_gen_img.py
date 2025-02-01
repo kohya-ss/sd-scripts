@@ -2420,9 +2420,9 @@ def main(args):
                 else:
                     fln = f"im_{ds_str}_{globalcount:02d}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
 
-                logger.info(f"Saving Image: {fln}:\nPrompt: {prompt}")
+                #logger.info(f"Saving Image: {fln}:\nPrompt: {prompt}")
                 if negative_prompt is not None:
-                    logger.info(f"Negative Prompt: {negative_prompt}\n")
+                #    logger.info(f"Negative Prompt: {negative_prompt}\n")
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
 
             if not args.no_preview and not highres_1st and args.interactive:
@@ -2923,10 +2923,10 @@ def main(args):
             for batch_list in batch_data:
                 with distributed_state.split_between_processes(batch_list) as batches:
                     for j in range(len(batches)):
-                        logger.info(f"Loading batch {j+1}/{len(batches)} of {len(batches[j])} prompts onto device {distributed_state.local_process_index}:")
+                        logger.info(f"\nLoading batch {j+1}/{len(batches)} of {len(batches[j])} prompts onto device {distributed_state.local_process_index}:")
                         logger.info(f"batch_list:")
                         for i in range(len(batches[j])):
-                            logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}")
+                            logger.info(f"Image: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}")
                         prev_image = process_batch(batch_list[j], highres_fix)[0]
     
                 distributed_state.wait_for_everyone()
