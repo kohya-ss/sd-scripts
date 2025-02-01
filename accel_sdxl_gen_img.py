@@ -2887,7 +2887,7 @@ def main(args):
                 sublist = []
                 if(len(split_into_batches) % distributed_state.num_processes != 0):
                     #Distributes last round of batches across available processes if last round of batches less than available processes and there is more than one prompt in the last batch
-                    popnum = (len(split_into_batches) % distributed_state.num_processes
+                    popnum = len(split_into_batches) % distributed_state.num_processes
                 else:
                     #force distribution check on last round of batches
                     popnum = distributed_state.num_processes
