@@ -2876,7 +2876,6 @@ def main(args):
         ext_separated_list_of_batches = []
         if len(prompt_data_list) > 0 and distributed_state.is_main_process:
             unique_extinfo = list(set(extinfo))
-            logger.info(f"Device {distributed_state.device}, prompt_data_list line 2880: {len(prompt_data_list)}, len(unique_extinfo): {len(unique_extinfo)}")
             # splits list of prompts into sublists where BatchDataExt ext is identical
             for i in range(len(unique_extinfo)):
                 templist = []
