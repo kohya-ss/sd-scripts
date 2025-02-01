@@ -2879,9 +2879,10 @@ def main(args):
         if len(batch_data) > 0:
             if distributed_state.is_main_process:
                 unique_extinfo = list(set(extinfo))
-                logger.info(f"batch_data line 2880: {len(batch_data)}")
+                logger.info(f"Device {distributed_state.device}, batch_data line 2880: {len(batch_data)}, len(unique_extinfo): {len(unique_extinfo)}")
                 # splits list of prompts into sublists where BatchDataExt ext is identical
                 for i in range(len(unique_extinfo)):
+                    logger.info(f"Device {distributed_state.device}, batch_data line 2880: {len(batch_data)}, len(unique_extinfo): {i}")
                     templist = []
                     res = [j for j, val in enumerate(batch_data) if val.ext == unique_extinfo[i]]
                     for index in res:
