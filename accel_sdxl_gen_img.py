@@ -2751,8 +2751,7 @@ def main(args):
                 if ds_depth_1 is not None:
                     if ds_depth_1 < 0:
                         ds_depth_1 = args.ds_depth_1 or 3
-                    for unet in unets:
-                        unet.set_deep_shrink(ds_depth_1, ds_timesteps_1, ds_depth_2, ds_timesteps_2, ds_ratio)
+                    unet.set_deep_shrink(ds_depth_1, ds_timesteps_1, ds_depth_2, ds_timesteps_2, ds_ratio)
 
                 # override Gradual Latent
                 if gl_timesteps is not None:
@@ -2776,8 +2775,7 @@ def main(args):
                         us_strength,
                         us_target_x,
                     )
-                    for pipe in pipes:
-                        pipe.set_gradual_latent(gradual_latent)
+                    pipe.set_gradual_latent(gradual_latent)
 
                 # prepare seed
                 if seeds is not None:  # given in prompt
@@ -2877,8 +2875,10 @@ def main(args):
         batch_data = gather_object(batch_data)
         logger.info(f"batch_data line 2878: {len(batch_data)}")
         batch_separated_list = []
+        logger.info(f"Device {distributed_state.device}, distributed_state.is_main_process 2878: {distributed_state.is_main_process}")
         if distributed_state.is_main_process and len(batch_data) > 0:
             unique_extinfo = list(set(extinfo))
+            logger.info(f"batch_data line 2880: {len(batch_data)}")
             # splits list of prompts into sublists where BatchDataExt ext is identical
             for i in range(len(unique_extinfo)):
                 templist = []
@@ -2910,7 +2910,7 @@ def main(args):
                         logger.info(f"batch_separated_list: {len(batch_separated_list)}")
         distributed_state.wait_for_everyone()
         batch_data = gather_object(batch_separated_list)
-        logger.info(f"batch_data line 2912: {len(batch_data)}")
+        logger.info(f"batch_data line 2911: {len(batch_data)}")
         del extinfo
         
         if len(batch_data) > 0:
