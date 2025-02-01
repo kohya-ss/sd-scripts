@@ -2875,6 +2875,7 @@ def main(args):
 
             prompt_index += 1
         batch_data = gather_object(batch_data)
+        logger.info(f"batch_data line 2878: {len(batch_data)}")
         batch_separated_list = []
         if distributed_state.is_main_process and len(batch_data) > 0:
             unique_extinfo = list(set(extinfo))
