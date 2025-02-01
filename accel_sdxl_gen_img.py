@@ -1510,7 +1510,7 @@ def main(args):
         if len(files) == 1:
             args.ckpt = files[0]
     #device = get_preferred_device()
-    logger.info(f"preferred device: {device}")
+    logger.info(f"preferred device: {device}, {distributed_state.is_main_process}")
     clean_memory_on_device(device)
     model_dtype = sdxl_train_util.match_mixed_precision(args, dtype)
     for pi in range(distributed_state.num_processes):
@@ -2898,6 +2898,7 @@ def main(args):
                     n, m = divmod(len(sublist), device)
                     split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(device)])
                 batch_separated_list.append(split_into_batches)
+                logger.info(f"batch_separated_list line 2901: {len(batch_separated_list)}, {distributed_state.num_processes}")
                 if distributed_state.num_processes > 1:
                     logger.info(f"batch_separated_list: {len(batch_separated_list)}")
                     templist = []
