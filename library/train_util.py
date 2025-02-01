@@ -5538,7 +5538,7 @@ def sample_images_common(
                 logger.info(f"Original Image Height: {prompt_dict['height']}")
                 prompt_dict["width"] = example_tuple[0][idx].shape[3] * 8
                 logger.info(f"Original Image Width: {prompt_dict['width']}")
-                prompt_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+                prompt_dict["original_lantent"] = example_tuple[0][idx]
                 idx = (idx + 1) % len(example_tuple[1])
     
             prompt_dict["enum"] = i
