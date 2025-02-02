@@ -132,8 +132,8 @@ class NetworkTrainer:
             if param.grad is not None:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, example_tuple=None):
-        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, example_tuple)
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, latents_list=None):
+        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, latents_list)
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1025,16 +1025,22 @@ class NetworkTrainer:
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 # Collecting latents and caption lists from all processes
                 logger.info(f"latents.size: {latents.size()} before gather on device {accelerator.state.local_process_index}")
-                all_latents = gather(latents)
-                all_captions =  gather_object(batch["captions"])
-                #logger.info(f"latents: {latents}")
-                logger.info(f"all_latents.size: {all_latents.size()}")
-                example_tuple = (all_latents, all_captions)
+                #Converts batch of latents into list of dicts containing individual latents, height and width to merge across processes
+                #Allows for different latent sizes
+                latents_list = []
+                for idx in range(len(batch["captions"]):
+                    latent_dict = {}
+                    latent_dict["prompt"] = batch["captions"][idx]
+                    latent_dict["height"] = latents.shape[2] * 8
+                    latent_dict["width"] = latents.shape[3] * 8
+                    latent_dict["original_lantent"] = latents[idx].unsqueeze(0)
+                    latents_list.append(latent_dict)
+                latents_list = gather_object(latents_list)
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
 
-                    self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
+                    self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, latents_list)
 
                     # 指定ステップごとにモデルを保存
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
@@ -1090,7 +1096,7 @@ class NetworkTrainer:
                     if args.save_state:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
-            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
+            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, latents_list)
 
             # end of epoch
 
