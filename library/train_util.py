@@ -5432,7 +5432,7 @@ def sample_images_common(
     tokenizer,
     text_encoder,
     unet,
-    example_tuple=None,
+    latents_list=None,
     prompt_replacement=None,
     controlnet=None,
 ):
@@ -5524,22 +5524,22 @@ def sample_images_common(
                 prompts[i] = prompt_dict
             assert isinstance(prompt_dict, dict)
             
-            if '__caption__' in prompt_dict.get("prompt") and example_tuple:
+            if '__caption__' in prompt_dict.get("prompt") and latents_list:
                 logger.info(f"Original prompt: {prompt_dict.get('prompt')}")
     
-                while example_tuple[1][idx] == '':
-                    idx = (idx + 1) % len(example_tuple[1])
+                while latents_list[idx]["prompt"] == '':
+                    idx = (idx + 1) % len(latents_list)
                     if idx == 0:
                         break
                 
-                prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{example_tuple[1][idx]}')
+                prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'{latents_list[idx]["prompt"]}')
                 logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
-                prompt_dict["height"] = example_tuple[0][idx].shape[2] * 8
+                prompt_dict["height"] = latents_list[idx]["height"]
                 logger.info(f"Original Image Height: {prompt_dict['height']}")
-                prompt_dict["width"] = example_tuple[0][idx].shape[3] * 8
+                prompt_dict["width"] = latents_list[idx]["width"]
                 logger.info(f"Original Image Width: {prompt_dict['width']}")
-                prompt_dict["original_lantent"] = example_tuple[0][idx]
-                idx = (idx + 1) % len(example_tuple[1])
+                prompt_dict["original_lantent"] = latents_list[idx]["original_lantent"]
+                idx = (idx + 1) % len(latents_list)
     
             prompt_dict["enum"] = i
             prompt_dict.pop("subset", None)
