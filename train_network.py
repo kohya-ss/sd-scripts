@@ -1024,9 +1024,9 @@ class NetworkTrainer:
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 # Collecting latents and caption lists from all processes
-                logger.info(f"latents.size: {latents.size()} before gather on device {accelerator.state.local_process_index}")
-                #Converts batch of latents into list of dicts containing individual latents, height and width to merge across processes
-                #Allows for different latent sizes
+                
+                # Converts batch of latents into list of dicts containing individual latents, height and width to merge across processes
+                # Allows for different latent sizes
                 latents_list = []
                 for idx in range(len(batch["captions"])):
                     latent_dict = {}
