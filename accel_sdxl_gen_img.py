@@ -2924,7 +2924,7 @@ def main(args):
                                 logger.info(f"Image: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}")
                             prev_image = process_batch(batch_list[j], highres_fix)[0]
     
-                distributed_state.wait_for_everyone()
+        distributed_state.wait_for_everyone()
             #for i in range(len(data_loader)):
             #    logger.info(f"Loading Batch {i+1} of {len(data_loader)}")
             #    prompt_data_list_split.append(data_loader[i])
