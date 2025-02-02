@@ -39,7 +39,7 @@ from library.custom_train_functions import (
     apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
-from accelerate.utils import gather_object
+from accelerate.utils import gather_object, gather
 
 setup_logging()
 import logging
@@ -1024,10 +1024,11 @@ class NetworkTrainer:
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 # Collecting latents and caption lists from all processes
-                all_latents = gather_object([latents])
+                logger.info(f"latents.size: {latents.size()} before gather on device {accelerator.state.local_process_index}")
+                all_latents = gather(latents)
                 all_captions =  gather_object(batch["captions"])
                 #logger.info(f"latents: {latents}")
-                #logger.info(f"all_latents: {all_latents}")
+                logger.info(f"all_latents.size: {all_latents.size()}")
                 example_tuple = (all_latents, all_captions)
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
