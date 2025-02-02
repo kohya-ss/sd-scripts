@@ -5574,8 +5574,8 @@ def sample_images_common(
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
             for prompt_dict in prompt_dict_lists:
                 if '__caption__' in prompt_dict.get("prompt"):
-                    logger.info("No training prompts loaded, skipping '__caption__' prompt.")
-                    continue
+                    prompt_dict["prompt"] = prompt_dict.get("prompt").replace('__caption__', f'Astronaut riding a horse on the moon')
+                    logger.info("No training prompts loaded, replacing with placeholder 'Astronaut riding a horse on the moon' prompt.")
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                 )
