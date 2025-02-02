@@ -1028,7 +1028,7 @@ class NetworkTrainer:
                 #Converts batch of latents into list of dicts containing individual latents, height and width to merge across processes
                 #Allows for different latent sizes
                 latents_list = []
-                for idx in range(len(batch["captions"]):
+                for idx in range(len(batch["captions"])):
                     latent_dict = {}
                     latent_dict["prompt"] = batch["captions"][idx]
                     latent_dict["height"] = latents.shape[2] * 8
