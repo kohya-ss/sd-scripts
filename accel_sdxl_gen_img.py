@@ -2430,7 +2430,7 @@ def main(args):
                         fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                     else:
                         fln = f"im_{ds_str}_{ts_str}_{globalcount:02d}_{highres_prefix}{i:03d}_{seed}.png"
-                    logger.info(f"Saving image {global_count}: {fln}\nPrompt: {prompt}")
+                    logger.info(f"Saving image {globalcount}: {fln}\nPrompt: {prompt}")
                     image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
     
                 if not args.no_preview and not highres_1st and args.interactive:
