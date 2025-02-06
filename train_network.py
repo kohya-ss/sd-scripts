@@ -1028,7 +1028,7 @@ class NetworkTrainer:
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
-                    if args.sample_every_n_steps is not None and steps % args.sample_every_n_steps != 0:
+                    if args.sample_every_n_steps is not None and global_step % args.sample_every_n_steps == 0:
                         example_tuple = (latents, batch["captions"])
                         self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
 
