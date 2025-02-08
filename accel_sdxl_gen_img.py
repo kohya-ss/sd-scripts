@@ -2927,7 +2927,13 @@ def main(args):
                     elif len(split_into_batches) == 1 :
                         sublist.extend(split_into_batches.pop(-1))
                         split_into_batches = []
-                # sublist = sorted(sublist, key=lambda x: x.global_count)  
+                sublist = sorted(sublist, key=lambda x: x.global_count)  
+                resorted_list = []
+                for i in range(distributed_state.num_processes):
+                    resorted_list.append(sublist[i :: distributed_state.num_processes])
+                sublist = []
+                for list_of_prompts in resorted_list:
+                    sublist.extend(list_of_prompts)
 
                 n, m = divmod(len(sublist), distributed_state.num_processes)
                 split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(distributed_state.num_processes)])
