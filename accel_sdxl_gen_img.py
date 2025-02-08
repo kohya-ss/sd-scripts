@@ -2454,7 +2454,7 @@ def main(args):
                     )
 
             #distributed_state.wait_for_everyone()
-            logger.info(f"images: {len(images)} metadatas: {len(metadatas)} filenames: {len(filenames)} in process: {distributed_state.local_process_index})
+            logger.info(f"images: {len(images)} metadatas: {len(metadatas)} filenames: {len(filenames)} in process: {distributed_state.local_process_index}")
             return images, metadatas, filenames
 
         # 画像生成のプロンプトが一周するまでのループ
