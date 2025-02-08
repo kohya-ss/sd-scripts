@@ -2965,7 +2965,7 @@ def main(args):
                             for i in range(len(batches[j])):
                                 batchlogstr += f"\nImage: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}"
                             logger.info(batchlogstr)
-                            prev_image, prev_metadata, prev_filename = process_batch(batch_list[j], distributed_state, highres_fix)[0]
+                            prev_image, prev_metadata, prev_filename = process_batch(batch_list[j], distributed_state, highres_fix)
                             logger.info(f"prev_image: {len(prev_image)}")
                             logger.info(f"prev_metadata: {len(prev_metadata)}")
                             logger.info(f"prev_filename: {len(prev_filename)}")
