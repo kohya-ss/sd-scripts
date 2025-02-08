@@ -2434,7 +2434,7 @@ def main(args):
                 elif args.sequential_file_name:
                     fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                 else:
-                    fln = f"im_{ds_str}_{ts_str}_{globalcount:02d}_{highres_prefix}{i:03d}_{seed}.png"
+                    fln = f"im_{globalcount:02d}_{ds_str}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
                 logger.info(f"Saving image {globalcount}: {fln}\nPrompt: {prompt} on process {distributed_state.local_process_index}")
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
                 metadatas.append(metadata)
