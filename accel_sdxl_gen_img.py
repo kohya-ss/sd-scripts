@@ -2454,7 +2454,7 @@ def main(args):
                     )
 
             #distributed_state.wait_for_everyone()
-            return images, metadatas, filenames
+            return (images, metadatas, filenames)
 
         # 画像生成のプロンプトが一周するまでのループ
         prompt_index = 0
