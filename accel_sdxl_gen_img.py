@@ -2913,6 +2913,7 @@ def main(args):
                         sublist.extend(split_into_batches.pop(-1))
                         split_into_batches = []
 
+                sublist.reverse()
                 n, m = divmod(len(sublist), distributed_state.num_processes)
                 split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(distributed_state.num_processes)])
                 ext_separated_list_of_batches.append(split_into_batches)
