@@ -2972,12 +2972,9 @@ def main(args):
                             if distributed_state.is_main_process:
                                 for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
                                     logger.info(f"Saving image: {fln}")
-                                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                                    image.save(os.path.join(args.outdir, filename), pnginfo=metadata)
                             distributed_state.wait_for_everyone()
                             
-                            
-    
-        distributed_state.wait_for_everyone()
             #for i in range(len(data_loader)):
             #    logger.info(f"Loading Batch {i+1} of {len(data_loader)}")
             #    prompt_data_list_split.append(data_loader[i])
