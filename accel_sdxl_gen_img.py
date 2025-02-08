@@ -2926,7 +2926,7 @@ def main(args):
             #            ext_separated_list_of_batches[x].extend(batches)
  
         distributed_state.wait_for_everyone()
-        ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
+        # ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
         del extinfo
         
         if len(ext_separated_list_of_batches) > 0:
