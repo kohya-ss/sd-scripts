@@ -2974,7 +2974,7 @@ def main(args):
                             all_images = gather_object(coll_image)
                             all_metadatas = gather_object(coll_metadata)
                             all_filenames = gather_object(coll_filename)
-                            prev_image = allimages[0]
+                            prev_image = all_images[0]
                             if distributed_state.is_main_process:
                                 for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
                                     logger.info(f"Saving image: {filename}")
