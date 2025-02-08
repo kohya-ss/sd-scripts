@@ -2977,7 +2977,7 @@ def main(args):
                             prev_image = allimages[0]
                             if distributed_state.is_main_process:
                                 for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
-                                    logger.info(f"Saving image: {fln}")
+                                    logger.info(f"Saving image: {filename}")
                                     image.save(os.path.join(args.outdir, filename), pnginfo=metadata)
                             distributed_state.wait_for_everyone()
                             
