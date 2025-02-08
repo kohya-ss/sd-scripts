@@ -2169,7 +2169,7 @@ def main(args):
                     batch_1st.append(BatchData(is_1st_latent, global_count, base, ext_1st))
 
                 pipe.set_enable_control_net(True)  # 1st stageではControlNetを有効にする
-                images_1st = process_batch(batch_1st, distributed_state, True, True)
+                images_1st, _, _ = process_batch(batch_1st, distributed_state, True, True)
 
                 # 2nd stageのバッチを作成して以下処理する
                 logger.info("process 2nd stage")
@@ -2377,7 +2377,7 @@ def main(args):
                 clip_guide_images=guide_images,
             )
             if highres_1st and not args.highres_fix_save_1st:  # return images or latents
-                return images
+                return images, None, None
 
             # save image
             '''
@@ -2454,7 +2454,7 @@ def main(args):
                     )
 
             #distributed_state.wait_for_everyone()
-            return (images, metadatas, filenames)
+            return images, metadatas, filenames
 
         # 画像生成のプロンプトが一周するまでのループ
         prompt_index = 0
@@ -2964,11 +2964,10 @@ def main(args):
                             for i in range(len(batches[j])):
                                 batchlogstr += f"\nImage: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}"
                             logger.info(batchlogstr)
-                            test = process_batch(batch_list[j], distributed_state, highres_fix)[0]
-                            logger.info(f"test: {len(test)}")
-                            prev_image = test[0]
-                            prev_metadata = test[1]
-                            prev_filename = test[2]
+                            prev_image, prev_metadata, prev_filename = process_batch(batch_list[j], distributed_state, highres_fix)[0]
+                            logger.info(f"prev_image: {len(prev_image)}")
+                            logger.info(f"prev_metadata: {len(prev_metadata)}")
+                            logger.info(f"prev_filename: {len(prev_filename)}")
                             distributed_state.wait_for_everyone()
                             
                             all_images = gather_object(prev_image)
