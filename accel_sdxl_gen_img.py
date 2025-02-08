@@ -2966,9 +2966,9 @@ def main(args):
                                 batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
                             logger.info(batchlogstr)
                             coll_image, coll_metadata, coll_filename = process_batch(batch, distributed_state, highres_fix)
-                            logger.info(f"prev_image: {len(prev_image)}")
-                            logger.info(f"prev_metadata: {len(prev_metadata)}")
-                            logger.info(f"prev_filename: {len(prev_filename)}")
+                            logger.info(f"coll_image: {len(coll_image)}")
+                            logger.info(f"coll_metadata: {len(coll_metadata)}")
+                            logger.info(f"coll_filename: {len(coll_filename)}")
                             distributed_state.wait_for_everyone()
                             
                             all_images = gather_object(coll_image)
