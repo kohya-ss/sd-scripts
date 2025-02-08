@@ -2889,7 +2889,7 @@ def main(args):
         extinfo = gather_object(extinfo)
         
         ext_separated_list_of_batches = []
-        if len(prompt_data_list) > 0:
+        if len(prompt_data_list) > 0 and distributed_state.is_main_process:
             unique_extinfo = list(set(extinfo))
             # splits list of prompts into sublists where BatchDataExt ext is identical
             for i in range(len(unique_extinfo)):
@@ -2929,7 +2929,7 @@ def main(args):
                     ext_separated_list_of_batches[x] = holder[:]
  
         distributed_state.wait_for_everyone()
-        # ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
+        ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
         del extinfo
         logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
         if len(ext_separated_list_of_batches) > 0:
