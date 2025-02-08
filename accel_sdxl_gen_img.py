@@ -2398,6 +2398,8 @@ def main(args):
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
             ds_str = time.strftime("%Y%m%d", time.localtime())
             ts_str = time.strftime("%H%M%S", time.localtime())
+            metadatas = []
+            filenames = []
             for i, (image, globalcount, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
                 zip(images, global_counter, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
             ):
@@ -2435,6 +2437,8 @@ def main(args):
                     fln = f"im_{ds_str}_{ts_str}_{globalcount:02d}_{highres_prefix}{i:03d}_{seed}.png"
                 logger.info(f"Saving image {globalcount}: {fln}\nPrompt: {prompt}")
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                metadatas.append(metadata)
+                filenames.append("test_"+fln)
 
             if not args.no_preview and not highres_1st and args.interactive:
                 try:
@@ -2450,7 +2454,7 @@ def main(args):
                     )
 
             #distributed_state.wait_for_everyone()
-            return images
+            return images, metadatas, filenames
 
         # 画像生成のプロンプトが一周するまでのループ
         prompt_index = 0
@@ -2960,7 +2964,18 @@ def main(args):
                             for i in range(len(batches[j])):
                                 batchlogstr += f"\nImage: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}"
                             logger.info(batchlogstr)
-                            prev_image = process_batch(batch_list[j], distributed_state, highres_fix)[0]
+                            prev_image, prev_metadata, prev_filename = process_batch(batch_list[j], distributed_state, highres_fix)[0]
+                            distributed_state.wait_for_everyone()
+                            all_images = gather_object(prev_image)
+                            all_metadatas = gather_object(prev_metadata)
+                            all_filenames = gather_object(prev_filename)
+                            if distributed_state.is_main_process:
+                                for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
+                                    logger.info(f"Saving image: {fln}")
+                                    image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                            distributed_state.wait_for_everyone()
+                            
+                            
     
         distributed_state.wait_for_everyone()
             #for i in range(len(data_loader)):
