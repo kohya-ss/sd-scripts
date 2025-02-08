@@ -2399,7 +2399,7 @@ def main(args):
             ds_str = time.strftime("%Y%m%d", time.localtime())
             ts_str = time.strftime("%H%M%S", time.localtime())
             for i, (image, globalcount, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
-                zip(all_images, all_global_counter, all_prompts, all_negative_prompts, all_seeds, all_clip_prompts, all_raw_prompts)
+                zip(images, global_counter, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
             ):
                 if highres_fix:
                     seed -= 1  # record original seed
