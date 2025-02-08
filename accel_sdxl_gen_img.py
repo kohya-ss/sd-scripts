@@ -2960,12 +2960,12 @@ def main(args):
             for batch_list in ext_separated_list_of_batches:
                 with torch.no_grad():
                     with distributed_state.split_between_processes(batch_list) as batches:
-                        for j in range(len(batches)):
-                            batchlogstr=f"\nLoading batch {j+1}/{len(batches)} of {len(batches[j])} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
-                            for i in range(len(batches[j])):
-                                batchlogstr += f"\nImage: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}"
+                        for batch in batches:
+                            batchlogstr=f"\nLoading batch {j+1}/{len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
+                            for i in range(len(batch)):
+                                batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
                             logger.info(batchlogstr)
-                            coll_image, coll_metadata, coll_filename = process_batch(batch_list[j], distributed_state, highres_fix)
+                            coll_image, coll_metadata, coll_filename = process_batch(batch, distributed_state, highres_fix)
                             logger.info(f"prev_image: {len(prev_image)}")
                             logger.info(f"prev_metadata: {len(prev_metadata)}")
                             logger.info(f"prev_filename: {len(prev_filename)}")
