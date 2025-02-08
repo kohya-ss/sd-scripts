@@ -2946,7 +2946,7 @@ def main(args):
                     ext_separated_list_of_batches[x] = holder[:]
              '''
         distributed_state.wait_for_everyone()
-        '''
+        
         if distributed_state.is_main_process:
             batchlogstr = "Running through ext_separated_list_of_batches Before Gather:\n"
             for x in range(len(ext_separated_list_of_batches)):
@@ -2956,7 +2956,7 @@ def main(args):
                     for z in range(len(ext_separated_list_of_batches[x][y])):
                         batchlogstr += f"        Image {z} of {len(ext_separated_list_of_batches[x][y])} break: {ext_separated_list_of_batches[x][y][z].global_count}\n"
             logger.info(batchlogstr)  
-        '''
+        
         ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
         del extinfo
         #logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
