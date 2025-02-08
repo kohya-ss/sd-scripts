@@ -2897,7 +2897,8 @@ def main(args):
                 res = [j for j, val in enumerate(prompt_data_list) if val.ext == unique_extinfo[i]]
                 for index in res:
                     templist.append(prompt_data_list[index])
-                split_into_batches = get_batches(items=templist, batch_size=args.batch_size)
+                split_into_batches = get_batches(items=templist, batch_size=args.batch_size).copy()
+                '''
                 sublist = []
                 if(len(split_into_batches) % distributed_state.num_processes != 0):
                     #Distributes last round of batches across available processes if last round of batches less than available processes and there is more than one prompt in the last batch
@@ -2916,7 +2917,9 @@ def main(args):
                 sublist.reverse()
                 n, m = divmod(len(sublist), distributed_state.num_processes)
                 split_into_batches.extend([sublist[i*n+min(i,m):(i+1)*n+min(i+1,m)] for i in range(distributed_state.num_processes)])
+                '''
                 ext_separated_list_of_batches.append(split_into_batches)
+            '''
             logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
             if distributed_state.num_processes > 1:
                 for x in range(len(ext_separated_list_of_batches)):
@@ -2927,11 +2930,11 @@ def main(args):
                     for batches in temp_list:
                         holder.extend(batches)
                     ext_separated_list_of_batches[x] = holder[:]
- 
+             '''
         distributed_state.wait_for_everyone()
         ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
         del extinfo
-        logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
+        #logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
         if len(ext_separated_list_of_batches) > 0:
             for batch_list in ext_separated_list_of_batches:
                 with torch.no_grad():
