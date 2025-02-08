@@ -2389,7 +2389,7 @@ def main(args):
             all_seeds = gather_object(seeds)
             all_clip_prompts = gather_object(clip_prompts)
             all_raw_prompts = gather_object(raw_prompts)
-            if init_images not None:
+            if init_images is not None:
                 all_init_images = gather_object(init_images)
             else:
                 all_init_images = None
