@@ -2896,12 +2896,14 @@ def main(args):
                 res = [j for j, val in enumerate(prompt_data_list) if val.ext == unique_extinfo[i]]
                 for index in res:
                     templist.append(prompt_data_list[index])
+                '''
                 if distributed_state.num_processes > 1:
                     resorted_list = []
                     for i in range(distributed_state.num_processes):
                         resorted_list.append(templist[i :: distributed_state.num_processes])
                     for list_of_prompts in resorted_list:
                         templist.extend(list_of_prompts)
+                '''
                 split_into_batches = get_batches(items=templist, batch_size=args.batch_size).copy()
                 
                 sublist = []
