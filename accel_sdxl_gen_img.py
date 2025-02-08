@@ -2965,15 +2965,16 @@ def main(args):
                             for i in range(len(batches[j])):
                                 batchlogstr += f"\nImage: {batches[j][i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batches[j][i].base.prompt}\nNegative Prompt: {batches[j][i].base.negative_prompt}\nSeed: {batches[j][i].base.seed}"
                             logger.info(batchlogstr)
-                            prev_image, prev_metadata, prev_filename = process_batch(batch_list[j], distributed_state, highres_fix)
+                            coll_image, coll_metadata, coll_filename = process_batch(batch_list[j], distributed_state, highres_fix)
                             logger.info(f"prev_image: {len(prev_image)}")
                             logger.info(f"prev_metadata: {len(prev_metadata)}")
                             logger.info(f"prev_filename: {len(prev_filename)}")
                             distributed_state.wait_for_everyone()
                             
-                            all_images = gather_object(prev_image)
-                            all_metadatas = gather_object(prev_metadata)
-                            all_filenames = gather_object(prev_filename)
+                            all_images = gather_object(coll_image)
+                            all_metadatas = gather_object(coll_metadata)
+                            all_filenames = gather_object(coll_filename)
+                            prev_image = allimages[0]
                             if distributed_state.is_main_process:
                                 for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
                                     logger.info(f"Saving image: {fln}")
