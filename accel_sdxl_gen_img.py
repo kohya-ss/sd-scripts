@@ -2961,7 +2961,7 @@ def main(args):
                 with torch.no_grad():
                     with distributed_state.split_between_processes(batch_list) as batches:
                         for batch in batches:
-                            batchlogstr=f"\nLoading batch {j+1}/{len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
+                            batchlogstr=f"\nLoading batch of {len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
                             for i in range(len(batch)):
                                 batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
                             logger.info(batchlogstr)
