@@ -1489,6 +1489,7 @@ class NetworkTrainer:
                     args.max_timestep = original_args_max_timestep
                     optimizer_train_fn()
                     accelerator.unwrap_model(network).train()
+                    progress_bar.unpause()
 
                 if global_step >= args.max_train_steps:
                     break
@@ -1572,6 +1573,7 @@ class NetworkTrainer:
                 args.max_timestep = original_args_max_timestep
                 optimizer_train_fn()
                 accelerator.unwrap_model(network).train()
+                progress_bar.unpause()
 
             # END OF EPOCH
             if is_tracking:
