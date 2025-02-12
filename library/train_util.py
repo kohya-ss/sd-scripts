@@ -3463,6 +3463,7 @@ def get_sai_model_spec(
     is_stable_diffusion_ckpt: Optional[bool] = None,  # None for TI and LoRA
     sd3: str = None,
     flux: str = None,
+    lumina: str = None,
 ):
     timestamp = time.time()
 
@@ -3498,6 +3499,7 @@ def get_sai_model_spec(
         clip_skip=args.clip_skip,  # None or int
         sd3=sd3,
         flux=flux,
+        lumina=lumina,
     )
     return metadata
 

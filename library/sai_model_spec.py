@@ -61,6 +61,8 @@ ARCH_SD3_M = "stable-diffusion-3"  # may be followed by "-m" or "-5-large" etc.
 # ARCH_SD3_UNKNOWN = "stable-diffusion-3"
 ARCH_FLUX_1_DEV = "flux-1-dev"
 ARCH_FLUX_1_UNKNOWN = "flux-1"
+ARCH_LUMINA_2 = "lumina-2"
+ARCH_LUMINA_UNKNOWN = "lumina"
 
 ADAPTER_LORA = "lora"
 ADAPTER_TEXTUAL_INVERSION = "textual-inversion"
@@ -69,6 +71,7 @@ IMPL_STABILITY_AI = "https://github.com/Stability-AI/generative-models"
 IMPL_COMFY_UI = "https://github.com/comfyanonymous/ComfyUI"
 IMPL_DIFFUSERS = "diffusers"
 IMPL_FLUX = "https://github.com/black-forest-labs/flux"
+IMPL_LUMINA = "https://github.com/Alpha-VLLM/Lumina-Image-2.0"
 
 PRED_TYPE_EPSILON = "epsilon"
 PRED_TYPE_V = "v"
@@ -123,6 +126,7 @@ def build_metadata(
     clip_skip: Optional[int] = None,
     sd3: Optional[str] = None,
     flux: Optional[str] = None,
+    lumina: Optional[str] = None,
 ):
     """
     sd3: only supports "m", flux: only supports "dev"
@@ -146,6 +150,11 @@ def build_metadata(
             arch = ARCH_FLUX_1_DEV
         else:
             arch = ARCH_FLUX_1_UNKNOWN
+    elif lumina is not None:
+        if lumina == "lumina2":
+            arch = ARCH_LUMINA_2
+        else:
+            arch = ARCH_LUMINA_UNKNOWN
     elif v2:
         if v_parameterization:
             arch = ARCH_SD_V2_768_V
@@ -167,6 +176,9 @@ def build_metadata(
     if flux is not None:
         # Flux
         impl = IMPL_FLUX
+    elif lumina is not None:
+        # Lumina
+        impl = IMPL_LUMINA
     elif (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
         # Stable Diffusion ckpt, TI, SDXL LoRA
         impl = IMPL_STABILITY_AI
