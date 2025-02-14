@@ -6568,7 +6568,7 @@ class LossRecorder:
 
 def get_cv2_interpolation(interpolation: Optional[str]) -> Optional[int]:
     """
-    Convert interpolation ovalue to cv2 interpolation integer
+    Convert interpolation value to cv2 interpolation integer
     """
     if interpolation is None:
         return None 
