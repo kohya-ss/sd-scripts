@@ -4530,7 +4530,13 @@ def add_dataset_arguments(
         action="store_true",
         help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します",
     )
-
+    parser.add_argument(
+        "--resize_interpolation",
+        type=str,
+        default=None,
+        choices=["lanczos", "nearest", "bilinear", "linear", "bicubic", "cubic", "area"],
+        help="Resize interpolation when required. Default: area Options: lanczos, nearest, bilinear, bicubic, area / 必要に応じてサイズ補間を変更します。デフォルト: area オプション: lanczos, nearest, bilinear, bicubic, area",
+    )
     parser.add_argument(
         "--token_warmup_min",
         type=int,
