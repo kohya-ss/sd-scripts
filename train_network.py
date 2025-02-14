@@ -973,7 +973,7 @@ class NetworkTrainer:
             "ss_max_validation_steps": args.max_validation_steps, 
             "ss_validate_every_n_epochs": args.validate_every_n_epochs, 
             "ss_validate_every_n_steps": args.validate_every_n_steps, 
-            "ss_resize_interpolation": train_dataset_group.resize_interpolation
+            "ss_resize_interpolation": args.resize_interpolation
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
