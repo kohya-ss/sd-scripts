@@ -9,7 +9,9 @@ from library.strategy_base import (
     LatentsCachingStrategy,
     TokenizeStrategy,
     TextEncodingStrategy,
+    TextEncoderOutputsCachingStrategy
 )
+import numpy as np
 from library.utils import setup_logging
 
 setup_logging()

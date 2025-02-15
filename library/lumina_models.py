@@ -21,7 +21,8 @@ import torch.nn.functional as F
 
 try:
     from apex.normalization import FusedRMSNorm as RMSNorm
-except ImportError:
+except ModuleNotFoundError:
+    import warnings
     warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
 
 memory_efficient_attention = None
@@ -39,17 +40,20 @@ except:
 class LuminaParams:
     """Parameters for Lumina model configuration"""
     patch_size: int = 2
-    dim: int = 2592
+    in_channels: int = 4
+    dim: int = 4096
     n_layers: int = 30
+    n_refiner_layers: int = 2
     n_heads: int = 24
     n_kv_heads: int = 8
+    multiple_of: int = 256
     axes_dims: List[int] = None
     axes_lens: List[int] = None
-    qk_norm: bool = False,
-    ffn_dim_multiplier: Optional[float] = None,
-    norm_eps: float = 1e-5,
-    scaling_factor: float = 1.0,
-    cap_feat_dim: int = 32,
+    qk_norm: bool = False
+    ffn_dim_multiplier: Optional[float] = None
+    norm_eps: float = 1e-5
+    scaling_factor: float = 1.0
+    cap_feat_dim: int = 32
 
     def __post_init__(self):
         if self.axes_dims is None:
@@ -62,12 +66,15 @@ class LuminaParams:
         """Returns the configuration for the 2B parameter model"""
         return cls(
             patch_size=2,
-            dim=2592,
-            n_layers=30,
+            in_channels=16,
+            dim=2304,
+            n_layers=26,
             n_heads=24,
             n_kv_heads=8,
-            axes_dims=[36, 36, 36],
-            axes_lens=[300, 512, 512]
+            axes_dims=[32, 32, 32],
+            axes_lens=[300, 512, 512],
+            qk_norm=True,
+            cap_feat_dim=2304
         )
 
     @classmethod
@@ -696,8 +703,8 @@ class NextDiT(nn.Module):
         norm_eps: float = 1e-5,
         qk_norm: bool = False,
         cap_feat_dim: int = 5120,
-        axes_dims: List[int] = (16, 56, 56),
-        axes_lens: List[int] = (1, 512, 512),
+        axes_dims: List[int] = [16, 56, 56],
+        axes_lens: List[int] = [1, 512, 512],
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -1090,6 +1097,7 @@ def NextDiT_2B_GQA_patch2_Adaln_Refiner(params: Optional[LuminaParams] = None, *
     
     return NextDiT(
         patch_size=params.patch_size,
+        in_channels=params.in_channels,
         dim=params.dim,
         n_layers=params.n_layers,
         n_heads=params.n_heads,
@@ -1099,7 +1107,6 @@ def NextDiT_2B_GQA_patch2_Adaln_Refiner(params: Optional[LuminaParams] = None, *
         qk_norm=params.qk_norm,
         ffn_dim_multiplier=params.ffn_dim_multiplier,
         norm_eps=params.norm_eps,
-        scaling_factor=params.scaling_factor,
         cap_feat_dim=params.cap_feat_dim,
         **kwargs,
     )
