@@ -62,6 +62,19 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             disable_mmap=args.disable_mmap_load_safetensors,
         )
 
+        if args.fp8_base:
+            # check dtype of model
+            if model.dtype == torch.float8_e4m3fnuz or model.dtype == torch.float8_e5m2 or model.dtype == torch.float8_e5m2fnuz:
+                raise ValueError(f"Unsupported fp8 model dtype: {model.dtype}")
+            elif model.dtype == torch.float8_e4m3fn:
+                logger.info("Loaded fp8 Lumina 2 model")
+            else:
+                logger.info(
+                    "Cast Lumina 2 model to fp8. This may take a while. You can reduce the time by using fp8 checkpoint."
+                    " / Lumina 2モデルをfp8に変換しています。これには時間がかかる場合があります。fp8チェックポイントを使用することで時間を短縮できます。"
+                )
+                model.to(torch.float8_e4m3fn)
+
         # if args.blocks_to_swap:
         #     logger.info(f'Enabling block swap: {args.blocks_to_swap}')
         #     model.enable_block_swap(args.blocks_to_swap, accelerator.device)
@@ -70,6 +83,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         gemma2 = lumina_util.load_gemma2(
             args.gemma2, weight_dtype, "cpu"
         )
+        gemma2.eval()
         ae = lumina_util.load_ae(
             args.ae, weight_dtype, "cpu"
         )
@@ -118,17 +132,65 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         dataset,
         weight_dtype,
     ):
-        for text_encoder in text_encoders:
-            text_encoder_outputs_caching_strategy = (
-                self.get_text_encoder_outputs_caching_strategy(args)
-            )
-            if text_encoder_outputs_caching_strategy is not None:
-                text_encoder_outputs_caching_strategy.cache_batch_outputs(
-                    self.get_tokenize_strategy(args),
-                    [text_encoder],
-                    self.get_text_encoding_strategy(args),
-                    dataset,
-                )
+        if args.cache_text_encoder_outputs:
+            if not args.lowram:
+                # メモリ消費を減らす
+                logger.info("move vae and unet to cpu to save memory")
+                org_vae_device = vae.device
+                org_unet_device = unet.device
+                vae.to("cpu")
+                unet.to("cpu")
+                clean_memory_on_device(accelerator.device)
+
+            # When TE is not be trained, it will not be prepared so we need to use explicit autocast
+            logger.info("move text encoders to gpu")
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)  # always not fp8
+
+            if text_encoders[0].dtype == torch.float8_e4m3fn:
+                # if we load fp8 weights, the model is already fp8, so we use it as is
+                self.prepare_text_encoder_fp8(1, text_encoders[1], text_encoders[1].dtype, weight_dtype)
+            else:
+                # otherwise, we need to convert it to target dtype
+                text_encoders[0].to(weight_dtype)
+
+            with accelerator.autocast():
+                dataset.new_cache_text_encoder_outputs(text_encoders, accelerator)
+
+            # cache sample prompts
+            if args.sample_prompts is not None:
+                logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
+
+                tokenize_strategy: strategy_lumina.LuminaTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
+                text_encoding_strategy: strategy_lumina.LuminaTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
+
+                prompts = train_util.load_prompts(args.sample_prompts)
+                sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
+                with accelerator.autocast(), torch.no_grad():
+                    for prompt_dict in prompts:
+                        for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
+                            if p not in sample_prompts_te_outputs:
+                                logger.info(f"cache Text Encoder outputs for prompt: {p}")
+                                tokens_and_masks = tokenize_strategy.tokenize(p)
+                                sample_prompts_te_outputs[p] = text_encoding_strategy.encode_tokens(
+                                    tokenize_strategy, text_encoders, tokens_and_masks, args.apply_t5_attn_mask
+                                )
+                self.sample_prompts_te_outputs = sample_prompts_te_outputs
+
+            accelerator.wait_for_everyone()
+
+            # move back to cpu
+            if not self.is_train_text_encoder(args):
+                logger.info("move Gemma 2 back to cpu")
+                text_encoders[0].to("cpu")
+            clean_memory_on_device(accelerator.device)
+
+            if not args.lowram:
+                logger.info("move vae and unet back to original device")
+                vae.to(org_vae_device)
+                unet.to(org_unet_device)
+        else:
+            # Text Encoderから毎回出力を取得するので、GPUに乗せておく
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)
 
     def sample_images(
         self,
@@ -196,12 +258,13 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             )
         )
 
+        # May not need to pack/unpack?
         # pack latents and get img_ids - 这部分可以保留因为NextDiT也需要packed格式的输入
-        packed_noisy_model_input = lumina_util.pack_latents(noisy_model_input)
-        packed_latent_height, packed_latent_width = (
-            noisy_model_input.shape[2] // 2,
-            noisy_model_input.shape[3] // 2,
-        )
+        # packed_noisy_model_input = lumina_util.pack_latents(noisy_model_input)
+        # packed_latent_height, packed_latent_width = (
+        #     noisy_model_input.shape[2] // 2,
+        #     noisy_model_input.shape[3] // 2,
+        # )
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -212,32 +275,30 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
 
         # Unpack Gemma2 outputs
         gemma2_hidden_states, gemma2_attn_mask, input_ids = text_encoder_conds
-        if not args.apply_gemma2_attn_mask:
-            gemma2_attn_mask = None
 
-        def call_dit(img, gemma2_hidden_states, input_ids, timesteps, gemma2_attn_mask):
+        def call_dit(img, gemma2_hidden_states, timesteps, gemma2_attn_mask):
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # NextDiT forward expects (x, t, cap_feats, cap_mask)
                 model_pred = unet(
-                    x=img,  # packed latents
+                    x=img, # image latents (B, C, H, W)
                     t=timesteps / 1000,  # timesteps需要除以1000来匹配模型预期
                     cap_feats=gemma2_hidden_states,  # Gemma2的hidden states作为caption features
-                    cap_mask=gemma2_attn_mask,  # Gemma2的attention mask
+                    cap_mask=gemma2_attn_mask.to(dtype=torch.int32),  # Gemma2的attention mask
                 )
             return model_pred
 
         model_pred = call_dit(
-            img=packed_noisy_model_input,
+            img=noisy_model_input,
             gemma2_hidden_states=gemma2_hidden_states,
-            input_ids=input_ids,
             timesteps=timesteps,
             gemma2_attn_mask=gemma2_attn_mask,
         )
 
+        # May not need to pack/unpack?
         # unpack latents
-        model_pred = lumina_util.unpack_latents(
-            model_pred, packed_latent_height, packed_latent_width
-        )
+        # model_pred = lumina_util.unpack_latents(
+        #     model_pred, packed_latent_height, packed_latent_width
+        # )
 
         # apply model prediction type
         model_pred, weighting = flux_train_utils.apply_model_prediction_type(

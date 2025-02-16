@@ -3,7 +3,7 @@ import os
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, GemmaTokenizerFast
 from library import train_util
 from library.strategy_base import (
     LatentsCachingStrategy,
@@ -27,34 +27,35 @@ class LuminaTokenizeStrategy(TokenizeStrategy):
     def __init__(
         self, max_length: Optional[int], tokenizer_cache_dir: Optional[str] = None
     ) -> None:
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer: GemmaTokenizerFast = AutoTokenizer.from_pretrained(
             GEMMA_ID, cache_dir=tokenizer_cache_dir
         )
         self.tokenizer.padding_side = "right"
 
         if max_length is None:
-            self.max_length = self.tokenizer.model_max_length
+            self.max_length = 256
         else:
             self.max_length = max_length
 
-    def tokenize(self, text: Union[str, List[str]]) -> List[torch.Tensor]:
+    def tokenize(self, text: Union[str, List[str]]) -> Tuple[torch.Tensor, torch.Tensor]:
         text = [text] if isinstance(text, str) else text
         encodings = self.tokenizer(
             text,
-            padding="max_length",
             max_length=self.max_length,
             return_tensors="pt",
+            padding=True,
+            pad_to_multiple_of=8,
             truncation=True,
         )
-        return [encodings.input_ids]
+        return encodings.input_ids, encodings.attention_mask
 
     def tokenize_with_weights(
         self, text: str | List[str]
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
         # Gemma doesn't support weighted prompts, return uniform weights
-        tokens = self.tokenize(text)
+        tokens, attention_masks = self.tokenize(text)
         weights = [torch.ones_like(t) for t in tokens]
-        return tokens, weights
+        return tokens, attention_masks, weights
 
 
 class LuminaTextEncodingStrategy(TextEncodingStrategy):
@@ -66,50 +67,39 @@ class LuminaTextEncodingStrategy(TextEncodingStrategy):
         self,
         tokenize_strategy: TokenizeStrategy,
         models: List[Any],
-        tokens: List[torch.Tensor],
+        tokens: torch.Tensor,
+        attention_masks: torch.Tensor,
         apply_gemma2_attn_mask: Optional[bool] = None,
-    ) -> List[torch.Tensor]:
-
+    ) -> torch.Tensor:
         if apply_gemma2_attn_mask is None:
             apply_gemma2_attn_mask = self.apply_gemma2_attn_mask
 
         text_encoder = models[0]
-        input_ids = tokens[0].to(text_encoder.device)
 
-        attention_mask = None
-        position_ids = None
-        if apply_gemma2_attn_mask:
-            # Create attention mask (1 for non-padding, 0 for padding)
-            attention_mask = (input_ids != tokenize_strategy.tokenizer.pad_token_id).to(
-                text_encoder.device
-            )
+        # Create position IDs
+        position_ids = attention_masks.cumsum(-1) - 1
+        position_ids.masked_fill_(attention_masks == 0, 1)
 
-            # Create position IDs
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
+        outputs = text_encoder(
+            input_ids=tokens.to(text_encoder.device),
+            attention_mask=attention_masks.to(text_encoder.device) if apply_gemma2_attn_mask else None,
+            position_ids=position_ids.to(text_encoder.device),
+            output_hidden_states=True,
+            return_dict=True,
+        )
 
-        with torch.no_grad():
-            outputs = text_encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-            # Get the last hidden state
-            hidden_states = outputs.last_hidden_state
-
-        return [hidden_states]
+        return outputs.hidden_states[-2]
 
     def encode_tokens_with_weights(
         self,
         tokenize_strategy: TokenizeStrategy,
         models: List[Any],
-        tokens_list: List[torch.Tensor],
+        tokens: torch.Tensor,
         weights_list: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
+        attention_masks: torch.Tensor
+    ) -> torch.Tensor:
         # For simplicity, use uniform weighting
-        return self.encode_tokens(tokenize_strategy, models, tokens_list)
+        return self.encode_tokens(tokenize_strategy, models, tokens, attention_masks)
 
 
 class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
@@ -149,6 +139,15 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
             npz = np.load(npz_path)
             if "hidden_state" not in npz:
                 return False
+            if "attention_mask" not in npz:
+                return False
+            if "input_ids" not in npz:
+                return False
+            if "apply_gemma2_attn_mask" not in npz:
+                return False
+            npz_apply_gemma2_attn_mask = npz["apply_gemma2_attn_mask"]
+            if npz_apply_gemma2_attn_mask != self.apply_gemma2_attn_mask:
+                return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
             raise e
@@ -158,13 +157,15 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
         data = np.load(npz_path)
         hidden_state = data["hidden_state"]
-        return [hidden_state]
+        attention_mask = data["attention_mask"]
+        input_ids = data["input_ids"]
+        return [hidden_state, attention_mask, input_ids]
 
     def cache_batch_outputs(
         self,
-        tokenize_strategy: TokenizeStrategy,
+        tokenize_strategy: LuminaTokenizeStrategy,
         models: List[Any],
-        text_encoding_strategy: TextEncodingStrategy,
+        text_encoding_strategy: LuminaTextEncodingStrategy,
         infos: List,
     ):
         lumina_text_encoding_strategy: LuminaTextEncodingStrategy = (
@@ -173,35 +174,44 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         captions = [info.caption for info in infos]
 
         if self.is_weighted:
-            tokens_list, weights_list = tokenize_strategy.tokenize_with_weights(
+            tokens, attention_masks, weights_list = tokenize_strategy.tokenize_with_weights(
                 captions
             )
             with torch.no_grad():
                 hidden_state = lumina_text_encoding_strategy.encode_tokens_with_weights(
-                    tokenize_strategy, models, tokens_list, weights_list
-                )[0]
+                    tokenize_strategy, models, tokens, weights_list, attention_masks
+                )
         else:
-            tokens = tokenize_strategy.tokenize(captions)
+            tokens, attention_masks = tokenize_strategy.tokenize(captions)
             with torch.no_grad():
                 hidden_state = lumina_text_encoding_strategy.encode_tokens(
-                    tokenize_strategy, models, tokens
-                )[0]
+                    tokenize_strategy, models, tokens, attention_masks
+                )
 
-        if hidden_state.dtype == torch.bfloat16:
+        if hidden_state.dtype != torch.float32:
             hidden_state = hidden_state.float()
 
         hidden_state = hidden_state.cpu().numpy()
+        attention_mask = attention_masks.cpu().numpy()
+        input_ids = tokens.cpu().numpy()
+
 
         for i, info in enumerate(infos):
             hidden_state_i = hidden_state[i]
+            attention_mask_i = attention_mask[i]
+            input_ids_i = input_ids[i]
+            apply_gemma2_attn_mask_i = self.apply_gemma2_attn_mask
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
                     hidden_state=hidden_state_i,
+                    attention_mask=attention_mask_i,
+                    input_ids=input_ids_i,
+                    apply_gemma2_attn_mask=apply_gemma2_attn_mask_i,
                 )
             else:
-                info.text_encoder_outputs = [hidden_state_i]
+                info.text_encoder_outputs = [hidden_state_i, attention_mask_i, input_ids_i]
 
 
 class LuminaLatentsCachingStrategy(LatentsCachingStrategy):

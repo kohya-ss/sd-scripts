@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from flash_attn import flash_attn_varlen_func
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 import torch
+from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -91,6 +93,25 @@ class LuminaParams:
         )
 
 
+class GradientCheckpointMixin(nn.Module):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = False
+
+    def forward(self, *args, **kwargs):
+        if self.training and self.gradient_checkpointing:
+            return checkpoint(self._forward, *args, use_reentrant=False, **kwargs)
+        else:
+            return self._forward(*args, **kwargs)
+
 #############################################################################
 #                                 RMSNorm                                   #
 #############################################################################
@@ -114,7 +135,7 @@ class RMSNorm(torch.nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
+    def _norm(self, x) -> Tensor:
         """
         Apply the RMSNorm normalization to the input tensor.
 
@@ -125,21 +146,14 @@ class RMSNorm(torch.nn.Module):
             torch.Tensor: The normalized tensor.
 
         """
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
 
-    def forward(self, x):
-        """
-        Forward pass through the RMSNorm layer.
 
-        Args:
-            x (torch.Tensor): The input tensor.
-
-        Returns:
-            torch.Tensor: The output tensor after applying RMSNorm.
-
-        """
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+    def forward(self, x: Tensor):
+        x_dtype = x.dtype
+        x = x.float()
+        rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
+        return ((x * rrms) * self.weight.float()).to(dtype=x_dtype)
 
 
 def modulate(x, scale):
@@ -151,7 +165,7 @@ def modulate(x, scale):
 #############################################################################
 
 
-class TimestepEmbedder(nn.Module):
+class TimestepEmbedder(GradientCheckpointMixin):
     """
     Embeds scalar timesteps into vector representations.
     """
@@ -203,10 +217,31 @@ class TimestepEmbedder(nn.Module):
             )
         return embedding
 
-    def forward(self, t):
+    def _forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq.to(self.mlp[0].weight.dtype))
         return t_emb
+
+def to_cuda(x):
+    if isinstance(x, torch.Tensor):
+        return x.cuda()
+    elif isinstance(x, (list, tuple)):
+        return [to_cuda(elem) for elem in x]
+    elif isinstance(x, dict):
+        return {k: to_cuda(v) for k, v in x.items()}
+    else:
+        return x
+
+
+def to_cpu(x):
+    if isinstance(x, torch.Tensor):
+        return x.cpu()
+    elif isinstance(x, (list, tuple)):
+        return [to_cpu(elem) for elem in x]
+    elif isinstance(x, dict):
+        return {k: to_cpu(v) for k, v in x.items()}
+    else:
+        return x
 
 
 #############################################################################
@@ -284,7 +319,7 @@ class JointAttention(nn.Module):
             Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor
                 and key tensor with rotary embeddings.
         """
-        with torch.amp.autocast("cuda",enabled=False):
+        with torch.autocast("cuda", enabled=False):
             x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
             freqs_cis = freqs_cis.unsqueeze(2)
             x_out = torch.view_as_real(x * freqs_cis).flatten(3)
@@ -496,15 +531,15 @@ class FeedForward(nn.Module):
         return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
 
 
-class JointTransformerBlock(nn.Module):
+class JointTransformerBlock(GradientCheckpointMixin):
     def __init__(
         self,
         layer_id: int,
         dim: int,
         n_heads: int,
-        n_kv_heads: int,
+        n_kv_heads: Optional[int],
         multiple_of: int,
-        ffn_dim_multiplier: float,
+        ffn_dim_multiplier: Optional[float],
         norm_eps: float,
         qk_norm: bool,
         modulation=True,
@@ -520,7 +555,7 @@ class JointTransformerBlock(nn.Module):
                 value features (if using GQA), or set to None for the same as
                 query.
             multiple_of (int):
-            ffn_dim_multiplier (float):
+            ffn_dim_multiplier (Optional[float]):
             norm_eps (float):
 
         """
@@ -554,7 +589,7 @@ class JointTransformerBlock(nn.Module):
             nn.init.zeros_(self.adaLN_modulation[1].weight)
             nn.init.zeros_(self.adaLN_modulation[1].bias)
 
-    def forward(
+    def _forward(
         self,
         x: torch.Tensor,
         x_mask: torch.Tensor,
@@ -608,7 +643,7 @@ class JointTransformerBlock(nn.Module):
         return x
 
 
-class FinalLayer(nn.Module):
+class FinalLayer(GradientCheckpointMixin):
     """
     The final layer of NextDiT.
     """
@@ -661,22 +696,21 @@ class RopeEmbedder:
             self.axes_dims, self.axes_lens, theta=self.theta
         )
 
-    def __call__(self, ids: torch.Tensor):
+    def get_freqs_cis(self, ids: torch.Tensor):
         self.freqs_cis = [freqs_cis.to(ids.device) for freqs_cis in self.freqs_cis]
         result = []
         for i in range(len(self.axes_dims)):
-            # import torch.distributed as dist
-            # if not dist.is_initialized() or dist.get_rank() == 0:
-            #     import pdb
-            #     pdb.set_trace()
             index = (
                 ids[:, :, i : i + 1]
                 .repeat(1, 1, self.freqs_cis[i].shape[-1])
                 .to(torch.int64)
             )
+
+            axes = self.freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1)
+
             result.append(
                 torch.gather(
-                    self.freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1),
+                    axes,
                     dim=1,
                     index=index,
                 )
@@ -790,76 +824,98 @@ class NextDiT(nn.Module):
         self.dim = dim
         self.n_heads = n_heads
 
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+        self.blocks_to_swap = None
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+        self.cpu_offload_checkpointing = cpu_offload
+
+        self.t_embedder.enable_gradient_checkpointing()
+
+        for block in self.layers + self.context_refiner + self.noise_refiner:
+            block.enable_gradient_checkpointing(cpu_offload=cpu_offload)
+
+        self.final_layer.enable_gradient_checkpointing()
+
+        print(f"Lumina: Gradient checkpointing enabled. CPU offload: {cpu_offload}")
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+        self.t_embedder.disable_gradient_checkpointing()
+
+        for block in self.layers + self.context_refiner + self.noise_refiner:
+            block.disable_gradient_checkpointing()
+
+        self.final_layer.disable_gradient_checkpointing()
+
+        print("Lumina: Gradient checkpointing disabled.")
+
     def unpatchify(
         self,
         x: torch.Tensor,
-        img_size: List[Tuple[int, int]],
-        cap_size: List[int],
-        return_tensor=False,
-    ) -> List[torch.Tensor]:
+        width: int,
+        height: int,
+        encoder_seq_lengths: List[int],
+        seq_lengths: List[int],
+    ) -> torch.Tensor:
         """
         x: (N, T, patch_size**2 * C)
         imgs: (N, H, W, C)
         """
         pH = pW = self.patch_size
-        imgs = []
-        for i in range(x.size(0)):
-            H, W = img_size[i]
-            begin = cap_size[i]
-            end = begin + (H // pH) * (W // pW)
-            imgs.append(
-                x[i][begin:end]
-                .view(H // pH, W // pW, pH, pW, self.out_channels)
+
+        output = []
+        for i, (encoder_seq_len, seq_len) in enumerate(zip(encoder_seq_lengths, seq_lengths)):
+            output.append(
+                x[i][encoder_seq_len:seq_len]
+                .view(height // pH, width // pW, pH, pW, self.out_channels)
                 .permute(4, 0, 2, 1, 3)
                 .flatten(3, 4)
                 .flatten(1, 2)
             )
+        output = torch.stack(output, dim=0)
 
-        if return_tensor:
-            imgs = torch.stack(imgs, dim=0)
-        return imgs
+        return output
 
     def patchify_and_embed(
         self,
-        x: List[torch.Tensor] | torch.Tensor,
+        x: torch.Tensor,
         cap_feats: torch.Tensor,
         cap_mask: torch.Tensor,
         t: torch.Tensor,
     ) -> Tuple[
-        torch.Tensor, torch.Tensor, List[Tuple[int, int]], List[int], torch.Tensor
+        torch.Tensor, torch.Tensor, torch.Tensor, List[int], List[int]
     ]:
-        bsz = len(x)
+        bsz, channels, height, width = x.shape
         pH = pW = self.patch_size
-        device = x[0].device
+        device = x.device
 
         l_effective_cap_len = cap_mask.sum(dim=1).tolist()
-        img_sizes = [(img.size(1), img.size(2)) for img in x]
-        l_effective_img_len = [(H // pH) * (W // pW) for (H, W) in img_sizes]
+        encoder_seq_len = cap_mask.shape[1]
 
-        max_seq_len = max(
-            (
-                cap_len + img_len
-                for cap_len, img_len in zip(l_effective_cap_len, l_effective_img_len)
-            )
-        )
-        max_cap_len = max(l_effective_cap_len)
-        max_img_len = max(l_effective_img_len)
+        image_seq_len = (height // self.patch_size) * (width // self.patch_size)
+        seq_lengths = [cap_seq_len + image_seq_len for cap_seq_len in l_effective_cap_len]
+        max_seq_len = max(seq_lengths)
 
-        position_ids = torch.zeros(
-            bsz, max_seq_len, 3, dtype=torch.int32, device=device
-        )
+        position_ids = torch.zeros(bsz, max_seq_len, 3, dtype=torch.int32, device=device)
 
-        for i in range(bsz):
-            cap_len = l_effective_cap_len[i]
-            img_len = l_effective_img_len[i]
-            H, W = img_sizes[i]
-            H_tokens, W_tokens = H // pH, W // pW
-            assert H_tokens * W_tokens == img_len
+        for i, (cap_len, seq_len) in enumerate(zip(l_effective_cap_len, seq_lengths)):
+            H_tokens, W_tokens = height // pH, width // pW
 
-            position_ids[i, :cap_len, 0] = torch.arange(
-                cap_len, dtype=torch.int32, device=device
-            )
-            position_ids[i, cap_len : cap_len + img_len, 0] = cap_len
+            position_ids[i, :cap_len, 0] = torch.arange(cap_len, dtype=torch.int32, device=device)
+            position_ids[i, cap_len : cap_len + seq_len, 0] = cap_len
             row_ids = (
                 torch.arange(H_tokens, dtype=torch.int32, device=device)
                 .view(-1, 1)
@@ -872,77 +928,40 @@ class NextDiT(nn.Module):
                 .repeat(H_tokens, 1)
                 .flatten()
             )
-            position_ids[i, cap_len : cap_len + img_len, 1] = row_ids
-            position_ids[i, cap_len : cap_len + img_len, 2] = col_ids
+            position_ids[i, cap_len : cap_len + seq_len, 1] = row_ids
+            position_ids[i, cap_len : cap_len + seq_len, 2] = col_ids
 
-        freqs_cis = self.rope_embedder(position_ids)
+        freqs_cis = self.rope_embedder.get_freqs_cis(position_ids)
 
-        # build freqs_cis for cap and image individually
-        cap_freqs_cis_shape = list(freqs_cis.shape)
-        # cap_freqs_cis_shape[1] = max_cap_len
-        cap_freqs_cis_shape[1] = cap_feats.shape[1]
-        cap_freqs_cis = torch.zeros(
-            *cap_freqs_cis_shape, device=device, dtype=freqs_cis.dtype
-        )
+        cap_freqs_cis = torch.zeros(bsz, encoder_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype)
+        img_freqs_cis = torch.zeros(bsz, image_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype)
 
-        img_freqs_cis_shape = list(freqs_cis.shape)
-        img_freqs_cis_shape[1] = max_img_len
-        img_freqs_cis = torch.zeros(
-            *img_freqs_cis_shape, device=device, dtype=freqs_cis.dtype
-        )
-
-        for i in range(bsz):
-            cap_len = l_effective_cap_len[i]
-            img_len = l_effective_img_len[i]
+        for i, (cap_len, seq_len) in enumerate(zip(l_effective_cap_len, seq_lengths)):
             cap_freqs_cis[i, :cap_len] = freqs_cis[i, :cap_len]
-            img_freqs_cis[i, :img_len] = freqs_cis[i, cap_len : cap_len + img_len]
+            img_freqs_cis[i, :seq_len] = freqs_cis[i, cap_len : cap_len + seq_len]
+
+        x = x.view(bsz, channels, height // pH, pH, width // pW, pW).permute(0, 2, 4, 3, 5, 1).flatten(3).flatten(1, 2)
+        x_mask = torch.zeros(bsz, max_seq_len, dtype=torch.bool, device=device)
 
         # refine context
         for layer in self.context_refiner:
             cap_feats = layer(cap_feats, cap_mask, cap_freqs_cis)
 
-        # refine image
-        flat_x = []
-        for i in range(bsz):
-            img = x[i]
-            C, H, W = img.size()
-            img = (
-                img.view(C, H // pH, pH, W // pW, pW)
-                .permute(1, 3, 2, 4, 0)
-                .flatten(2)
-                .flatten(0, 1)
-            )
-            flat_x.append(img)
-        x = flat_x
-        padded_img_embed = torch.zeros(
-            bsz, max_img_len, x[0].shape[-1], device=device, dtype=x[0].dtype
-        )
-        padded_img_mask = torch.zeros(bsz, max_img_len, dtype=torch.bool, device=device)
-        for i in range(bsz):
-            padded_img_embed[i, : l_effective_img_len[i]] = x[i]
-            padded_img_mask[i, : l_effective_img_len[i]] = True
+        x = self.x_embedder(x)
 
-        padded_img_embed = self.x_embedder(padded_img_embed)
         for layer in self.noise_refiner:
-            padded_img_embed = layer(
-                padded_img_embed, padded_img_mask, img_freqs_cis, t
-            )
+            x = layer(x, x_mask, img_freqs_cis, t)
 
-        mask = torch.zeros(bsz, max_seq_len, dtype=torch.bool, device=device)
-        padded_full_embed = torch.zeros(
-            bsz, max_seq_len, self.dim, device=device, dtype=x[0].dtype
-        )
-        for i in range(bsz):
-            cap_len = l_effective_cap_len[i]
-            img_len = l_effective_img_len[i]
+        joint_hidden_states = torch.zeros(bsz, max_seq_len, self.dim, device=device, dtype=x.dtype)
+        attention_mask = torch.zeros(bsz, max_seq_len, dtype=torch.bool, device=device)
+        for i, (cap_len, seq_len) in enumerate(zip(l_effective_cap_len, seq_lengths)):
+            attention_mask[i, :seq_len] = True
+            joint_hidden_states[i, :cap_len] = cap_feats[i, :cap_len]
+            joint_hidden_states[i, cap_len:seq_len] = x[i]
 
-            mask[i, : cap_len + img_len] = True
-            padded_full_embed[i, :cap_len] = cap_feats[i, :cap_len]
-            padded_full_embed[i, cap_len : cap_len + img_len] = padded_img_embed[
-                i, :img_len
-            ]
+        x = joint_hidden_states
 
-        return padded_full_embed, mask, img_sizes, l_effective_cap_len, freqs_cis
+        return x, attention_mask, freqs_cis, l_effective_cap_len, seq_lengths
 
     def forward(self, x, t, cap_feats, cap_mask):
         """
@@ -950,30 +969,19 @@ class NextDiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of text tokens/features
         """
-
-        # import torch.distributed as dist
-        # if not dist.is_initialized() or dist.get_rank() == 0:
-        #     import pdb
-        #     pdb.set_trace()
-        # torch.save([x, t, cap_feats, cap_mask], "./fake_input.pt")
+        _, _, height, width = x.shape # B, C, H, W
         t = self.t_embedder(t)  # (N, D)
-        adaln_input = t
+        cap_feats = self.cap_embedder(cap_feats)  # (N, L, D)  # todo check if able to batchify w.o. redundant compute
 
-        cap_feats = self.cap_embedder(
-            cap_feats
-        )  # (N, L, D)  # todo check if able to batchify w.o. redundant compute
-
-        x_is_tensor = isinstance(x, torch.Tensor)
-        x, mask, img_size, cap_size, freqs_cis = self.patchify_and_embed(
+        x, mask, freqs_cis, l_effective_cap_len, seq_lengths = self.patchify_and_embed(
             x, cap_feats, cap_mask, t
         )
-        freqs_cis = freqs_cis.to(x.device)
 
         for layer in self.layers:
-            x = layer(x, mask, freqs_cis, adaln_input)
+            x = layer(x, mask, freqs_cis, t)
 
-        x = self.final_layer(x, adaln_input)
-        x = self.unpatchify(x, img_size, cap_size, return_tensor=x_is_tensor)
+        x = self.final_layer(x, t)
+        x = self.unpatchify(x, width, height, l_effective_cap_len, seq_lengths)
 
         return x
 
