@@ -345,7 +345,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     train_util.add_dit_training_arguments(parser)
-    lumina_train_utils.add_lumina_train_arguments(parser)
+    lumina_train_util.add_lumina_train_arguments(parser)
     return parser
 
 

@@ -27,14 +27,14 @@ def load_lumina_model(
     dtype: torch.dtype,
     device: Union[str, torch.device],
     disable_mmap: bool = False,
-) -> lumina_models.Lumina:
+):
     logger.info("Building Lumina")
     with torch.device("meta"):
         model = lumina_models.NextDiT_2B_GQA_patch2_Adaln_Refiner().to(dtype)
 
     logger.info(f"Loading state dict from {ckpt_path}")
     state_dict = load_safetensors(
-        ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype
+        ckpt_path, device=device, disable_mmap=disable_mmap, dtype=dtype
     )
     info = model.load_state_dict(state_dict, strict=False, assign=True)
     logger.info(f"Loaded Lumina: {info}")
@@ -69,30 +69,39 @@ def load_gemma2(
 ) -> Gemma2Model:
     logger.info("Building Gemma2")
     GEMMA2_CONFIG = {
-        "_name_or_path": "google/gemma-2b",
-        "attention_bias": false,
-        "attention_dropout": 0.0,
-        "bos_token_id": 2,
-        "eos_token_id": 1,
-        "head_dim": 256,
-        "hidden_act": "gelu",
-        "hidden_size": 2048,
-        "initializer_range": 0.02,
-        "intermediate_size": 16384,
-        "max_position_embeddings": 8192,
-        "model_type": "gemma",
-        "num_attention_heads": 8,
-        "num_hidden_layers": 18,
-        "num_key_value_heads": 1,
-        "pad_token_id": 0,
-        "rms_norm_eps": 1e-06,
-        "rope_scaling": null,
-        "rope_theta": 10000.0,
-        "torch_dtype": "bfloat16",
-        "transformers_version": "4.38.0.dev0",
-        "use_cache": true,
-        "vocab_size": 256000
+      "_name_or_path": "google/gemma-2-2b",
+      "architectures": [
+        "Gemma2Model"
+      ],
+      "attention_bias": False,
+      "attention_dropout": 0.0,
+      "attn_logit_softcapping": 50.0,
+      "bos_token_id": 2,
+      "cache_implementation": "hybrid",
+      "eos_token_id": 1,
+      "final_logit_softcapping": 30.0,
+      "head_dim": 256,
+      "hidden_act": "gelu_pytorch_tanh",
+      "hidden_activation": "gelu_pytorch_tanh",
+      "hidden_size": 2304,
+      "initializer_range": 0.02,
+      "intermediate_size": 9216,
+      "max_position_embeddings": 8192,
+      "model_type": "gemma2",
+      "num_attention_heads": 8,
+      "num_hidden_layers": 26,
+      "num_key_value_heads": 4,
+      "pad_token_id": 0,
+      "query_pre_attn_scalar": 256,
+      "rms_norm_eps": 1e-06,
+      "rope_theta": 10000.0,
+      "sliding_window": 4096,
+      "torch_dtype": "float32",
+      "transformers_version": "4.44.2",
+      "use_cache": True,
+      "vocab_size": 256000
     }
+
     config = Gemma2Config(**GEMMA2_CONFIG)
     with init_empty_weights():
         gemma2 = Gemma2Model._from_config(config)
@@ -104,6 +113,13 @@ def load_gemma2(
         sd = load_safetensors(
             ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype
         )
+
+    for key in list(sd.keys()):
+        new_key = key.replace("model.", "")
+        if new_key == key:
+            break  # the model doesn't have annoying prefix
+        sd[new_key] = sd.pop(key)
+
     info = gemma2.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded Gemma2: {info}")
     return gemma2
