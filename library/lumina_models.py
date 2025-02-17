@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 try:
     from apex.normalization import FusedRMSNorm as RMSNorm
-except ImportError:
+except:
     warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
 
 memory_efficient_attention = None
