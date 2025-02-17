@@ -237,7 +237,7 @@ def build_metadata(
             reso = (reso[0], reso[0])
     else:
         # resolution is defined in dataset, so use default
-        if sdxl or sd3 is not None or flux is not None:
+        if sdxl or sd3 is not None or flux is not None or lumina is not None:
             reso = 1024
         elif v2 and v_parameterization:
             reso = 768
