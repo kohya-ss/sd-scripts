@@ -1990,6 +1990,7 @@ class DreamBoothDataset(BaseDataset):
                     # Skip any validation dataset for regularization images
                     if self.is_training_dataset is False:
                         img_paths = []
+                        sizes = []
                     # Otherwise the img_paths remain as original img_paths and no split 
                     # required for training images dataset of regularization images
                 else:
