@@ -161,15 +161,19 @@ def split_train_val(
     [0:80] = 80 training images
     [80:] = 20 validation images
     """
+    dataset = list(zip(paths, sizes))
     if validation_seed is not None:
         logging.info(f"Using validation seed: {validation_seed}")
         prevstate = random.getstate()
         random.seed(validation_seed)
-        random.shuffle(paths)
+        random.shuffle(dataset)
         random.setstate(prevstate)
     else:
-        random.shuffle(paths)
+        random.shuffle(dataset)
 
+    paths, sizes = zip(*dataset)
+    paths = list(paths)
+    sizes = list(sizes)
     # Split the dataset between training and validation
     if is_training_dataset:
         # Training dataset we split to the first part
