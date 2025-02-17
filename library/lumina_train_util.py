@@ -227,7 +227,7 @@ def sample_image_inference(
     )
     timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)
     img_ids = lumina_util.prepare_img_ids(1, packed_latent_height, packed_latent_width).to(accelerator.device, weight_dtype)
-    gemma2_attn_mask = gemma2_attn_mask.to(accelerator.device) if args.apply_gemma2_attn_mask else None
+    gemma2_attn_mask = gemma2_attn_mask.to(accelerator.device)
 
     # if controlnet_image is not None:
     #     controlnet_image = Image.open(controlnet_image).convert("RGB")
@@ -510,11 +510,6 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="maximum token length for Gemma2. if omitted, 256 for schnell and 512 for dev"
         " / Gemma2の最大トークン長。省略された場合、schnellの場合は256、devの場合は512",
-    )
-    parser.add_argument(
-        "--apply_gemma2_attn_mask",
-        action="store_true",
-        help="apply attention mask to Gemma2 encode and NextDIT double blocks / Gemma2エンコードとNextDITダブルブロックにアテンションマスクを適用する",
     )
 
     parser.add_argument(
