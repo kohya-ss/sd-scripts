@@ -1557,7 +1557,7 @@ class NetworkTrainer:
 
                 if is_tracking:
                     avr_loss: float = val_epoch_loss_recorder.moving_average
-                    loss_validation_divergence = val_epoch_loss_recorder.moving_average - avr_loss 
+                    loss_validation_divergence = val_epoch_loss_recorder.moving_average - loss_recorder.moving_average 
                     logs = {
                         "loss/validation/epoch_average": avr_loss,
                         "loss/validation/epoch_divergence": loss_validation_divergence,
