@@ -130,11 +130,6 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
                 return False
             if "input_ids" not in npz:
                 return False
-            if "apply_gemma2_attn_mask" not in npz:
-                return False
-            npz_apply_gemma2_attn_mask = npz["apply_gemma2_attn_mask"]
-            if not npz_apply_gemma2_attn_mask:
-                return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
             raise e
@@ -142,11 +137,17 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         return True
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+        """
+        Load outputs from a npz file
+
+        Returns:
+            List[np.ndarray]: hidden_state,  input_ids, attention_mask
+        """
         data = np.load(npz_path)
         hidden_state = data["hidden_state"]
         attention_mask = data["attention_mask"]
         input_ids = data["input_ids"]
-        return [hidden_state, attention_mask, input_ids]
+        return [hidden_state, input_ids, attention_mask]
 
     def cache_batch_outputs(
         self,
@@ -193,8 +194,7 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
                     info.text_encoder_outputs_npz,
                     hidden_state=hidden_state_i,
                     attention_mask=attention_mask_i,
-                    input_ids=input_ids_i,
-                    apply_gemma2_attn_mask=True
+                    input_ids=input_ids_i
                 )
             else:
                 info.text_encoder_outputs = [hidden_state_i, attention_mask_i, input_ids_i]

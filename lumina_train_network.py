@@ -2,9 +2,10 @@ import argparse
 import copy
 import math
 import random
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Tuple
 
 import torch
+from torch import Tensor
 from accelerate import Accelerator
 
 from library.device_utils import clean_memory_on_device, init_ipex
@@ -165,36 +166,31 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                     f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}"
                 )
 
-                tokenize_strategy: strategy_lumina.LuminaTokenizeStrategy = (
-                    strategy_base.TokenizeStrategy.get_strategy()
-                )
-                text_encoding_strategy: strategy_lumina.LuminaTextEncodingStrategy = (
-                    strategy_base.TextEncodingStrategy.get_strategy()
-                )
+                tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
+                text_encoding_strategy  = strategy_base.TextEncodingStrategy.get_strategy()
+                
+                assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
+                assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
-                prompts = train_util.load_prompts(args.sample_prompts)
+                sample_prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = (
                     {}
                 )  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
-                    for prompt_dict in prompts:
-                        for p in [
-                            prompt_dict.get("prompt", ""),
-                            prompt_dict.get("negative_prompt", ""),
-                        ]:
-                            if p not in sample_prompts_te_outputs:
-                                logger.info(
-                                    f"cache Text Encoder outputs for prompt: {p}"
-                                )
-                                tokens_and_masks = tokenize_strategy.tokenize(p)
-                                sample_prompts_te_outputs[p] = (
-                                    text_encoding_strategy.encode_tokens(
-                                        tokenize_strategy,
-                                        text_encoders,
-                                        tokens_and_masks,
-                                        args.apply_t5_attn_mask,
-                                    )
-                                )
+                    for prompt_dict in sample_prompts:
+                        prompts = [prompt_dict.get("prompt", ""),
+                            prompt_dict.get("negative_prompt", "")]
+                        logger.info(
+                            f"cache Text Encoder outputs for prompt: {prompts[0]}"
+                        )
+                        tokens_and_masks = tokenize_strategy.tokenize(prompts)
+                        sample_prompts_te_outputs[prompts[0]] = (
+                            text_encoding_strategy.encode_tokens(
+                                tokenize_strategy,
+                                text_encoders,
+                                tokens_and_masks,
+                            )
+                        )
                 self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
             accelerator.wait_for_everyone()
@@ -220,7 +216,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         epoch,
         global_step,
         device,
-        ae,
+        vae,
         tokenizer,
         text_encoder,
         lumina,
@@ -231,7 +227,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             epoch,
             global_step,
             lumina,
-            ae,
+            vae,
             self.get_models_for_text_encoding(args, accelerator, text_encoder),
             self.sample_prompts_te_outputs,
         )
@@ -258,12 +254,12 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
     def get_noise_pred_and_target(
         self,
         args,
-        accelerator,
+        accelerator: Accelerator,
         noise_scheduler,
         latents,
         batch,
-        text_encoder_conds,
-        unet: lumina_models.NextDiT,
+        text_encoder_conds: Tuple[Tensor, Tensor, Tensor], # (hidden_states, input_ids, attention_masks)
+        dit: lumina_models.NextDiT,
         network,
         weight_dtype,
         train_unet,
@@ -296,7 +292,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         def call_dit(img, gemma2_hidden_states, timesteps, gemma2_attn_mask):
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # NextDiT forward expects (x, t, cap_feats, cap_mask)
-                model_pred = unet(
+                model_pred = dit(
                     x=img,  # image latents (B, C, H, W)
                     t=timesteps / 1000,  # timesteps需要除以1000来匹配模型预期
                     cap_feats=gemma2_hidden_states,  # Gemma2的hidden states作为caption features
@@ -341,7 +337,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 network.set_multiplier(0.0)
                 with torch.no_grad():
                     model_pred_prior = call_dit(
-                        img=packed_noisy_model_input[diff_output_pr_indices],
+                        img=noisy_model_input[diff_output_pr_indices],
                         gemma2_hidden_states=gemma2_hidden_states[
                             diff_output_pr_indices
                         ],
@@ -350,9 +346,9 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                     )
                 network.set_multiplier(1.0)
 
-                model_pred_prior = lumina_util.unpack_latents(
-                    model_pred_prior, packed_latent_height, packed_latent_width
-                )
+                # model_pred_prior = lumina_util.unpack_latents(
+                #     model_pred_prior, packed_latent_height, packed_latent_width
+                # )
                 model_pred_prior, _ = flux_train_utils.apply_model_prediction_type(
                     args,
                     model_pred_prior,
@@ -404,7 +400,8 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             return super().prepare_unet_with_accelerator(args, accelerator, unet)
 
         # if we doesn't swap blocks, we can move the model to device
-        nextdit: lumina_models.Nextdit = unet
+        nextdit = unet
+        assert isinstance(nextdit, lumina_models.NextDiT)
         nextdit = accelerator.prepare(
             nextdit, device_placement=[not self.is_swapping_blocks]
         )
