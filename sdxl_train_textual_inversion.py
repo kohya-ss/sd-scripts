@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Optional, Union
 
 import regex
 
@@ -18,11 +19,13 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
         self.vae_scale_factor = sdxl_model_util.VAE_SCALE_FACTOR
         self.is_sdxl = True
 
-    def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
+    def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
+        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         sdxl_train_util.verify_sdxl_training_args(args, supportTextEncoderCaching=False)
 
         train_dataset_group.verify_bucket_reso_steps(32)
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)
 
     def load_target_model(self, args, weight_dtype, accelerator):
         (
