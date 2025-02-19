@@ -13,6 +13,7 @@ import math
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
+from einops import rearrange
 from flash_attn import flash_attn_varlen_func
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 import torch
@@ -23,24 +24,16 @@ import torch.nn.functional as F
 
 try:
     from apex.normalization import FusedRMSNorm as RMSNorm
-except ModuleNotFoundError:
+except:
     import warnings
+
     warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
 
-memory_efficient_attention = None
-try:
-    import xformers
-except:
-    pass
-
-try:
-    from xformers.ops import memory_efficient_attention
-except:
-    memory_efficient_attention = None
 
 @dataclass
 class LuminaParams:
     """Parameters for Lumina model configuration"""
+
     patch_size: int = 2
     in_channels: int = 4
     dim: int = 4096
@@ -68,7 +61,7 @@ class LuminaParams:
         """Returns the configuration for the 2B parameter model"""
         return cls(
             patch_size=2,
-            in_channels=16,
+            in_channels=16,  # VAE channels
             dim=2304,
             n_layers=26,
             n_heads=24,
@@ -76,21 +69,13 @@ class LuminaParams:
             axes_dims=[32, 32, 32],
             axes_lens=[300, 512, 512],
             qk_norm=True,
-            cap_feat_dim=2304
+            cap_feat_dim=2304,  # Gemma 2 hidden_size
         )
 
     @classmethod
     def get_7b_config(cls) -> "LuminaParams":
         """Returns the configuration for the 7B parameter model"""
-        return cls(
-            patch_size=2,
-            dim=4096,
-            n_layers=32,
-            n_heads=32,
-            n_kv_heads=8,
-            axes_dims=[64, 64, 64],
-            axes_lens=[300, 512, 512]
-        )
+        return cls(patch_size=2, dim=4096, n_layers=32, n_heads=32, n_kv_heads=8, axes_dims=[64, 64, 64], axes_lens=[300, 512, 512])
 
 
 class GradientCheckpointMixin(nn.Module):
@@ -111,6 +96,7 @@ class GradientCheckpointMixin(nn.Module):
             return checkpoint(self._forward, *args, use_reentrant=False, **kwargs)
         else:
             return self._forward(*args, **kwargs)
+
 
 #############################################################################
 #                                 RMSNorm                                   #
@@ -148,9 +134,18 @@ class RMSNorm(torch.nn.Module):
         """
         return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
 
-
     def forward(self, x: Tensor):
+        """
+        Apply RMSNorm to the input tensor.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The normalized tensor.
+        """
         x_dtype = x.dtype
+        # To handle float8 we need to convert the tensor to float
         x = x.float()
         rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
         return ((x * rrms) * self.weight.float()).to(dtype=x_dtype)
@@ -204,23 +199,18 @@ class TimestepEmbedder(GradientCheckpointMixin):
         """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period)
-            * torch.arange(start=0, end=half, dtype=torch.float32)
-            / half
-        ).to(device=t.device)
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(device=t.device)
         args = t[:, None].float() * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
-            embedding = torch.cat(
-                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
-            )
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
     def _forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq.to(self.mlp[0].weight.dtype))
         return t_emb
+
 
 def to_cuda(x):
     if isinstance(x, torch.Tensor):
@@ -266,6 +256,7 @@ class JointAttention(nn.Module):
             dim (int): Number of input dimensions.
             n_heads (int): Number of heads.
             n_kv_heads (Optional[int]): Number of kv heads, if using GQA.
+            qk_norm (bool): Whether to use normalization for queries and keys.
 
         """
         super().__init__()
@@ -294,6 +285,14 @@ class JointAttention(nn.Module):
             self.k_norm = RMSNorm(self.head_dim)
         else:
             self.q_norm = self.k_norm = nn.Identity()
+
+        self.flash_attn = False
+
+        # self.attention_processor = xformers.ops.memory_efficient_attention
+        self.attention_processor = F.scaled_dot_product_attention
+
+    def set_attention_processor(self, attention_processor):
+        self.attention_processor = attention_processor
 
     @staticmethod
     def apply_rotary_emb(
@@ -326,16 +325,12 @@ class JointAttention(nn.Module):
             return x_out.type_as(x_in)
 
     # copied from huggingface modeling_llama.py
-    def _upad_input(
-        self, query_layer, key_layer, value_layer, attention_mask, query_length
-    ):
+    def _upad_input(self, query_layer, key_layer, value_layer, attention_mask, query_length):
         def _get_unpad_data(attention_mask):
             seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
             indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
             max_seqlen_in_batch = seqlens_in_batch.max().item()
-            cu_seqlens = F.pad(
-                torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0)
-            )
+            cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
             return (
                 indices,
                 cu_seqlens,
@@ -355,9 +350,7 @@ class JointAttention(nn.Module):
         )
         if query_length == kv_seq_len:
             query_layer = index_first_axis(
-                query_layer.reshape(
-                    batch_size * kv_seq_len, self.n_local_heads, head_dim
-                ),
+                query_layer.reshape(batch_size * kv_seq_len, self.n_local_heads, head_dim),
                 indices_k,
             )
             cu_seqlens_q = cu_seqlens_k
@@ -373,9 +366,7 @@ class JointAttention(nn.Module):
         else:
             # The -q_len: slice assumes left padding.
             attention_mask = attention_mask[:, -query_length:]
-            query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q = unpad_input(
-                query_layer, attention_mask
-            )
+            query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q = unpad_input(query_layer, attention_mask)
 
         return (
             query_layer,
@@ -388,10 +379,10 @@ class JointAttention(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        x_mask: torch.Tensor,
-        freqs_cis: torch.Tensor,
-    ) -> torch.Tensor:
+        x: Tensor,
+        x_mask: Tensor,
+        freqs_cis: Tensor,
+    ) -> Tensor:
         """
 
         Args:
@@ -425,7 +416,7 @@ class JointAttention(nn.Module):
 
         softmax_scale = math.sqrt(1 / self.head_dim)
 
-        if dtype in [torch.float16, torch.bfloat16]:
+        if self.flash_attn:
             # begin var_len flash attn
             (
                 query_states,
@@ -459,14 +450,13 @@ class JointAttention(nn.Module):
             if n_rep >= 1:
                 xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
                 xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
+
             output = (
-                F.scaled_dot_product_attention(
+                self.attention_processor(
                     xq.permute(0, 2, 1, 3),
                     xk.permute(0, 2, 1, 3),
                     xv.permute(0, 2, 1, 3),
-                    attn_mask=x_mask.bool()
-                    .view(bsz, 1, 1, seqlen)
-                    .expand(-1, self.n_local_heads, seqlen, -1),
+                    attn_mask=x_mask.bool().view(bsz, 1, 1, seqlen).expand(-1, self.n_local_heads, seqlen, -1),
                     scale=softmax_scale,
                 )
                 .permute(0, 2, 1, 3)
@@ -474,8 +464,38 @@ class JointAttention(nn.Module):
             )
 
         output = output.flatten(-2)
-
         return self.out(output)
+
+
+def apply_rope(
+    x_in: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Apply rotary embeddings to input tensors using the given frequency
+    tensor.
+
+    This function applies rotary embeddings to the given query 'xq' and
+    key 'xk' tensors using the provided frequency tensor 'freqs_cis'. The
+    input tensors are reshaped as complex numbers, and the frequency tensor
+    is reshaped for broadcasting compatibility. The resulting tensors
+    contain rotary embeddings and are returned as real tensors.
+
+    Args:
+        x_in (torch.Tensor): Query or Key tensor to apply rotary embeddings.
+        freqs_cis (torch.Tensor): Precomputed frequency tensor for complex
+            exponentials.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor
+            and key tensor with rotary embeddings.
+    """
+    with torch.autocast("cuda", enabled=False):
+        x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
+        freqs_cis = freqs_cis.unsqueeze(2)
+        x_out = torch.view_as_real(x * freqs_cis).flatten(3)
+
+    return x_out.type_as(x_in)
 
 
 class FeedForward(nn.Module):
@@ -554,10 +574,13 @@ class JointTransformerBlock(GradientCheckpointMixin):
             n_kv_heads (Optional[int]): Number of attention heads in key and
                 value features (if using GQA), or set to None for the same as
                 query.
-            multiple_of (int):
-            ffn_dim_multiplier (Optional[float]):
-            norm_eps (float):
-
+            multiple_of (int): Number of multiple of the hidden dimension.
+            ffn_dim_multiplier (Optional[float]): Dimension multiplier for the
+                feedforward layer.
+            norm_eps (float): Epsilon value for normalization.
+            qk_norm (bool): Whether to use normalization for queries and keys.
+            modulation (bool): Whether to use modulation for the attention
+                layer.
         """
         super().__init__()
         self.dim = dim
@@ -593,32 +616,30 @@ class JointTransformerBlock(GradientCheckpointMixin):
         self,
         x: torch.Tensor,
         x_mask: torch.Tensor,
-        freqs_cis: torch.Tensor,
+        pe: torch.Tensor,
         adaln_input: Optional[torch.Tensor] = None,
     ):
         """
         Perform a forward pass through the TransformerBlock.
 
         Args:
-            x (torch.Tensor): Input tensor.
-            freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
+            x (Tensor): Input tensor.
+            pe (Tensor): Rope position embedding.
 
         Returns:
-            torch.Tensor: Output tensor after applying attention and
+            Tensor: Output tensor after applying attention and
                 feedforward layers.
 
         """
         if self.modulation:
             assert adaln_input is not None
-            scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(
-                adaln_input
-            ).chunk(4, dim=1)
+            scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).chunk(4, dim=1)
 
             x = x + gate_msa.unsqueeze(1).tanh() * self.attention_norm2(
                 self.attention(
                     modulate(self.attention_norm1(x), scale_msa),
                     x_mask,
-                    freqs_cis,
+                    pe,
                 )
             )
             x = x + gate_mlp.unsqueeze(1).tanh() * self.ffn_norm2(
@@ -632,7 +653,7 @@ class JointTransformerBlock(GradientCheckpointMixin):
                 self.attention(
                     self.attention_norm1(x),
                     x_mask,
-                    freqs_cis,
+                    pe,
                 )
             )
             x = x + self.ffn_norm2(
@@ -649,6 +670,14 @@ class FinalLayer(GradientCheckpointMixin):
     """
 
     def __init__(self, hidden_size, patch_size, out_channels):
+        """
+        Initialize the FinalLayer.
+
+        Args:
+            hidden_size (int): Hidden size of the input features.
+            patch_size (int): Patch size of the input features.
+            out_channels (int): Number of output channels.
+        """
         super().__init__()
         self.norm_final = nn.LayerNorm(
             hidden_size,
@@ -682,39 +711,21 @@ class FinalLayer(GradientCheckpointMixin):
 
 
 class RopeEmbedder:
-    def __init__(
-        self,
-        theta: float = 10000.0,
-        axes_dims: List[int] = (16, 56, 56),
-        axes_lens: List[int] = (1, 512, 512),
-    ):
+    def __init__(self, theta: float = 10000.0, axes_dims: List[int] = [16, 56, 56], axes_lens: List[int] = [1, 512, 512]):
         super().__init__()
         self.theta = theta
         self.axes_dims = axes_dims
         self.axes_lens = axes_lens
-        self.freqs_cis = NextDiT.precompute_freqs_cis(
-            self.axes_dims, self.axes_lens, theta=self.theta
-        )
+        self.freqs_cis = NextDiT.precompute_freqs_cis(self.axes_dims, self.axes_lens, theta=self.theta)
 
-    def get_freqs_cis(self, ids: torch.Tensor):
+    def __call__(self, ids: torch.Tensor):
+        device = ids.device
         self.freqs_cis = [freqs_cis.to(ids.device) for freqs_cis in self.freqs_cis]
         result = []
         for i in range(len(self.axes_dims)):
-            index = (
-                ids[:, :, i : i + 1]
-                .repeat(1, 1, self.freqs_cis[i].shape[-1])
-                .to(torch.int64)
-            )
-
-            axes = self.freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1)
-
-            result.append(
-                torch.gather(
-                    axes,
-                    dim=1,
-                    index=index,
-                )
-            )
+            freqs = self.freqs_cis[i].to(ids.device)
+            index = ids[:, :, i : i + 1].repeat(1, 1, freqs.shape[-1]).to(torch.int64)
+            result.append(torch.gather(freqs.unsqueeze(0).repeat(index.shape[0], 1, 1), dim=1, index=index))
         return torch.cat(result, dim=-1)
 
 
@@ -740,10 +751,62 @@ class NextDiT(nn.Module):
         axes_dims: List[int] = [16, 56, 56],
         axes_lens: List[int] = [1, 512, 512],
     ) -> None:
+        """
+        Initialize the NextDiT model.
+
+        Args:
+            patch_size (int): Patch size of the input features.
+            in_channels (int): Number of input channels.
+            dim (int): Hidden size of the input features.
+            n_layers (int): Number of Transformer layers.
+            n_refiner_layers (int): Number of refiner layers.
+            n_heads (int): Number of attention heads.
+            n_kv_heads (Optional[int]): Number of attention heads in key and
+                value features (if using GQA), or set to None for the same as
+                query.
+            multiple_of (int): Multiple of the hidden size.
+            ffn_dim_multiplier (Optional[float]): Dimension multiplier for the
+                feedforward layer.
+            norm_eps (float): Epsilon value for normalization.
+            qk_norm (bool): Whether to use query key normalization.
+            cap_feat_dim (int): Dimension of the caption features.
+            axes_dims (List[int]): List of dimensions for the axes.
+            axes_lens (List[int]): List of lengths for the axes.
+
+        Returns:
+            None
+        """
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.patch_size = patch_size
+
+        self.t_embedder = TimestepEmbedder(min(dim, 1024))
+        self.cap_embedder = nn.Sequential(
+            RMSNorm(cap_feat_dim, eps=norm_eps),
+            nn.Linear(
+                cap_feat_dim,
+                dim,
+                bias=True,
+            ),
+        )
+
+        self.context_refiner = nn.ModuleList(
+            [
+                JointTransformerBlock(
+                    layer_id,
+                    dim,
+                    n_heads,
+                    n_kv_heads,
+                    multiple_of,
+                    ffn_dim_multiplier,
+                    norm_eps,
+                    qk_norm,
+                    modulation=False,
+                )
+                for layer_id in range(n_refiner_layers)
+            ]
+        )
 
         self.x_embedder = nn.Linear(
             in_features=patch_size * patch_size * in_channels,
@@ -769,32 +832,7 @@ class NextDiT(nn.Module):
                 for layer_id in range(n_refiner_layers)
             ]
         )
-        self.context_refiner = nn.ModuleList(
-            [
-                JointTransformerBlock(
-                    layer_id,
-                    dim,
-                    n_heads,
-                    n_kv_heads,
-                    multiple_of,
-                    ffn_dim_multiplier,
-                    norm_eps,
-                    qk_norm,
-                    modulation=False,
-                )
-                for layer_id in range(n_refiner_layers)
-            ]
-        )
 
-        self.t_embedder = TimestepEmbedder(min(dim, 1024))
-        self.cap_embedder = nn.Sequential(
-            RMSNorm(cap_feat_dim, eps=norm_eps),
-            nn.Linear(
-                cap_feat_dim,
-                dim,
-                bias=True,
-            ),
-        )
         nn.init.trunc_normal_(self.cap_embedder[1].weight, std=0.02)
         # nn.init.zeros_(self.cap_embedder[1].weight)
         nn.init.zeros_(self.cap_embedder[1].bias)
@@ -864,15 +902,26 @@ class NextDiT(nn.Module):
 
     def unpatchify(
         self,
-        x: torch.Tensor,
+        x: Tensor,
         width: int,
         height: int,
         encoder_seq_lengths: List[int],
         seq_lengths: List[int],
-    ) -> torch.Tensor:
+    ) -> Tensor:
         """
+        Unpatchify the input tensor and embed the caption features.
         x: (N, T, patch_size**2 * C)
         imgs: (N, H, W, C)
+
+        Args:
+            x (Tensor): Input tensor.
+            width (int): Width of the input tensor.
+            height (int): Height of the input tensor.
+            encoder_seq_lengths (List[int]): List of encoder sequence lengths.
+            seq_lengths (List[int]): List of sequence lengths
+
+        Returns:
+            output: (N, C, H, W)
         """
         pH = pW = self.patch_size
 
@@ -891,13 +940,25 @@ class NextDiT(nn.Module):
 
     def patchify_and_embed(
         self,
-        x: torch.Tensor,
-        cap_feats: torch.Tensor,
-        cap_mask: torch.Tensor,
-        t: torch.Tensor,
-    ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, List[int], List[int]
-    ]:
+        x: Tensor,
+        cap_feats: Tensor,
+        cap_mask: Tensor,
+        t: Tensor,
+    ) -> Tuple[Tensor, Tensor, Tensor, List[int], List[int]]:
+        """
+        Patchify and embed the input image and caption features.
+
+        Args:
+            x: (N, C, H, W) image latents
+            cap_feats: (N, C, D) caption features
+            cap_mask: (N, C, D) caption attention mask
+            t: (N), T timesteps
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor, List[int], List[int]]:
+
+            return x, attention_mask, freqs_cis, l_effective_cap_len, seq_lengths
+        """
         bsz, channels, height, width = x.shape
         pH = pW = self.patch_size
         device = x.device
@@ -915,40 +976,35 @@ class NextDiT(nn.Module):
             H_tokens, W_tokens = height // pH, width // pW
 
             position_ids[i, :cap_len, 0] = torch.arange(cap_len, dtype=torch.int32, device=device)
-            position_ids[i, cap_len : cap_len + seq_len, 0] = cap_len
-            row_ids = (
-                torch.arange(H_tokens, dtype=torch.int32, device=device)
-                .view(-1, 1)
-                .repeat(1, W_tokens)
-                .flatten()
-            )
-            col_ids = (
-                torch.arange(W_tokens, dtype=torch.int32, device=device)
-                .view(1, -1)
-                .repeat(H_tokens, 1)
-                .flatten()
-            )
-            position_ids[i, cap_len : cap_len + seq_len, 1] = row_ids
-            position_ids[i, cap_len : cap_len + seq_len, 2] = col_ids
+            position_ids[i, cap_len:seq_len, 0] = cap_len
 
-        freqs_cis = self.rope_embedder.get_freqs_cis(position_ids)
+            row_ids = torch.arange(H_tokens, dtype=torch.int32, device=device).view(-1, 1).repeat(1, W_tokens).flatten()
+            col_ids = torch.arange(W_tokens, dtype=torch.int32, device=device).view(1, -1).repeat(H_tokens, 1).flatten()
 
+            position_ids[i, cap_len:seq_len, 1] = row_ids
+            position_ids[i, cap_len:seq_len, 2] = col_ids
+
+        # Get combined rotary embeddings
+        freqs_cis = self.rope_embedder(position_ids)
+
+        # Create separate rotary embeddings for captions and images
         cap_freqs_cis = torch.zeros(bsz, encoder_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype)
         img_freqs_cis = torch.zeros(bsz, image_seq_len, freqs_cis.shape[-1], device=device, dtype=freqs_cis.dtype)
 
         for i, (cap_len, seq_len) in enumerate(zip(l_effective_cap_len, seq_lengths)):
             cap_freqs_cis[i, :cap_len] = freqs_cis[i, :cap_len]
-            img_freqs_cis[i, :seq_len] = freqs_cis[i, cap_len : cap_len + seq_len]
+            img_freqs_cis[i, :image_seq_len] = freqs_cis[i, cap_len:seq_len]
 
-        x = x.view(bsz, channels, height // pH, pH, width // pW, pW).permute(0, 2, 4, 3, 5, 1).flatten(3).flatten(1, 2)
-        x_mask = torch.zeros(bsz, max_seq_len, dtype=torch.bool, device=device)
-
-        # refine context
+        # Refine caption context
         for layer in self.context_refiner:
             cap_feats = layer(cap_feats, cap_mask, cap_freqs_cis)
 
+        x = x.view(bsz, channels, height // pH, pH, width // pW, pW).permute(0, 2, 4, 3, 5, 1).flatten(3).flatten(1, 2)
+        x_mask = torch.zeros(bsz, image_seq_len, dtype=torch.bool, device=device)
+
         x = self.x_embedder(x)
 
+        # Refine image context
         for layer in self.noise_refiner:
             x = layer(x, x_mask, img_freqs_cis, t)
 
@@ -963,19 +1019,23 @@ class NextDiT(nn.Module):
 
         return x, attention_mask, freqs_cis, l_effective_cap_len, seq_lengths
 
-    def forward(self, x, t, cap_feats, cap_mask):
+    def forward(self, x: Tensor, t: Tensor, cap_feats: Tensor, cap_mask: Tensor) -> Tensor:
         """
         Forward pass of NextDiT.
-        t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of text tokens/features
+        Args:
+            x: (N, C, H, W) image latents
+            t: (N,) tensor of diffusion timesteps
+            cap_feats: (N, L, D) caption features
+            cap_mask: (N, L) caption attention mask
+
+        Returns:
+            x: (N, C, H, W) denoised latents
         """
-        _, _, height, width = x.shape # B, C, H, W
+        _, _, height, width = x.shape  # B, C, H, W
         t = self.t_embedder(t)  # (N, D)
         cap_feats = self.cap_embedder(cap_feats)  # (N, L, D)  # todo check if able to batchify w.o. redundant compute
 
-        x, mask, freqs_cis, l_effective_cap_len, seq_lengths = self.patchify_and_embed(
-            x, cap_feats, cap_mask, t
-        )
+        x, mask, freqs_cis, l_effective_cap_len, seq_lengths = self.patchify_and_embed(x, cap_feats, cap_mask, t)
 
         for layer in self.layers:
             x = layer(x, mask, freqs_cis, t)
@@ -986,7 +1046,14 @@ class NextDiT(nn.Module):
         return x
 
     def forward_with_cfg(
-        self, x, t, cap_feats, cap_mask, cfg_scale, cfg_trunc=100, renorm_cfg=1
+        self,
+        x: Tensor,
+        t: Tensor,
+        cap_feats: Tensor,
+        cap_mask: Tensor,
+        cfg_scale: float,
+        cfg_trunc: int = 100,
+        renorm_cfg: float = 1.0,
     ):
         """
         Forward pass of NextDiT, but also batches the unconditional forward pass
@@ -996,9 +1063,10 @@ class NextDiT(nn.Module):
         half = x[: len(x) // 2]
         if t[0] < cfg_trunc:
             combined = torch.cat([half, half], dim=0)  # [2, 16, 128, 128]
-            model_out = self.forward(
-                combined, t, cap_feats, cap_mask
-            )  # [2, 16, 128, 128]
+            assert (
+                cap_mask.shape[0] == combined.shape[0]
+            ), f"caption attention mask shape: {cap_mask.shape[0]} latents shape: {combined.shape[0]}"
+            model_out = self.forward(x, t, cap_feats, cap_mask)  # [2, 16, 128, 128]
             # For exact reproducibility reasons, we apply classifier-free guidance on only
             # three channels by default. The standard approach to cfg applies it to all channels.
             # This can be done by uncommenting the following line and commenting-out the line following that.
@@ -1009,13 +1077,9 @@ class NextDiT(nn.Module):
             cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
             half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
             if float(renorm_cfg) > 0.0:
-                ori_pos_norm = torch.linalg.vector_norm(
-                    cond_eps, dim=tuple(range(1, len(cond_eps.shape))), keepdim=True
-                )
+                ori_pos_norm = torch.linalg.vector_norm(cond_eps, dim=tuple(range(1, len(cond_eps.shape))), keepdim=True)
                 max_new_norm = ori_pos_norm * float(renorm_cfg)
-                new_pos_norm = torch.linalg.vector_norm(
-                    half_eps, dim=tuple(range(1, len(half_eps.shape))), keepdim=True
-                )
+                new_pos_norm = torch.linalg.vector_norm(half_eps, dim=tuple(range(1, len(half_eps.shape))), keepdim=True)
                 if new_pos_norm >= max_new_norm:
                     half_eps = half_eps * (max_new_norm / new_pos_norm)
         else:
@@ -1040,7 +1104,7 @@ class NextDiT(nn.Module):
         dim: List[int],
         end: List[int],
         theta: float = 10000.0,
-    ):
+    ) -> List[Tensor]:
         """
         Precompute the frequency tensor for complex exponentials (cis) with
         given dimensions.
@@ -1057,19 +1121,17 @@ class NextDiT(nn.Module):
                 Defaults to 10000.0.
 
         Returns:
-            torch.Tensor: Precomputed frequency tensor with complex
+            List[torch.Tensor]: Precomputed frequency tensor with complex
                 exponentials.
         """
         freqs_cis = []
+        freqs_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
+
         for i, (d, e) in enumerate(zip(dim, end)):
-            freqs = 1.0 / (
-                theta ** (torch.arange(0, d, 2, dtype=torch.float64, device="cpu") / d)
-            )
-            timestep = torch.arange(e, device=freqs.device, dtype=torch.float64)
-            freqs = torch.outer(timestep, freqs).float()
-            freqs_cis_i = torch.polar(torch.ones_like(freqs), freqs).to(
-                torch.complex64
-            )  # complex64
+            pos = torch.arange(e, dtype=freqs_dtype, device="cpu")
+            freqs = 1.0 / (theta ** (torch.arange(0, d, 2, dtype=freqs_dtype, device="cpu") / d))
+            freqs = torch.outer(pos, freqs)
+            freqs_cis_i = torch.polar(torch.ones_like(freqs), freqs)  # [S, D/2]
             freqs_cis.append(freqs_cis_i)
 
         return freqs_cis
@@ -1102,7 +1164,7 @@ class NextDiT(nn.Module):
 def NextDiT_2B_GQA_patch2_Adaln_Refiner(params: Optional[LuminaParams] = None, **kwargs):
     if params is None:
         params = LuminaParams.get_2b_config()
-    
+
     return NextDiT(
         patch_size=params.patch_size,
         in_channels=params.in_channels,

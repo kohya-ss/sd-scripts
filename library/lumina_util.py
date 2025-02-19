@@ -11,23 +11,33 @@ from safetensors.torch import load_file
 from transformers import Gemma2Config, Gemma2Model
 
 from library.utils import setup_logging
-
-setup_logging()
-import logging
-
-logger = logging.getLogger(__name__)
-
 from library import lumina_models, flux_models
 from library.utils import load_safetensors
+import logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 MODEL_VERSION_LUMINA_V2 = "lumina2"
 
 def load_lumina_model(
     ckpt_path: str,
     dtype: torch.dtype,
-    device: Union[str, torch.device],
+    device: torch.device,
     disable_mmap: bool = False,
 ):
+    """
+    Load the Lumina model from the checkpoint path.
+
+    Args:
+        ckpt_path (str): Path to the checkpoint.
+        dtype (torch.dtype): The data type for the model.
+        device (torch.device): The device to load the model on.
+        disable_mmap (bool, optional): Whether to disable mmap. Defaults to False.
+
+    Returns:
+        model (lumina_models.NextDiT): The loaded model.
+    """
     logger.info("Building Lumina")
     with torch.device("meta"):
         model = lumina_models.NextDiT_2B_GQA_patch2_Adaln_Refiner().to(dtype)
@@ -46,6 +56,18 @@ def load_ae(
     device: Union[str, torch.device],
     disable_mmap: bool = False,
 ) -> flux_models.AutoEncoder:
+    """
+    Load the AutoEncoder model from the checkpoint path.
+
+    Args:
+        ckpt_path (str): Path to the checkpoint.
+        dtype (torch.dtype): The data type for the model.
+        device (Union[str, torch.device]): The device to load the model on.
+        disable_mmap (bool, optional): Whether to disable mmap. Defaults to False.
+
+    Returns:
+        ae (flux_models.AutoEncoder): The loaded model.
+    """
     logger.info("Building AutoEncoder")
     with torch.device("meta"):
         # dev and schnell have the same AE params
@@ -67,6 +89,19 @@ def load_gemma2(
     disable_mmap: bool = False,
     state_dict: Optional[dict] = None,
 ) -> Gemma2Model:
+    """
+    Load the Gemma2 model from the checkpoint path.
+
+    Args:
+        ckpt_path (str): Path to the checkpoint.
+        dtype (torch.dtype): The data type for the model.
+        device (Union[str, torch.device]): The device to load the model on.
+        disable_mmap (bool, optional): Whether to disable mmap. Defaults to False.
+        state_dict (Optional[dict], optional): The state dict to load. Defaults to None.
+
+    Returns:
+        gemma2 (Gemma2Model): The loaded model
+    """
     logger.info("Building Gemma2")
     GEMMA2_CONFIG = {
       "_name_or_path": "google/gemma-2-2b",
