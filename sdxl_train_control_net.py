@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.signal_handler import SignalHandler
 
 init_ipex()
 
@@ -456,7 +457,7 @@ def train(args):
         unet,
         controlnet=control_net,
     )
-
+    signal_handler = SignalHandler()
     # training loop
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -578,11 +579,13 @@ def train(args):
                     [text_encoder1, text_encoder2, unwrap_model(text_encoder2)],
                     unet,
                     controlnet=control_net,
+                    force_sample=signal_handler.should_sample()
                 )
-
+                signal_handler.reset_sample()
                 # 指定ステップごとにモデルを保存
-                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                if signal_handler.should_save() or (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0):
                     accelerator.wait_for_everyone()
+                    signal_handler.reset_save()
                     if accelerator.is_main_process:
                         ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
                         save_model(ckpt_name, unwrap_model(control_net))

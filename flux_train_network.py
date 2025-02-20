@@ -280,12 +280,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     #     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
     #     return noise_pred
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux):
+    def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux, force_sample=False):
         text_encoders = text_encoder  # for compatibility
         text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
-
         flux_train_utils.sample_images(
-            accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
+            accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs, force_sample=force_sample
         )
         # return
 

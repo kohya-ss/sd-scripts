@@ -14,6 +14,7 @@ from tqdm import tqdm
 import torch
 from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.signal_handler import SignalHandler
 
 init_ipex()
 
@@ -431,7 +432,8 @@ def train(args):
     if len(accelerator.trackers) > 0:
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
-
+    
+    signal_handler = SignalHandler()
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
@@ -539,11 +541,13 @@ def train(args):
                     text_encoder,
                     unet,
                     controlnet=controlnet,
+                    force_sample=signal_handler.should_sample(),
                 )
-
+                signal_handler.reset_sample()
                 # 指定ステップごとにモデルを保存
-                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                if signal_handler.should_save() or (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0):
                     accelerator.wait_for_everyone()
+                    signal_handler.reset_save()
                     if accelerator.is_main_process:
                         ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
                         save_model(

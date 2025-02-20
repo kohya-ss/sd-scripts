@@ -10,6 +10,7 @@ from tqdm import tqdm
 import torch
 from library import deepspeed_utils
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.signal_handler import SignalHandler
 
 init_ipex()
 
@@ -429,6 +430,7 @@ def train(args):
             logger.info(f"removing old checkpoint: {old_ckpt_file}")
             os.remove(old_ckpt_file)
 
+    signal_handler = SignalHandler()
     # training loop
     for epoch in range(num_train_epochs):
         logger.info("")
@@ -518,8 +520,9 @@ def train(args):
                 # )
 
                 # 指定ステップごとにモデルを保存
-                if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                if signal_handler.should_save() or (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0):
                     accelerator.wait_for_everyone()
+                    signal_handler.reset_save()
                     if accelerator.is_main_process:
                         updated_embs = (
                             accelerator.unwrap_model(text_encoder)
