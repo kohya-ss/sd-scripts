@@ -1,16 +1,16 @@
 import argparse
 import copy
-import math
-import random
-from typing import Any, Optional, Union, Tuple
+from typing import Any, Tuple
 
 import torch
-from torch import Tensor
-from accelerate import Accelerator
 
 from library.device_utils import clean_memory_on_device, init_ipex
 
 init_ipex()
+
+from torch import Tensor
+from accelerate import Accelerator
+
 
 import train_network
 from library import (
@@ -40,10 +40,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
     def assert_extra_args(self, args, train_dataset_group, val_dataset_group):
         super().assert_extra_args(args, train_dataset_group, val_dataset_group)
 
-        if (
-            args.cache_text_encoder_outputs_to_disk
-            and not args.cache_text_encoder_outputs
-        ):
+        if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning("Enabling cache_text_encoder_outputs due to disk caching")
             args.cache_text_encoder_outputs = True
 
@@ -59,17 +56,14 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         model = lumina_util.load_lumina_model(
             args.pretrained_model_name_or_path,
             loading_dtype,
-            "cpu",
+            torch.device("cpu"),
             disable_mmap=args.disable_mmap_load_safetensors,
+            use_flash_attn=args.use_flash_attn,
         )
 
         if args.fp8_base:
             # check dtype of model
-            if (
-                model.dtype == torch.float8_e4m3fnuz
-                or model.dtype == torch.float8_e5m2
-                or model.dtype == torch.float8_e5m2fnuz
-            ):
+            if model.dtype == torch.float8_e4m3fnuz or model.dtype == torch.float8_e5m2 or model.dtype == torch.float8_e5m2fnuz:
                 raise ValueError(f"Unsupported fp8 model dtype: {model.dtype}")
             elif model.dtype == torch.float8_e4m3fn:
                 logger.info("Loaded fp8 Lumina 2 model")
@@ -92,17 +86,13 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         return lumina_util.MODEL_VERSION_LUMINA_V2, [gemma2], ae, model
 
     def get_tokenize_strategy(self, args):
-        return strategy_lumina.LuminaTokenizeStrategy(
-            args.gemma2_max_token_length, args.tokenizer_cache_dir
-        )
+        return strategy_lumina.LuminaTokenizeStrategy(args.gemma2_max_token_length, args.tokenizer_cache_dir)
 
     def get_tokenizers(self, tokenize_strategy: strategy_lumina.LuminaTokenizeStrategy):
         return [tokenize_strategy.tokenizer]
 
     def get_latents_caching_strategy(self, args):
-        return strategy_lumina.LuminaLatentsCachingStrategy(
-            args.cache_latents_to_disk, args.vae_batch_size, False
-        )
+        return strategy_lumina.LuminaLatentsCachingStrategy(args.cache_latents_to_disk, args.vae_batch_size, False)
 
     def get_text_encoding_strategy(self, args):
         return strategy_lumina.LuminaTextEncodingStrategy()
@@ -144,15 +134,11 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
 
             # When TE is not be trained, it will not be prepared so we need to use explicit autocast
             logger.info("move text encoders to gpu")
-            text_encoders[0].to(
-                accelerator.device, dtype=weight_dtype
-            )  # always not fp8
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)  # always not fp8
 
             if text_encoders[0].dtype == torch.float8_e4m3fn:
                 # if we load fp8 weights, the model is already fp8, so we use it as is
-                self.prepare_text_encoder_fp8(
-                    1, text_encoders[1], text_encoders[1].dtype, weight_dtype
-                )
+                self.prepare_text_encoder_fp8(1, text_encoders[1], text_encoders[1].dtype, weight_dtype)
             else:
                 # otherwise, we need to convert it to target dtype
                 text_encoders[0].to(weight_dtype)
@@ -162,35 +148,36 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
 
             # cache sample prompts
             if args.sample_prompts is not None:
-                logger.info(
-                    f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}"
-                )
+                logger.info(f"cache Text Encoder outputs for sample prompts: {args.sample_prompts}")
 
                 tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
-                text_encoding_strategy  = strategy_base.TextEncodingStrategy.get_strategy()
-                
+                text_encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
+
                 assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
                 assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
+                system_prompt = args.system_prompt or ""
                 sample_prompts = train_util.load_prompts(args.sample_prompts)
-                sample_prompts_te_outputs = (
-                    {}
-                )  # key: prompt, value: text encoder outputs
+                sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in sample_prompts:
-                        prompts = [prompt_dict.get("prompt", ""),
-                            prompt_dict.get("negative_prompt", "")]
-                        logger.info(
-                            f"cache Text Encoder outputs for prompt: {prompts[0]}"
-                        )
-                        tokens_and_masks = tokenize_strategy.tokenize(prompts)
-                        sample_prompts_te_outputs[prompts[0]] = (
-                            text_encoding_strategy.encode_tokens(
+                        prompts = [
+                            prompt_dict.get("prompt", ""),
+                            prompt_dict.get("negative_prompt", ""),
+                        ]
+                        for prompt in prompts:
+                            prompt = system_prompt + prompt
+                            if prompt in sample_prompts_te_outputs:
+                                continue
+
+                            logger.info(f"cache Text Encoder outputs for prompt: {prompt}")
+                            tokens_and_masks = tokenize_strategy.tokenize(prompt)
+                            sample_prompts_te_outputs[prompt] = text_encoding_strategy.encode_tokens(
                                 tokenize_strategy,
                                 text_encoders,
                                 tokens_and_masks,
                             )
-                        )
+
                 self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
             accelerator.wait_for_everyone()
@@ -235,12 +222,8 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
     # Remaining methods maintain similar structure to flux implementation
     # with Lumina-specific model calls and strategies
 
-    def get_noise_scheduler(
-        self, args: argparse.Namespace, device: torch.device
-    ) -> Any:
-        noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(
-            num_train_timesteps=1000, shift=args.discrete_flow_shift
-        )
+    def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
+        noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
@@ -258,26 +241,45 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         noise_scheduler,
         latents,
         batch,
-        text_encoder_conds: Tuple[Tensor, Tensor, Tensor], # (hidden_states, input_ids, attention_masks)
+        text_encoder_conds: Tuple[Tensor, Tensor, Tensor],  # (hidden_states, input_ids, attention_masks)
         dit: lumina_models.NextDiT,
         network,
         weight_dtype,
         train_unet,
         is_train=True,
     ):
+        assert isinstance(noise_scheduler, sd3_train_utils.FlowMatchEulerDiscreteScheduler)
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
 
-        # get noisy model input and timesteps
-        noisy_model_input, timesteps, sigmas = (
-            flux_train_utils.get_noisy_model_input_and_timesteps(
-                args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
-            )
+        # Sample a random timestep for each image
+        # for weighting schemes where we sample timesteps non-uniformly
+        u = lumina_train_util.compute_density_for_timestep_sampling(
+            weighting_scheme=args.weighting_scheme,
+            batch_size=bsz,
+            logit_mean=args.logit_mean,
+            logit_std=args.logit_std,
+            mode_scale=args.mode_scale,
         )
+        indices = (u * noise_scheduler.config.num_train_timesteps).long()
+        timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
 
-        # May not need to pack/unpack?
-        # pack latents and get img_ids - 这部分可以保留因为NextDiT也需要packed格式的输入
-        # packed_noisy_model_input = lumina_util.pack_latents(noisy_model_input)
+        def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
+            sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
+            schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+            timesteps = timesteps.to(accelerator.device)
+            step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+
+            sigma = sigmas[step_indices].flatten()
+            while len(sigma.shape) < n_dim:
+                sigma = sigma.unsqueeze(-1)
+            return sigma
+
+        # Add noise according to flow matching.
+        # zt = (1 - texp) * x + texp * z1
+        # Lumina2 reverses the lerp i.e., sigma of 1.0 should mean `latents`
+        sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
+        noisy_model_input = (1.0 - sigmas) * noise + sigmas * latents
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -289,48 +291,35 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         # Unpack Gemma2 outputs
         gemma2_hidden_states, input_ids, gemma2_attn_mask = text_encoder_conds
 
-        def call_dit(img, gemma2_hidden_states, timesteps, gemma2_attn_mask):
+        def call_dit(img, gemma2_hidden_states, gemma2_attn_mask, timesteps):
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # NextDiT forward expects (x, t, cap_feats, cap_mask)
                 model_pred = dit(
                     x=img,  # image latents (B, C, H, W)
                     t=timesteps / 1000,  # timesteps需要除以1000来匹配模型预期
                     cap_feats=gemma2_hidden_states,  # Gemma2的hidden states作为caption features
-                    cap_mask=gemma2_attn_mask.to(
-                        dtype=torch.int32
-                    ),  # Gemma2的attention mask
+                    cap_mask=gemma2_attn_mask.to(dtype=torch.int32),  # Gemma2的attention mask
                 )
             return model_pred
 
         model_pred = call_dit(
             img=noisy_model_input,
             gemma2_hidden_states=gemma2_hidden_states,
-            timesteps=timesteps,
             gemma2_attn_mask=gemma2_attn_mask,
+            timesteps=timesteps,
         )
-
-        # May not need to pack/unpack?
-        # unpack latents
-        # model_pred = lumina_util.unpack_latents(
-        #     model_pred, packed_latent_height, packed_latent_width
-        # )
 
         # apply model prediction type
-        model_pred, weighting = flux_train_utils.apply_model_prediction_type(
-            args, model_pred, noisy_model_input, sigmas
-        )
+        model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
 
-        # flow matching loss: this is different from SD3
-        target = noise - latents
+        # flow matching loss
+        target = latents - noise
 
         # differential output preservation
         if "custom_attributes" in batch:
             diff_output_pr_indices = []
             for i, custom_attributes in enumerate(batch["custom_attributes"]):
-                if (
-                    "diff_output_preservation" in custom_attributes
-                    and custom_attributes["diff_output_preservation"]
-                ):
+                if "diff_output_preservation" in custom_attributes and custom_attributes["diff_output_preservation"]:
                     diff_output_pr_indices.append(i)
 
             if len(diff_output_pr_indices) > 0:
@@ -338,9 +327,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 with torch.no_grad():
                     model_pred_prior = call_dit(
                         img=noisy_model_input[diff_output_pr_indices],
-                        gemma2_hidden_states=gemma2_hidden_states[
-                            diff_output_pr_indices
-                        ],
+                        gemma2_hidden_states=gemma2_hidden_states[diff_output_pr_indices],
                         timesteps=timesteps[diff_output_pr_indices],
                         gemma2_attn_mask=(gemma2_attn_mask[diff_output_pr_indices]),
                     )
@@ -363,9 +350,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         return loss
 
     def get_sai_model_spec(self, args):
-        return train_util.get_sai_model_spec(
-            None, args, False, True, False, lumina="lumina2"
-        )
+        return train_util.get_sai_model_spec(None, args, False, True, False, lumina="lumina2")
 
     def update_metadata(self, metadata, args):
         metadata["ss_weighting_scheme"] = args.weighting_scheme
@@ -384,12 +369,8 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
     def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
         text_encoder.embed_tokens.requires_grad_(True)
 
-    def prepare_text_encoder_fp8(
-        self, index, text_encoder, te_weight_dtype, weight_dtype
-    ):
-        logger.info(
-            f"prepare Gemma2 for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}"
-        )
+    def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
+        logger.info(f"prepare Gemma2 for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}")
         text_encoder.to(te_weight_dtype)  # fp8
         text_encoder.embed_tokens.to(dtype=weight_dtype)
 
@@ -402,12 +383,8 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         # if we doesn't swap blocks, we can move the model to device
         nextdit = unet
         assert isinstance(nextdit, lumina_models.NextDiT)
-        nextdit = accelerator.prepare(
-            nextdit, device_placement=[not self.is_swapping_blocks]
-        )
-        accelerator.unwrap_model(nextdit).move_to_device_except_swap_blocks(
-            accelerator.device
-        )  # reduce peak memory usage
+        nextdit = accelerator.prepare(nextdit, device_placement=[not self.is_swapping_blocks])
+        accelerator.unwrap_model(nextdit).move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
         accelerator.unwrap_model(nextdit).prepare_block_swap_before_forward()
 
         return nextdit

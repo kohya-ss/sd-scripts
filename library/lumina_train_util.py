@@ -1,21 +1,28 @@
+import inspect
+import enum
 import argparse
 import math
 import os
 import numpy as np
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Tuple, Any, Union
 
 import torch
 from torch import Tensor
+from torchdiffeq import odeint
 from accelerate import Accelerator, PartialState
 from transformers import Gemma2Model
 from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
+from diffusers.schedulers.scheduling_heun_discrete import HeunDiscreteScheduler
 from library import lumina_models, lumina_util, strategy_base, strategy_lumina, train_util
+from library.flux_models import AutoEncoder
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
+from library.lumina_dpm_solver import NoiseScheduleFlow, DPM_Solver
+import library.lumina_path as path
 
 init_ipex()
 
@@ -162,12 +169,12 @@ def sample_image_inference(
     args: argparse.Namespace,
     nextdit: lumina_models.NextDiT,
     gemma2_model: Gemma2Model,
-    vae: torch.nn.Module,
+    vae: AutoEncoder,
     save_dir: str,
     prompt_dict: Dict[str, str],
     epoch: int,
     global_step: int,
-    sample_prompts_gemma2_outputs: List[Tuple[Tensor, Tensor, Tensor]],
+    sample_prompts_gemma2_outputs: dict[str, List[Tuple[Tensor, Tensor, Tensor]]],
     prompt_replacement: Optional[Tuple[str, str]] = None,
     controlnet=None,
 ):
@@ -179,12 +186,12 @@ def sample_image_inference(
         args (argparse.Namespace): Arguments object
         nextdit (lumina_models.NextDiT): NextDiT model
         gemma2_model (Gemma2Model): Gemma2 model
-        vae (torch.nn.Module): VAE model
+        vae (AutoEncoder): VAE model
         save_dir (str): Directory to save images
         prompt_dict (Dict[str, str]): Prompt dictionary
         epoch (int): Epoch number
         steps (int): Number of steps to run
-        sample_prompts_gemma2_outputs (List[Tuple[Tensor, Tensor, Tensor]]): List of tuples containing gemma2 outputs
+        sample_prompts_gemma2_outputs (List[Tuple[Tensor, Tensor, Tensor]]): List of tuples containing Gemma 2 outputs
         prompt_replacement (Optional[Tuple[str, str]], optional): Replacement for positive and negative prompt. Defaults to None.
 
     Returns:
@@ -192,15 +199,18 @@ def sample_image_inference(
     """
     assert isinstance(prompt_dict, dict)
     # negative_prompt = prompt_dict.get("negative_prompt")
-    sample_steps = prompt_dict.get("sample_steps", 38)
-    width = prompt_dict.get("width", 1024)
-    height = prompt_dict.get("height", 1024)
-    guidance_scale: int = prompt_dict.get("scale", 3.5)
-    seed: int = prompt_dict.get("seed", None)
+    sample_steps = int(prompt_dict.get("sample_steps", 38))
+    width = int(prompt_dict.get("width", 1024))
+    height = int(prompt_dict.get("height", 1024))
+    guidance_scale = float(prompt_dict.get("scale", 3.5))
+    seed = prompt_dict.get("seed", None)
     controlnet_image = prompt_dict.get("controlnet_image")
     prompt: str = prompt_dict.get("prompt", "")
     negative_prompt: str = prompt_dict.get("negative_prompt", "")
     # sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
+
+    seed = int(seed) if seed is not None else None
+    assert seed is None or seed > 0, f"Invalid seed {seed}"
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -213,10 +223,10 @@ def sample_image_inference(
 
     # if negative_prompt is None:
     #     negative_prompt = ""
-    height = max(64, height - height % 16)  # round to divisible by 16
-    width = max(64, width - width % 16)  # round to divisible by 16
+    height = max(64, height - height % 8)  # round to divisible by 8
+    width = max(64, width - width % 8)  # round to divisible by 8
     logger.info(f"prompt: {prompt}")
-    # logger.info(f"negative_prompt: {negative_prompt}")
+    logger.info(f"negative_prompt: {negative_prompt}")
     logger.info(f"height: {height}")
     logger.info(f"width: {width}")
     logger.info(f"sample_steps: {sample_steps}")
@@ -232,46 +242,51 @@ def sample_image_inference(
     assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
     assert isinstance(encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
-    gemma2_conds = []
+    system_prompt = args.system_prompt or ""
+
+    # Apply system prompt to prompts
+    prompt = system_prompt + prompt
+    negative_prompt = system_prompt + negative_prompt
+
+    # Get sample prompts from cache
     if sample_prompts_gemma2_outputs and prompt in sample_prompts_gemma2_outputs:
         gemma2_conds = sample_prompts_gemma2_outputs[prompt]
         logger.info(f"Using cached Gemma2 outputs for prompt: {prompt}")
+
+    if sample_prompts_gemma2_outputs and negative_prompt in sample_prompts_gemma2_outputs:
+        neg_gemma2_conds = sample_prompts_gemma2_outputs[negative_prompt]
+        logger.info(f"Using cached Gemma2 outputs for negative prompt: {negative_prompt}")
+
+    # Load sample prompts from Gemma 2
     if gemma2_model is not None:
         logger.info(f"Encoding prompt with Gemma2: {prompt}")
         tokens_and_masks = tokenize_strategy.tokenize(prompt)
-        encoded_gemma2_conds = encoding_strategy.encode_tokens(tokenize_strategy, [gemma2_model], tokens_and_masks)
+        gemma2_conds = encoding_strategy.encode_tokens(tokenize_strategy, [gemma2_model], tokens_and_masks)
 
-        # if gemma2_conds is not cached, use encoded_gemma2_conds
-        if len(gemma2_conds) == 0:
-            gemma2_conds = encoded_gemma2_conds
-        else:
-            # if encoded_gemma2_conds is not None, update cached gemma2_conds
-            for i in range(len(encoded_gemma2_conds)):
-                if encoded_gemma2_conds[i] is not None:
-                    gemma2_conds[i] = encoded_gemma2_conds[i]
+        tokens_and_masks = tokenize_strategy.tokenize(negative_prompt)
+        neg_gemma2_conds = encoding_strategy.encode_tokens(tokenize_strategy, [gemma2_model], tokens_and_masks)
 
     # Unpack Gemma2 outputs
     gemma2_hidden_states, input_ids, gemma2_attn_mask = gemma2_conds
+    neg_gemma2_hidden_states, neg_input_ids, neg_gemma2_attn_mask = neg_gemma2_conds
 
     # sample image
     weight_dtype = vae.dtype  # TOFO give dtype as argument
     latent_height = height // 8
     latent_width = width // 8
+    latent_channels = 16
     noise = torch.randn(
         1,
-        16,
+        latent_channels,
         latent_height,
         latent_width,
         device=accelerator.device,
         dtype=weight_dtype,
         generator=generator,
     )
-    # Prompts are paired positive/negative
-    noise = noise.repeat(gemma2_attn_mask.shape[0], 1, 1, 1)
 
-    timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)
-    # img_ids = lumina_util.prepare_img_ids(1, packed_latent_height, packed_latent_width).to(accelerator.device, weight_dtype)
-    gemma2_attn_mask = gemma2_attn_mask.to(accelerator.device)
+    scheduler = FlowMatchEulerDiscreteScheduler(shift=6.0, use_karras_sigmas=True)
+    timesteps, num_inference_steps = retrieve_timesteps(scheduler, num_inference_steps=sample_steps)
 
     # if controlnet_image is not None:
     #     controlnet_image = Image.open(controlnet_image).convert("RGB")
@@ -280,16 +295,25 @@ def sample_image_inference(
     #     controlnet_image = controlnet_image.permute(2, 0, 1).unsqueeze(0).to(weight_dtype).to(accelerator.device)
 
     with accelerator.autocast():
-        x = denoise(nextdit, noise, gemma2_hidden_states, gemma2_attn_mask, timesteps=timesteps, guidance=guidance_scale)
+        x = denoise(
+            scheduler,
+            nextdit,
+            noise,
+            gemma2_hidden_states,
+            gemma2_attn_mask.to(accelerator.device),
+            neg_gemma2_hidden_states,
+            neg_gemma2_attn_mask.to(accelerator.device),
+            timesteps=timesteps,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+        )
 
-    # x = lumina_util.unpack_latents(x, packed_latent_height, packed_latent_width)
-
-    # latent to image
+    # Latent to image
     clean_memory_on_device(accelerator.device)
     org_vae_device = vae.device  # will be on cpu
     vae.to(accelerator.device)  # distributed_state.device is same as accelerator.device
     with accelerator.autocast():
-        x = vae.decode(x)
+        x = vae.decode((x / vae.scale_factor) + vae.shift_factor)
     vae.to(org_vae_device)
     clean_memory_on_device(accelerator.device)
 
@@ -317,30 +341,25 @@ def sample_image_inference(
         wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
 
 
-def time_shift(mu: float, sigma: float, t: Tensor):
-    """
-    Get time shift
-
-    Args:
-        mu (float): mu value.
-        sigma (float): sigma value.
-        t (Tensor): timestep.
-
-    Return:
-        float: time shift
-    """
-    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+def time_shift(mu: float, sigma: float, t: torch.Tensor):
+    # the following implementation was original for t=0: clean / t=1: noise
+    # Since we adopt the reverse, the 1-t operations are needed
+    t = 1 - t
+    t = math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+    t = 1 - t
+    return t
 
 
-def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: float = 1.15) -> Callable[[float], float]:
+def get_lin_function(x1: float = 256, x2: float = 4096, y1: float = 0.5, y2: float = 1.15) -> Callable[[float], float]:
     """
     Get linear function
 
     Args:
-        x1 (float, optional): x1 value. Defaults to 256.
-        y1 (float, optional): y1 value. Defaults to 0.5.
-        x2 (float, optional): x2 value. Defaults to 4096.
-        y2 (float, optional): y2 value. Defaults to 1.15.
+        image_seq_len,
+        x1 base_seq_len: int = 256,
+        y2 max_seq_len: int = 4096,
+        y1 base_shift: float = 0.5,
+        y2 max_shift: float = 1.15,
 
     Return:
         Callable[[float], float]: linear function
@@ -370,51 +389,164 @@ def get_schedule(
     Return:
         List[float]: timesteps schedule
     """
-    # extra step for zero
-    timesteps = torch.linspace(1, 0, num_steps + 1)
+    timesteps = torch.linspace(1, 1 / num_steps, num_steps)
 
     # shifting the schedule to favor high timesteps for higher signal images
     if shift:
         # eastimate mu based on linear estimation between two points
-        mu = get_lin_function(y1=base_shift, y2=max_shift)(image_seq_len)
+        mu = get_lin_function(y1=base_shift, y2=max_shift, x1=256, x2=4096)(image_seq_len)
         timesteps = time_shift(mu, 1.0, timesteps)
 
     return timesteps.tolist()
 
 
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
+def retrieve_timesteps(
+    scheduler,
+    num_inference_steps: Optional[int] = None,
+    device: Optional[Union[str, torch.device]] = None,
+    timesteps: Optional[List[int]] = None,
+    sigmas: Optional[List[float]] = None,
+    **kwargs,
+) -> Tuple[torch.Tensor, int]:
+    r"""
+    Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
+    custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
+
+    Args:
+        scheduler (`SchedulerMixin`):
+            The scheduler to get timesteps from.
+        num_inference_steps (`int`):
+            The number of diffusion steps used when generating samples with a pre-trained model. If used, `timesteps`
+            must be `None`.
+        device (`str` or `torch.device`, *optional*):
+            The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
+        timesteps (`List[int]`, *optional*):
+            Custom timesteps used to override the timestep spacing strategy of the scheduler. If `timesteps` is passed,
+            `num_inference_steps` and `sigmas` must be `None`.
+        sigmas (`List[float]`, *optional*):
+            Custom sigmas used to override the timestep spacing strategy of the scheduler. If `sigmas` is passed,
+            `num_inference_steps` and `timesteps` must be `None`.
+
+    Returns:
+        `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
+        second element is the number of inference steps.
+    """
+    if timesteps is not None and sigmas is not None:
+        raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
+    if timesteps is not None:
+        accepts_timesteps = "timesteps" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        if not accepts_timesteps:
+            raise ValueError(
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" timestep schedules. Please check whether you are using the correct scheduler."
+            )
+        scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+        num_inference_steps = len(timesteps)
+    elif sigmas is not None:
+        accept_sigmas = "sigmas" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        if not accept_sigmas:
+            raise ValueError(
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" sigmas schedules. Please check whether you are using the correct scheduler."
+            )
+        scheduler.set_timesteps(sigmas=sigmas, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+        num_inference_steps = len(timesteps)
+    else:
+        scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+    return timesteps, num_inference_steps
+
+
 def denoise(
-    model: lumina_models.NextDiT, img: Tensor, txt: Tensor, txt_mask: Tensor, timesteps: List[float], guidance: float = 4.0
+    scheduler,
+    model: lumina_models.NextDiT,
+    img: Tensor,
+    txt: Tensor,
+    txt_mask: Tensor,
+    neg_txt: Tensor,
+    neg_txt_mask: Tensor,
+    timesteps: Union[List[float], torch.Tensor],
+    num_inference_steps: int = 38,
+    guidance_scale: float = 4.0,
+    cfg_trunc_ratio: float = 1.0,
+    cfg_normalization: bool = True,
 ):
     """
     Denoise an image using the NextDiT model.
 
     Args:
+        scheduler ():
+            Noise scheduler
         model (lumina_models.NextDiT): The NextDiT model instance.
-        img (Tensor): The input image tensor.
-        txt (Tensor): The input text tensor.
-        txt_mask (Tensor): The input text mask tensor.
-        timesteps (List[float]): A list of timesteps for the denoising process.
-        guidance (float, optional): The guidance scale for the denoising process. Defaults to 4.0.
+        img (Tensor):
+            The input image latent tensor.
+        txt (Tensor):
+            The input text tensor.
+        txt_mask (Tensor):
+            The input text mask tensor.
+        neg_txt (Tensor):
+            The negative input txt tensor
+        neg_txt_mask (Tensor):
+            The negative input text mask tensor.
+        timesteps (List[Union[float, torch.FloatTensor]]):
+            A list of timesteps for the denoising process.
+        guidance_scale (float, optional):
+            The guidance scale for the denoising process. Defaults to 4.0.
+        cfg_trunc_ratio (float, optional):
+            The ratio of the timestep interval to apply normalization-based guidance scale.
+        cfg_normalization (bool, optional):
+            Whether to apply normalization-based guidance scale.
 
     Returns:
-        img (Tensor): Denoised tensor
+        img (Tensor): Denoised latent tensor
     """
-    for t_curr, t_prev in zip(tqdm(timesteps[:-1]), timesteps[1:]):
-        t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        # model.prepare_block_swap_before_forward()
-        # block_samples = None
-        # block_single_samples = None
-        pred = model.forward_with_cfg(
-            x=img,  # image latents (B, C, H, W)
-            t=t_vec / 1000,  # timesteps需要除以1000来匹配模型预期
+
+    for i, t in enumerate(tqdm(timesteps)):
+        # compute whether apply classifier-free truncation on this timestep
+        do_classifier_free_truncation = (i + 1) / num_inference_steps > cfg_trunc_ratio
+
+        # reverse the timestep since Lumina uses t=0 as the noise and t=1 as the image
+        current_timestep = 1 - t / scheduler.config.num_train_timesteps
+        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+        current_timestep = current_timestep.expand(img.shape[0]).to(model.device)
+
+        noise_pred_cond = model(
+            img,
+            current_timestep,
             cap_feats=txt,  # Gemma2的hidden states作为caption features
             cap_mask=txt_mask.to(dtype=torch.int32),  # Gemma2的attention mask
-            cfg_scale=guidance,
         )
 
-        img = img + (t_prev - t_curr) * pred
+        if not do_classifier_free_truncation:
+            noise_pred_uncond = model(
+                img,
+                current_timestep,
+                cap_feats=neg_txt,  # Gemma2的hidden states作为caption features
+                cap_mask=neg_txt_mask.to(dtype=torch.int32),  # Gemma2的attention mask
+            )
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            # apply normalization after classifier-free guidance
+            if cfg_normalization:
+                cond_norm = torch.norm(noise_pred_cond, dim=-1, keepdim=True)
+                noise_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
+                noise_pred = noise_pred * (cond_norm / noise_norm)
+        else:
+            noise_pred = noise_pred_cond
 
-    # model.prepare_block_swap_before_forward()
+        img_dtype = img.dtype
+
+        if img.dtype != img_dtype:
+            if torch.backends.mps.is_available():
+                # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
+                img = img.to(img_dtype)
+
+        # compute the previous noisy sample x_t -> x_t-1
+        noise_pred = -noise_pred
+        img = scheduler.step(noise_pred, t, img, return_dict=False)[0]
+
     return img
 
 
@@ -753,4 +885,15 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
         type=float,
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
+    )
+    parser.add_argument(
+        "--use_flash_attn",
+        action="store_true",
+        help="Use Flash Attention for the model. / モデルにFlash Attentionを使用する。",
+    )
+    parser.add_argument(
+        "--system_prompt",
+        type=str,
+        default="You are an assistant designed to generate high-quality images based on user prompts. <Prompt Start> ",
+        help="System prompt to add to the prompt. / プロンプトに追加するシステムプロンプト。",
     )

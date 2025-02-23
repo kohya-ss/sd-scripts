@@ -3,13 +3,13 @@ import os
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
-from transformers import AutoTokenizer, AutoModel, GemmaTokenizerFast
+from transformers import AutoTokenizer, AutoModel, Gemma2Model, GemmaTokenizerFast
 from library import train_util
 from library.strategy_base import (
     LatentsCachingStrategy,
     TokenizeStrategy,
     TextEncodingStrategy,
-    TextEncoderOutputsCachingStrategy
+    TextEncoderOutputsCachingStrategy,
 )
 import numpy as np
 from library.utils import setup_logging
@@ -37,21 +37,38 @@ class LuminaTokenizeStrategy(TokenizeStrategy):
         else:
             self.max_length = max_length
 
-    def tokenize(self, text: Union[str, List[str]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def tokenize(
+        self, text: Union[str, List[str]]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            text (Union[str, List[str]]): Text to tokenize
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                token input ids, attention_masks
+        """
         text = [text] if isinstance(text, str) else text
         encodings = self.tokenizer(
             text,
             max_length=self.max_length,
             return_tensors="pt",
-            padding=True,
+            padding="max_length",
             pad_to_multiple_of=8,
-            truncation=True,
         )
-        return [encodings.input_ids, encodings.attention_mask]
+        return (encodings.input_ids, encodings.attention_mask)
 
     def tokenize_with_weights(
         self, text: str | List[str]
     ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        """
+        Args:
+            text (Union[str, List[str]]): Text to tokenize
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+                token input ids, attention_masks, weights
+        """
         # Gemma doesn't support weighted prompts, return uniform weights
         tokens, attention_masks = self.tokenize(text)
         weights = [torch.ones_like(t) for t in tokens]
@@ -66,9 +83,20 @@ class LuminaTextEncodingStrategy(TextEncodingStrategy):
         self,
         tokenize_strategy: TokenizeStrategy,
         models: List[Any],
-        tokens: List[torch.Tensor],
+        tokens: Tuple[torch.Tensor, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
+            models (List[Any]): Text encoders
+            tokens (Tuple[torch.Tensor, torch.Tensor]): tokens, attention_masks
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                hidden_states, input_ids, attention_masks
+        """
         text_encoder = models[0]
+        assert isinstance(text_encoder, Gemma2Model)
         input_ids, attention_masks = tokens
 
         outputs = text_encoder(
@@ -84,9 +112,20 @@ class LuminaTextEncodingStrategy(TextEncodingStrategy):
         self,
         tokenize_strategy: TokenizeStrategy,
         models: List[Any],
-        tokens: List[torch.Tensor],
-        weights_list: List[torch.Tensor],
+        tokens: Tuple[torch.Tensor, torch.Tensor],
+        weights: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
+            models (List[Any]): Text encoders
+            tokens (Tuple[torch.Tensor, torch.Tensor]): tokens, attention_masks
+            weights_list (List[torch.Tensor]): Currently unused
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                hidden_states, input_ids, attention_masks
+        """
         # For simplicity, use uniform weighting
         return self.encode_tokens(tokenize_strategy, models, tokens)
 
@@ -114,7 +153,14 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
             + LuminaTextEncoderOutputsCachingStrategy.LUMINA_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
         )
 
-    def is_disk_cached_outputs_expected(self, npz_path: str):
+    def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
+        """
+        Args:
+            npz_path (str): Path to the npz file.
+
+        Returns:
+            bool: True if the npz file is expected to be cached.
+        """
         if not self.cache_to_disk:
             return False
         if not os.path.exists(npz_path):
@@ -141,7 +187,7 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         Load outputs from a npz file
 
         Returns:
-            List[np.ndarray]: hidden_state,  input_ids, attention_mask
+            List[np.ndarray]: hidden_state, input_ids, attention_mask
         """
         data = np.load(npz_path)
         hidden_state = data["hidden_state"]
@@ -151,53 +197,75 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
 
     def cache_batch_outputs(
         self,
-        tokenize_strategy: LuminaTokenizeStrategy,
+        tokenize_strategy: TokenizeStrategy,
         models: List[Any],
-        text_encoding_strategy: LuminaTextEncodingStrategy,
-        infos: List,
-    ):
-        lumina_text_encoding_strategy: LuminaTextEncodingStrategy = (
-            text_encoding_strategy
-        )
-        captions = [info.caption for info in infos]
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: List[train_util.ImageInfo],
+    ) -> None:
+        """
+        Args:
+            tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
+            models (List[Any]): Text encoders
+            text_encoding_strategy (LuminaTextEncodingStrategy):
+            infos (List): List of image_info
+
+        Returns:
+            None
+        """
+        assert isinstance(text_encoding_strategy, LuminaTextEncodingStrategy)
+        assert isinstance(tokenize_strategy, LuminaTokenizeStrategy)
+
+        captions = [info.system_prompt or "" + info.caption for info in batch]
 
         if self.is_weighted:
-            tokens, weights_list = tokenize_strategy.tokenize_with_weights(
-                captions
+            tokens, attention_masks, weights_list = (
+                tokenize_strategy.tokenize_with_weights(captions)
             )
             with torch.no_grad():
-                hidden_state, input_ids, attention_masks = lumina_text_encoding_strategy.encode_tokens_with_weights(
-                    tokenize_strategy, models, tokens, weights_list
+                hidden_state, input_ids, attention_masks = (
+                    text_encoding_strategy.encode_tokens_with_weights(
+                        tokenize_strategy,
+                        models,
+                        (tokens, attention_masks),
+                        weights_list,
+                    )
                 )
         else:
             tokens = tokenize_strategy.tokenize(captions)
             with torch.no_grad():
-                hidden_state, input_ids, attention_masks = lumina_text_encoding_strategy.encode_tokens(
-                    tokenize_strategy, models, tokens
+                hidden_state, input_ids, attention_masks = (
+                    text_encoding_strategy.encode_tokens(
+                        tokenize_strategy, models, tokens
+                    )
                 )
 
         if hidden_state.dtype != torch.float32:
             hidden_state = hidden_state.float()
 
         hidden_state = hidden_state.cpu().numpy()
-        attention_mask = attention_masks.cpu().numpy()
-        input_ids = tokens.cpu().numpy()
+        attention_mask = attention_masks.cpu().numpy() # (B, S)
+        input_ids = input_ids.cpu().numpy() # (B, S) 
 
-
-        for i, info in enumerate(infos):
+        for i, info in enumerate(batch):
             hidden_state_i = hidden_state[i]
             attention_mask_i = attention_mask[i]
             input_ids_i = input_ids[i]
+
+            assert info.text_encoder_outputs_npz is not None, "Text encoder cache outputs to disk not found for image {info.image_path}"
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
                     hidden_state=hidden_state_i,
                     attention_mask=attention_mask_i,
-                    input_ids=input_ids_i
+                    input_ids=input_ids_i,
                 )
             else:
-                info.text_encoder_outputs = [hidden_state_i, attention_mask_i, input_ids_i]
+                info.text_encoder_outputs = [
+                    hidden_state_i,
+                    attention_mask_i,
+                    input_ids_i,
+                ]
 
 
 class LuminaLatentsCachingStrategy(LatentsCachingStrategy):
@@ -227,7 +295,14 @@ class LuminaLatentsCachingStrategy(LatentsCachingStrategy):
         npz_path: str,
         flip_aug: bool,
         alpha_mask: bool,
-    ):
+    ) -> bool:
+        """
+        Args:
+            bucket_reso (Tuple[int, int]): The resolution of the bucket.
+            npz_path (str): Path to the npz file.
+            flip_aug (bool): Whether to flip the image.
+            alpha_mask (bool): Whether to apply
+        """
         return self._default_is_disk_cached_latents_expected(
             8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True
         )
@@ -241,6 +316,20 @@ class LuminaLatentsCachingStrategy(LatentsCachingStrategy):
         Optional[np.ndarray],
         Optional[np.ndarray],
     ]:
+        """
+        Args:
+            npz_path (str): Path to the npz file.
+            bucket_reso (Tuple[int, int]): The resolution of the bucket.
+
+        Returns:
+            Tuple[
+                Optional[np.ndarray],
+                Optional[List[int]],
+                Optional[List[int]],
+                Optional[np.ndarray],
+                Optional[np.ndarray],
+            ]: Tuple of latent tensors, attention_mask, input_ids, latents, latents_unet
+        """
         return self._default_load_latents_from_disk(
             8, npz_path, bucket_reso
         )  # support multi-resolution
