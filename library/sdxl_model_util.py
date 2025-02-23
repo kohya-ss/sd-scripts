@@ -15,6 +15,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+ARB_MIN_STEPS = 32
+UNET_NUM_BLOCKS_FOR_BLOCK_LR = 23
 VAE_SCALE_FACTOR = 0.13025
 MODEL_VERSION_SDXL_BASE_V1_0 = "sdxl_base_v1-0"
 
