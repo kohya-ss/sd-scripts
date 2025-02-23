@@ -280,7 +280,7 @@ def sample_image_inference(
         generator=generator,
     )
 
-    scheduler = FlowMatchEulerDiscreteScheduler(shift=6.0, use_karras_sigmas=True)
+    scheduler = FlowMatchEulerDiscreteScheduler(shift=6.0)
     timesteps, num_inference_steps = retrieve_timesteps(scheduler, num_inference_steps=sample_steps)
 
     # if controlnet_image is not None:
