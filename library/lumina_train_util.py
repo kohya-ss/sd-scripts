@@ -878,8 +878,8 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
-        default=3.0,
-        help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
+        default=6.0,
+        help="Discrete flow shift for the Euler Discrete Scheduler, default is 6.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは6.0。",
     )
     parser.add_argument(
         "--use_flash_attn",
@@ -889,6 +889,6 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--system_prompt",
         type=str,
-        default="You are an assistant designed to generate high-quality images based on user prompts. <Prompt Start> ",
+        default="",
         help="System prompt to add to the prompt. / プロンプトに追加するシステムプロンプト。",
     )
