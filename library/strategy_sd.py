@@ -4,8 +4,6 @@ from typing import Any, List, Optional, Tuple, Union
 
 import torch
 from transformers import CLIPTokenizer
-from library import train_util
-from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy
 from library.utils import setup_logging
 
 setup_logging()
@@ -13,6 +11,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from library import train_util, utils
+from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy
 
 TOKENIZER_ID = "openai/clip-vit-large-patch14"
 V2_STABLE_DIFFUSION_ID = "stabilityai/stable-diffusion-2"  # ここからtokenizerだけ使う v2とv2.1はtokenizer仕様は同じ
@@ -134,33 +134,30 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
     # sd and sdxl share the same strategy. we can make them separate, but the difference is only the suffix.
     # and we keep the old npz for the backward compatibility.
 
-    SD_OLD_LATENTS_NPZ_SUFFIX = ".npz"
-    SD_LATENTS_NPZ_SUFFIX = "_sd.npz"
-    SDXL_LATENTS_NPZ_SUFFIX = "_sdxl.npz"
+    ARCHITECTURE_SD = "sd"
+    ARCHITECTURE_SDXL = "sdxl"
 
     def __init__(self, sd: bool, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
+        arch = SdSdxlLatentsCachingStrategy.ARCHITECTURE_SD if sd else SdSdxlLatentsCachingStrategy.ARCHITECTURE_SDXL
+        super().__init__(arch, 8, cache_to_disk, batch_size, skip_disk_cache_validity_check)
         self.sd = sd
-        self.suffix = (
-            SdSdxlLatentsCachingStrategy.SD_LATENTS_NPZ_SUFFIX if sd else SdSdxlLatentsCachingStrategy.SDXL_LATENTS_NPZ_SUFFIX
-        )
-    
-    @property
-    def cache_suffix(self) -> str:
-        return self.suffix
 
-    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        # support old .npz
-        old_npz_file = os.path.splitext(absolute_path)[0] + SdSdxlLatentsCachingStrategy.SD_OLD_LATENTS_NPZ_SUFFIX
-        if os.path.exists(old_npz_file):
-            return old_npz_file
-        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.suffix
+    def is_disk_cached_latents_expected(
+        self,
+        bucket_reso: Tuple[int, int],
+        cache_path: str,
+        flip_aug: bool,
+        alpha_mask: bool,
+        preferred_dtype: Optional[torch.dtype] = None,
+    ) -> bool:
+        return self._default_is_disk_cached_latents_expected(bucket_reso, cache_path, flip_aug, alpha_mask, preferred_dtype)
 
-    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask)
+    def load_latents_from_disk(
+        self, cache_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        return self._default_load_latents_from_disk(cache_path, bucket_reso)
 
-    # TODO remove circular dependency for ImageInfo
-    def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
+    def cache_batch_latents(self, vae, image_infos: List[utils.ImageInfo], flip_aug: bool, alpha_mask: bool, random_crop: bool):
         encode_by_vae = lambda img_tensor: vae.encode(img_tensor).latent_dist.sample()
         vae_device = vae.device
         vae_dtype = vae.dtype

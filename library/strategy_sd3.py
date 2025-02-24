@@ -6,16 +6,15 @@ import torch
 import numpy as np
 from transformers import CLIPTokenizer, T5TokenizerFast, CLIPTextModel, CLIPTextModelWithProjection, T5EncoderModel
 
-from library import sd3_utils, train_util
-from library import sd3_models
-from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
-
 from library.utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+from library import train_util, utils
+from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
 
 
 CLIP_L_TOKENIZER_ID = "openai/clip-vit-large-patch14"
@@ -254,7 +253,8 @@ class Sd3TextEncodingStrategy(TextEncodingStrategy):
 
 
 class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
-    SD3_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_sd3_te.npz"
+    KEYS = ["lg_out", "t5_out", "lg_pooled"]
+    KEYS_MASKED = ["clip_l_attn_mask", "clip_g_attn_mask", "t5_attn_mask"]
 
     def __init__(
         self,
@@ -262,70 +262,51 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         batch_size: int,
         skip_disk_cache_validity_check: bool,
         is_partial: bool = False,
-        apply_lg_attn_mask: bool = False,
-        apply_t5_attn_mask: bool = False,
+        max_token_length: int = 256,
+        masked: bool = False,
     ) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial)
-        self.apply_lg_attn_mask = apply_lg_attn_mask
-        self.apply_t5_attn_mask = apply_t5_attn_mask
+        """
+        apply_lg_attn_mask and apply_t5_attn_mask must be same
+        """
+        super().__init__(
+            Sd3LatentsCachingStrategy.ARCHITECTURE_SD3,
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            max_token_length,
+            masked=masked,
+            is_partial=is_partial,
+        )
 
-    def get_outputs_npz_path(self, image_abs_path: str) -> str:
-        return os.path.splitext(image_abs_path)[0] + Sd3TextEncoderOutputsCachingStrategy.SD3_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+    def is_disk_cached_outputs_expected(
+        self, cache_path: str, prompts: list[str], preferred_dtype: Optional[Union[str, torch.dtype]]
+    ) -> bool:
+        keys = Sd3TextEncoderOutputsCachingStrategy.KEYS
+        if self.masked:
+            keys += Sd3TextEncoderOutputsCachingStrategy.KEYS_MASKED
+        return self._default_is_disk_cached_outputs_expected(cache_path, prompts, keys, preferred_dtype)
 
-    def is_disk_cached_outputs_expected(self, npz_path: str):
-        if not self.cache_to_disk:
-            return False
-        if not os.path.exists(npz_path):
-            return False
-        if self.skip_disk_cache_validity_check:
-            return True
-
-        try:
-            npz = np.load(npz_path)
-            if "lg_out" not in npz:
-                return False
-            if "lg_pooled" not in npz:
-                return False
-            if "clip_l_attn_mask" not in npz or "clip_g_attn_mask" not in npz:  # necessary even if not used
-                return False
-            if "apply_lg_attn_mask" not in npz:
-                return False
-            if "t5_out" not in npz:
-                return False
-            if "t5_attn_mask" not in npz:
-                return False
-            npz_apply_lg_attn_mask = npz["apply_lg_attn_mask"]
-            if npz_apply_lg_attn_mask != self.apply_lg_attn_mask:
-                return False
-            if "apply_t5_attn_mask" not in npz:
-                return False
-            npz_apply_t5_attn_mask = npz["apply_t5_attn_mask"]
-            if npz_apply_t5_attn_mask != self.apply_t5_attn_mask:
-                return False
-        except Exception as e:
-            logger.error(f"Error loading file: {npz_path}")
-            raise e
-
-        return True
-
-    def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
-        data = np.load(npz_path)
-        lg_out = data["lg_out"]
-        lg_pooled = data["lg_pooled"]
-        t5_out = data["t5_out"]
-
-        l_attn_mask = data["clip_l_attn_mask"]
-        g_attn_mask = data["clip_g_attn_mask"]
-        t5_attn_mask = data["t5_attn_mask"]
-
-        # apply_t5_attn_mask and apply_lg_attn_mask are same as self.apply_t5_attn_mask and self.apply_lg_attn_mask
+    def load_from_disk(self, cache_path: str, caption_index: int) -> list[Optional[torch.Tensor]]:
+        lg_out, lg_pooled, t5_out = self.load_from_disk_for_keys(
+            cache_path, caption_index, Sd3TextEncoderOutputsCachingStrategy.KEYS
+        )
+        if self.masked:
+            l_attn_mask, g_attn_mask, t5_attn_mask = self.load_from_disk_for_keys(
+                cache_path, caption_index, Sd3TextEncoderOutputsCachingStrategy.KEYS_MASKED
+            )
+        else:
+            l_attn_mask = g_attn_mask = t5_attn_mask = None
         return [lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask]
 
     def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: list[tuple[utils.ImageInfo, int, str]],
     ):
         sd3_text_encoding_strategy: Sd3TextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
+        captions = [caption for _, _, caption in batch]
 
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
@@ -334,87 +315,76 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 tokenize_strategy,
                 models,
                 tokens_and_masks,
-                apply_lg_attn_mask=self.apply_lg_attn_mask,
-                apply_t5_attn_mask=self.apply_t5_attn_mask,
+                apply_lg_attn_mask=self.masked,
+                apply_t5_attn_mask=self.masked,
                 enable_dropout=False,
             )
 
-        if lg_out.dtype == torch.bfloat16:
-            lg_out = lg_out.float()
-        if lg_pooled.dtype == torch.bfloat16:
-            lg_pooled = lg_pooled.float()
-        if t5_out.dtype == torch.bfloat16:
-            t5_out = t5_out.float()
+        lg_out = lg_out.cpu()
+        lg_pooled = lg_pooled.cpu()
+        t5_out = t5_out.cpu()
 
-        lg_out = lg_out.cpu().numpy()
-        lg_pooled = lg_pooled.cpu().numpy()
-        t5_out = t5_out.cpu().numpy()
+        l_attn_mask = tokens_and_masks[3].cpu()
+        g_attn_mask = tokens_and_masks[4].cpu()
+        t5_attn_mask = tokens_and_masks[5].cpu()
 
-        l_attn_mask = tokens_and_masks[3].cpu().numpy()
-        g_attn_mask = tokens_and_masks[4].cpu().numpy()
-        t5_attn_mask = tokens_and_masks[5].cpu().numpy()
-
-        for i, info in enumerate(infos):
+        keys = Sd3TextEncoderOutputsCachingStrategy.KEYS
+        if self.masked:
+            keys += Sd3TextEncoderOutputsCachingStrategy.KEYS_MASKED
+        for i, (info, caption_index, caption) in enumerate(batch):
             lg_out_i = lg_out[i]
             t5_out_i = t5_out[i]
             lg_pooled_i = lg_pooled[i]
             l_attn_mask_i = l_attn_mask[i]
             g_attn_mask_i = g_attn_mask[i]
             t5_attn_mask_i = t5_attn_mask[i]
-            apply_lg_attn_mask = self.apply_lg_attn_mask
-            apply_t5_attn_mask = self.apply_t5_attn_mask
 
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    lg_out=lg_out_i,
-                    lg_pooled=lg_pooled_i,
-                    t5_out=t5_out_i,
-                    clip_l_attn_mask=l_attn_mask_i,
-                    clip_g_attn_mask=g_attn_mask_i,
-                    t5_attn_mask=t5_attn_mask_i,
-                    apply_lg_attn_mask=apply_lg_attn_mask,
-                    apply_t5_attn_mask=apply_t5_attn_mask,
-                )
+                outputs = [lg_out_i, t5_out_i, lg_pooled_i]
+                if self.masked:
+                    outputs += [l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i]
+                self.save_outputs_to_disk(info.text_encoder_outputs_cache_path, caption_index, caption, keys, outputs)
             else:
                 # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
-                info.text_encoder_outputs = (lg_out_i, t5_out_i, lg_pooled_i, l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i)
+                while len(info.text_encoder_outputs) <= caption_index:
+                    info.text_encoder_outputs.append(None)
+                info.text_encoder_outputs[caption_index] = [
+                    lg_out_i,
+                    t5_out_i,
+                    lg_pooled_i,
+                    l_attn_mask_i,
+                    g_attn_mask_i,
+                    t5_attn_mask_i,
+                ]
 
 
 class Sd3LatentsCachingStrategy(LatentsCachingStrategy):
-    SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
+    ARCHITECTURE_SD3 = "sd3"
 
     def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
-        super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
+        super().__init__(Sd3LatentsCachingStrategy.ARCHITECTURE_SD3, 8, cache_to_disk, batch_size, skip_disk_cache_validity_check)
 
-    @property
-    def cache_suffix(self) -> str:
-        return Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
-
-    def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return (
-            os.path.splitext(absolute_path)[0]
-            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
-        )
-
-    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)
+    def is_disk_cached_latents_expected(
+        self,
+        bucket_reso: Tuple[int, int],
+        cache_path: str,
+        flip_aug: bool,
+        alpha_mask: bool,
+        preferred_dtype: Optional[torch.dtype] = None,
+    ):
+        return self._default_is_disk_cached_latents_expected(bucket_reso, cache_path, flip_aug, alpha_mask, preferred_dtype)
 
     def load_latents_from_disk(
-        self, npz_path: str, bucket_reso: Tuple[int, int]
-    ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-        return self._default_load_latents_from_disk(8, npz_path, bucket_reso)  # support multi-resolution
+        self, cache_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, List[int], List[int], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        return self._default_load_latents_from_disk(cache_path, bucket_reso)
 
-    # TODO remove circular dependency for ImageInfo
-    def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
+    def cache_batch_latents(self, vae, image_infos: List[utils.ImageInfo], flip_aug: bool, alpha_mask: bool, random_crop: bool):
         encode_by_vae = lambda img_tensor: vae.encode(img_tensor).to("cpu")
         vae_device = vae.device
         vae_dtype = vae.dtype
 
-        self._default_cache_batch_latents(
-            encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop, multi_resolution=True
-        )
+        self._default_cache_batch_latents(encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop)
 
         if not train_util.HIGH_VRAM:
             train_util.clean_memory_on_device(vae.device)

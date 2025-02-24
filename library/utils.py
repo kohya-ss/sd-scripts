@@ -21,6 +21,62 @@ def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
 
 
+class ImageInfo:
+    def __init__(self, image_key: str, num_repeats: int, is_reg: bool, absolute_path: str) -> None:
+        self.image_key: str = image_key
+        self.num_repeats: int = num_repeats
+        self.captions: Optional[list[str]] = None
+        self.caption_weights: Optional[list[float]] = None  # weights for each caption in sampling
+        self.list_of_tags: Optional[list[str]] = None
+        self.tags_weights: Optional[list[float]] = None
+        self.is_reg: bool = is_reg
+        self.absolute_path: str = absolute_path
+        self.latents_cache_dir: Optional[str] = None
+        self.image_size: Tuple[int, int] = None
+        self.resized_size: Tuple[int, int] = None
+        self.bucket_reso: Tuple[int, int] = None
+        self.latents: Optional[torch.Tensor] = None
+        self.latents_flipped: Optional[torch.Tensor] = None
+        self.latents_cache_path: Optional[str] = None  # set in cache_latents
+        self.latents_original_size: Optional[Tuple[int, int]] = None  # original image size, not latents size
+        # crop left top right bottom in original pixel size, not latents size
+        self.latents_crop_ltrb: Optional[Tuple[int, int]] = None
+        self.cond_img_path: Optional[str] = None
+        self.image: Optional[Image.Image] = None  # optional, original PIL Image. None if not the latents is cached
+        self.text_encoder_outputs_cache_path: Optional[str] = None  # set in cache_text_encoder_outputs
+
+        # new
+        self.text_encoder_outputs: Optional[list[list[torch.Tensor]]] = None
+        # old
+        self.text_encoder_outputs1: Optional[torch.Tensor] = None
+        self.text_encoder_outputs2: Optional[torch.Tensor] = None
+        self.text_encoder_pool2: Optional[torch.Tensor] = None
+
+        self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
+
+    def __str__(self) -> str:
+        return f"ImageInfo(image_key={self.image_key}, num_repeats={self.num_repeats}, captions={self.captions}, is_reg={self.is_reg}, absolute_path={self.absolute_path})"
+
+    def set_dreambooth_info(self, list_of_tags: list[str]) -> None:
+        self.list_of_tags = list_of_tags
+
+    def set_fine_tuning_info(
+        self,
+        captions: Optional[list[str]],
+        caption_weights: Optional[list[float]],
+        list_of_tags: Optional[list[str]],
+        tags_weights: Optional[list[float]],
+        image_size: Tuple[int, int],
+        latents_cache_dir: Optional[str],
+    ):
+        self.captions = captions
+        self.caption_weights = caption_weights
+        self.list_of_tags = list_of_tags
+        self.tags_weights = tags_weights
+        self.image_size = image_size
+        self.latents_cache_dir = latents_cache_dir
+
+
 # region Logging
 
 
@@ -189,6 +245,15 @@ def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) 
         raise ValueError(f"Unsupported dtype: {s}")
 
 
+def dtype_to_normalized_str(dtype: Union[str, torch.dtype]) -> str:
+    dtype = str_to_dtype(dtype) if isinstance(dtype, str) else dtype
+
+    # get name of the dtype
+    dtype_name = str(dtype).split(".")[-1]
+
+    return dtype_name
+
+
 def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None):
     """
     memory efficient save file
@@ -264,8 +329,8 @@ class MemoryEfficientSafeOpen:
     # does not support metadata loading
     def __init__(self, filename):
         self.filename = filename
-        self.header, self.header_size = self._read_header()
         self.file = open(filename, "rb")
+        self.header, self.header_size = self._read_header()
 
     def __enter__(self):
         return self
@@ -275,6 +340,9 @@ class MemoryEfficientSafeOpen:
 
     def keys(self):
         return [k for k in self.header.keys() if k != "__metadata__"]
+
+    def metadata(self) -> Dict[str, str]:
+        return self.header.get("__metadata__", {})
 
     def get_tensor(self, key):
         if key not in self.header:
@@ -293,10 +361,9 @@ class MemoryEfficientSafeOpen:
         return self._deserialize_tensor(tensor_bytes, metadata)
 
     def _read_header(self):
-        with open(self.filename, "rb") as f:
-            header_size = struct.unpack("<Q", f.read(8))[0]
-            header_json = f.read(header_size).decode("utf-8")
-            return json.loads(header_json), header_size
+        header_size = struct.unpack("<Q", self.file.read(8))[0]
+        header_json = self.file.read(header_size).decode("utf-8")
+        return json.loads(header_json), header_size
 
     def _deserialize_tensor(self, tensor_bytes, metadata):
         dtype = self._get_torch_dtype(metadata["dtype"])

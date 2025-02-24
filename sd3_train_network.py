@@ -43,6 +43,10 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
             assert (
                 train_dataset_group.is_text_encoder_output_cacheable()
             ), "when caching Text Encoder output, either caption_dropout_rate, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used / Text Encoderの出力をキャッシュするときはcaption_dropout_rate, shuffle_caption, token_warmup_step, caption_tag_dropout_rateは使えません"
+            assert args.apply_lg_attn_mask == args.apply_t5_attn_mask, (
+                "apply_lg_attn_mask and apply_t5_attn_mask must be the same when caching text encoder outputs"
+                " / text encoderの出力をキャッシュするときにはapply_lg_attn_maskとapply_t5_attn_maskは同じである必要があります"
+            )
 
         # prepare CLIP-L/CLIP-G/T5XXL training flags
         self.train_clip = not args.network_train_unet_only
@@ -188,8 +192,8 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
                 args.text_encoder_batch_size,
                 args.skip_cache_check,
                 is_partial=self.train_clip or self.train_t5xxl,
+                max_token_length=args.t5xxl_max_token_length,
                 apply_lg_attn_mask=args.apply_lg_attn_mask,
-                apply_t5_attn_mask=args.apply_t5_attn_mask,
             )
         else:
             return None

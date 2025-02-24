@@ -559,9 +559,9 @@ class NetworkTrainer:
             vae.requires_grad_(False)
             vae.eval()
 
-            train_dataset_group.new_cache_latents(vae, accelerator)
+            train_dataset_group.new_cache_latents(vae, accelerator, args.force_cache_precision)
             if val_dataset_group is not None:
-                val_dataset_group.new_cache_latents(vae, accelerator)
+                val_dataset_group.new_cache_latents(vae, accelerator, args.force_cache_precision)
 
             vae.to("cpu")
             clean_memory_on_device(accelerator.device)
