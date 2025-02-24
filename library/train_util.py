@@ -6188,6 +6188,16 @@ def line_to_prompt_dict(line: str) -> dict:
                 prompt_dict["controlnet_image"] = m.group(1)
                 continue
 
+            m = re.match(r"ct (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["cfg_trunc_ratio"] = float(m.group(1))
+                continue
+
+            m = re.match(r"rc (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["renorm_cfg"] = float(m.group(1))
+                continue
+
         except ValueError as ex:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
             logger.error(ex)

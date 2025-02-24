@@ -1081,7 +1081,7 @@ class NextDiT(nn.Module):
         cap_feats: Tensor,
         cap_mask: Tensor,
         cfg_scale: float,
-        cfg_trunc: int = 100,
+        cfg_trunc: float = 0.25,
         renorm_cfg: float = 1.0,
     ):
         """

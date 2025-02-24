@@ -357,7 +357,6 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_logit_mean"] = args.logit_mean
         metadata["ss_logit_std"] = args.logit_std
         metadata["ss_mode_scale"] = args.mode_scale
-        metadata["ss_guidance_scale"] = args.guidance_scale
         metadata["ss_timestep_sampling"] = args.timestep_sampling
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
         metadata["ss_model_prediction_type"] = args.model_prediction_type
