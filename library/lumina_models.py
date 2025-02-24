@@ -880,8 +880,8 @@ class NextDiT(nn.Module):
         self.n_heads = n_heads
 
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
-        self.blocks_to_swap = None
+        self.cpu_offload_checkpointing = False # TODO: not yet supported
+        self.blocks_to_swap = None # TODO: not yet supported
 
     @property
     def device(self):
@@ -982,8 +982,8 @@ class NextDiT(nn.Module):
 
         l_effective_cap_len = cap_mask.sum(dim=1).tolist()
         encoder_seq_len = cap_mask.shape[1]
-
         image_seq_len = (height // self.patch_size) * (width // self.patch_size)
+
         seq_lengths = [cap_seq_len + image_seq_len for cap_seq_len in l_effective_cap_len]
         max_seq_len = max(seq_lengths)
 
