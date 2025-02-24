@@ -110,7 +110,7 @@ def sample_images(
         vae (AutoEncoder): The VAE module.
         gemma2_model (Gemma2Model): The Gemma2 model instance.
         sample_prompts_gemma2_outputs (dict[str, Tuple[Tensor, Tensor, Tensor]]):
-            Dictionary ist of tuples containing the encoded prompts, text masks, and timestep for each sample.
+            Dictionary of tuples containing the encoded prompts, text masks, and timestep for each sample.
         prompt_replacement (Optional[Tuple[str, str]], optional):
             Tuple containing the prompt and negative prompt replacements. Defaults to None.
         controlnet (): ControlNet model, not yet supported
