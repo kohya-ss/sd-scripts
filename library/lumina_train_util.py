@@ -320,7 +320,6 @@ def sample_image_inference(
 
         # Load sample prompts from Gemma 2
         if gemma2_model is not None:
-            logger.info(f"Encoding prompt with Gemma2: {prompt}")
             tokens_and_masks = tokenize_strategy.tokenize(prompt)
             gemma2_conds = encoding_strategy.encode_tokens(tokenize_strategy, [gemma2_model], tokens_and_masks)
 

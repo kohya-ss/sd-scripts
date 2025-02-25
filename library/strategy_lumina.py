@@ -54,6 +54,7 @@ class LuminaTokenizeStrategy(TokenizeStrategy):
             max_length=self.max_length,
             return_tensors="pt",
             padding="max_length",
+            truncation=True,
             pad_to_multiple_of=8,
         )
         return (encodings.input_ids, encodings.attention_mask)
