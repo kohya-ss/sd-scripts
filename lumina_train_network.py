@@ -15,7 +15,6 @@ from accelerate import Accelerator
 import train_network
 from library import (
     lumina_models,
-    flux_train_utils,
     lumina_util,
     lumina_train_util,
     sd3_train_utils,
@@ -250,36 +249,10 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
     ):
         assert isinstance(noise_scheduler, sd3_train_utils.FlowMatchEulerDiscreteScheduler)
         noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
-
-        # Sample a random timestep for each image
-        # for weighting schemes where we sample timesteps non-uniformly
-        u = lumina_train_util.compute_density_for_timestep_sampling(
-            weighting_scheme=args.weighting_scheme,
-            batch_size=bsz,
-            logit_mean=args.logit_mean,
-            logit_std=args.logit_std,
-            mode_scale=args.mode_scale,
+        # get noisy model input and timesteps
+        noisy_model_input, timesteps, sigmas = lumina_train_util.get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
         )
-        indices = (u * noise_scheduler.config.num_train_timesteps).long()
-        timesteps = noise_scheduler.timesteps[indices].to(device=latents.device)
-
-        def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
-            sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
-            schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
-            timesteps = timesteps.to(accelerator.device)
-            step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-
-            sigma = sigmas[step_indices].flatten()
-            while len(sigma.shape) < n_dim:
-                sigma = sigma.unsqueeze(-1)
-            return sigma
-
-        # Add noise according to flow matching.
-        # zt = (1 - texp) * x + texp * z1
-        # Lumina2 reverses the lerp i.e., sigma of 1.0 should mean `latents`
-        sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-        noisy_model_input = (1.0 - sigmas) * noise + sigmas * latents
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -310,7 +283,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         )
 
         # apply model prediction type
-        model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
+        model_pred, weighting = lumina_train_util.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
 
         # flow matching loss
         target = latents - noise
@@ -336,7 +309,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 # model_pred_prior = lumina_util.unpack_latents(
                 #     model_pred_prior, packed_latent_height, packed_latent_width
                 # )
-                model_pred_prior, _ = flux_train_utils.apply_model_prediction_type(
+                model_pred_prior, _ = lumina_train_util.apply_model_prediction_type(
                     args,
                     model_pred_prior,
                     noisy_model_input[diff_output_pr_indices],
