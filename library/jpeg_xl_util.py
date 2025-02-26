@@ -1,5 +1,5 @@
-# Modifed from https://github.com/Fraetor/jxl_decode
-# Added partial read support for 200x speedup
+# Modified from https://github.com/Fraetor/jxl_decode
+# Added partial read support for up to 200x speedup
 import os
 
 class JXLBitstream:
@@ -32,16 +32,16 @@ class JXLBitstream:
         self.shift += length
         return bits
 
-    def partial_read(self, readed_length, length):
+    def partial_read(self, current_length, length):
         self.previous_data_len += self.offsets[self.index][2]
-        to_read_length = self.previous_data_len - (self.shift + readed_length)
+        to_read_length = self.previous_data_len - (self.shift + current_length)
         self.bitstream += self.file.read(to_read_length)
-        readed_length += to_read_length
+        current_length += to_read_length
         self.partial_to_read_length -= to_read_length
         self.index += 1
         self.file.seek(self.offsets[self.index][1])
         if self.shift + length > self.previous_data_len + self.offsets[self.index][2]:
-            self.partial_read(readed_length, length)
+            self.partial_read(current_length, length)
 
 
 def decode_codestream(file, offset=0, offsets=[]):
