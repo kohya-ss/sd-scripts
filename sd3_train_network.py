@@ -450,13 +450,18 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
                 text_encoder.to(te_weight_dtype)  # fp8
                 prepare_fp8(text_encoder, weight_dtype)
 
-    def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
-        # drop cached text encoder outputs
+    def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True):
+        # drop cached text encoder outputs: in validation, we drop cached outputs deterministically by fixed seed
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
         if text_encoder_outputs_list is not None:
             text_encodoing_strategy: strategy_sd3.Sd3TextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
             text_encoder_outputs_list = text_encodoing_strategy.drop_cached_text_encoder_outputs(*text_encoder_outputs_list)
             batch["text_encoder_outputs_list"] = text_encoder_outputs_list
+
+    def on_validation_step_end(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
+        if self.is_swapping_blocks:
+            # prepare for next forward: because backward pass is not called, we need to prepare it here
+            accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
 
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
