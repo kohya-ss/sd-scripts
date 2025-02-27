@@ -1282,7 +1282,6 @@ class NetworkTrainer:
         # For --sample_at_first
         optimizer_eval_fn()
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
-        progress_bar.unpause() # Reset progress bar to before sampling images
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
