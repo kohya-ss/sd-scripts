@@ -73,10 +73,10 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 )
                 model.to(torch.float8_e4m3fn)
 
-        # if args.blocks_to_swap:
-        #     logger.info(f'Enabling block swap: {args.blocks_to_swap}')
-        #     model.enable_block_swap(args.blocks_to_swap, accelerator.device)
-        #     self.is_swapping_blocks = True
+        if args.blocks_to_swap:
+            logger.info(f'Enabling block swap: {args.blocks_to_swap}')
+            model.enable_block_swap(args.blocks_to_swap, accelerator.device)
+            self.is_swapping_blocks = True
 
         gemma2 = lumina_util.load_gemma2(args.gemma2, weight_dtype, "cpu")
         gemma2.eval()

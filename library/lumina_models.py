@@ -1205,15 +1205,14 @@ class NextDiT(nn.Module):
         self.blocks_to_swap = num_blocks
         
         # Calculate how many blocks to swap from main layers
-        num_main_blocks_to_swap = min(num_blocks, self.layers)
         
-        assert num_main_blocks_to_swap <= len(self.layers) - 2, (
+        assert num_blocks <= len(self.layers) - 2, (
             f"Cannot swap more than {len(self.layers) - 2} main blocks. "
-            f"Requested {num_main_blocks_to_swap} blocks."
+            f"Requested {num_blocks} blocks."
         )
         
         self.offloader_main = custom_offloading_utils.ModelOffloader(
-            self.layers, len(self.layers), num_main_blocks_to_swap, device
+            self.layers, len(self.layers), num_blocks, device
         )
         
         print(f"NextDiT: Block swap enabled. Swapping {num_blocks} blocks.")
