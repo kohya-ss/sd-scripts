@@ -155,7 +155,8 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
                 assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
-                system_prompt = args.system_prompt or ""
+                system_prompt_special_token = "<Prompt Start>"
+                system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else "" 
                 sample_prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
@@ -164,8 +165,10 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                             prompt_dict.get("prompt", ""),
                             prompt_dict.get("negative_prompt", ""),
                         ]
-                        for prompt in prompts:
-                            prompt = system_prompt + prompt
+                        for i, prompt in enumerate(prompts):
+                            # Add system prompt only to positive prompt
+                            if i == 0:
+                                prompt = system_prompt + prompt
                             if prompt in sample_prompts_te_outputs:
                                 continue
 

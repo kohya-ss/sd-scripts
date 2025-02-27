@@ -216,7 +216,8 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         assert isinstance(text_encoding_strategy, LuminaTextEncodingStrategy)
         assert isinstance(tokenize_strategy, LuminaTokenizeStrategy)
 
-        captions = [info.system_prompt or "" + info.caption for info in batch]
+        system_prompt_special_token = "<Prompt Start>"
+        captions = [f"{info.system_prompt} {system_prompt_special_token} " if info.system_prompt else "" + info.caption for info in batch]
 
         if self.is_weighted:
             tokens, attention_masks, weights_list = (

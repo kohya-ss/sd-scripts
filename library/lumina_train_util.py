@@ -330,11 +330,12 @@ def sample_image_inference(
         logger.info(f"renorm: {renorm_cfg}")
         # logger.info(f"sample_sampler: {sampler_name}")
 
-        system_prompt = args.system_prompt or ""
+        system_prompt_special_token = "<Prompt Start>"
+        system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else ""
 
         # Apply system prompt to prompts
         prompt = system_prompt + prompt
-        negative_prompt = system_prompt + negative_prompt
+        negative_prompt = negative_prompt
 
         # Get sample prompts from cache
         if sample_prompts_gemma2_outputs and prompt in sample_prompts_gemma2_outputs:
