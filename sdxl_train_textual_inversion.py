@@ -19,7 +19,7 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
         self.is_sdxl = True
 
     def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
+        # super().assert_extra_args(args, train_dataset_group)
         sdxl_train_util.verify_sdxl_training_args(args, supportTextEncoderCaching=False)
 
         train_dataset_group.verify_bucket_reso_steps(32)
