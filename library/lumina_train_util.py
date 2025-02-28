@@ -665,6 +665,7 @@ def denoise(
 
         # compute whether to apply classifier-free guidance based on current timestep
         if current_timestep[0] < cfg_trunc_ratio:
+            model.prepare_block_swap_before_forward()
             noise_pred_uncond = model(
                 img,
                 current_timestep,
