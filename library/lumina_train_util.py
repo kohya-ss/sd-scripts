@@ -647,6 +647,7 @@ def denoise(
     """
 
     for i, t in enumerate(tqdm(timesteps)):
+        model.prepare_block_swap_before_forward()
 
         # reverse the timestep since Lumina uses t=0 as the noise and t=1 as the image
         current_timestep = 1 - t / scheduler.config.num_train_timesteps
