@@ -208,7 +208,7 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
             tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
             models (List[Any]): Text encoders
             text_encoding_strategy (LuminaTextEncodingStrategy):
-            infos (List): List of image_info
+            infos (List): List of ImageInfo
 
         Returns:
             None

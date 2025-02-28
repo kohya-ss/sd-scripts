@@ -1194,7 +1194,7 @@ class NextDiT(nn.Module):
     def get_checkpointing_wrap_module_list(self) -> List[nn.Module]:
         return list(self.layers)
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, blocks_to_swap: int, device: torch.device):
         """
         Enable block swapping to reduce memory usage during inference.
         
@@ -1202,20 +1202,18 @@ class NextDiT(nn.Module):
             num_blocks (int): Number of blocks to swap between CPU and device
             device (torch.device): Device to use for computation
         """
-        self.blocks_to_swap = num_blocks
+        self.blocks_to_swap = blocks_to_swap
         
         # Calculate how many blocks to swap from main layers
         
-        assert num_blocks <= len(self.layers) - 2, (
+        assert blocks_to_swap <= len(self.layers) - 2, (
             f"Cannot swap more than {len(self.layers) - 2} main blocks. "
-            f"Requested {num_blocks} blocks."
+            f"Requested {blocks_to_swap} blocks."
         )
         
         self.offloader_main = custom_offloading_utils.ModelOffloader(
-            self.layers, len(self.layers), num_blocks, device
+            self.layers, blocks_to_swap, device, debug=False
         )
-        
-        print(f"NextDiT: Block swap enabled. Swapping {num_blocks} blocks.")
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         """
@@ -1227,13 +1225,12 @@ class NextDiT(nn.Module):
         """
         if self.blocks_to_swap:
             save_layers = self.layers
-            self.layers = None
+            self.layers = nn.ModuleList([])
             
-            self.to(device)
+        self.to(device)
             
+        if self.blocks_to_swap:
             self.layers = save_layers
-        else:
-            self.to(device)
 
     def prepare_block_swap_before_forward(self):
         """
