@@ -367,6 +367,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
 
 
+
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     train_util.add_dit_training_arguments(parser)
