@@ -6,7 +6,7 @@ import torch
 from safetensors.torch import safe_open
 
 from library.utils import setup_logging
-from library.utils import load_safetensors, mem_eff_save_file
+from library.utils import load_safetensors, mem_eff_save_file, str_to_dtype
 
 setup_logging()
 import logging
@@ -22,6 +22,7 @@ def merge_safetensors(
     t5xxl_path: Optional[str] = None,
     output_path: str = "merged_model.safetensors",
     device: str = "cpu",
+    save_precision: Optional[str] = None,
 ):
     """
     Merge multiple safetensors files into a single file
@@ -34,8 +35,15 @@ def merge_safetensors(
         t5xxl_path: Path to the T5-XXL model
         output_path: Path to save the merged model
         device: Device to load tensors to
+        save_precision: Target dtype for model weights (e.g. 'fp16', 'bf16')
     """
     logger.info("Starting to merge safetensors files...")
+
+    # Convert save_precision string to torch dtype if specified
+    if save_precision:
+        target_dtype = str_to_dtype(save_precision)
+    else:
+        target_dtype = None
 
     # 1. Get DiT metadata if available
     metadata = None
@@ -55,7 +63,7 @@ def merge_safetensors(
     # DiT/MMDiT - prefix: model.diffusion_model.
     # This state dict may have VAE keys.
     logger.info(f"Loading DiT model from {dit_path}")
-    dit_state_dict = load_safetensors(dit_path, device=device, disable_mmap=True)
+    dit_state_dict = load_safetensors(dit_path, device=device, disable_mmap=True, dtype=target_dtype)
     logger.info(f"Adding DiT model with {len(dit_state_dict)} keys")
     for key, value in dit_state_dict.items():
         if key.startswith("model.diffusion_model.") or key.startswith("first_stage_model."):
@@ -70,7 +78,7 @@ def merge_safetensors(
     # May be omitted if VAE is already included in DiT model.
     if vae_path:
         logger.info(f"Loading VAE model from {vae_path}")
-        vae_state_dict = load_safetensors(vae_path, device=device, disable_mmap=True)
+        vae_state_dict = load_safetensors(vae_path, device=device, disable_mmap=True, dtype=target_dtype)
         logger.info(f"Adding VAE model with {len(vae_state_dict)} keys")
         for key, value in vae_state_dict.items():
             if key.startswith("first_stage_model."):
@@ -84,7 +92,7 @@ def merge_safetensors(
     # CLIP-L - prefix: text_encoders.clip_l.
     if clip_l_path:
         logger.info(f"Loading CLIP-L model from {clip_l_path}")
-        clip_l_state_dict = load_safetensors(clip_l_path, device=device, disable_mmap=True)
+        clip_l_state_dict = load_safetensors(clip_l_path, device=device, disable_mmap=True, dtype=target_dtype)
         logger.info(f"Adding CLIP-L model with {len(clip_l_state_dict)} keys")
         for key, value in clip_l_state_dict.items():
             if key.startswith("text_encoders.clip_l.transformer."):
@@ -98,7 +106,7 @@ def merge_safetensors(
     # CLIP-G - prefix: text_encoders.clip_g.
     if clip_g_path:
         logger.info(f"Loading CLIP-G model from {clip_g_path}")
-        clip_g_state_dict = load_safetensors(clip_g_path, device=device, disable_mmap=True)
+        clip_g_state_dict = load_safetensors(clip_g_path, device=device, disable_mmap=True, dtype=target_dtype)
         logger.info(f"Adding CLIP-G model with {len(clip_g_state_dict)} keys")
         for key, value in clip_g_state_dict.items():
             if key.startswith("text_encoders.clip_g.transformer."):
@@ -112,7 +120,7 @@ def merge_safetensors(
     # T5-XXL - prefix: text_encoders.t5xxl.
     if t5xxl_path:
         logger.info(f"Loading T5-XXL model from {t5xxl_path}")
-        t5xxl_state_dict = load_safetensors(t5xxl_path, device=device, disable_mmap=True)
+        t5xxl_state_dict = load_safetensors(t5xxl_path, device=device, disable_mmap=True, dtype=target_dtype)
         logger.info(f"Adding T5-XXL model with {len(t5xxl_state_dict)} keys")
         for key, value in t5xxl_state_dict.items():
             if key.startswith("text_encoders.t5xxl.transformer."):
@@ -138,6 +146,7 @@ def main():
     parser.add_argument("--t5xxl", help="Path to the T5-XXL model")
     parser.add_argument("--output", default="merged_model.safetensors", help="Path to save the merged model")
     parser.add_argument("--device", default="cpu", help="Device to load tensors to")
+    parser.add_argument("--save_precision", type=str, help="Precision to save the model in (e.g., 'fp16', 'bf16', 'float16', etc.)")
 
     args = parser.parse_args()
 
@@ -149,6 +158,7 @@ def main():
         t5xxl_path=args.t5xxl,
         output_path=args.output,
         device=args.device,
+        save_precision=args.save_precision,
     )
 
 
