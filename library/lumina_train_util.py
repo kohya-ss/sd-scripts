@@ -1078,6 +1078,11 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
         help="Use Flash Attention for the model / モデルにFlash Attentionを使用する",
     )
     parser.add_argument(
+        "--use_sage_attn",
+        action="store_true",
+        help="Use Sage Attention for the model / モデルにSage Attentionを使用する",
+    )
+    parser.add_argument(
         "--system_prompt",
         type=str,
         default="",

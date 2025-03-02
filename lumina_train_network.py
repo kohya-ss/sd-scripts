@@ -58,6 +58,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             torch.device("cpu"),
             disable_mmap=args.disable_mmap_load_safetensors,
             use_flash_attn=args.use_flash_attn,
+            use_sage_attn=args.use_sage_attn
         )
 
         if args.fp8_base:

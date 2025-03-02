@@ -27,6 +27,7 @@ def load_lumina_model(
     device: torch.device,
     disable_mmap: bool = False,
     use_flash_attn: bool = False,
+    use_sage_attn: bool = False,
 ):
     """
     Load the Lumina model from the checkpoint path.
@@ -43,7 +44,7 @@ def load_lumina_model(
     """
     logger.info("Building Lumina")
     with torch.device("meta"):
-        model = lumina_models.NextDiT_2B_GQA_patch2_Adaln_Refiner(use_flash_attn=use_flash_attn).to(dtype)
+        model = lumina_models.NextDiT_2B_GQA_patch2_Adaln_Refiner(use_flash_attn=use_flash_attn, use_sage_attn=use_sage_attn).to(dtype)
 
     logger.info(f"Loading state dict from {ckpt_path}")
     state_dict = load_safetensors(ckpt_path, device=device, disable_mmap=disable_mmap, dtype=dtype)
