@@ -2,6 +2,13 @@ import functools
 import gc
 
 import torch
+try:
+    # intel gpu support for pytorch older than 2.5
+    # ipex is not needed after pytorch 2.5
+    import intel_extension_for_pytorch as ipex  # noqa
+except Exception:
+    pass
+
 
 try:
     HAS_CUDA = torch.cuda.is_available()
@@ -14,8 +21,6 @@ except Exception:
     HAS_MPS = False
 
 try:
-    import intel_extension_for_pytorch as ipex  # noqa
-
     HAS_XPU = torch.xpu.is_available()
 except Exception:
     HAS_XPU = False
@@ -69,7 +74,7 @@ def init_ipex():
 
     This function should run right after importing torch and before doing anything else.
 
-    If IPEX is not available, this function does nothing.
+    If xpu is not available, this function does nothing.
     """
     try:
         if HAS_XPU:
