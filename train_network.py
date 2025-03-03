@@ -105,6 +105,12 @@ class NetworkTrainer:
         tokenizer = train_util.load_tokenizer(args)
         return tokenizer
 
+    def load_noise_scheduler(self, args):
+        noise_scheduler = DDPMScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
+        )
+        return noise_scheduler
+
     def is_text_encoder_outputs_cached(self, args):
         return False
 
@@ -427,8 +433,15 @@ class NetworkTrainer:
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
             if t_enc.device.type != "cpu":
                 t_enc.to(dtype=te_weight_dtype)
-                # nn.Embedding not support FP8
-                t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                    # nn.Embedding not support FP8
+                if hasattr(t_enc, "text_model"):
+                    t_enc.text_model.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                elif hasattr(t_enc, "embeddings"):
+                    # HunYuan Bert(CLIP)
+                    t_enc.embeddings.to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
+                elif hasattr(t_enc, "get_token_embedding"):
+                    # Others (mT5 or other encoder, will have custom method to get the correct embedding)
+                    t_enc.get_token_embedding().to(dtype=(weight_dtype if te_weight_dtype != weight_dtype else te_weight_dtype))
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
         if args.deepspeed:
@@ -470,7 +483,14 @@ class NetworkTrainer:
 
                 # set top parameter requires_grad = True for gradient checkpointing works
                 if train_text_encoder:
-                    t_enc.text_model.embeddings.requires_grad_(True)
+                    if hasattr(t_enc, "text_model"):
+                        t_enc.text_model.embeddings.requires_grad_(True)
+                    elif hasattr(t_enc, "embeddings"):
+                        # HunYuan Bert(CLIP)
+                        t_enc.embeddings.requires_grad_(True)
+                    elif hasattr(t_enc, "get_token_embedding"):
+                        # Others (mT5 or other encoder, will have custom method to get the correct embedding)
+                        t_enc.get_token_embedding().requires_grad_(True)
 
         else:
             unet.eval()
@@ -825,9 +845,7 @@ class NetworkTrainer:
 
         global_step = 0
 
-        noise_scheduler = DDPMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
-        )
+        noise_scheduler = self.load_noise_scheduler(args)
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
         if args.zero_terminal_snr:
             custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
@@ -960,7 +978,8 @@ class NetworkTrainer:
                         for x in noisy_latents:
                             x.requires_grad_(True)
                         for t in text_encoder_conds:
-                            t.requires_grad_(True)
+                            if t.dtype in {torch.float16, torch.bfloat16, torch.float32}:
+                                t.requires_grad_(True)
 
                     # Predict the noise residual
                     with accelerator.autocast():
