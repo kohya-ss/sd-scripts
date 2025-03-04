@@ -614,7 +614,6 @@ class LoRANetwork(torch.nn.Module):
                             rank_dropout=rank_dropout,
                             module_dropout=module_dropout,
                         )
-                        logger.info(f"Add LoRA module: {lora_name}")
                         loras.append(lora)
 
                 if target_replace_modules is None:
