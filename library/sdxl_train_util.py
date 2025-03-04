@@ -91,9 +91,9 @@ def _load_target_model(
                 pipe = StableDiffusionXLPipeline.from_pretrained(
                     name_or_path, torch_dtype=model_dtype, variant=variant, tokenizer=None
                 )
-            except EnvironmentError as ex:
+            except ValueError as ex:
                 if variant is not None:
-                    logger.info("try to load fp32 model")
+                    logger.info("try to load default model")
                     pipe = StableDiffusionXLPipeline.from_pretrained(name_or_path, variant=None, tokenizer=None)
                 else:
                     raise ex
