@@ -250,12 +250,13 @@ class BucketManager:
                 reso = self.predefined_resos[predefined_bucket_id]
 
             ar_reso = reso[0] / reso[1]
-            if aspect_ratio > ar_reso:  # 横が長い→縦を合わせる
-                scale = reso[1] / image_height
+            if ar_reso > aspect_ratio:
+                resized_width = reso[1] * aspect_ratio
+                resized_height = reso[1]
             else:
-                scale = reso[0] / image_width
-
-            resized_size = (int(image_width * scale + 0.5), int(image_height * scale + 0.5))
+                resized_width = reso[0]
+                resized_height = reso[0] / aspect_ratio
+            resized_size = (int(resized_width + 0.5), int(resized_height + 0.5))
             # logger.info(f"use predef, {image_width}, {image_height}, {reso}, {resized_size}")
         else:
             # 縮小のみを行う
@@ -287,8 +288,8 @@ class BucketManager:
                 resized_size = (image_width, image_height)  # リサイズは不要
 
             # 画像のサイズ未満をbucketのサイズとする（paddingせずにcroppingする）
-            bucket_width = resized_size[0] - resized_size[0] % self.reso_steps
-            bucket_height = resized_size[1] - resized_size[1] % self.reso_steps
+            bucket_width = self.round_to_steps(resized_size[0])
+            bucket_height = self.round_to_steps(resized_size[1])
             # logger.info(f"use arbitrary {image_width}, {image_height}, {resized_size}, {bucket_width}, {bucket_height}")
 
             reso = (bucket_width, bucket_height)
