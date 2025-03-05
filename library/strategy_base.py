@@ -522,6 +522,7 @@ class LatentsCachingStrategy:
         """
         return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
 
+    # TODO: Solve Multinode hang
     def _default_load_latents_from_disk(
         self, latents_stride: Optional[int], npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:

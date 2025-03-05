@@ -135,6 +135,7 @@ IMAGE_TRANSFORMS = transforms.Compose(
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3 = "_sd3_te.npz"
+SKIP_NPZ_PATH_CHECK = False
 
 def set_skip_npz_path_check(skip: bool):
     global SKIP_NPZ_PATH_CHECK
