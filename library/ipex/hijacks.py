@@ -2,10 +2,19 @@ import os
 from functools import wraps
 from contextlib import nullcontext
 import torch
-import intel_extension_for_pytorch as ipex # pylint: disable=import-error, unused-import
 import numpy as np
 
-device_supports_fp64 = torch.xpu.has_fp64_dtype()
+device_supports_fp64 = torch.xpu.has_fp64_dtype() if hasattr(torch.xpu, "has_fp64_dtype") else torch.xpu.get_device_properties("xpu").has_fp64
+if os.environ.get('IPEX_FORCE_ATTENTION_SLICE', '0') == '0' and (torch.xpu.get_device_properties("xpu").total_memory / 1024 / 1024 / 1024) > 4.1:
+    try:
+        x = torch.ones((33000,33000), dtype=torch.float32, device="xpu")
+        del x
+        torch.xpu.empty_cache()
+        can_allocate_plus_4gb = True
+    except Exception:
+        can_allocate_plus_4gb = False
+else:
+    can_allocate_plus_4gb = bool(os.environ.get('IPEX_FORCE_ATTENTION_SLICE', '0') == '-1')
 
 # pylint: disable=protected-access, missing-function-docstring, line-too-long, unnecessary-lambda, no-else-return
 
@@ -26,7 +35,7 @@ def check_device(device):
     return bool((isinstance(device, torch.device) and device.type == "cuda") or (isinstance(device, str) and "cuda" in device) or isinstance(device, int))
 
 def return_xpu(device):
-    return f"xpu:{device.split(':')[-1]}" if isinstance(device, str) and ":" in device else f"xpu:{device}" if isinstance(device, int) else torch.device("xpu") if isinstance(device, torch.device) else "xpu"
+    return f"xpu:{device.split(':')[-1]}" if isinstance(device, str) and ":" in device else f"xpu:{device}" if isinstance(device, int) else torch.device(f"xpu:{device.index}" if device.index is not None else "xpu") if isinstance(device, torch.device) else "xpu"
 
 
 # Autocast
@@ -42,7 +51,7 @@ def autocast_init(self, device_type, dtype=None, enabled=True, cache_enabled=Non
 original_interpolate = torch.nn.functional.interpolate
 @wraps(torch.nn.functional.interpolate)
 def interpolate(tensor, size=None, scale_factor=None, mode='nearest', align_corners=None, recompute_scale_factor=None, antialias=False): # pylint: disable=too-many-arguments
-    if antialias or align_corners is not None or mode == 'bicubic':
+    if mode in {'bicubic', 'bilinear'}:
         return_device = tensor.device
         return_dtype = tensor.dtype
         return original_interpolate(tensor.to("cpu", dtype=torch.float32), size=size, scale_factor=scale_factor, mode=mode,
@@ -73,35 +82,46 @@ def as_tensor(data, dtype=None, device=None):
         return original_as_tensor(data, dtype=dtype, device=device)
 
 
-if device_supports_fp64 and os.environ.get('IPEX_FORCE_ATTENTION_SLICE', None) is None:
-    original_torch_bmm = torch.bmm
+if can_allocate_plus_4gb:
     original_scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
 else:
     # 32 bit attention workarounds for Alchemist:
     try:
-        from .attention import torch_bmm_32_bit as original_torch_bmm
-        from .attention import scaled_dot_product_attention_32_bit as original_scaled_dot_product_attention
+        from .attention import dynamic_scaled_dot_product_attention as original_scaled_dot_product_attention
     except Exception: # pylint: disable=broad-exception-caught
-        original_torch_bmm = torch.bmm
         original_scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
 
-
-# Data Type Errors:
-@wraps(torch.bmm)
-def torch_bmm(input, mat2, *, out=None):
-    if input.dtype != mat2.dtype:
-        mat2 = mat2.to(input.dtype)
-    return original_torch_bmm(input, mat2, out=out)
-
 @wraps(torch.nn.functional.scaled_dot_product_attention)
-def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False):
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, **kwargs):
     if query.dtype != key.dtype:
         key = key.to(dtype=query.dtype)
     if query.dtype != value.dtype:
         value = value.to(dtype=query.dtype)
     if attn_mask is not None and query.dtype != attn_mask.dtype:
         attn_mask = attn_mask.to(dtype=query.dtype)
-    return original_scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal)
+    return original_scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, **kwargs)
+
+# Data Type Errors:
+original_torch_bmm = torch.bmm
+@wraps(torch.bmm)
+def torch_bmm(input, mat2, *, out=None):
+    if input.dtype != mat2.dtype:
+        mat2 = mat2.to(input.dtype)
+    return original_torch_bmm(input, mat2, out=out)
+
+# Diffusers FreeU
+original_fft_fftn = torch.fft.fftn
+@wraps(torch.fft.fftn)
+def fft_fftn(input, s=None, dim=None, norm=None, *, out=None):
+    return_dtype = input.dtype
+    return original_fft_fftn(input.to(dtype=torch.float32), s=s, dim=dim, norm=norm, out=out).to(dtype=return_dtype)
+
+# Diffusers FreeU
+original_fft_ifftn = torch.fft.ifftn
+@wraps(torch.fft.ifftn)
+def fft_ifftn(input, s=None, dim=None, norm=None, *, out=None):
+    return_dtype = input.dtype
+    return original_fft_ifftn(input.to(dtype=torch.float32), s=s, dim=dim, norm=norm, out=out).to(dtype=return_dtype)
 
 # A1111 FP16
 original_functional_group_norm = torch.nn.functional.group_norm
@@ -133,6 +153,15 @@ def functional_linear(input, weight, bias=None):
         bias.data = bias.data.to(dtype=weight.data.dtype)
     return original_functional_linear(input, weight, bias=bias)
 
+original_functional_conv1d = torch.nn.functional.conv1d
+@wraps(torch.nn.functional.conv1d)
+def functional_conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+    if input.dtype != weight.data.dtype:
+        input = input.to(dtype=weight.data.dtype)
+    if bias is not None and bias.data.dtype != weight.data.dtype:
+        bias.data = bias.data.to(dtype=weight.data.dtype)
+    return original_functional_conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
+
 original_functional_conv2d = torch.nn.functional.conv2d
 @wraps(torch.nn.functional.conv2d)
 def functional_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
@@ -142,14 +171,15 @@ def functional_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1,
         bias.data = bias.data.to(dtype=weight.data.dtype)
     return original_functional_conv2d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
 
-# A1111 Embedding BF16
-original_torch_cat = torch.cat
-@wraps(torch.cat)
-def torch_cat(tensor, *args, **kwargs):
-    if len(tensor) == 3 and (tensor[0].dtype != tensor[1].dtype or tensor[2].dtype != tensor[1].dtype):
-        return original_torch_cat([tensor[0].to(tensor[1].dtype), tensor[1], tensor[2].to(tensor[1].dtype)], *args, **kwargs)
-    else:
-        return original_torch_cat(tensor, *args, **kwargs)
+# LTX Video
+original_functional_conv3d = torch.nn.functional.conv3d
+@wraps(torch.nn.functional.conv3d)
+def functional_conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+    if input.dtype != weight.data.dtype:
+        input = input.to(dtype=weight.data.dtype)
+    if bias is not None and bias.data.dtype != weight.data.dtype:
+        bias.data = bias.data.to(dtype=weight.data.dtype)
+    return original_functional_conv3d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
 
 # SwinIR BF16:
 original_functional_pad = torch.nn.functional.pad
@@ -164,6 +194,7 @@ def functional_pad(input, pad, mode='constant', value=None):
 original_torch_tensor = torch.tensor
 @wraps(torch.tensor)
 def torch_tensor(data, *args, dtype=None, device=None, **kwargs):
+    global device_supports_fp64
     if check_device(device):
         device = return_xpu(device)
     if not device_supports_fp64:
@@ -227,7 +258,7 @@ def torch_empty(*args, device=None, **kwargs):
 original_torch_randn = torch.randn
 @wraps(torch.randn)
 def torch_randn(*args, device=None, dtype=None, **kwargs):
-    if dtype == bytes:
+    if dtype is bytes:
         dtype = None
     if check_device(device):
         return original_torch_randn(*args, device=return_xpu(device), **kwargs)
@@ -250,6 +281,14 @@ def torch_zeros(*args, device=None, **kwargs):
     else:
         return original_torch_zeros(*args, device=device, **kwargs)
 
+original_torch_full = torch.full
+@wraps(torch.full)
+def torch_full(*args, device=None, **kwargs):
+    if check_device(device):
+        return original_torch_full(*args, device=return_xpu(device), **kwargs)
+    else:
+        return original_torch_full(*args, device=device, **kwargs)
+
 original_torch_linspace = torch.linspace
 @wraps(torch.linspace)
 def torch_linspace(*args, device=None, **kwargs):
@@ -257,14 +296,6 @@ def torch_linspace(*args, device=None, **kwargs):
         return original_torch_linspace(*args, device=return_xpu(device), **kwargs)
     else:
         return original_torch_linspace(*args, device=device, **kwargs)
-
-original_torch_Generator = torch.Generator
-@wraps(torch.Generator)
-def torch_Generator(device=None):
-    if check_device(device):
-        return original_torch_Generator(return_xpu(device))
-    else:
-        return original_torch_Generator(device)
 
 original_torch_load = torch.load
 @wraps(torch.load)
@@ -276,9 +307,27 @@ def torch_load(f, map_location=None, *args, **kwargs):
     else:
         return original_torch_load(f, *args, map_location=map_location, **kwargs)
 
+original_torch_Generator = torch.Generator
+@wraps(torch.Generator)
+def torch_Generator(device=None):
+    if check_device(device):
+        return original_torch_Generator(return_xpu(device))
+    else:
+        return original_torch_Generator(device)
+
+@wraps(torch.cuda.synchronize)
+def torch_cuda_synchronize(device=None):
+    if check_device(device):
+        return torch.xpu.synchronize(return_xpu(device))
+    else:
+        return torch.xpu.synchronize(device)
+
 
 # Hijack Functions:
-def ipex_hijacks():
+def ipex_hijacks(legacy=True):
+    global device_supports_fp64, can_allocate_plus_4gb
+    if legacy and float(torch.__version__[:3]) < 2.5:
+        torch.nn.functional.interpolate = interpolate
     torch.tensor = torch_tensor
     torch.Tensor.to = Tensor_to
     torch.Tensor.cuda = Tensor_cuda
@@ -289,9 +338,11 @@ def ipex_hijacks():
     torch.randn = torch_randn
     torch.ones = torch_ones
     torch.zeros = torch_zeros
+    torch.full = torch_full
     torch.linspace = torch_linspace
-    torch.Generator = torch_Generator
     torch.load = torch_load
+    torch.Generator = torch_Generator
+    torch.cuda.synchronize = torch_cuda_synchronize
 
     torch.backends.cuda.sdp_kernel = return_null_context
     torch.nn.DataParallel = DummyDataParallel
@@ -302,12 +353,15 @@ def ipex_hijacks():
     torch.nn.functional.group_norm = functional_group_norm
     torch.nn.functional.layer_norm = functional_layer_norm
     torch.nn.functional.linear = functional_linear
+    torch.nn.functional.conv1d = functional_conv1d
     torch.nn.functional.conv2d = functional_conv2d
-    torch.nn.functional.interpolate = interpolate
+    torch.nn.functional.conv3d = functional_conv3d
     torch.nn.functional.pad = functional_pad
 
     torch.bmm = torch_bmm
-    torch.cat = torch_cat
+    torch.fft.fftn = fft_fftn
+    torch.fft.ifftn = fft_ifftn
     if not device_supports_fp64:
         torch.from_numpy = from_numpy
         torch.as_tensor = as_tensor
+    return device_supports_fp64, can_allocate_plus_4gb
