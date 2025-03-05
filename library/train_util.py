@@ -250,12 +250,13 @@ class BucketManager:
                 reso = self.predefined_resos[predefined_bucket_id]
 
             ar_reso = reso[0] / reso[1]
-            if ar_reso > aspect_ratio:
-                resized_width = reso[1] * aspect_ratio
+            if aspect_ratio > ar_reso:
                 resized_height = reso[1]
+                resized_width = reso[1] * aspect_ratio
             else:
                 resized_width = reso[0]
                 resized_height = reso[0] / aspect_ratio
+
             resized_size = (int(resized_width + 0.5), int(resized_height + 0.5))
             # logger.info(f"use predef, {image_width}, {image_height}, {reso}, {resized_size}")
         else:
