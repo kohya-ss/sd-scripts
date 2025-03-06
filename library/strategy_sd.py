@@ -152,9 +152,13 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
         # support old .npz
         old_npz_file = os.path.splitext(absolute_path)[0] + SdSdxlLatentsCachingStrategy.SD_OLD_LATENTS_NPZ_SUFFIX
-        if os.path.exists(old_npz_file):
+        if self.skip_npz_check:
+            # TODO: Check user behaviour (lack of information)
             return old_npz_file
-        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.suffix
+        elif os.path.exists(old_npz_file):
+            return old_npz_file
+        else:
+            return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.suffix
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
         return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask)

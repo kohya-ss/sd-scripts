@@ -55,6 +55,7 @@ class TokenizeStrategy:
         self, model_class: Any, model_id: str, subfolder: Optional[str] = None, tokenizer_cache_dir: Optional[str] = None
     ) -> Any:
         tokenizer = None
+        #TODO: skip_npz_check adaption (However I don't cache TE latents)
         if tokenizer_cache_dir:
             local_tokenizer_path = os.path.join(tokenizer_cache_dir, model_id.replace("/", "_"))
             if os.path.exists(local_tokenizer_path):
@@ -435,8 +436,10 @@ class LatentsCachingStrategy:
     ):
         if not self.cache_to_disk:
             return False
-        if not os.path.exists(npz_path):
-            return False
+        # In multinode training, os.path will hang, but np.load not sure.
+        if not self.skip_npz_check:            
+            if not os.path.exists(npz_path):
+                return False
         if self.skip_disk_cache_validity_check:
             return True
 
