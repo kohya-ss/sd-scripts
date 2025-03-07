@@ -249,8 +249,10 @@ class BucketManager:
                 predefined_bucket_id = np.abs(ar_errors).argmin()  # 当該解像度以外でaspect ratio errorが最も少ないもの
                 reso = self.predefined_resos[predefined_bucket_id]
 
+            # 按照最接近的边进行缩放
             ar_reso = reso[0] / reso[1]
             if aspect_ratio > ar_reso:
+                # 原始图更宽时, 则按 bucket 的高进行缩放
                 resized_height = reso[1]
                 resized_width = reso[1] * aspect_ratio
             else:
@@ -307,6 +309,7 @@ class BucketManager:
 
         bucket_ar = bucket_reso[0] / bucket_reso[1]
         image_ar = image_size[0] / image_size[1]
+        # 为了让原始图像完全填充 bucket, 所以当 bucket 更宽时, 按 bucket 的高进行缩放, 这样图像会水平方向溢出,便于裁剪
         if bucket_ar > image_ar:
             # bucketのほうが横長→縦を合わせる
             resized_width = bucket_reso[1] * image_ar
