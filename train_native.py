@@ -465,6 +465,8 @@ class NativeTrainer:
         training_started_at = time.time()
         train_util.verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
+        if args.skip_cache_check:
+            train_util.set_skip_npz_path_check(True)
         deepspeed_utils.prepare_deepspeed_args(args)
         setup_logging(args, reset=True)
 
@@ -1651,7 +1653,6 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_sd_saving_arguments(parser)
-    train_util.add_skip_check_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
@@ -1763,8 +1764,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
-    if args.skip_npz_existence_check:
-        train_util.set_skip_npz_path_check(True)
 
     trainer = NativeTrainer()
     trainer.train(args)
