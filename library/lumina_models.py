@@ -887,6 +887,9 @@ class NextDiT(nn.Module):
             ),
         )
 
+        nn.init.trunc_normal_(self.cap_embedder[1].weight, std=0.02)
+        nn.init.zeros_(self.cap_embedder[1].bias)
+
         self.context_refiner = nn.ModuleList(
             [
                 JointTransformerBlock(
@@ -929,9 +932,6 @@ class NextDiT(nn.Module):
             ]
         )
 
-        nn.init.trunc_normal_(self.cap_embedder[1].weight, std=0.02)
-        # nn.init.zeros_(self.cap_embedder[1].weight)
-        nn.init.zeros_(self.cap_embedder[1].bias)
 
         self.layers = nn.ModuleList(
             [
