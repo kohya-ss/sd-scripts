@@ -1,0 +1,17 @@
+[general]
+enable_bucket    = true     # 是否使用Aspect Ratio Bucketing
+
+# ARB相关参数
+bucket_no_upscale = false   # 设为true时，不会将图像放大到超过原始尺寸
+bucket_reso_steps = 64      # 分桶的分辨率增量步长，默认64像素
+min_bucket_reso  = 320      # 最小bucket分辨率
+max_bucket_reso  = 1280     # 最大bucket分辨率
+
+[[datasets]]
+resolution = 1024           # 训练分辨率
+batch_size = 2              # 批次大小
+
+  [[datasets.subsets]]
+  image_dir         = '/root/autodl-tmp/data/three_people_group_photo'  # 指定包含训练图像的文件夹
+  caption_extension = '.txt'  # 若使用txt文件,更改此项
+  num_repeats       = 10      # 训练图像的重复次数

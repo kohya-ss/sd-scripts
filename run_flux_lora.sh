@@ -8,11 +8,12 @@ OUTPUT_DIR="/root/autodl-tmp/output"
 mkdir -p $OUTPUT_DIR
 
 # 模型路径设置 - 请根据实际路径修改
-MODEL_PATH="/root/autodl-tmp/models/Fluxgym-modles/"
-FLUX_MODEL="$MODEL_PATH/flux1-dev.sft"  # FLUX.1模型路径
-CLIP_L_MODEL="$MODEL_PATH/clip_l.safetensors"   # CLIP-L模型路径
-T5XXL_MODEL="$MODEL_PATH/t5xxl_fp16.safetensors" # T5XXL模型路径
-VAE_MODEL="$MODEL_PATH/ae.sft"           # VAE模型路径
+MODEL_PATH="/root/autodl-tmp/models/"
+# FLUX_MODEL="$MODEL_PATH/Fluxgym-modles/flux1-dev.sft"  # FLUX.1模型路径
+FLUX_MODEL="$MODEL_PATH/majicflus_v1/majicflus_v134.safetensors"  # 麦橘超然 MajicFlus 模型路径
+CLIP_L_MODEL="$MODEL_PATH/Fluxgym-modles/clip_l.safetensors"   # CLIP-L模型路径
+T5XXL_MODEL="$MODEL_PATH/Fluxgym-modles/t5xxl_fp16.safetensors" # T5XXL模型路径
+VAE_MODEL="$MODEL_PATH/Fluxgym-modles/ae.sft"           # VAE模型路径
 CONFIG_FILE="flux_data_config.toml"         # 数据配置文件
 
 # 训练参数
