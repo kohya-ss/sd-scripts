@@ -5,7 +5,9 @@
    1. 包含 `clip` 使用的词表文件，路径存放在 `~/.cache/huggingface/hub/models--google--t5-v1_1-xxl/` 和 `~/.cache/huggingface/hub/models--openai--clip-vit-large-patch14/`
    2. `sd-scripts` 运行时所需要的 pip 依赖
    3. 已经装了 `tmux` 软件（如果不熟悉该软件，可以忽略）
-3. flux.1 相关权重模型需要执行下面的脚本进行下载,下载路径存放在 `/root/autodl-tmp/models/Fluxgym-modles`
+3. flux.1 相关权重模型需要执行下面的脚本进行下载,下载路径存放在 `/root/autodl-tmp/models`
+4. 模型输出目录：`/root/autodl-tmp/output`
+5. 训练数据目录：`/root/autodl-tmp/data`
 
 ## 学术资源加速
 
@@ -20,11 +22,18 @@
 ## 下载 flux.1 模型
 
 ```
-# 终端执行
-cg down zealman/Fluxgym-modles/ae.sft -t /root/autodl-tmp/models/
-cg down zealman/Fluxgym-modles/t5xxl_fp16.safetensors -t /root/autodl-tmp/models/
-cg down zealman/Fluxgym-modles/clip_l.safetensors -t /root/autodl-tmp/models/
-cg down zealman/Fluxgym-modles/flux1-dev.sft -t /root/autodl-tmp/models/
+# 下载 vae 模型
+!cg down zealman/Fluxgym-modles/ae.sft -t /root/autodl-tmp/models/
+
+# 下载 clip 模型
+!cg down zealman/Fluxgym-modles/t5xxl_fp16.safetensors -t /root/autodl-tmp/models/
+!cg down zealman/Fluxgym-modles/clip_l.safetensors -t /root/autodl-tmp/models/
+
+# 下载 unet 模型
+# 标准版 flux1.dev
+!cg down zealman/Fluxgym-modles/flux1-dev.sft -t /root/autodl-tmp/models/
+# 麦橘超然 MajicFlus (flux1.dev 微调融合模型)
+!cg down AtlasKing/majicflus_v1/majicflus_v134.safetensors -t /root/autodl-tmp/models/
 ```
 
 ## 准数据配置文件
@@ -53,15 +62,12 @@ batch_size = 2              # 批次大小
   num_repeats       = 10      # 训练图像的重复次数
 ```
 
-
-
 ## 准备训练脚本
 
 * 已经准备好了模板脚本 `/root/sd-scripts/run_flux_lora.sh`, 可以直接修改。详情说明可以看官方说明：https://github.com/kohya-ss/sd-scripts/blob/sd3/README.md
 
 ```shell
 > cat /root/sd-scripts/run_flux_lora.sh
-
 #!/bin/bash
 
 # 设置环境变量
@@ -72,11 +78,12 @@ OUTPUT_DIR="/root/autodl-tmp/output"
 mkdir -p $OUTPUT_DIR
 
 # 模型路径设置 - 请根据实际路径修改
-MODEL_PATH="/root/autodl-tmp/models/Fluxgym-modles/"
-FLUX_MODEL="$MODEL_PATH/flux1-dev.sft"  # FLUX.1模型路径
-CLIP_L_MODEL="$MODEL_PATH/clip_l.safetensors"   # CLIP-L模型路径
-T5XXL_MODEL="$MODEL_PATH/t5xxl_fp16.safetensors" # T5XXL模型路径
-VAE_MODEL="$MODEL_PATH/ae.sft"           # VAE模型路径
+MODEL_PATH="/root/autodl-tmp/models/"
+# FLUX_MODEL="$MODEL_PATH/Fluxgym-modles/flux1-dev.sft"  # FLUX.1 dev 模型路径
+FLUX_MODEL="$MODEL_PATH/majicflus_v1/majicflus_v134.safetensors"  # 麦橘超然 MajicFlus 模型路径
+CLIP_L_MODEL="$MODEL_PATH/Fluxgym-modles/clip_l.safetensors"   # CLIP-L模型路径
+T5XXL_MODEL="$MODEL_PATH/Fluxgym-modles/t5xxl_fp16.safetensors" # T5XXL模型路径
+VAE_MODEL="$MODEL_PATH/Fluxgym-modles/ae.sft"           # VAE模型路径
 CONFIG_FILE="flux_data_config.toml"         # 数据配置文件
 
 # 训练参数
@@ -132,6 +139,3 @@ echo "训练完成! 模型保存在: $OUTPUT_DIR"
   ```
 * 运行截图
   ![sdscripts.png](https://codewithgpu-image-1310972338.cos.ap-beijing.myqcloud.com/6683-825545018-n5Jjtb1HXqJpLOW9GTop.png)
-
-
-
