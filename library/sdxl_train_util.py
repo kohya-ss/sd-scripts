@@ -12,7 +12,6 @@ from accelerate import init_empty_weights
 from tqdm import tqdm
 from transformers import CLIPTokenizer
 from library import model_util, sdxl_model_util, train_util, sdxl_original_unet
-from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
 from .utils import setup_logging
 
 setup_logging()
@@ -327,7 +326,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
     )
 
 
-def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
+def add_sdxl_training_arguments(parser: argparse.ArgumentParser, support_text_encoder_caching: bool = True):
     parser.add_argument(
         "--cache_text_encoder_outputs", action="store_true", help="cache text encoder outputs / text encoderの出力をキャッシュする"
     )
@@ -345,8 +344,6 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
 
 def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
     assert not args.v2, "v2 cannot be enabled in SDXL training / SDXL学習ではv2を有効にすることはできません"
-    if args.v_parameterization:
-        logger.warning("v_parameterization will be unexpected / SDXL学習ではv_parameterizationは想定外の動作になります")
 
     if args.clip_skip is not None:
         logger.warning("clip_skip will be unexpected / SDXL学習ではclip_skipは動作しません")
@@ -364,9 +361,9 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
     #         )
     #     logger.info(f"noise_offset is set to {args.noise_offset} / noise_offsetが{args.noise_offset}に設定されました")
 
-    assert (
-        not hasattr(args, "weighted_captions") or not args.weighted_captions
-    ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
+    # assert (
+    #     not hasattr(args, "weighted_captions") or not args.weighted_captions
+    # ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
 
     if supportTextEncoderCaching:
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
@@ -378,4 +375,6 @@ def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCachin
 
 
 def sample_images(*args, **kwargs):
+    from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
+
     return train_util.sample_images_common(SdxlStableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
