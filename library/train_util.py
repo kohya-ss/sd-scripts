@@ -2275,7 +2275,7 @@ class FineTuningDataset(BaseDataset):
                         image_info.latents_npz_flipped = abs_path.replace(".npz", "_flip.npz") if subset.flip_aug else None
                     else:
                         # if npz exists, use them
-                        image_info.latents_npz, image_info.latents_npz_flipped = self.image_key_to_npz_file(subset, image_key, abs_path)
+                        image_info.latents_npz, image_info.latents_npz_flipped = self.image_key_to_npz_file(subset, image_key)
 
                 self.register_image(image_info, subset)
 
