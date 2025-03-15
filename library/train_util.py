@@ -3599,7 +3599,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
         "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, "
         "AdaFactor. "
-        "Also, you can use any optimizer by specifying the full path to the class, like 'bitsandbytes.optim.AdEMAMix8bit' or 'bitsandbytes.optim.PagedAdEMAMix8bit'.",
+        "Also, you can use any optimizer by specifying the full path to the class, like 'bitsandbytes.optim.AdEMAMix8bit' or 'bitsandbytes.optim.PagedAdEMAMix8bit', or 'pytorch_optimizer.CAME'.",
     )
 
     # backward compatibility
