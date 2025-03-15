@@ -43,4 +43,5 @@ rich==13.7.0
 # for T5XXL tokenizer (SD3/FLUX)
 sentencepiece==0.2.0
 # for kohya_ss library
+pytorch-optimizer
 -e .
