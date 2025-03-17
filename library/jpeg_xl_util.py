@@ -26,9 +26,9 @@ class JXLBitstream:
             self.partial_to_read_length = length
             if self.shift < self.previous_data_len + self.offsets[self.index][2]:
                 self.partial_read(0, length)
-            self.bitstream += self.file.read(self.partial_to_read_length)
+            self.bitstream.extend(self.file.read(self.partial_to_read_length))
         else:
-            self.bitstream += self.file.read(length)
+            self.bitstream.extend(self.file.read(length))
         bitmask = 2**length - 1
         bits = (int.from_bytes(self.bitstream, "little") >> self.shift) & bitmask
         self.shift += length
@@ -37,7 +37,7 @@ class JXLBitstream:
     def partial_read(self, current_length: int, length: int) -> None:
         self.previous_data_len += self.offsets[self.index][2]
         to_read_length = self.previous_data_len - (self.shift + current_length)
-        self.bitstream += self.file.read(to_read_length)
+        self.bitstream.extend(self.file.read(to_read_length))
         current_length += to_read_length
         self.partial_to_read_length -= to_read_length
         self.index += 1
