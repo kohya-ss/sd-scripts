@@ -1158,7 +1158,7 @@ class BaseDataset(torch.utils.data.Dataset):
             )
 
     def get_image_size(self, image_path):
-        if image_path.endswith(".jxl"):
+        if image_path.endswith(".jxl") or image_path.endswith(".JXL"):
             return get_jxl_size(image_path)
         return imagesize.get(image_path)
 
