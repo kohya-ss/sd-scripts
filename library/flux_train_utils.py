@@ -423,7 +423,7 @@ def get_noisy_model_input_and_timesteps(
         else:
             ip_noise = args.ip_noise_gamma * torch.randn_like(latents)
     else:
-        ip_noise = torch.ones_like(latents)
+        ip_noise = torch.zeros_like(latents)
 
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
         # Simple random t-based noise sampling
