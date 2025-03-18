@@ -6,6 +6,7 @@ import re
 from torch.types import Number
 from typing import List, Optional, Union
 from .utils import setup_logging
+from library import train_util
 
 setup_logging()
 import logging
@@ -17,7 +18,7 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
     if hasattr(noise_scheduler, "all_snr"):
         return
 
-    alphas_cumprod = noise_scheduler.alphas_cumprod
+    alphas_cumprod = train_util.get_alphas_cumprod(noise_scheduler)
     sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
     sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
     alpha = sqrt_alphas_cumprod
@@ -66,7 +67,8 @@ def fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler):
 
 
 def apply_snr_weight(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, gamma: Number, v_prediction=False):
-    snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
+    timesteps_indices = train_util.timesteps_to_indices(timesteps, len(noise_scheduler.all_snr))
+    snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps_indices])
     min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
     if v_prediction:
         snr_weight = torch.div(min_snr_gamma, snr + 1).float().to(loss.device)
@@ -81,9 +83,9 @@ def scale_v_prediction_loss_like_noise_prediction(loss: torch.Tensor, timesteps:
     loss = loss * scale
     return loss
 
-
 def get_snr_scale(timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler):
-    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
+    timesteps_indices = train_util.timesteps_to_indices(timesteps, len(noise_scheduler.all_snr))
+    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps_indices])  # batch_size
     snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
     scale = snr_t / (snr_t + 1)
     # # show debug info
@@ -99,7 +101,12 @@ def add_v_prediction_like_loss(loss: torch.Tensor, timesteps: torch.IntTensor, n
 
 
 def apply_debiased_estimation(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, v_prediction=False):
-    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
+    if not hasattr(noise_scheduler, "all_snr"):
+        return loss
+
+    timesteps_indices = train_util.timesteps_to_indices(timesteps, len(noise_scheduler.all_snr))
+    
+    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps_indices])  # batch_size
     snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
     if v_prediction:
         weight = 1 / (snr_t + 1)

@@ -21,6 +21,13 @@ from library import (
     strategy_flux,
     train_util,
 )
+from library.custom_train_functions import (
+    prepare_scheduler_for_custom_training,
+    apply_snr_weight,
+    scale_v_prediction_loss_like_noise_prediction,
+    add_v_prediction_like_loss,
+    apply_debiased_estimation,
+)
 from library.utils import setup_logging
 
 setup_logging()
@@ -326,6 +333,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+        prepare_scheduler_for_custom_training(noise_scheduler, device)
         return noise_scheduler
 
     def encode_images_to_latents(self, args, vae, images):
@@ -450,7 +458,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         return model_pred, target, timesteps, weighting
 
-    def post_process_loss(self, loss, args, timesteps, noise_scheduler):
+    def post_process_loss(self, loss: torch.Tensor, args, timesteps, noise_scheduler) -> torch.FloatTensor:
+        if args.min_snr_gamma:
+            loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
+        if args.scale_v_pred_loss_like_noise_pred:
+            loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
+        if args.v_pred_like_loss:
+            loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
+        if args.debiased_estimation_loss:
+            loss = apply_debiased_estimation(loss, timesteps, noise_scheduler, args.v_parameterization)
         return loss
 
     def get_sai_model_spec(self, args):
