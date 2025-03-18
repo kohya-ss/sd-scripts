@@ -471,7 +471,7 @@ def get_noisy_model_input_and_timesteps(
 
         # Add noise according to flow matching.
         sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=latents.ndim, dtype=dtype)
-        noisy_model_input = sigmas * noise + (1.0 - sigmas) * latents + ip_noise_gamma
+        noisy_model_input = sigmas * noise +  ip_noise_gamma + (1.0 - sigmas) * latents
 
 
     return noisy_model_input.to(dtype), timesteps.to(dtype), sigmas
