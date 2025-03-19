@@ -350,15 +350,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
-
-        # Add noise to the latents according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        if args.ip_noise_gamma:
-            if args.ip_noise_gamma_random_strength:
-                noise = noise + (torch.rand(1, device=latents.device) * args.ip_noise_gamma) * torch.randn_like(latents)
-            else:
-                noise = noise + args.ip_noise_gamma * torch.randn_like(latents)
-
         bsz = latents.shape[0]
 
         # get noisy model input and timesteps
