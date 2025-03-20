@@ -7,7 +7,6 @@ opencv-python==4.8.1.78
 einops==0.7.0
 pytorch-lightning==1.9.0
 bitsandbytes==0.44.0
-prodigyopt==1.0
 lion-pytorch==0.0.6
 schedulefree==1.4
 tensorboard
@@ -43,4 +42,7 @@ rich==13.7.0
 # for T5XXL tokenizer (SD3/FLUX)
 sentencepiece==0.2.0
 # for kohya_ss library
+pytorch-optimizer
+prodigy-plus-schedule-free==1.9.0
+prodigyopt==1.1.2
 -e .
