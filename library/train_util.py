@@ -31,6 +31,7 @@ from packaging.version import Version
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy, TextEncodingStrategy
 
 init_ipex()
@@ -60,7 +61,7 @@ from diffusers import (
     KDPM2AncestralDiscreteScheduler,
     AutoencoderKL,
 )
-from library import custom_train_functions, sd3_utils
+from library import custom_train_functions, sd3_utils, flux_train_utils
 from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
@@ -5976,7 +5977,7 @@ def get_noise_noisy_latents_and_timesteps(
     return noise, noisy_latents, timesteps
 
 
-def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler) -> Optional[torch.Tensor]:
+def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, latents: torch.Tensor, noise_scheduler) -> Optional[torch.Tensor]:
     if not (args.loss_type == "huber" or args.loss_type == "smooth_l1"):
         return None
 
@@ -5985,12 +5986,23 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
         alpha = -math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
         result = torch.exp(-alpha * timesteps) * args.huber_scale
     elif args.huber_schedule == "snr":
-        alphas_cumprod = get_alphas_cumprod(noise_scheduler)
+        if hasattr(noise_scheduler, "sigmas"):
+            # Need to adjust the timesteps based on the latent dimensions
+            if args.timestep_sampling == "flux_shift":
+                _, _, h, w = latents.shape
+                mu = flux_train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
+                alphas_cumprod = get_alphas_cumprod(noise_scheduler, mu)
+            else:
+                alphas_cumprod = get_alphas_cumprod(noise_scheduler)
+        else:
+            alphas_cumprod = get_alphas_cumprod(noise_scheduler)
+
         if alphas_cumprod is None:
             raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
         timesteps_indices = index_for_timesteps(timesteps, noise_scheduler)
         alphas_cumprod = torch.index_select(alphas_cumprod.to(timesteps.device), 0, timesteps_indices)
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
+
         result = (1 - args.huber_c) / (1 + sigmas) ** 2 + args.huber_c
         result = result.to(timesteps.device)
     elif args.huber_schedule == "constant":
@@ -6039,7 +6051,7 @@ def timesteps_to_indices(timesteps: torch.Tensor, num_train_timesteps: int):
 
     return timesteps_indices
 
-def get_alphas_cumprod(noise_scheduler) -> Optional[torch.Tensor]:
+def get_alphas_cumprod(noise_scheduler, mu=None) -> Optional[torch.Tensor]:
     """
     Get the cumulative product of the alpha values across the timesteps.
 
@@ -6048,8 +6060,11 @@ def get_alphas_cumprod(noise_scheduler) -> Optional[torch.Tensor]:
     if hasattr(noise_scheduler, "alphas_cumprod"):
         alphas_cumprod = noise_scheduler.alphas_cumprod
     elif hasattr(noise_scheduler, "sigmas"):
-        # Since we don't have alphas_cumprod directly, we can derive it from sigmas
-        sigmas = noise_scheduler.sigmas
+        if noise_scheduler.config.use_dynamic_shifting is True:
+            sigmas = noise_scheduler.time_shift(mu, 1.0, noise_scheduler.sigmas)
+        else:
+            # Since we don't have alphas_cumprod directly, we can derive it from sigmas
+            sigmas = noise_scheduler.sigmas
         
         # In many diffusion models, sigma² = (1-α)/α where α is the cumulative product of alphas
         # So we can derive alphas_cumprod from sigmas

@@ -391,7 +391,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
 
         return model_pred, target, timesteps, weighting
 
-    def post_process_loss(self, loss, args, timesteps, noise_scheduler):
+    def post_process_loss(self, loss, args, timesteps, noise_scheduler, latents):
         return loss
 
     def get_sai_model_spec(self, args):
