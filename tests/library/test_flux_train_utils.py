@@ -77,7 +77,7 @@ def test_uniform_sampling(args, noise_scheduler, latents, noise, device):
 
 def test_sigmoid_sampling(args, noise_scheduler, latents, noise, device):
     args.timestep_sampling = "sigmoid"
-    args.sigmoid_scale = 10.0
+    args.sigmoid_scale = 1.0
     dtype = torch.float32
 
     noisy_input, timesteps, sigmas = get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
@@ -102,7 +102,7 @@ def test_shift_sampling(args, noise_scheduler, latents, noise, device):
 
 def test_flux_shift_sampling(args, noise_scheduler, latents, noise, device):
     args.timestep_sampling = "flux_shift"
-    args.sigmoid_scale = 10.0
+    args.sigmoid_scale = 1.0
     dtype = torch.float32
 
     noisy_input, timesteps, sigmas = get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
