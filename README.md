@@ -752,6 +752,8 @@ Not available yet.
 [__Change History__](#change-history) is moved to the bottom of the page. 
 更新履歴は[ページ末尾](#change-history)に移しました。
 
+Latest update: 2025-03-21 (Version 0.9.1)
+
 [日本語版READMEはこちら](./README-ja.md)
 
 The development version is in the `dev` branch. Please check the dev branch for the latest changes.
@@ -894,6 +896,11 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 
 ## Change History
+
+### Mar 21, 2025 /  2025-03-21 Version 0.9.1
+
+- Fixed a bug where some of LoRA modules for CLIP Text Encoder were not trained. Thank you Nekotekina for PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964)
+  - The LoRA modules for CLIP Text Encoder are now 264 modules, which is the same as before. Only 88 modules were trained in the previous version. 
 
 ### Jan 17, 2025 /  2025-01-17 Version 0.9.0
 
