@@ -24,7 +24,6 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         self.is_sdxl = True
 
     def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
-        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.cache_text_encoder_outputs:
