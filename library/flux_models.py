@@ -968,7 +968,7 @@ class Flux(nn.Module):
 
     def enable_block_swap(self, num_blocks: int, device: torch.device):
         self.blocks_to_swap = num_blocks
-        double_blocks_to_swap = num_blocks // 2
+        double_blocks_to_swap = min(self.num_double_blocks - 2, num_blocks // 2)
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
 
         assert double_blocks_to_swap <= self.num_double_blocks - 2 and single_blocks_to_swap <= self.num_single_blocks - 2, (
