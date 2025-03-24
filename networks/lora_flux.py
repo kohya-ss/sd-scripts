@@ -14,6 +14,8 @@ from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
 import numpy as np
 import torch
+from torch import Tensor
+from tqdm import tqdm
 import re
 from library.utils import setup_logging
 from library.train_util import initialize_lora, initialize_pissa, initialize_urae
@@ -84,8 +86,14 @@ class LoRAModule(torch.nn.Module):
 
             if initialize == "urae":
                 initialize_urae(org_module, self.lora_down, self.lora_up, self.lora_dim)
+                # Need to store the original weights so we can get a plain LoRA out
+                self._org_lora_up = self.lora_up.weight.data
+                self._org_lora_down = self.lora_down.weight.data
             elif initialize == "pissa":
                 initialize_pissa(org_module, self.lora_down, self.lora_up, self.scale, self.lora_dim)
+                # Need to store the original weights so we can get a plain LoRA out
+                self._org_lora_up = self.lora_up.weight.data
+                self._org_lora_down = self.lora_down.weight.data
             else:
                 initialize_lora(self.lora_down, self.lora_up)
         else:
@@ -99,9 +107,15 @@ class LoRAModule(torch.nn.Module):
             self.lora_up = torch.nn.ModuleList([torch.nn.Linear(self.lora_dim, split_dim, bias=False) for split_dim in split_dims])
             for lora_down, lora_up in zip(self.lora_down, self.lora_up):
                 if initialize == "urae":
-                    initialize_urae(org_module, lora_down, lora_up, self.lora_dim)
+                    initialize_urae(org_module, lora_down, lora_up, self.scale, self.lora_dim)
+                    # Need to store the original weights so we can get a plain LoRA out
+                    self._org_lora_up = lora_up.weight.data
+                    self._org_lora_down = lora_down.weight.data
                 elif initialize == "pissa":
                     initialize_pissa(org_module, lora_down, lora_up, self.scale, self.lora_dim)
+                    # Need to store the original weights so we can get a plain LoRA out
+                    self._org_lora_up = lora_up.weight.data
+                    self._org_lora_down = lora_down.weight.data
                 else:
                     initialize_lora(lora_down, lora_up)
 
@@ -588,6 +602,7 @@ class LoRANetwork(torch.nn.Module):
         self.train_blocks = train_blocks if train_blocks is not None else "all"
         self.split_qkv = split_qkv
         self.train_t5xxl = train_t5xxl
+        self.initialize = initialize
 
         self.type_dims = type_dims
         self.in_dims = in_dims
@@ -635,12 +650,16 @@ class LoRANetwork(torch.nn.Module):
 
             loras = []
             skipped = []
+
+            total_modules = len(list(root_module.modules()))
+            progress = tqdm(total=total_modules, desc="Modules")
             for name, module in root_module.named_modules():
                 if target_replace_modules is None or module.__class__.__name__ in target_replace_modules:
                     if target_replace_modules is None:  # dirty hack for all modules
                         module = root_module  # search all modules
 
                     for child_name, child_module in module.named_modules():
+                        progress.update(1)
                         is_linear = child_module.__class__.__name__ == "Linear"
                         is_conv2d = child_module.__class__.__name__ == "Conv2d"
                         is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
@@ -880,10 +899,10 @@ class LoRANetwork(torch.nn.Module):
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         if not self.split_qkv:
-            return super().state_dict(destination, prefix, keep_vars)
+            return super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
 
         # merge qkv
-        state_dict = super().state_dict(destination, prefix, keep_vars)
+        state_dict = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
         new_state_dict = {}
         for key in list(state_dict.keys()):
             if "double" in key and "qkv" in key:
@@ -1076,6 +1095,39 @@ class LoRANetwork(torch.nn.Module):
             metadata = None
 
         state_dict = self.state_dict()
+
+        if self.initialize in ['pissa']:
+            loras: List[LoRAInfModule] = self.text_encoder_loras + self.unet_loras
+            def convert_pissa_to_standard_lora(trained_up: Tensor, trained_down: Tensor, orig_up: Tensor, orig_down: Tensor, rank: int):
+                # Calculate ΔW = A'B' - AB
+                delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
+                
+                # We need to create new low-rank matrices that represent this delta
+                # One approach is to do SVD on delta_w
+                U, S, V = torch.linalg.svd(delta_w, full_matrices=False)
+                
+                # Take the top 2*r singular values (as suggested in the paper)
+                rank = rank * 2
+                rank = min(rank, len(S))  # Make sure we don't exceed available singular values
+                
+                # Create new LoRA matrices
+                new_up = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
+                new_down = torch.diag(torch.sqrt(S[:rank])) @ V[:rank, :]
+                
+                # These matrices can now be used as standard LoRA weights
+                return new_up, new_down
+
+            with torch.no_grad():
+                progress = tqdm(total=len(loras), desc="Convert PiSSA")
+                for lora in loras:
+                    lora_up_key = f"{lora.lora_name}.lora_up.weight"
+                    lora_down_key = f"{lora.lora_name}.lora_down.weight"
+                    lora_up = state_dict[lora_up_key]
+                    lora_down = state_dict[lora_down_key]
+                    up, down = convert_pissa_to_standard_lora(lora_up, lora_down, lora._org_lora_up, lora._org_lora_down, lora.lora_dim)
+                    state_dict[lora_up_key] = up.detach()
+                    state_dict[lora_down_key] = down.detach()
+                    progress.update(1)
 
         if dtype is not None:
             for key in list(state_dict.keys()):
