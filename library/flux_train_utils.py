@@ -235,7 +235,7 @@ def sample_image_inference(
         controlnet_image = controlnet_image.permute(2, 0, 1).unsqueeze(0).to(weight_dtype).to(accelerator.device)
 
     with accelerator.autocast(), torch.no_grad():
-        x = denoise(flux, noise, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=scale, t5_attn_mask=t5_attn_mask, controlnet=controlnet, controlnet_img=controlnet_image)
+        x = denoise(flux, noise, img_ids, t5_out, txt_ids, l_pooled, timesteps=timesteps, guidance=scale, t5_attn_mask=t5_attn_mask, controlnet=controlnet, controlnet_img=controlnet_image, proportional_attention=args.proportional_attention)
 
     x = flux_utils.unpack_latents(x, packed_latent_height, packed_latent_width)
 
@@ -313,6 +313,7 @@ def denoise(
     t5_attn_mask: Optional[torch.Tensor] = None,
     controlnet: Optional[flux_models.ControlNetFlux] = None,
     controlnet_img: Optional[torch.Tensor] = None,
+    proportional_attention: Optional[bool] =None
 ):
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
@@ -332,6 +333,7 @@ def denoise(
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 txt_attention_mask=t5_attn_mask,
+                proportional_attention=proportional_attention,
             )
         else:
             block_samples = None
@@ -347,6 +349,7 @@ def denoise(
             timesteps=t_vec,
             guidance=guidance_vec,
             txt_attention_mask=t5_attn_mask,
+            proportional_attention=proportional_attention,
         )
 
         img = img + (t_prev - t_curr) * pred
@@ -617,3 +620,5 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
+
+    parser.add_argument("--proportional_attention", action="store_true", help="Proportional attention to the image sequence length URAE")

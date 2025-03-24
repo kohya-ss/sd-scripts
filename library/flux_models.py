@@ -1018,6 +1018,7 @@ class Flux(nn.Module):
         block_controlnet_single_hidden_states=None,
         guidance: Tensor | None = None,
         txt_attention_mask: Tensor | None = None,
+        proportional_attention=None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
@@ -1041,20 +1042,20 @@ class Flux(nn.Module):
 
         if not self.blocks_to_swap:
             for block_idx, block in enumerate(self.double_blocks):
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask, proportional_attention=proportional_attention)
                 if block_controlnet_hidden_states is not None and controlnet_depth > 0:
                     img = img + block_controlnet_hidden_states[block_idx % controlnet_depth]
 
             img = torch.cat((txt, img), 1)
             for block_idx, block in enumerate(self.single_blocks):
-                img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask, proportional_attention=proportional_attention)
                 if block_controlnet_single_hidden_states is not None and controlnet_single_depth > 0:
                     img = img + block_controlnet_single_hidden_states[block_idx % controlnet_single_depth]
         else:
             for block_idx, block in enumerate(self.double_blocks):
                 self.offloader_double.wait_for_block(block_idx)
 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask, proportional_attention=proportional_attention)
                 if block_controlnet_hidden_states is not None and controlnet_depth > 0:
                     img = img + block_controlnet_hidden_states[block_idx % controlnet_depth]
 
@@ -1065,7 +1066,7 @@ class Flux(nn.Module):
             for block_idx, block in enumerate(self.single_blocks):
                 self.offloader_single.wait_for_block(block_idx)
 
-                img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask, proportional_attention=proportional_attention)
                 if block_controlnet_single_hidden_states is not None and controlnet_single_depth > 0:
                     img = img + block_controlnet_single_hidden_states[block_idx % controlnet_single_depth]
 
