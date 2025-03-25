@@ -14,7 +14,7 @@ def initialize_urae(org_module: torch.nn.Module, lora_down: torch.nn.Module, lor
 
     weight = org_module.weight.data.to(device, dtype=torch.float32)
     
-    with torch.autocast(device.type, dtype=torch.float32):
+    with torch.autocast(device.type):
         # SVD decomposition
         V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
         
@@ -58,7 +58,7 @@ def initialize_pissa(org_module: torch.nn.Module, lora_down: torch.nn.Module, lo
 
     weight = org_module.weight.data.clone().to(device, dtype=torch.float32)
 
-    with torch.autocast(device.type, dtype=torch.float32):
+    with torch.autocast(device.type):
         # USV^T = W <-> VSU^T = W^T, where W^T = weight.data in R^{out_channel, in_channel},
         V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
         Vr = V[:, : rank]
