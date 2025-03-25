@@ -44,6 +44,7 @@ class LoRAModule(torch.nn.Module):
         rank_dropout=None,
         module_dropout=None,
         split_dims: Optional[List[int]] = None,
+        rank_stabilized: Optional[bool] = False
     ):
         """
         if alpha == 0 or None, alpha is rank (no scaling).
@@ -93,7 +94,10 @@ class LoRAModule(torch.nn.Module):
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
-        self.scale = alpha / self.lora_dim
+        rank_factor = self.lora_dim
+        if rank_stabilized:
+            rank_factor = math.sqrt(rank_factor)
+        self.scale = alpha / rank_factor
         self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         # same as microsoft's
@@ -562,6 +566,7 @@ class LoRANetwork(torch.nn.Module):
         train_double_block_indices: Optional[List[bool]] = None,
         train_single_block_indices: Optional[List[bool]] = None,
         verbose: Optional[bool] = False,
+        rank_stabilized: Optional[bool] = False,
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
@@ -576,6 +581,7 @@ class LoRANetwork(torch.nn.Module):
         self.train_blocks = train_blocks if train_blocks is not None else "all"
         self.split_qkv = split_qkv
         self.train_t5xxl = train_t5xxl
+        self.rank_stabilized = rank_stabilized
 
         self.type_dims = type_dims
         self.in_dims = in_dims
@@ -722,6 +728,7 @@ class LoRANetwork(torch.nn.Module):
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
                                 split_dims=split_dims,
+                                rank_stabilized=rank_stabilized,
                             )
                             loras.append(lora)
 
@@ -1132,7 +1139,10 @@ class LoRANetwork(torch.nn.Module):
             up = state_dict[upkeys[i]].to(device)
             alpha = state_dict[alphakeys[i]].to(device)
             dim = down.shape[0]
-            scale = alpha / dim
+            rank_factor = dim
+            if self.rank_stabilized:
+                rank_factor = math.sqrt(rank_factor)
+            scale = alpha / rank_factor
 
             if up.shape[2:] == (1, 1) and down.shape[2:] == (1, 1):
                 updown = (up.squeeze(2).squeeze(2) @ down.squeeze(2).squeeze(2)).unsqueeze(2).unsqueeze(3)

@@ -31,7 +31,7 @@ class DyLoRAModule(torch.nn.Module):
     """
 
     # NOTE: support dropout in future
-    def __init__(self, lora_name, org_module: torch.nn.Module, multiplier=1.0, lora_dim=4, alpha=1, unit=1):
+    def __init__(self, lora_name, org_module: torch.nn.Module, multiplier=1.0, lora_dim=4, alpha=1, unit=1, rank_stabilized=False):
         super().__init__()
         self.lora_name = lora_name
         self.lora_dim = lora_dim
@@ -48,7 +48,10 @@ class DyLoRAModule(torch.nn.Module):
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
-        self.scale = alpha / self.lora_dim
+        rank_factor = self.lora_dim
+        if rank_stabilized:
+            rank_factor = math.sqrt(rank_factor)
+        self.scale = alpha / rank_factor
         self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
 
         self.is_conv2d = org_module.__class__.__name__ == "Conv2d"
@@ -285,6 +288,7 @@ class DyLoRANetwork(torch.nn.Module):
         unit=1,
         module_class=DyLoRAModule,
         varbose=False,
+        rank_stabilized=False,
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
@@ -334,7 +338,7 @@ class DyLoRANetwork(torch.nn.Module):
                                 continue
 
                             # dropout and fan_in_fan_out is default
-                            lora = module_class(lora_name, child_module, self.multiplier, dim, alpha, unit)
+                            lora = module_class(lora_name, child_module, self.multiplier, dim, alpha, unit, rank_stabilized=rank_stabilized)
                             loras.append(lora)
             return loras
 

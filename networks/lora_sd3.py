@@ -256,6 +256,7 @@ class LoRANetwork(torch.nn.Module):
         emb_dims: Optional[List[int]] = None,
         train_block_indices: Optional[List[bool]] = None,
         verbose: Optional[bool] = False,
+        rank_stabilized: Optional[bool] = False
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
@@ -269,6 +270,7 @@ class LoRANetwork(torch.nn.Module):
         self.module_dropout = module_dropout
         self.split_qkv = split_qkv
         self.train_t5xxl = train_t5xxl
+        self.rank_stabilized = rank_stabilized
 
         self.type_dims = type_dims
         self.emb_dims = emb_dims
@@ -404,6 +406,7 @@ class LoRANetwork(torch.nn.Module):
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
                                 split_dims=split_dims,
+                                rank_stabilized=rank_stabilized
                             )
                             loras.append(lora)
 
@@ -814,7 +817,10 @@ class LoRANetwork(torch.nn.Module):
             up = state_dict[upkeys[i]].to(device)
             alpha = state_dict[alphakeys[i]].to(device)
             dim = down.shape[0]
-            scale = alpha / dim
+            rank_factor = dim
+            if self.rank_stabilized:
+                rank_factor = math.sqrt(rank_factor)
+            scale = alpha / rank_factor
 
             if up.shape[2:] == (1, 1) and down.shape[2:] == (1, 1):
                 updown = (up.squeeze(2).squeeze(2) @ down.squeeze(2).squeeze(2)).unsqueeze(2).unsqueeze(3)
