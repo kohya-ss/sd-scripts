@@ -1,5 +1,4 @@
 # common functions for training
-
 import argparse
 import ast
 import asyncio
@@ -6489,83 +6488,6 @@ class ImageLoadingDataset(torch.utils.data.Dataset):
 
 
 # endregion
-
-
-def initialize_lora(lora_down: torch.nn.Module, lora_up: torch.nn.Module):
-    torch.nn.init.kaiming_uniform_(lora_down.weight, a=math.sqrt(5))
-    torch.nn.init.zeros_(lora_up.weight)
-
-# URAE: Ultra-Resolution Adaptation with Ease
-def initialize_urae(org_module: torch.nn.Module, lora_down: torch.nn.Module, lora_up: torch.nn.Module, scale: float, rank: int, device=None, dtype=None):
-    weight_dtype = org_module.weight.data.dtype
-    weight = org_module.weight.data.to(device="cuda", dtype=torch.float32)
-    
-    # SVD decomposition
-    V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
-    
-    # For URAE, use the LAST/SMALLEST singular values and vectors (residual components)
-    Vr = V[:, -rank:]
-    Sr = S[-rank:]
-    Sr /= rank
-    Uhr = Uh[-rank:, :]
-    
-    # Create down and up matrices
-    down = torch.diag(torch.sqrt(Sr)) @ Uhr
-    up = Vr @ torch.diag(torch.sqrt(Sr))
-    
-    # Get expected shapes
-    expected_down_shape = lora_down.weight.shape
-    expected_up_shape = lora_up.weight.shape
-    
-    # Verify shapes match expected
-    if down.shape != expected_down_shape:
-        print(f"Warning: Down matrix shape mismatch. Got {down.shape}, expected {expected_down_shape}")
-    
-    if up.shape != expected_up_shape:
-        print(f"Warning: Up matrix shape mismatch. Got {up.shape}, expected {expected_up_shape}")
-    
-    # Assign to LoRA weights
-    lora_up.weight.data = up
-    lora_down.weight.data = down
-    
-    # Optionally, subtract from original weight
-    weight = weight - scale * (up @ down)
-    org_module.weight.data = weight.to(dtype=weight_dtype)
-
-# PiSSA: Principal Singular Values and Singular Vectors Adaptation
-def initialize_pissa(org_module: torch.nn.Module, lora_down: torch.nn.Module, lora_up: torch.nn.Module, scale: float, rank: int, device=None, dtype=None):
-    weight_dtype = org_module.weight.data.dtype
-
-    weight = org_module.weight.data.to(device="cuda", dtype=torch.float32)
-
-    # USV^T = W <-> VSU^T = W^T, where W^T = weight.data in R^{out_channel, in_channel},
-    V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
-    Vr = V[:, : rank]
-    Sr = S[: rank]
-    Sr /= rank
-    Uhr = Uh[: rank]
-
-    down = torch.diag(torch.sqrt(Sr)) @ Uhr
-    up= Vr @ torch.diag(torch.sqrt(Sr))
-
-    # Get expected shapes
-    expected_down_shape = lora_down.weight.shape
-    expected_up_shape = lora_up.weight.shape
-
-    # Verify shapes match expected or reshape appropriately
-    if down.shape != expected_down_shape:
-        print(f"Warning: Down matrix shape mismatch. Got {down.shape}, expected {expected_down_shape}")
-        # Additional reshaping logic if needed
-    
-    if up.shape != expected_up_shape:
-        print(f"Warning: Up matrix shape mismatch. Got {up.shape}, expected {expected_up_shape}")
-        # Additional reshaping logic if needed
-
-    lora_up.weight.data = up
-    lora_down.weight.data = down
-
-    weight = weight.data - scale * (up @ down)
-    org_module.weight.data = weight.to(dtype=weight_dtype)
 
 # collate_fn用 epoch,stepはmultiprocessing.Value
 class collator_class:
