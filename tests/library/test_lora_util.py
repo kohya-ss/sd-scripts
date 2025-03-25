@@ -1,7 +1,7 @@
 import torch
 import pytest
 from library.lora_util import initialize_pissa
-from tests.test_util import generate_synthetic_weights
+from ..test_util import generate_synthetic_weights
 
 
 def test_initialize_pissa_basic():

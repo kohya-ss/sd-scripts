@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 from networks.lora_flux import LoRAModule, LoRANetwork, create_network
-from tests.test_util import generate_synthetic_weights
+from ..test_util import generate_synthetic_weights
 from unittest.mock import MagicMock
 
 
