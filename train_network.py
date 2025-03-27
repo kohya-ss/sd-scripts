@@ -1432,7 +1432,7 @@ class NetworkTrainer:
                         weight_norms = network.weight_norms()
                         maximum_norm = weight_norms.max().item() if weight_norms.numel() > 0 else None
                         keys_scaled = None
-                        max_mean_logs = {"avg weight norm": mean_norm, "avg grad norm": mean_grad_norm, "avg comb norm": mean_combined_norm}
+                        max_mean_logs = {}
                     else:
                         keys_scaled, mean_norm, maximum_norm = None, None, None
                         mean_grad_norm = None
