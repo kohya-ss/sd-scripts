@@ -29,6 +29,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
+import torch.amp as amp
 from einops import rearrange
 
 
@@ -1110,9 +1111,8 @@ if __name__ == "__main__":
     import transformers
 
     optimizer = transformers.optimization.Adafactor(unet.parameters(), relative_step=True)  # working at 22.2GB with torch2
-
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
-
+    # scaler = torch.cuda.amp.GradScaler(enabled=True)
+    scaler = amp.GradScaler(enabled=True)
     print("start training")
     steps = 10
     batch_size = 1
@@ -1127,7 +1127,7 @@ if __name__ == "__main__":
         ctx = torch.randn(batch_size, 77, 2048).cuda()
         y = torch.randn(batch_size, ADM_IN_CHANNELS).cuda()
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with amp.autocast(enabled=True):
             output = unet(x, t, ctx, y)
             target = torch.randn_like(output)
             loss = torch.nn.functional.mse_loss(output, target)
