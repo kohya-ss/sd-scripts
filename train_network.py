@@ -929,7 +929,6 @@ class NetworkTrainer:
                         if torch.any(torch.isnan(latents)):
                             accelerator.print("NaN found in latents, replacing with zeros")
                             latents = torch.nan_to_num(latents, 0, out=latents)
-                    logger.info(f"Latents Shape: {latents.shape}")
                     latents = latents * self.vae_scale_factor
 
                     # get multiplier for each sample
