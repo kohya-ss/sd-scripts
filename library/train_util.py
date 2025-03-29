@@ -5719,7 +5719,7 @@ def sample_image_inference(
         
         clean_memory_on_device(accelerator.device)
         
-        original_latent = prompt_dict.get("original_lantent")
+        original_latent = prompt_dict.get("original_lantent").to(device=accelerator.device)
         logger.info(f"original_latent: {original_latent.shape}")
         original_image = pipeline.latents_to_image(original_latent)[0]
         text_image = draw_text_on_image(f"caption: {prompt}", image.width * 2)
