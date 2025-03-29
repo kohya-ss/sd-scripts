@@ -5463,7 +5463,7 @@ def sample_images_common(
     distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
 
     org_vae_device = vae.device  # CPUにいるはず
-    vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
+    vae.to(device)  # distributed_state.device is same as accelerator.device
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
@@ -5507,7 +5507,7 @@ def sample_images_common(
         requires_safety_checker=False,
         clip_skip=args.clip_skip,
     )
-    pipeline.to(distributed_state.device)
+    pipeline.to(device)
     
 
     # preprocess prompts
