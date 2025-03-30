@@ -1418,6 +1418,8 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+                        if args.gradient_noise_scale and hasattr(network, "accumulate_grad"):
+                            network.accumulate_grad()
 
                     optimizer.step()
                     lr_scheduler.step()
@@ -1491,6 +1493,8 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
+                    if args.gradient_noise_scale and hasattr(network, "gradient_noise_scale"):
+                        logs = {**logs, "grad/noise_scale": self.gradient_noise_scale()}
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented

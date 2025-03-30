@@ -293,6 +293,10 @@ class LoRAModule(torch.nn.Module):
                 approx_grad = self.scale * ((self.lora_up.weight @ lora_down_grad) + (lora_up_grad @ self.lora_down.weight))
                 self.grad_norms = torch.norm(approx_grad, dim=1, keepdim=True)
 
+    def accumulate_grad(self):
+        for param in self.parameters():
+            if param.grad is not None:
+                self.all_grad.append(param.grad.view(-1))
 
     @property
     def device(self):
@@ -976,6 +980,31 @@ class LoRANetwork(torch.nn.Module):
                 combined_weight_norms.append(lora.combined_weight_norms.mean(dim=0))
         return torch.stack(combined_weight_norms) if len(combined_weight_norms) > 0 else torch.tensor([])
 
+    def accumulate_grad(self):
+        for lora in self.text_encoder_loras + self.unet_loras:
+            lora.accumulate_grad()
+
+    def all_grad(self):
+        all_grad = []
+        for lora in self.text_encoder_loras + self.unet_loras:
+            all_grad.append(lora.all_grad)
+
+        return torch.stack(all_grad)
+
+    def gradient_noise_scale(self):
+        mean_grad = torch.mean(self.all_grads(), dim=0)
+
+        # Calculate trace of covariance matrix
+        centered_grads = all_grads - mean_grad
+        trace_cov = torch.mean(torch.sum(centered_grads**2, dim=1))
+
+        # Calculate norm of mean gradient squared
+        grad_norm_squared = torch.sum(mean_grad**2)
+
+        # Calculate GNS using provided gradient norm squared
+        gradient_noise_scale = trace_cov / grad_norm_squared
+    
+        return gradient_noise_scale.item()
 
     def load_weights(self, file):
         if os.path.splitext(file)[1] == ".safetensors":
