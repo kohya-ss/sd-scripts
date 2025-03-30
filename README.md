@@ -14,6 +14,9 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Mar 30, 2025:
+- The interpolation method for resizing the original image to the training size can now be specified. Thank you to rockerBOO for PR [#1939](https://github.com/kohya-ss/sd-scripts/pull/1939).
+
 Mar 20, 2025:
 - `pytorch-optimizer` is added to requirements.txt. Thank you to gesen2egee for PR [#1985](https://github.com/kohya-ss/sd-scripts/pull/1985). 
   - For example, you can use CAME optimizer with `--optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"`.
