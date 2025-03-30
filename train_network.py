@@ -1494,7 +1494,7 @@ class NetworkTrainer:
                         mean_combined_norm,
                     )
                     if args.gradient_noise_scale and hasattr(network, "gradient_noise_scale"):
-                        logs = {**logs, "grad/noise_scale": self.gradient_noise_scale()}
+                        logs = {**logs, "grad/noise_scale": network.gradient_noise_scale()}
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
