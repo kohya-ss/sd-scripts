@@ -400,7 +400,7 @@ def pil_resize(image, size, interpolation):
 
 def resize_image(image: np.ndarray, width: int, height: int, resized_width: int, resized_height: int, resize_interpolation: Optional[str] = None):
     """
-    Resize image with resize interpolation. Default interpolation to AREA if image is smaller, else LANCZOS
+    Resize image with resize interpolation. Default interpolation to AREA if image is smaller, else LANCZOS.
 
     Args:
         image: numpy.ndarray
@@ -413,14 +413,21 @@ def resize_image(image: np.ndarray, width: int, height: int, resized_width: int,
     Returns:
         image
     """
-    interpolation = get_cv2_interpolation(resize_interpolation)
+    if resize_interpolation is None:
+        resize_interpolation = "lanczos" if width > resized_width and height > resized_height else "area"
+    
+    # we use PIL for lanczos (for backward compatibility) and box, cv2 for others
+    use_pil = resize_interpolation in ["lanczos", "lanczos4", "box"]
+
     resized_size = (resized_width, resized_height)
-    if width > resized_width and height > resized_width:
-        image = cv2.resize(image, resized_size, interpolation=interpolation if interpolation is not None else cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
-        logger.debug(f"resize image using {resize_interpolation}")
+    if use_pil:
+        interpolation = get_pil_interpolation(resize_interpolation)
+        image = pil_resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (PIL)")
     else:
-        image = cv2.resize(image, resized_size, interpolation=interpolation if interpolation is not None else cv2.INTER_LANCZOS4)  # INTER_AREAでやりたいのでcv2でリサイズ
-        logger.debug(f"resize image using {resize_interpolation}")
+        interpolation = get_cv2_interpolation(resize_interpolation)
+        image = cv2.resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (cv2)")
 
     return image
 
