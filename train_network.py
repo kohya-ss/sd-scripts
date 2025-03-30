@@ -1012,11 +1012,12 @@ class NetworkTrainer:
             "ss_huber_c": args.huber_c,
             "ss_fp8_base": bool(args.fp8_base),
             "ss_fp8_base_unet": bool(args.fp8_base_unet),
-            "ss_validation_seed": args.validation_seed,
-            "ss_validation_split": args.validation_split,
-            "ss_max_validation_steps": args.max_validation_steps,
-            "ss_validate_every_n_epochs": args.validate_every_n_epochs,
-            "ss_validate_every_n_steps": args.validate_every_n_steps,
+            "ss_validation_seed": args.validation_seed, 
+            "ss_validation_split": args.validation_split, 
+            "ss_max_validation_steps": args.max_validation_steps, 
+            "ss_validate_every_n_epochs": args.validate_every_n_epochs, 
+            "ss_validate_every_n_steps": args.validate_every_n_steps, 
+            "ss_resize_interpolation": args.resize_interpolation
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1042,6 +1043,7 @@ class NetworkTrainer:
                     "max_bucket_reso": dataset.max_bucket_reso,
                     "tag_frequency": dataset.tag_frequency,
                     "bucket_info": dataset.bucket_info,
+                    "resize_interpolation": dataset.resize_interpolation,
                 }
 
                 subsets_metadata = []
@@ -1059,6 +1061,7 @@ class NetworkTrainer:
                         "enable_wildcard": bool(subset.enable_wildcard),
                         "caption_prefix": subset.caption_prefix,
                         "caption_suffix": subset.caption_suffix,
+                        "resize_interpolation": subset.resize_interpolation,
                     }
 
                     image_dir_or_metadata_file = None
