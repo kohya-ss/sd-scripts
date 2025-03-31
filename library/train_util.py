@@ -113,14 +113,16 @@ except:
 # JPEG-XL on Linux
 try:
     from jxlpy import JXLImagePlugin
+    from library.jpeg_xl_util import get_jxl_size
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
     pass
 
-# JPEG-XL on Windows
+# JPEG-XL on Linux and Windows
 try:
     import pillow_jxl
+    from library.jpeg_xl_util import get_jxl_size
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
@@ -1463,6 +1465,8 @@ class BaseDataset(torch.utils.data.Dataset):
                 )
 
     def get_image_size(self, image_path):
+        if image_path.endswith(".jxl") or image_path.endswith(".JXL"):
+            return get_jxl_size(image_path)
         # return imagesize.get(image_path)
         image_size = imagesize.get(image_path)
         if image_size[0] <= 0:
