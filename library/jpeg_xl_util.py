@@ -1,4 +1,4 @@
-# Modified from https://github.com/Fraetor/jxl_decode
+# Modified from https://github.com/Fraetor/jxl_decode Original license: MIT
 # Added partial read support for up to 200x speedup
 
 import os
