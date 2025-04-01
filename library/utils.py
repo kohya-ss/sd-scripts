@@ -413,6 +413,13 @@ def resize_image(image: np.ndarray, width: int, height: int, resized_width: int,
     Returns:
         image
     """
+
+    # Ensure all size parameters are actual integers
+    width = int(width)
+    height = int(height)
+    resized_width = int(resized_width)
+    resized_height = int(resized_height)
+
     if resize_interpolation is None:
         resize_interpolation = "lanczos" if width > resized_width and height > resized_height else "area"
     
