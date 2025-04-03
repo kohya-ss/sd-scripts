@@ -1017,7 +1017,7 @@ class LoRANetwork(torch.nn.Module):
         sum_grads, sum_squared_grads, count = self.sum_grads()
 
         if count == 0:
-            return None
+            return None, None
 
         # Calculate mean gradient and mean squared gradient
         mean_grad = torch.mean(sum_grads / count, dim=0)
@@ -1044,7 +1044,7 @@ class LoRANetwork(torch.nn.Module):
         # # Calculate GNS using provided gradient norm squared
         # gradient_noise_scale = trace_cov / grad_norm_squared
 
-        return gradient_noise_scale.item()
+        return gradient_noise_scale.item(), variance.item()
 
     def load_weights(self, file):
         if os.path.splitext(file)[1] == ".safetensors":
