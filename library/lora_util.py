@@ -19,6 +19,10 @@ def initialize_urae(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
 ):
+    org_module_device = org_module.weight.device
+    org_module_weight_dtype = org_module.weight.data.dtype
+    org_module_requires_grad = org_module.weight.requires_grad
+
     device = device if device is not None else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     assert isinstance(device, torch.device), f"Invalid device type: {device}"
 
@@ -55,9 +59,8 @@ def initialize_urae(
 
         # Optionally, subtract from original weight
         weight = weight - scale * (up @ down)
-
-        weight_dtype = org_module.weight.data.dtype
-        org_module.weight.data = weight.to(dtype=weight_dtype)
+        org_module.weight.data = weight.to(org_module_device, dtype=org_module_weight_dtype)
+        org_module.weight.requires_grad = org_module_requires_grad
 
 
 # PiSSA: Principal Singular Values and Singular Vectors Adaptation
@@ -70,15 +73,16 @@ def initialize_pissa(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
 ):
-    weight_dtype = org_module.weight.data.dtype
-    org_module_requires_grad = org_module.weight.data.requires_grad
+    org_module_device = org_module.weight.device
+    org_module_weight_dtype = org_module.weight.data.dtype
+    org_module_requires_grad = org_module.weight.requires_grad
 
     device = device if device is not None else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     assert isinstance(device, torch.device), f"Invalid device type: {device}"
 
     weight = org_module.weight.data.clone().to(device, dtype=torch.float32)
 
-    with torch.autocast(device.type):
+    with torch.no_grad():
         # USV^T = W <-> VSU^T = W^T, where W^T = weight.data in R^{out_channel, in_channel},
         V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
         Vr = V[:, :rank]
@@ -104,5 +108,6 @@ def initialize_pissa(
         lora_down.weight.data = down.to(dtype=lora_up.weight.dtype)
 
         weight = weight.data - scale * (up @ down)
-        org_module.weight.data = weight.to(dtype=weight_dtype)
-        org_module.weight.data.requires_grad = org_module_requires_grad
+        org_module.weight.data = weight.to(org_module_device, dtype=org_module_weight_dtype)
+        org_module.weight.requires_grad = org_module_requires_grad
+

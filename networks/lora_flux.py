@@ -15,6 +15,7 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 from library.utils import setup_logging
+from library.device_utils import clean_memory_on_device
 from library.lora_util import initialize_lora, initialize_pissa, initialize_urae
 
 setup_logging()
@@ -119,6 +120,12 @@ class LoRAModule(torch.nn.Module):
                     self._org_lora_down = lora_down.weight.data.detach().clone()
                 else:
                     initialize_lora(lora_down, lora_up)
+
+        if self._org_lora_up is not None and self._org_lora_down is not None:
+            # TODO: Capture option if we should keep on VRAM
+            # offloading to CPU
+            self._org_lora_up = self._org_lora_up.to("cpu")
+            self._org_lora_down = self._org_lora_down.to("cpu")
 
     def apply_to(self):
         self.org_forward = self.org_module.forward
@@ -1126,7 +1133,9 @@ class LoRANetwork(torch.nn.Module):
                     lora_up = state_dict[lora_up_key]
                     lora_down = state_dict[lora_down_key]
                     with torch.autocast("cuda"):
-                        up, down = convert_pissa_to_standard_lora(lora_up, lora_down, lora._org_lora_up, lora._org_lora_down, lora.lora_dim)
+                        up, down = convert_pissa_to_standard_lora(lora_up, lora_down, lora._org_lora_up.to(lora_up.device), lora._org_lora_down.to(lora_up.device), lora.lora_dim)
+                        # TODO: Capture option if we should offload
+                        # offload to CPU
                     state_dict[lora_up_key] = up.detach()
                     state_dict[lora_down_key] = down.detach()
                     progress.update(1)
