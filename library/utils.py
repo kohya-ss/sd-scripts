@@ -16,7 +16,6 @@ from PIL import Image
 import numpy as np
 from safetensors.torch import load_file
 
-
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
 
@@ -89,6 +88,8 @@ def setup_logging(args=None, log_level=None, reset=False):
         logger = logging.getLogger(__name__)
         logger.info(msg_init)
 
+setup_logging()
+logger = logging.getLogger(__name__)
 
 # endregion
 
@@ -378,7 +379,7 @@ def load_safetensors(
 # region Image utils
 
 
-def pil_resize(image, size, interpolation=Image.LANCZOS):
+def pil_resize(image, size, interpolation):
     has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
 
     if has_alpha:
@@ -386,7 +387,7 @@ def pil_resize(image, size, interpolation=Image.LANCZOS):
     else:
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
-    resized_pil = pil_image.resize(size, interpolation)
+    resized_pil = pil_image.resize(size, resample=interpolation)
 
     # Convert back to cv2 format
     if has_alpha:
@@ -396,6 +397,107 @@ def pil_resize(image, size, interpolation=Image.LANCZOS):
 
     return resized_cv2
 
+
+def resize_image(image: np.ndarray, width: int, height: int, resized_width: int, resized_height: int, resize_interpolation: Optional[str] = None):
+    """
+    Resize image with resize interpolation. Default interpolation to AREA if image is smaller, else LANCZOS.
+
+    Args:
+        image: numpy.ndarray
+        width: int Original image width
+        height: int Original image height
+        resized_width: int Resized image width
+        resized_height: int Resized image height
+        resize_interpolation: Optional[str] Resize interpolation method "lanczos", "area", "bilinear", "bicubic", "nearest", "box"
+
+    Returns:
+        image
+    """
+    if resize_interpolation is None:
+        resize_interpolation = "lanczos" if width > resized_width and height > resized_height else "area"
+    
+    # we use PIL for lanczos (for backward compatibility) and box, cv2 for others
+    use_pil = resize_interpolation in ["lanczos", "lanczos4", "box"]
+
+    resized_size = (resized_width, resized_height)
+    if use_pil:
+        interpolation = get_pil_interpolation(resize_interpolation)
+        image = pil_resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (PIL)")
+    else:
+        interpolation = get_cv2_interpolation(resize_interpolation)
+        image = cv2.resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (cv2)")
+
+    return image
+
+
+def get_cv2_interpolation(interpolation: Optional[str]) -> Optional[int]:
+    """
+    Convert interpolation value to cv2 interpolation integer
+
+    https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga5bb5a1fea74ea38e1a5445ca803ff121
+    """
+    if interpolation is None:
+        return None 
+
+    if interpolation == "lanczos" or interpolation == "lanczos4":
+        # Lanczos interpolation over 8x8 neighborhood 
+        return cv2.INTER_LANCZOS4
+    elif interpolation == "nearest":
+        # Bit exact nearest neighbor interpolation. This will produce same results as the nearest neighbor method in PIL, scikit-image or Matlab. 
+        return cv2.INTER_NEAREST_EXACT
+    elif interpolation == "bilinear" or interpolation == "linear":
+        # bilinear interpolation
+        return cv2.INTER_LINEAR
+    elif interpolation == "bicubic" or interpolation == "cubic":
+        # bicubic interpolation 
+        return cv2.INTER_CUBIC
+    elif interpolation == "area":
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method. 
+        return cv2.INTER_AREA
+    elif interpolation == "box":
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method. 
+        return cv2.INTER_AREA
+    else:
+        return None
+
+def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resampling]:
+    """
+    Convert interpolation value to PIL interpolation
+
+    https://pillow.readthedocs.io/en/stable/handbook/concepts.html#concept-filters
+    """
+    if interpolation is None:
+        return None 
+
+    if interpolation == "lanczos":
+        return Image.Resampling.LANCZOS
+    elif interpolation == "nearest":
+        # Pick one nearest pixel from the input image. Ignore all other input pixels.
+        return Image.Resampling.NEAREST
+    elif interpolation == "bilinear" or interpolation == "linear":
+        # For resize calculate the output pixel value using linear interpolation on all pixels that may contribute to the output value. For other transformations linear interpolation over a 2x2 environment in the input image is used.
+        return Image.Resampling.BILINEAR
+    elif interpolation == "bicubic" or interpolation == "cubic":
+        # For resize calculate the output pixel value using cubic interpolation on all pixels that may contribute to the output value. For other transformations cubic interpolation over a 4x4 environment in the input image is used.
+        return Image.Resampling.BICUBIC
+    elif interpolation == "area":
+        # Image.Resampling.BOX may be more appropriate if upscaling 
+        # Area interpolation is related to cv2.INTER_AREA
+        # Produces a sharper image than Resampling.BILINEAR, doesn’t have dislocations on local level like with Resampling.BOX.
+        return Image.Resampling.HAMMING
+    elif interpolation == "box":
+        # Each pixel of source image contributes to one pixel of the destination image with identical weights. For upscaling is equivalent of Resampling.NEAREST.
+        return Image.Resampling.BOX
+    else:
+        return None
+
+def validate_interpolation_fn(interpolation_str: str) -> bool:
+    """
+    Check if a interpolation function is supported
+    """
+    return interpolation_str in ["lanczos", "nearest", "bilinear", "linear", "bicubic", "cubic", "area", "box"]
 
 # endregion
 

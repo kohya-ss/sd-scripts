@@ -14,6 +14,11 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Mar 30, 2025:
+- LoRA-GGPO is added for FLUX.1 LoRA training. Thank you to rockerBOO for PR [#1974](https://github.com/kohya-ss/sd-scripts/pull/1974). 
+  - Specify `--network_args ggpo_sigma=0.03 ggpo_beta=0.01` in the command line or `network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]` in .toml file. See PR for details.
+- The interpolation method for resizing the original image to the training size can now be specified. Thank you to rockerBOO for PR [#1939](https://github.com/kohya-ss/sd-scripts/pull/1939).
+
 Mar 20, 2025:
 - `pytorch-optimizer` is added to requirements.txt. Thank you to gesen2egee for PR [#1985](https://github.com/kohya-ss/sd-scripts/pull/1985). 
   - For example, you can use CAME optimizer with `--optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"`.
