@@ -413,9 +413,19 @@ def resize_image(image: np.ndarray, width: int, height: int, resized_width: int,
     Returns:
         image
     """
+
+    # Ensure all size parameters are actual integers
+    width = int(width)
+    height = int(height)
+    resized_width = int(resized_width)
+    resized_height = int(resized_height)
+
     if resize_interpolation is None:
-        resize_interpolation = "lanczos" if width > resized_width and height > resized_height else "area"
-    
+        if width >= resized_width and height >= resized_height:
+            resize_interpolation = "area"
+        else:
+            resize_interpolation = "lanczos"
+
     # we use PIL for lanczos (for backward compatibility) and box, cv2 for others
     use_pil = resize_interpolation in ["lanczos", "lanczos4", "box"]
 
