@@ -171,9 +171,10 @@ class NetworkTrainer:
         train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
         val_dataset_group: Optional[train_util.DatasetGroup],
     ):
-        train_dataset_group.verify_bucket_reso_steps(64)
-        if val_dataset_group is not None:
-            val_dataset_group.verify_bucket_reso_steps(64)
+        if type(self).__name__ == "NetworkTrainer":
+            train_dataset_group.verify_bucket_reso_steps(64)
+            if val_dataset_group is not None:
+                val_dataset_group.verify_bucket_reso_steps(64)
 
     def load_target_model(self, args, weight_dtype, accelerator):
         text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
