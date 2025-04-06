@@ -14,6 +14,10 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Apr 6, 2025:
+- IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
+    - `--ip_noise_gamma` and `--ip_noise_gamma_random_strength` are available.
+  
 Mar 30, 2025:
 - LoRA-GGPO is added for FLUX.1 LoRA training. Thank you to rockerBOO for PR [#1974](https://github.com/kohya-ss/sd-scripts/pull/1974). 
   - Specify `--network_args ggpo_sigma=0.03 ggpo_beta=0.01` in the command line or `network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]` in .toml file. See PR for details.
