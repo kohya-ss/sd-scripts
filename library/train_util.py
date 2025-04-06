@@ -2191,7 +2191,7 @@ class FineTuningDataset(BaseDataset):
         validation_seed: int,
         validation_split: float,
         skip_npz_check: Optional[bool] = SKIP_NPZ_PATH_CHECK,
-        resize_interpolation: Optional[str],
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 

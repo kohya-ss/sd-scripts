@@ -15,6 +15,7 @@ tensorboard
 safetensors
 torchao
 pytorch-optimizer
+deepspeed==0.15.4
 # gradio==3.16.2
 altair
 easygui
