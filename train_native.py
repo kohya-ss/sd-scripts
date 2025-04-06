@@ -1303,11 +1303,10 @@ class NativeTrainer:
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
 
-                #250406: Why multiply? It has been included.
-                #initial_step *= args.gradient_accumulation_steps
+                initial_step *= args.gradient_accumulation_steps
 
-                # set epoch to start to make initial_step less than len(train_dataloader)
-                epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+                # set epoch to start to make initial_step less than len(train_dataloader). Notice that initial_step has been multipled.
+                epoch_to_start = initial_step // len(train_dataloader) 
             else:
                 # if not, only epoch no is skipped for informative purpose
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1352,7 +1351,8 @@ class NativeTrainer:
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
                 initial_step -= len(train_dataloader)
-            global_step = initial_step
+            # Divide back for proper logging.
+            global_step = int(initial_step / args.gradient_accumulation_steps)
 
         # log device and dtype for each model
         logger.info(f"unet dtype: {unet_weight_dtype}, device: {unet.device}")
