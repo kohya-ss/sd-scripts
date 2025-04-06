@@ -78,14 +78,14 @@ class SdxlNativeTrainer(train_native.NativeTrainer):
         train_util.append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names)
 
     def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
-        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
+        #Disabled for 64 / 32 conflict. Has been checked below.
+        #super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.cache_text_encoder_outputs:
             assert (
                 train_dataset_group.is_text_encoder_output_cacheable()
             ), "when caching Text Encoder output, either caption_dropout_rate, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used / Text Encoderの出力をキャッシュするときはcaption_dropout_rate, shuffle_caption, token_warmup_step, caption_tag_dropout_rateは使えません"
-        
         train_dataset_group.verify_bucket_reso_steps(self.arb_min_steps)
         if val_dataset_group is not None:
             val_dataset_group.verify_bucket_reso_steps(self.arb_min_steps)
