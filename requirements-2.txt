@@ -10,6 +10,7 @@ bitsandbytes
 prodigyopt
 lion-pytorch
 schedulefree
+prodigy-plus-schedule-free
 tensorboard
 safetensors
 torchao
