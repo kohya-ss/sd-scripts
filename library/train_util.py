@@ -3949,6 +3949,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="enable static_graph for DDP / DDPでstatic_graphを有効にする",
     )
     parser.add_argument(
+        "--profiler_path",
+        type=str,
+        default="/dev/shm/trace",
+        help="Path for storing PyTorch Profiler traces. Recommended to store in RAM drive. / PyTorch Profiler トレースを保存するためのパス。RAM ドライブに保存することをお勧めします。",
+    )
+    parser.add_argument(
         "--clip_skip",
         type=int,
         default=None,
@@ -5478,7 +5484,7 @@ def prepare_accelerator(args: argparse.Namespace):
         (
             ProfileKwargs(
                 activities=["cpu", "cuda"],
-                output_trace_dir="/dev/shm/trace",
+                output_trace_dir=args.profiler_path,
                 profile_memory=True,
                 record_shapes=True,
                 with_flops=True
