@@ -708,10 +708,10 @@ class NativeTrainer:
             unet.to(accelerator.device, dtype=weight_dtype)  # because of unet is not prepared
 
         # TODO: SDXL Model Specific
-        # TODO: Is casting to torch.tensor slowing down the performance so much? (20% slower)
+        # TODO: Why casting to torch.tensor will slow down the performance so much? (20% slower)
         training_models = []
         params_to_optimize = []
-        using_torchao = args.optimizer_type.endswith("4bit") or  args.optimizer_type.endswith("Fp8")
+        using_torchao = args.optimizer_type.endswith("4bit") or args.optimizer_type.endswith("Fp8")
         if train_unet:
             training_models.append(unet)
             if block_lrs is None:
@@ -1302,7 +1302,9 @@ class NativeTrainer:
                         f"initial_step is specified but not resuming. lr scheduler will be started from the beginning / initial_stepが指定されていますがresumeしていないため、lr schedulerは最初から始まります"
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
-                initial_step *= args.gradient_accumulation_steps
+
+                #250406: Why multiply? It has been included.
+                #initial_step *= args.gradient_accumulation_steps
 
                 # set epoch to start to make initial_step less than len(train_dataloader)
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1350,8 +1352,7 @@ class NativeTrainer:
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
                 initial_step -= len(train_dataloader)
-            # I have found that the log is screwed up. This should be divided back.
-            global_step = int(initial_step / args.gradient_accumulation_steps)
+            global_step = initial_step
 
         # log device and dtype for each model
         logger.info(f"unet dtype: {unet_weight_dtype}, device: {unet.device}")
@@ -1380,6 +1381,8 @@ class NativeTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
+                #Enable this for profiler. Hint: select a big area (until EPOCH VALIDATION) and tab / shift tab
+                #with accelerator.profile() as prof:
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
@@ -1392,7 +1395,10 @@ class NativeTrainer:
                 # Tne correct specific "network" operation has been removed.
                 # The process_batch will wrap all the inference logic (because it will be used for validation dataset also)
                 with accelerator.accumulate(*training_models):
-                  
+                    # 250331: From HF guide
+                    # 250406: No need
+                    #optimizer.zero_grad(set_to_none=True)
+                    
                     # temporary, for batch processing
                     self.on_step_start(args, accelerator, text_encoders, unet, batch, weight_dtype)
 
@@ -1415,13 +1421,13 @@ class NativeTrainer:
 
                     accelerator.backward(loss)
 
+                    #250331: It is required to sync manually. See torch.Tensor.grad
                     if accelerator.sync_gradients:
                         for training_model in training_models:
-                            self.all_reduce_training_model(accelerator, training_model)  # sync DDP grad manually
-                            if args.max_grad_norm != 0.0:
-                                if hasattr(training_model, "get_trainable_params"):
-                                    params_to_clip = accelerator.unwrap_model(training_model).get_trainable_params()
-                                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                            self.all_reduce_training_model(accelerator, training_model)  # sync DDP grad manually                            
+                            if (args.max_grad_norm != 0.0) and hasattr(training_model, "get_trainable_params"):
+                                params_to_clip = accelerator.unwrap_model(training_model).get_trainable_params()
+                                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                     optimizer.step()
                     lr_scheduler.step()

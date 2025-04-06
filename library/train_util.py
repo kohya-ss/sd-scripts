@@ -14,7 +14,7 @@ import shutil
 import time
 import typing
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState, DataLoaderConfiguration
+from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, ProfileKwargs, PartialState, DataLoaderConfiguration
 import glob
 import math
 import os
@@ -5448,6 +5448,15 @@ def prepare_accelerator(args: argparse.Namespace):
             if args.ddp_gradient_as_bucket_view or args.ddp_static_graph
             else None
         ),
+        (
+            ProfileKwargs(
+                activities=["cpu", "cuda"],
+                output_trace_dir="/dev/shm/trace",
+                profile_memory=True,
+                record_shapes=True,
+                with_flops=True
+            )
+        )
     ]
     kwargs_handlers = [i for i in kwargs_handlers if i is not None]
     deepspeed_plugin = deepspeed_utils.prepare_deepspeed_plugin(args)
