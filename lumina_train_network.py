@@ -230,7 +230,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
-    def encode_images_to_latents(self, args, accelerator, vae, images):
+    def encode_images_to_latents(self, args, vae, images):
         return vae.encode(images)
 
     # not sure, they use same flux vae
