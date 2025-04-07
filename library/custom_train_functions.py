@@ -105,9 +105,26 @@ def add_v_prediction_like_loss(loss: torch.Tensor, timesteps: torch.IntTensor, n
     return loss
 
 
-def apply_debiased_estimation(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, v_prediction=False):
-    snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
-    snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
+
+def apply_debiased_estimation(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, v_prediction=False, image_size=None):
+   # Check if we have SNR values available
+    if not (hasattr(noise_scheduler, "all_snr") or hasattr(noise_scheduler, "get_snr_for_timestep")):
+        return loss
+
+    if hasattr(noise_scheduler, "get_snr_for_timestep") and not callable(noise_scheduler.get_snr_for_timestep):
+        return loss
+
+    # Get SNR values with image_size consideration
+    if hasattr(noise_scheduler, "get_snr_for_timestep") and callable(noise_scheduler.get_snr_for_timestep):
+        snr_t: torch.Tensor = noise_scheduler.get_snr_for_timestep(timesteps, image_size)
+    else:
+        timesteps_indices = train_util.timesteps_to_indices(timesteps, len(noise_scheduler.all_snr))
+        snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps_indices])
+    
+    # Cap the SNR to avoid numerical issues
+    snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)
+    
+    # Apply weighting based on prediction type
     if v_prediction:
         weight = 1 / (snr_t + 1)
     else:
