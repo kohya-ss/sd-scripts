@@ -572,7 +572,7 @@ def train(args, progress_interceptor = None):
     # )
     accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
     accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
-
+    accelerator.print("starting training")
     progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
 
@@ -761,7 +761,7 @@ def train(args, progress_interceptor = None):
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                print("progress interceptor entered")
+                accelerator.print("progress interceptor entered")
                 progress_interceptor.send_training_progress(
                     value=global_step,
                     max_value=args.max_train_steps,
