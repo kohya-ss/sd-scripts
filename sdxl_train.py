@@ -761,6 +761,7 @@ def train(args, progress_interceptor = None):
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
+                print("progress interceptor entered")
                 progress_interceptor.send_training_progress(
                     value=global_step,
                     max_value=args.max_train_steps,
@@ -952,6 +953,7 @@ class ProgressInterceptor:
         self.api_base_url = "https://13df-2405-201-d02a-a86b-69e0-1f60-c792-bb5/api/generations"
 
     def send_training_progress(self, value, max_value):
+        print("entered training progress")
         if max_value < 100:
             progress = int((value / max_value) * 100)
             self._post_progress(progress)
