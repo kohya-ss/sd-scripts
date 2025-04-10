@@ -1729,6 +1729,7 @@ class DreamBoothDataset(BaseDataset):
         self.num_train_images = num_train_images
 
         logger.info(f"{num_reg_images} reg images.")
+        random.shuffle(reg_infos)
         if num_train_images < num_reg_images:
             logger.warning("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
 
@@ -1742,13 +1743,16 @@ class DreamBoothDataset(BaseDataset):
                 for info, subset in reg_infos:
                     if first_loop:
                         self.register_image(info, subset)
+                        logger.info(f"Registering image: {info.absolute_path}")
                         n += info.num_repeats
                     else:
                         info.num_repeats += 1  # rewrite registered info
+                        logger.info(f"Registering image: {info.absolute_path}")
                         n += 1
                     if n >= num_train_images:
                         break
                 first_loop = False
+                random.shuffle(reg_infos)
 
         self.num_reg_images = num_reg_images
 
