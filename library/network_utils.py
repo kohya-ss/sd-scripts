@@ -105,7 +105,7 @@ def initialize_pissa(
             warnings.warn(UserWarning(f"Up matrix shape mismatch. Got {up.shape}, expected {expected_up_shape}"))
 
         lora_up.weight.data = up.to(dtype=lora_up.weight.dtype)
-        lora_down.weight.data = down.to(dtype=lora_up.weight.dtype)
+        lora_down.weight.data = down.to(dtype=lora_down.weight.dtype)
 
         weight = weight.data - scale * (up @ down)
         org_module.weight.data = weight.to(org_module_device, dtype=org_module_weight_dtype)
