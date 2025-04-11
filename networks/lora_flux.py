@@ -103,7 +103,7 @@ class LoRAModule(torch.nn.Module):
 
     def initialize_weights(self, org_module: torch.nn.Module, initialize: Optional[str], device: Optional[torch.device]):
         """
-        Inititalize the weights for the LoRA
+        Initialize the weights for the LoRA
 
         org_module: original module we are applying the LoRA to
         device: device to run initialization computation on
