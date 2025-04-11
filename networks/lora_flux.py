@@ -7,6 +7,7 @@
 # https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
 # https://github.com/cloneofsimo/lora/blob/master/lora_diffusion/lora.py
 
+import math
 import os
 from typing import Dict, List, Optional, Type, Union
 from diffusers import AutoencoderKL
@@ -86,6 +87,19 @@ class LoRAModule(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
+        self._org_lora_up = None
+        self._org_lora_down = None
+
+        self.ggpo_sigma = ggpo_sigma
+        self.ggpo_beta = ggpo_beta
+
+        if self.ggpo_beta is not None and self.ggpo_sigma is not None:
+            self.combined_weight_norms = None
+            self.grad_norms = None
+            self.perturbation_norm_factor = 1.0 / math.sqrt(org_module.weight.shape[0])
+            self.initialize_norm_cache(org_module.weight)
+            self.org_module_shape: tuple[int] = org_module.weight.shape
+
 
     def initialize_weights(self, org_module: torch.nn.Module, initialize: Optional[str], device: Optional[torch.device]):
         """
@@ -130,15 +144,6 @@ class LoRAModule(torch.nn.Module):
             self._org_lora_up = self._org_lora_up.to("cpu")
             self._org_lora_down = self._org_lora_down.to("cpu")
 
-        self.ggpo_sigma = ggpo_sigma
-        self.ggpo_beta = ggpo_beta
-
-        if self.ggpo_beta is not None and self.ggpo_sigma is not None:
-            self.combined_weight_norms = None
-            self.grad_norms = None
-            self.perturbation_norm_factor = 1.0 / math.sqrt(org_module.weight.shape[0])
-            self.initialize_norm_cache(org_module.weight)
-            self.org_module_shape: tuple[int] = org_module.weight.shape
 
     def apply_to(self):
         self.org_forward = self.org_module.forward

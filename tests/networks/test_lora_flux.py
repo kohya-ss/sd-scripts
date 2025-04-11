@@ -62,6 +62,7 @@ def test_alpha_scaling():
 
 
 def test_initialization_methods():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Test different initialization methods
     org_module = nn.Linear(10, 20)
     org_module.weight.data = generate_synthetic_weights(org_module.weight)
@@ -73,7 +74,8 @@ def test_initialization_methods():
     assert lora_module1.lora_up.weight.shape == (20, 4)
 
     # URAE initialization
-    lora_module2 = LoRAModule(lora_name="test_init_urae", org_module=org_module, lora_dim=4, initialize="urae")
+    lora_module2 = LoRAModule(lora_name="test_init_urae", org_module=org_module, lora_dim=4)
+    lora_module2.initialize_weights(org_module, "urae", device)
     assert hasattr(lora_module2, "_org_lora_up") and lora_module2._org_lora_down is not None
     assert hasattr(lora_module2, "_org_lora_down") and lora_module2._org_lora_down is not None
 
@@ -81,7 +83,8 @@ def test_initialization_methods():
     assert lora_module2.lora_up.weight.shape == (20, 4)
 
     # PISSA initialization
-    lora_module3 = LoRAModule(lora_name="test_init_pissa", org_module=org_module, lora_dim=4, initialize="pissa")
+    lora_module3 = LoRAModule(lora_name="test_init_pissa", org_module=org_module, lora_dim=4)
+    lora_module3.initialize_weights(org_module, "pissa", device)
     assert hasattr(lora_module3, "_org_lora_up") and lora_module3._org_lora_down is not None
     assert hasattr(lora_module3, "_org_lora_down") and lora_module3._org_lora_down is not None
 
