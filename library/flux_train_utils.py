@@ -528,7 +528,6 @@ def get_noisy_model_input_and_timesteps(
 
     return noisy_model_input.to(dtype), timesteps.to(dtype), sigmas
 
-
 def apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas):
     weighting = None
     if args.model_prediction_type == "raw":

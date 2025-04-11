@@ -465,11 +465,28 @@ class NetworkTrainer:
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
 
         if args.wavelet_loss_alpha:
-            # Calculate flow-based clean estimate using the target
-            flow_based_clean = noisy_latents - sigmas.view(-1, 1, 1, 1) * target
-            
-            # Calculate model-based denoised estimate
-            model_denoised = noisy_latents - sigmas.view(-1, 1, 1, 1) * noise_pred
+            if args.wavelet_loss_rectified_flow:
+                # Calculate flow-based clean estimate using the target
+                flow_based_clean = noisy_latents - sigmas.view(-1, 1, 1, 1) * target
+                
+                # Calculate model-based denoised estimate
+                model_denoised = noisy_latents - sigmas.view(-1, 1, 1, 1) * noise_pred
+            else:
+                flow_based_clean = target
+                model_denoised = noise_pred
+
+            def wavelet_loss_fn(args):
+                loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
+                def loss_fn(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
+                    # TODO: we need to get the proper huber_c here, or apply the loss_fn before we get the loss
+                    # To get the noise scheduler, timesteps, and latents
+                    huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, latents, noise_scheduler)
+                    return train_util.conditional_loss(input.float(), target.float(), loss_type, reduction, huber_c)
+
+                return loss_fn
+
+
+            self.wavelet_loss.set_loss_fn(wavelet_loss_fn(args))
 
             wav_loss, pred_combined_hf, target_combined_hf = self.wavelet_loss(model_denoised.float(), flow_based_clean.float())
             # Weight the losses as needed
@@ -1059,6 +1076,9 @@ class NetworkTrainer:
             "ss_wavelet_loss_transform": args.wavelet_loss_transform,
             "ss_wavelet_loss_wavelet": args.wavelet_loss_wavelet,
             "ss_wavelet_loss_level": args.wavelet_loss_level,
+            "ss_wavelet_loss_band_weights": args.wavelet_loss_band_weights,
+            "ss_wavelet_loss_ll_level_threshold": args.wavelet_loss_ll_level_threshold,
+            "ss_wavelet_loss_rectified_flow": args.wavelet_loss_rectified_flow,
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1280,34 +1300,21 @@ class NetworkTrainer:
         val_epoch_loss_recorder = train_util.LossRecorder()
 
         if args.wavelet_loss:
-            def loss_fn(args):
-                loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
-                if loss_type == "huber":
-                    def huber(pred, target, reduction="mean"):
-                        if args.huber_c is None:
-                            raise NotImplementedError("huber_c not implemented correctly")
-                        b_size = pred.shape[0]
-                        huber_c = torch.full((b_size,), args.huber_c * args.huber_scale, device=pred.device)
-                        huber_c = huber_c.view(-1, 1, 1, 1)
-                        loss = 2 * huber_c * (torch.sqrt((pred - target) ** 2 + huber_c**2) - huber_c)
-                        return loss.mean()
-                    return huber
+            self.wavelet_loss = WaveletLoss(
+                wavelet=args.wavelet_loss_wavelet, 
+                level=args.wavelet_loss_level, 
+                band_weights=args.wavelet_loss_band_weights, 
+                ll_level_threshold=args.wavelet_loss_ll_level_threshold, 
+                device=accelerator.device
+            )
 
-                elif loss_type == "smooth_l1":
-                    def smooth_l1(pred, target, reduction="mean"):
-                        if args.huber_c is None:
-                            raise NotImplementedError("huber_c not implemented correctly")
-                        b_size = pred.shape[0]
-                        huber_c = torch.full((b_size,), args.huber_c * args.huber_scale, device=pred.device)
-                        huber_c = huber_c.view(-1, 1, 1, 1)
-                        loss = 2 * (torch.sqrt((pred - target) ** 2 + huber_c**2) - huber_c)
-                        return loss.mean()
-                elif loss_type == "l2":
-                    return  torch.nn.functional.mse_loss
-                elif loss_type == "l1":
-                    return torch.nn.functional.l1_loss
-
-            self.wavelet_loss = WaveletLoss(wavelet=args.wavelet_loss_wavelet, level=args.wavelet_loss_level, loss_fn=loss_fn(args), device=accelerator.device)
+            logger.info("Wavelet Loss:")
+            logger.info(f"\tLevel: {args.wavelet_loss_level}")
+            logger.info(f"\tWavelet: {args.wavelet_loss_wavelet}")
+            if args.wavelet_loss_ll_level_threshold is not None:
+                logger.info(f"\tLL level threshold: {args.wavelet_loss_band_weights}")
+            if args.wavelet_loss_band_weights is not None:
+                logger.info(f"\tBand Weights: {args.wavelet_loss_band_weights}")
 
         del train_dataset_group
         if val_dataset_group is not None:
