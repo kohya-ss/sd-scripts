@@ -1031,12 +1031,12 @@ class NetworkTrainer:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
-                example_tuple = (latents, batch["captions"])
                 
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
                     if args.sample_every_n_steps is not None and global_step % args.sample_every_n_steps == 0:
+                        accelerator.wait_for_everyone()
                         example_tuple = (latents, batch["captions"])
                         self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
 
@@ -1095,6 +1095,7 @@ class NetworkTrainer:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
             if args.sample_every_n_epochs is not None and (epoch + 1)% args.sample_every_n_epochs == 0:
+                accelerator.wait_for_everyone()
                 example_tuple = (latents, batch["captions"])
                 self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, example_tuple)
 
