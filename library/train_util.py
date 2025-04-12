@@ -4657,6 +4657,11 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
             ignore_nesting_dict[section_name] = section_dict
             continue
 
+
+        if section_name == "wavelet_loss_band_level_weights":
+            ignore_nesting_dict[section_name] = section_dict
+            continue
+
         if section_name == "wavelet_loss_band_weights":
             ignore_nesting_dict[section_name] = section_dict
             continue
