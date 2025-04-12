@@ -1318,11 +1318,13 @@ class NetworkTrainer:
 
             logger.info("Wavelet Loss:")
             logger.info(f"\tLevel: {args.wavelet_loss_level}")
+            logger.info(f"\tAlpha: {args.wavelet_loss_alpha}")
+            logger.info(f"\tTransform: {args.wavelet_loss_transform}")
             logger.info(f"\tWavelet: {args.wavelet_loss_wavelet}")
             if args.wavelet_loss_ll_level_threshold is not None:
-                logger.info(f"\tLL level threshold: {args.wavelet_loss_band_weights}")
+                logger.info(f"\tLL level threshold: {args.wavelet_loss_ll_level_threshold}")
             if args.wavelet_loss_band_weights is not None:
-                logger.info(f"\tBand Weights: {args.wavelet_loss_band_weights}")
+                logger.info(f"\tBand weights: {args.wavelet_loss_band_weights}")
 
         del train_dataset_group
         if val_dataset_group is not None:
