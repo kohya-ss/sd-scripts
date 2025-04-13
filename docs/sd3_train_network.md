@@ -6,7 +6,7 @@
 
 `sd3_train_network.py`は、Stable Diffusion 3/3.5モデルに対してLoRAなどの追加ネットワークを学習させるためのスクリプトです。SD3は、MMDiT (Multi-Modal Diffusion Transformer) と呼ばれる新しいアーキテクチャを採用しており、従来のStable Diffusionモデルとは構造が異なります。このスクリプトを使用することで、SD3/3.5モデルに特化したLoRAモデルを作成できます。
 
-このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象とし、`train_network.py`での学習経験があることを前提としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](how_to_use_train_network.md)を参照してください。
+このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象とし、`train_network.py`での学習経験があることを前提としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](train_network.md)を参照してください。
 
 **前提条件:**
 
@@ -68,7 +68,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 
 ### 4.1. 主要なコマンドライン引数の解説（`train_network.py`からの追加・変更点）
 
-[`train_network.py`のガイド](how_to_use_train_network.md)で説明されている引数に加え、以下のSD3/3.5特有の引数を指定します。共通の引数（`--output_dir`, `--output_name`, `--network_module`, `--network_dim`, `--network_alpha`, `--learning_rate`など）については、上記ガイドを参照してください。
+[`train_network.py`のガイド](train_network.md)で説明されている引数に加え、以下のSD3/3.5特有の引数を指定します。共通の引数（`--output_dir`, `--output_name`, `--network_module`, `--network_dim`, `--network_alpha`, `--learning_rate`など）については、上記ガイドを参照してください。
 
 #### モデル関連
 
@@ -111,7 +111,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 
 ### 4.2. 学習の開始
 
-必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](how_to_use_train_network.md#32-starting-the-training--学習の開始)と同様です。
+必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
 
 ## 5. 学習済みモデルの利用
 
@@ -119,4 +119,4 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 
 ## 6. その他
 
-`sd3_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](how_to_use_train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python sd3_train_network.py --help`) を参照してください。
+`sd3_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python sd3_train_network.py --help`) を参照してください。
