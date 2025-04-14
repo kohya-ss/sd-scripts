@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch import Tensor
 import re
-from library.model_utils import AID_GELU
+from library.model_utils import AID
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -125,7 +125,7 @@ class LoRAModule(torch.nn.Module):
         self.module_dropout = module_dropout
 
         self.aid = (
-            AID_GELU(dropout_prob=aid_dropout, approximate="tanh") if aid_dropout is not None else torch.nn.Identity()
+            AID(aid_dropout) if aid_dropout is not None else torch.nn.Identity()
         )  # AID activation
 
         self.ggpo_sigma = ggpo_sigma
