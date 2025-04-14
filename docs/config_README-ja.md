@@ -144,6 +144,7 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `resize_interpolation` |（通常は設定しません） | o | o | o |
 
 * `num_repeats`
     * サブセットの画像の繰り返し回数を指定します。fine tuning における `--dataset_repeats` に相当しますが、`num_repeats` はどの学習方法でも指定可能です。
@@ -161,6 +162,9 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 
 * `enable_wildcard`
     * ワイルドカード記法および複数行キャプションを有効にします。ワイルドカード記法、複数行キャプションについては後述します。
+
+* `resize_interpolation`
+    * 画像のリサイズ時に使用する補間方法を指定します。通常は指定しなくて構いません。`lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box` が指定可能です。デフォルト（未指定時）は、縮小時は `area`、拡大時は `lanczos` になります。このオプションを指定すると、拡大時・縮小時とも同じ補間方法が使用されます。`lanczos`、`box`を指定するとPILが、それ以外を指定するとOpenCVが使用されます。
 
 ### DreamBooth 方式専用のオプション
 

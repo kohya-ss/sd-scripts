@@ -152,6 +152,7 @@ These options are related to subset configuration.
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `resize_interpolation` | (not specified) | o | o | o |
 
 * `num_repeats`
     * Specifies the number of repeats for images in a subset. This is equivalent to `--dataset_repeats` in fine-tuning but can be specified for any training method.
@@ -165,6 +166,8 @@ These options are related to subset configuration.
     * Specifies an additional separator. The part separated by this separator is treated as one tag and is shuffled and dropped. It is then replaced by `caption_separator`. For example, if you specify `aaa;;;bbb;;;ccc`, it will be replaced by `aaa,bbb,ccc` or dropped together.
 * `enable_wildcard`
     * Enables wildcard notation. This will be explained later.
+* `resize_interpolation`
+    * Specifies the interpolation method used when resizing images. Normally, there is no need to specify this. The following options can be specified: `lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box`. By default (when not specified), `area` is used for downscaling, and `lanczos` is used for upscaling. If this option is specified, the same interpolation method will be used for both upscaling and downscaling. When `lanczos` or `box` is specified, PIL is used; for other options, OpenCV is used.
 
 ### DreamBooth-specific options
 
