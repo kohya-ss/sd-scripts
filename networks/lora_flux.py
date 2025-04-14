@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch import Tensor
 import re
-from library.model_utils import AID
+from library.model_utils import AID_GELU
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 
 NUM_DOUBLE_BLOCKS = 19
 NUM_SINGLE_BLOCKS = 38
+
+def get_point_on_curve(block_id, total_blocks=38, peak=0.9, shift=0.75):
+    # Normalize the position to 0-1 range
+    normalized_pos = block_id / total_blocks
+    
+    # Shift the sine curve to only use the first 3/4 of the cycle
+    # This gives us: start at 0, peak in the middle, end around 0.7
+    phase_shift = shift * math.pi
+    sine_value = math.sin(normalized_pos * phase_shift)
+    
+    # Scale to our desired peak of 0.9
+    result = peak * sine_value
+    
+    return result
 
 
 class LoRAModule(torch.nn.Module):
@@ -109,7 +123,7 @@ class LoRAModule(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
-        self.aid = AID(dropout_prob=aid_dropout)  # AID activation
+        self.aid = AID_GELU(dropout_prob=aid_dropout, approximate="tanh") if aid_dropout is not None else torch.nn.Identity()  # AID activation
 
         self.ggpo_sigma = ggpo_sigma
         self.ggpo_beta = ggpo_beta
@@ -159,8 +173,8 @@ class LoRAModule(torch.nn.Module):
 
             lx = self.lora_up(lx)
 
-            if self.aid_dropout is not None and self.training:
-                lx = self.aid(lx)
+            # Activation by Interval-wise Dropout 
+            lx = self.aid(lx)
 
             # LoRA Gradient-Guided Perturbation Optimization
             if self.training and self.ggpo_sigma is not None and self.ggpo_beta is not None and self.combined_weight_norms is not None and self.grad_norms is not None:
@@ -810,6 +824,7 @@ class LoRANetwork(torch.nn.Module):
 
                             dim = None
                             alpha = None
+                            aid_dropout_p = None
 
                             if modules_dim is not None:
                                 # モジュール指定あり
@@ -837,6 +852,22 @@ class LoRANetwork(torch.nn.Module):
                                             if d is not None and all([id in lora_name for id in identifier[i]]):
                                                 dim = d  # may be 0 for skip
                                                 break
+                                    is_double = False
+                                    if "double" in lora_name:
+                                        is_double = True
+                                    is_single = False
+                                    if "single" in lora_name:
+                                        is_single = True
+                                    block_index = None
+                                    if is_flux and dim and (is_double or is_single):
+                                        # "lora_unet_double_blocks_0_..." or "lora_unet_single_blocks_0_..."
+                                        block_index = int(lora_name.split("_")[4])  # bit dirty
+
+                                    if block_index is not None:
+
+                                        all_block_index = block_index if is_double else block_index + NUM_DOUBLE_BLOCKS
+                                        aid_dropout_p = get_point_on_curve(all_block_index, NUM_DOUBLE_BLOCKS + NUM_SINGLE_BLOCKS)
+
 
                                     if (
                                         is_flux
@@ -847,8 +878,6 @@ class LoRANetwork(torch.nn.Module):
                                         )
                                         and ("double" in lora_name or "single" in lora_name)
                                     ):
-                                        # "lora_unet_double_blocks_0_..." or "lora_unet_single_blocks_0_..."
-                                        block_index = int(lora_name.split("_")[4])  # bit dirty
                                         if (
                                             "double" in lora_name
                                             and self.train_double_block_indices is not None
@@ -889,7 +918,7 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
-                                aid_dropout=aid_dropout,
+                                aid_dropout=aid_dropout_p if aid_dropout_p is not None else aid_dropout,
                                 split_dims=split_dims,
                                 ggpo_beta=ggpo_beta,
                                 ggpo_sigma=ggpo_sigma,
