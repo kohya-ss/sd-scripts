@@ -6,7 +6,7 @@
 
 `sd3_train_network.py`は、Stable Diffusion 3/3.5モデルに対してLoRAなどの追加ネットワークを学習させるためのスクリプトです。SD3は、MMDiT (Multi-Modal Diffusion Transformer) と呼ばれる新しいアーキテクチャを採用しており、従来のStable Diffusionモデルとは構造が異なります。このスクリプトを使用することで、SD3/3.5モデルに特化したLoRAモデルを作成できます。
 
-このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象とし、`train_network.py`での学習経験があることを前提としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](train_network.md)を参照してください。
+このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](train_network.md)を参照してください。また一部のパラメータは [`sdxl_train_network.py`](sdxl_train_network.md) と同様のものがあるため、そちらも参考にしてください。
 
 **前提条件:**
 
@@ -18,8 +18,8 @@
 
 `sd3_train_network.py`は`train_network.py`をベースに、SD3/3.5モデルに対応するための変更が加えられています。主な違いは以下の通りです。
 
-*   **対象モデル:** Stable Diffusion 3 Medium / Large (3.0 / 3.5) モデルを対象とします。
-*   **モデル構造:** U-Netの代わりにMMDiT (Transformerベース) を使用します。Text EncoderとしてCLIP-L, CLIP-G, T5-XXLの三つを使用します。VAEはSDXLと互換性がありますが、入力のスケール処理が異なります。
+*   **対象モデル:** Stable Diffusion 3, 3.5 Medium / Large モデルを対象とします。
+*   **モデル構造:** U-Netの代わりにMMDiT (Transformerベース) を使用します。Text EncoderとしてCLIP-L, CLIP-G, T5-XXLの三つを使用します。VAEはSDXLと互換性がありません。
 *   **引数:** SD3/3.5モデル、Text Encoder群、VAEを指定する引数があります。ただし、単一ファイルの`.safetensors`形式であれば、内部で自動的に分離されるため、個別のパス指定は必須ではありません。
 *   **一部引数の非互換性:** Stable Diffusion v1/v2向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）はSD3/3.5の学習では使用されません。
 *   **SD3特有の引数:** Text Encoderのアテンションマスクやドロップアウト率、Positional Embeddingの調整（SD3.5向け）、タイムステップのサンプリングや損失の重み付けに関する引数が追加されています。
@@ -29,8 +29,8 @@
 学習を開始する前に、以下のファイルが必要です。
 
 1.  **学習スクリプト:** `sd3_train_network.py`
-2.  **SD3/3.5モデルファイル:** 学習のベースとなるSD3/3.5モデルの`.safetensors`ファイル。単一ファイル形式（Diffusers/ComfyUI/AUTOMATIC1111形式）を推奨します。
-    *   Text EncoderやVAEが別ファイルになっている場合は、対応する引数でパスを指定します。
+2.  **SD3/3.5モデルファイル:** 学習のベースとなるSD3/3.5モデルの`.safetensors`ファイル。またText Encoderをそれぞれ対応する引数でパスを指定します。
+    * 単一ファイル形式も使用可能です。
 3.  **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）。
     *   例として`my_sd3_dataset_config.toml`を使用します。
 
@@ -43,6 +43,9 @@
 ```bash
 accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py 
  --pretrained_model_name_or_path="<path to SD3 model>" 
+ --clip_l="<path to CLIP-L model>"
+ --clip_g="<path to CLIP-G model>" 
+ --t5xxl="<path to T5-XXL model>" 
  --dataset_config="my_sd3_dataset_config.toml" 
  --output_dir="<output directory for training results>" 
  --output_name="my_sd3_lora" 
@@ -58,8 +61,6 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
  --save_every_n_epochs=1 
  --mixed_precision="fp16" 
  --gradient_checkpointing 
- --apply_lg_attn_mask 
- --apply_t5_attn_mask 
  --weighting_scheme="sigma_sqrt" 
  --blocks_to_swap=32
 ```
@@ -73,10 +74,10 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 #### モデル関連
 
 *   `--pretrained_model_name_or_path="<path to SD3 model>"` **[必須]**
-    *   学習のベースとなるSD3/3.5モデルの`.safetensors`ファイルのパスを指定します。単一ファイル形式（Diffusers/ComfyUI/AUTOMATIC1111形式）を想定しています。
+    *   学習のベースとなるSD3/3.5モデルの`.safetensors`ファイルのパスを指定します。
 *   `--clip_l`, `--clip_g`, `--t5xxl`, `--vae`:
-    *   ベースモデルが単一ファイル形式の場合、通常これらの指定は不要です（自動的にモデル内部から読み込まれます）。
-    *   もしText EncoderやVAEが別ファイルとして提供されている場合は、それぞれの`.safetensors`ファイルのパスを指定します。
+    *   ベースモデルが単一ファイル形式の場合、これらの指定は不要です（自動的にモデル内部から読み込まれます）。
+    *   Text Encoderが別ファイルとして提供されている場合は、それぞれの`.safetensors`ファイルのパスを指定します。`--vae` はベースモデルに含まれているため、通常は指定する必要はありません（明示的に異なるVAEを使用する場合のみ指定）。
 
 #### SD3/3.5 学習パラメータ
 
@@ -89,13 +90,13 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 *   `--clip_l_dropout_rate`, `--clip_g_dropout_rate`, `--t5_dropout_rate`:
     *   各Text Encoderの出力に対して、指定した確率でドロップアウト（出力をゼロにする）を適用します。過学習の抑制に役立つ場合があります。デフォルトは`0.0`（ドロップアウトなし）です。
 *   `--pos_emb_random_crop_rate=<float>` **[SD3.5向け]**
-    *   MMDiTのPositional Embeddingに対してランダムクロップを適用する確率を指定します。SD3 5M (3.5) モデルで学習された機能であり、他のモデルでの効果は限定的です。デフォルトは`0.0`です。
-*   `--enable_scaled_pos_embed` **[SD3.5向け]**
-    *   マルチ解像度学習時に、解像度に応じてPositional Embeddingをスケーリングします。SD3 5M (3.5) モデルで学習された機能であり、他のモデルでの効果は限定的です。
+    *   MMDiTのPositional Embeddingに対してランダムクロップを適用する確率を指定します。[SD3.5M model card](https://huggingface.co/stabilityai/stable-diffusion-3.5-medium) で説明されています。デフォルトは`0.0`です。
+*   `--enable_scaled_pos_embed` **[SD3.5向け]** **[実験的機能]**
+    *   マルチ解像度学習時に、解像度に応じてPositional Embeddingをスケーリングします。デフォルトは`False`です。通常は指定不要です。
 *   `--training_shift=<float>`
-    *   学習時のタイムステップ（ノイズレベル）の分布を調整するためのシフト値です。`weighting_scheme`に加えて適用されます。`1.0`より大きい値はノイズの大きい（構造寄り）領域を、小さい値はノイズの小さい（詳細寄り）領域を重視する傾向になります。デフォルトは`1.0`です。
+    *   学習時のタイムステップ（ノイズレベル）の分布を調整するためのシフト値です。`weighting_scheme`に加えて適用されます。`1.0`より大きい値はノイズの大きい（構造寄り）領域を、小さい値はノイズの小さい（詳細寄り）領域を重視する傾向になります。デフォルトは`1.0`です。通常はデフォルト値で問題ありません。
 *   `--weighting_scheme=<choice>`
-    *   損失計算時のタイムステップ（ノイズレベル）に応じた重み付け方法を指定します。`sigma_sqrt`, `logit_normal`, `mode`, `cosmap`, `uniform` (または`none`) から選択します。SD3の論文では`sigma_sqrt`が使用されています。デフォルトは`uniform`です。
+    *   損失計算時のタイムステップ（ノイズレベル）に応じた重み付け方法を指定します。`sigma_sqrt`, `logit_normal`, `mode`, `cosmap`, `uniform` (または`none`) から選択します。SD3の論文では`sigma_sqrt`が使用されています。デフォルトは`uniform`です。通常はデフォルト値で問題ありません。
 *   `--logit_mean`, `--logit_std`, `--mode_scale`:
     *   `weighting_scheme`で`logit_normal`または`mode`を選択した場合に、その分布を制御するためのパラメータです。通常はデフォルト値で問題ありません。
 
