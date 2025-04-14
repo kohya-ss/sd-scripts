@@ -5554,15 +5554,14 @@ def sample_images_common(
                                 idx = (idx + 1) % len(latents_list)
                                 if idx == 0:
                                     break
-                            
-                            prompt_dict["prompt"] = prompt_dict.get("prompt").replace(match_caption.group(0), f'{latents_list[idx]["prompt"]}')
-                            #logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
-                            prompt_dict["height"] = latents_list[idx]["height"]
-                            #logger.info(f"Original Image Height: {prompt_dict['height']}")
-                            prompt_dict["width"] = latents_list[idx]["width"]
-                            #logger.info(f"Original Image Width: {prompt_dict['width']}")
-                            prompt_dict["original_lantent"] = latents_list[idx]["original_lantent"]
-                            idx = (idx + 1) % len(latents_list)
+                        prompt_dict["prompt"] = prompt_dict.get("prompt").replace(match_caption.group(0), f'{latents_list[idx]["prompt"]}')
+                        #logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
+                        prompt_dict["height"] = latents_list[idx]["height"]
+                        #logger.info(f"Original Image Height: {prompt_dict['height']}")
+                        prompt_dict["width"] = latents_list[idx]["width"]
+                        #logger.info(f"Original Image Width: {prompt_dict['width']}")
+                        prompt_dict["original_lantent"] = latents_list[idx]["original_lantent"]
+                        idx = (idx + 1) % len(latents_list)
     
             prompt_dict["enum"] = i
             prompt_dict.pop("subset", None)
