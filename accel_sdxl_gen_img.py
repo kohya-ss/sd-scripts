@@ -2455,7 +2455,7 @@ def main(args):
                     )
 
             #distributed_state.wait_for_everyone()
-            logger.info(f"images: {len(images)} metadatas: {len(metadatas)} filenames: {len(filenames)} in process: {distributed_state.local_process_index}")
+            #logger.info(f"images: {len(images)} metadatas: {len(metadatas)} filenames: {len(filenames)} in process: {distributed_state.local_process_index}")
             return images, metadatas, filenames
 
         # 画像生成のプロンプトが一周するまでのループ
@@ -2918,6 +2918,7 @@ def main(args):
                 ext_separated_list_of_batches.append(split_into_batches)
 
         if distributed_state.is_main_process:
+            '''
             batchlogstr = "Running through ext_separated_list_of_batches Before Gather:\n"
             for x in range(len(ext_separated_list_of_batches)):
                 batchlogstr += f"Batch_ext {x} of {len(ext_separated_list_of_batches)} break:\n"
@@ -2925,7 +2926,8 @@ def main(args):
                     batchlogstr += f"    Batch {y} of {len(ext_separated_list_of_batches[x])} break:\n"
                     for z in range(len(ext_separated_list_of_batches[x][y])):
                         batchlogstr += f"        Image {z} of {len(ext_separated_list_of_batches[x][y])} break: {ext_separated_list_of_batches[x][y][z].global_count}\n"
-            logger.info(batchlogstr)  
+            logger.info(batchlogstr)
+            '''
         distributed_state.wait_for_everyone()
         ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
         del extinfo
@@ -2935,10 +2937,10 @@ def main(args):
                 with torch.no_grad():
                     with distributed_state.split_between_processes(batch_list) as batches:
                         for batch in batches:
-                            batchlogstr=f"\nLoading batch of {len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
-                            for i in range(len(batch)):
-                                batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
-                            logger.info(batchlogstr)
+                            #batchlogstr=f"\nLoading batch of {len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
+                            #for i in range(len(batch)):
+                            #    batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
+                            #logger.info(batchlogstr)
                             coll_image, coll_metadata, coll_filename = process_batch(batch, distributed_state, highres_fix)
                             #logger.info(f"coll_image: {len(coll_image)}")
                             #logger.info(f"coll_metadata: {len(coll_metadata)}")
