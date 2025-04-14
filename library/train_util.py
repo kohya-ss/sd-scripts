@@ -5595,7 +5595,6 @@ def sample_images_common(
     with torch.no_grad():
         with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
             for prompt_dict in prompt_dict_lists:
-                if '__caption__' in prompt_dict.get("prompt"):
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                 )
