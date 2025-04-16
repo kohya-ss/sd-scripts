@@ -2,7 +2,7 @@ import argparse
 import copy
 import math
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
 from accelerate import Accelerator
@@ -26,7 +26,12 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         super().__init__()
         self.sample_prompts_te_outputs = None
 
-    def assert_extra_args(self, args, train_dataset_group: train_util.DatasetGroup):
+    def assert_extra_args(
+        self,
+        args,
+        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
+        val_dataset_group: Optional[train_util.DatasetGroup],
+    ):
         # super().assert_extra_args(args, train_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
@@ -56,9 +61,14 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing / blocks_to_swapはcpu_offload_checkpointingと併用できません"
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
         # enumerate resolutions from dataset for positional embeddings
-        self.resolutions = train_dataset_group.get_resolutions()
+        resolutions = train_dataset_group.get_resolutions()
+        if val_dataset_group is not None:
+            resolutions = resolutions + val_dataset_group.get_resolutions()
+        self.resolutions = resolutions
 
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
@@ -294,7 +304,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.training_shift)
         return noise_scheduler
 
-    def encode_images_to_latents(self, args, accelerator, vae, images):
+    def encode_images_to_latents(self, args, vae, images):
         return vae.encode(images)
 
     def shift_scale_latents(self, args, latents):
@@ -312,6 +322,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        is_train=True,
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -339,7 +350,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         # call model
-        with accelerator.autocast():
+        with torch.set_grad_enabled(is_train), accelerator.autocast():
             # TODO support attention mask
             model_pred = unet(noisy_model_input, timesteps, context=context, y=lg_pooled)
 
@@ -439,13 +450,18 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
                 text_encoder.to(te_weight_dtype)  # fp8
                 prepare_fp8(text_encoder, weight_dtype)
 
-    def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
-        # drop cached text encoder outputs
+    def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True):
+        # drop cached text encoder outputs: in validation, we drop cached outputs deterministically by fixed seed
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
         if text_encoder_outputs_list is not None:
             text_encodoing_strategy: strategy_sd3.Sd3TextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
             text_encoder_outputs_list = text_encodoing_strategy.drop_cached_text_encoder_outputs(*text_encoder_outputs_list)
             batch["text_encoder_outputs_list"] = text_encoder_outputs_list
+
+    def on_validation_step_end(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
+        if self.is_swapping_blocks:
+            # prepare for next forward: because backward pass is not called, we need to prepare it here
+            accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
 
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module

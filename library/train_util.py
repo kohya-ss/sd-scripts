@@ -12,17 +12,8 @@ import pathlib
 import re
 import shutil
 import time
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Tuple,
-    Union
-)
+import typing
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
 import glob
 import math
@@ -83,7 +74,7 @@ import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
 import library.deepspeed_utils as deepspeed_utils
-from library.utils import setup_logging, pil_resize
+from library.utils import setup_logging, resize_image, validate_interpolation_fn
 
 setup_logging()
 import logging
@@ -122,14 +113,16 @@ except:
 # JPEG-XL on Linux
 try:
     from jxlpy import JXLImagePlugin
+    from library.jpeg_xl_util import get_jxl_size
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
     pass
 
-# JPEG-XL on Windows
+# JPEG-XL on Linux and Windows
 try:
     import pillow_jxl
+    from library.jpeg_xl_util import get_jxl_size
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
@@ -144,6 +137,45 @@ IMAGE_TRANSFORMS = transforms.Compose(
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3 = "_sd3_te.npz"
+
+
+def split_train_val(
+    paths: List[str],
+    sizes: List[Optional[Tuple[int, int]]],
+    is_training_dataset: bool,
+    validation_split: float,
+    validation_seed: int | None,
+) -> Tuple[List[str], List[Optional[Tuple[int, int]]]]:
+    """
+    Split the dataset into train and validation
+
+    Shuffle the dataset based on the validation_seed or the current random seed.
+    For example if the split of 0.2 of 100 images.
+    [0:80] = 80 training images
+    [80:] = 20 validation images
+    """
+    dataset = list(zip(paths, sizes))
+    if validation_seed is not None:
+        logging.info(f"Using validation seed: {validation_seed}")
+        prevstate = random.getstate()
+        random.seed(validation_seed)
+        random.shuffle(dataset)
+        random.setstate(prevstate)
+    else:
+        random.shuffle(dataset)
+
+    paths, sizes = zip(*dataset)
+    paths = list(paths)
+    sizes = list(sizes)
+    # Split the dataset between training and validation
+    if is_training_dataset:
+        # Training dataset we split to the first part
+        split = math.ceil(len(paths) * (1 - validation_split))
+        return paths[0:split], sizes[0:split]
+    else:
+        # Validation dataset we split to the second part
+        split = len(paths) - round(len(paths) * validation_split)
+        return paths[split:], sizes[split:]
 
 
 class ImageInfo:
@@ -175,6 +207,7 @@ class ImageInfo:
         self.text_encoder_pool2: Optional[torch.Tensor] = None
 
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
+        self.resize_interpolation: Optional[str] = None
 
 
 class BucketManager:
@@ -397,6 +430,9 @@ class BaseSubset:
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
         custom_attributes: Optional[Dict[str, Any]] = None,
+        validation_seed: Optional[int] = None,
+        validation_split: Optional[float] = 0.0,
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
@@ -423,6 +459,11 @@ class BaseSubset:
         self.custom_attributes = custom_attributes if custom_attributes is not None else {}
 
         self.img_count = 0
+
+        self.validation_seed = validation_seed
+        self.validation_split = validation_split
+
+        self.resize_interpolation = resize_interpolation
 
 
 class DreamBoothSubset(BaseSubset):
@@ -453,6 +494,9 @@ class DreamBoothSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
+        validation_seed: Optional[int] = None,
+        validation_split: Optional[float] = 0.0,
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -478,6 +522,9 @@ class DreamBoothSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
+            validation_seed=validation_seed,
+            validation_split=validation_split,
+            resize_interpolation=resize_interpolation,
         )
 
         self.is_reg = is_reg
@@ -518,6 +565,9 @@ class FineTuningSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
+        validation_seed: Optional[int] = None,
+        validation_split: Optional[float] = 0.0,
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -543,6 +593,9 @@ class FineTuningSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
+            validation_seed=validation_seed,
+            validation_split=validation_split,
+            resize_interpolation=resize_interpolation,
         )
 
         self.metadata_file = metadata_file
@@ -579,6 +632,9 @@ class ControlNetSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
+        validation_seed: Optional[int] = None,
+        validation_split: Optional[float] = 0.0,
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -604,6 +660,9 @@ class ControlNetSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
+            validation_seed=validation_seed,
+            validation_split=validation_split,
+            resize_interpolation=resize_interpolation,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
@@ -624,6 +683,7 @@ class BaseDataset(torch.utils.data.Dataset):
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
+        resize_interpolation: Optional[str] = None
     ) -> None:
         super().__init__()
 
@@ -657,6 +717,10 @@ class BaseDataset(torch.utils.data.Dataset):
         self.aug_helper = AugHelper()
 
         self.image_transforms = IMAGE_TRANSFORMS
+
+        if resize_interpolation is not None:
+            assert validate_interpolation_fn(resize_interpolation), f"Resize interpolation \"{resize_interpolation}\" is not a valid interpolation"
+        self.resize_interpolation = resize_interpolation
 
         self.image_data: Dict[str, ImageInfo] = {}
         self.image_to_subset: Dict[str, Union[DreamBoothSubset, FineTuningSubset]] = {}
@@ -1401,6 +1465,8 @@ class BaseDataset(torch.utils.data.Dataset):
                 )
 
     def get_image_size(self, image_path):
+        if image_path.endswith(".jxl") or image_path.endswith(".JXL"):
+            return get_jxl_size(image_path)
         # return imagesize.get(image_path)
         image_size = imagesize.get(image_path)
         if image_size[0] <= 0:
@@ -1447,7 +1513,7 @@ class BaseDataset(torch.utils.data.Dataset):
         nh = int(height * scale + 0.5)
         nw = int(width * scale + 0.5)
         assert nh >= self.height and nw >= self.width, f"internal error. small scale {scale}, {width}*{height}"
-        image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
+        image = resize_image(image, width, height, nw, nh, subset.resize_interpolation)
         face_cx = int(face_cx * scale + 0.5)
         face_cy = int(face_cy * scale + 0.5)
         height, width = nh, nw
@@ -1544,7 +1610,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 if self.enable_bucket:
                     img, original_size, crop_ltrb = trim_and_resize_if_required(
-                        subset.random_crop, img, image_info.bucket_reso, image_info.resized_size
+                        subset.random_crop, img, image_info.bucket_reso, image_info.resized_size, resize_interpolation=image_info.resize_interpolation
                     )
                 else:
                     if face_cx > 0:  # 顔位置情報あり
@@ -1786,9 +1852,13 @@ class BaseDataset(torch.utils.data.Dataset):
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
 
+    # The is_training_dataset defines the type of dataset, training or validation
+    # if is_training_dataset is True -> training dataset
+    # if is_training_dataset is False -> validation dataset
     def __init__(
         self,
         subsets: Sequence[DreamBoothSubset],
+        is_training_dataset: bool,
         batch_size: int,
         resolution,
         network_multiplier: float,
@@ -1799,8 +1869,11 @@ class DreamBoothDataset(BaseDataset):
         bucket_no_upscale: bool,
         prior_loss_weight: float,
         debug_dataset: bool,
+        validation_split: float,
+        validation_seed: Optional[int],
+        resize_interpolation: Optional[str],
     ) -> None:
-        super().__init__(resolution, network_multiplier, debug_dataset)
+        super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
@@ -1808,6 +1881,9 @@ class DreamBoothDataset(BaseDataset):
         self.size = min(self.width, self.height)  # 短いほう
         self.prior_loss_weight = prior_loss_weight
         self.latents_cache = None
+        self.is_training_dataset = is_training_dataset
+        self.validation_seed = validation_seed
+        self.validation_split = validation_split
 
         self.enable_bucket = enable_bucket
         if self.enable_bucket:
@@ -1873,12 +1949,12 @@ class DreamBoothDataset(BaseDataset):
                 with open(info_cache_file, "r", encoding="utf-8") as f:
                     metas = json.load(f)
                 img_paths = list(metas.keys())
-                sizes = [meta["resolution"] for meta in metas.values()]
+                sizes: List[Optional[Tuple[int, int]]] = [meta["resolution"] for meta in metas.values()]
 
                 # we may need to check image size and existence of image files, but it takes time, so user should check it before training
             else:
                 img_paths = glob_images(subset.image_dir, "*")
-                sizes = [None] * len(img_paths)
+                sizes: List[Optional[Tuple[int, int]]] = [None] * len(img_paths)
 
                 # new caching: get image size from cache files
                 strategy = LatentsCachingStrategy.get_strategy()
@@ -1911,9 +1987,31 @@ class DreamBoothDataset(BaseDataset):
                             w, h = None, None
 
                         if w is not None and h is not None:
-                            sizes[i] = [w, h]
+                            sizes[i] = (w, h)
                             size_set_count += 1
                     logger.info(f"set image size from cache files: {size_set_count}/{len(img_paths)}")
+
+            # We want to create a training and validation split. This should be improved in the future
+            # to allow a clearer distinction between training and validation. This can be seen as a
+            # short-term solution to limit what is necessary to implement validation datasets
+            #
+            # We split the dataset for the subset based on if we are doing a validation split
+            # The self.is_training_dataset defines the type of dataset, training or validation
+            # if self.is_training_dataset is True -> training dataset
+            # if self.is_training_dataset is False -> validation dataset
+            if self.validation_split > 0.0:
+                # For regularization images we do not want to split this dataset.
+                if subset.is_reg is True:
+                    # Skip any validation dataset for regularization images
+                    if self.is_training_dataset is False:
+                        img_paths = []
+                        sizes = []
+                    # Otherwise the img_paths remain as original img_paths and no split
+                    # required for training images dataset of regularization images
+                else:
+                    img_paths, sizes = split_train_val(
+                        img_paths, sizes, self.is_training_dataset, self.validation_split, self.validation_seed
+                    )
 
             logger.info(f"found directory {subset.image_dir} contains {len(img_paths)} image files")
 
@@ -1973,9 +2071,10 @@ class DreamBoothDataset(BaseDataset):
         num_reg_images = 0
         reg_infos: List[Tuple[ImageInfo, DreamBoothSubset]] = []
         for subset in subsets:
-            if subset.num_repeats < 1:
+            num_repeats = subset.num_repeats if self.is_training_dataset else 1
+            if num_repeats < 1:
                 logger.warning(
-                    f"ignore subset with image_dir='{subset.image_dir}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}"
+                    f"ignore subset with image_dir='{subset.image_dir}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {num_repeats}"
                 )
                 continue
 
@@ -1993,12 +2092,13 @@ class DreamBoothDataset(BaseDataset):
                 continue
 
             if subset.is_reg:
-                num_reg_images += subset.num_repeats * len(img_paths)
+                num_reg_images += num_repeats * len(img_paths)
             else:
-                num_train_images += subset.num_repeats * len(img_paths)
+                num_train_images += num_repeats * len(img_paths)
 
             for img_path, caption, size in zip(img_paths, captions, sizes):
-                info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
+                info = ImageInfo(img_path, num_repeats, caption, subset.is_reg, img_path)
+                info.resize_interpolation = subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
@@ -2009,10 +2109,12 @@ class DreamBoothDataset(BaseDataset):
             subset.img_count = len(img_paths)
             self.subsets.append(subset)
 
-        logger.info(f"{num_train_images} train images with repeating.")
+        images_split_name = "train" if self.is_training_dataset else "validation"
+        logger.info(f"{num_train_images} {images_split_name} images with repeats.")
+
         self.num_train_images = num_train_images
 
-        logger.info(f"{num_reg_images} reg images.")
+        logger.info(f"{num_reg_images} reg images with repeats.")
         if num_train_images < num_reg_images:
             logger.warning("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
 
@@ -2050,8 +2152,11 @@ class FineTuningDataset(BaseDataset):
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
         debug_dataset: bool,
+        validation_seed: int,
+        validation_split: float,
+        resize_interpolation: Optional[str],
     ) -> None:
-        super().__init__(resolution, network_multiplier, debug_dataset)
+        super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 
         self.batch_size = batch_size
 
@@ -2275,9 +2380,12 @@ class ControlNetDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
-        debug_dataset: float,
+        debug_dataset: bool,
+        validation_split: float,
+        validation_seed: Optional[int],        
+        resize_interpolation: Optional[str] = None,
     ) -> None:
-        super().__init__(resolution, network_multiplier, debug_dataset)
+        super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 
         db_subsets = []
         for subset in subsets:
@@ -2309,11 +2417,13 @@ class ControlNetDataset(BaseDataset):
                 subset.caption_suffix,
                 subset.token_warmup_min,
                 subset.token_warmup_step,
+                resize_interpolation=subset.resize_interpolation,
             )
             db_subsets.append(db_subset)
 
         self.dreambooth_dataset_delegate = DreamBoothDataset(
             db_subsets,
+            True,
             batch_size,
             resolution,
             network_multiplier,
@@ -2324,6 +2434,9 @@ class ControlNetDataset(BaseDataset):
             bucket_no_upscale,
             1.0,
             debug_dataset,
+            validation_split,
+            validation_seed,
+            resize_interpolation,
         )
 
         # config_util等から参照される値をいれておく（若干微妙なのでなんとかしたい）
@@ -2331,6 +2444,9 @@ class ControlNetDataset(BaseDataset):
         self.batch_size = batch_size
         self.num_train_images = self.dreambooth_dataset_delegate.num_train_images
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images
+        self.validation_split = validation_split
+        self.validation_seed = validation_seed 
+        self.resize_interpolation = resize_interpolation
 
         # assert all conditioning data exists
         missing_imgs = []
@@ -2418,9 +2534,8 @@ class ControlNetDataset(BaseDataset):
                 assert (
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
-                cond_img = cv2.resize(
-                    cond_img, image_info.resized_size, interpolation=cv2.INTER_AREA
-                )  # INTER_AREAでやりたいのでcv2でリサイズ
+
+                cond_img = resize_image(cond_img, original_size_hw[1], original_size_hw[0], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
 
                 # TODO support random crop
                 # 現在サポートしているcropはrandomではなく中央のみ
@@ -2434,7 +2549,7 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img = pil_resize(cond_img, (int(target_size_hw[1]), int(target_size_hw[0])))
+                    cond_img = resize_image(cond_img, cond_img.shape[0], cond_img.shape[1], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -2800,6 +2915,9 @@ class MinimalDataset(BaseDataset):
         """
         raise NotImplementedError
 
+    def get_resolutions(self) -> List[Tuple[int, int]]:
+        return []
+
 
 def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
     module = ".".join(args.dataset_class.split(".")[:-1])
@@ -2828,17 +2946,13 @@ def load_image(image_path, alpha=False):
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
 def trim_and_resize_if_required(
-    random_crop: bool, image: np.ndarray, reso, resized_size: Tuple[int, int]
+    random_crop: bool, image: np.ndarray, reso, resized_size: Tuple[int, int], resize_interpolation: Optional[str] = None
 ) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
     image_height, image_width = image.shape[0:2]
     original_size = (image_width, image_height)  # size before resize
 
     if image_width != resized_size[0] or image_height != resized_size[1]:
-        # リサイズする
-        if image_width > resized_size[0] and image_height > resized_size[1]:
-            image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
-        else:
-            image = pil_resize(image, resized_size)
+        image = resize_image(image, image_width, image_height, resized_size[0], resized_size[1], resize_interpolation)
 
     image_height, image_width = image.shape[0:2]
 
@@ -2883,7 +2997,7 @@ def load_images_and_masks_for_caching(
     for info in image_infos:
         image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
+        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
 
         original_sizes.append(original_size)
         crop_ltrbs.append(crop_ltrb)
@@ -2924,7 +3038,7 @@ def cache_batch_latents(
     for info in image_infos:
         image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
         # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
+        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
 
         info.latents_original_size = original_size
         info.latents_crop_ltrb = crop_ltrb
@@ -4402,7 +4516,13 @@ def add_dataset_arguments(
         action="store_true",
         help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します",
     )
-
+    parser.add_argument(
+        "--resize_interpolation",
+        type=str,
+        default=None,
+        choices=["lanczos", "nearest", "bilinear", "linear", "bicubic", "cubic", "area"],
+        help="Resize interpolation when required. Default: area Options: lanczos, nearest, bilinear, bicubic, area / 必要に応じてサイズ補間を変更します。デフォルト: area オプション: lanczos, nearest, bilinear, bicubic, area",
+    )
     parser.add_argument(
         "--token_warmup_min",
         type=int,
@@ -4544,7 +4664,6 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
     config_args = argparse.Namespace(**ignore_nesting_dict)
     args = parser.parse_args(namespace=config_args)
     args.config_file = os.path.splitext(args.config_file)[0]
-    logger.info(args.config_file)
 
     return args
 
@@ -4887,7 +5006,7 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
             import schedulefree as sf
         except ImportError:
             raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
-        
+
         if optimizer_type == "RAdamScheduleFree".lower():
             optimizer_class = sf.RAdamScheduleFree
             logger.info(f"use RAdamScheduleFree optimizer | {optimizer_kwargs}")
@@ -5838,13 +5957,18 @@ def save_sd_model_on_train_end_common(
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
 
-def get_timesteps(min_timestep, max_timestep, b_size, device):
-    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device="cpu")
+def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device) -> torch.Tensor:
+    if min_timestep < max_timestep:
+        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device="cpu")
+    else:
+        timesteps = torch.full((b_size,), max_timestep, device="cpu")
     timesteps = timesteps.long().to(device)
     return timesteps
 
 
-def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
+def get_noise_noisy_latents_and_timesteps(
+    args, noise_scheduler, latents: torch.FloatTensor
+) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:
@@ -5905,11 +6029,16 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
 def conditional_loss(
     model_pred: torch.Tensor, target: torch.Tensor, loss_type: str, reduction: str, huber_c: Optional[torch.Tensor] = None
 ):
+    """
+    NOTE: if you're using the scheduled version, huber_c has to depend on the timesteps already
+    """
     if loss_type == "l2":
         loss = torch.nn.functional.mse_loss(model_pred, target, reduction=reduction)
     elif loss_type == "l1":
         loss = torch.nn.functional.l1_loss(model_pred, target, reduction=reduction)
     elif loss_type == "huber":
+        if huber_c is None:
+            raise NotImplementedError("huber_c not implemented correctly")
         huber_c = huber_c.view(-1, 1, 1, 1)
         loss = 2 * huber_c * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
@@ -5917,6 +6046,8 @@ def conditional_loss(
         elif reduction == "sum":
             loss = torch.sum(loss)
     elif loss_type == "smooth_l1":
+        if huber_c is None:
+            raise NotImplementedError("huber_c not implemented correctly")
         huber_c = huber_c.view(-1, 1, 1, 1)
         loss = 2 * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
@@ -6329,6 +6460,34 @@ def sample_image_inference(
         wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
 
 
+def init_trackers(accelerator: Accelerator, args: argparse.Namespace, default_tracker_name: str):
+    """
+    Initialize experiment trackers with tracker specific behaviors
+    """
+    if accelerator.is_main_process:
+        init_kwargs = {}
+        if args.wandb_run_name:
+            init_kwargs["wandb"] = {"name": args.wandb_run_name}
+        if args.log_tracker_config is not None:
+            init_kwargs = toml.load(args.log_tracker_config)
+        accelerator.init_trackers(
+            default_tracker_name if args.log_tracker_name is None else args.log_tracker_name,
+            config=get_sanitized_config_or_none(args),
+            init_kwargs=init_kwargs,
+        )
+
+        if "wandb" in [tracker.name for tracker in accelerator.trackers]:
+            import wandb
+
+            wandb_tracker = accelerator.get_tracker("wandb", unwrap=True)
+
+            # Define specific metrics to handle validation and epochs "steps"
+            wandb_tracker.define_metric("epoch", hidden=True)
+            wandb_tracker.define_metric("val_step", hidden=True)
+
+            wandb_tracker.define_metric("global_step", hidden=True)
+
+
 # endregion
 
 
@@ -6397,4 +6556,8 @@ class LossRecorder:
 
     @property
     def moving_average(self) -> float:
-        return self.loss_total / len(self.loss_list)
+        losses = len(self.loss_list)
+        if losses == 0:
+            return 0
+        return self.loss_total / losses
+

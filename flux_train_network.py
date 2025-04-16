@@ -2,7 +2,7 @@ import argparse
 import copy
 import math
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
 from accelerate import Accelerator
@@ -36,8 +36,13 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
 
-    def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
+    def assert_extra_args(
+        self,
+        args,
+        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
+        val_dataset_group: Optional[train_util.DatasetGroup],
+    ):
+        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.fp8_base_unet:
@@ -80,6 +85,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 args.blocks_to_swap = 18  # 18 is safe for most cases
 
         train_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)  # TODO check this
 
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
@@ -321,7 +328,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
-    def encode_images_to_latents(self, args, accelerator, vae, images):
+    def encode_images_to_latents(self, args, vae, images):
         return vae.encode(images)
 
     def shift_scale_latents(self, args, latents):
@@ -339,6 +346,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         network,
         weight_dtype,
         train_unet,
+        is_train=True,
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -373,9 +381,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             t5_attn_mask = None
 
         def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask):
-            # if not args.split_mode:
-            # normal forward
-            with accelerator.autocast():
+            # grad is enabled even if unet is not in train mode, because Text Encoder is in train mode
+            with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                 model_pred = unet(
                     img=img,
@@ -387,42 +394,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     guidance=guidance_vec,
                     txt_attention_mask=t5_attn_mask,
                 )
-            """
-            else:
-                # split forward to reduce memory usage
-                assert network.train_blocks == "single", "train_blocks must be single for split mode"
-                with accelerator.autocast():
-                    # move flux lower to cpu, and then move flux upper to gpu
-                    unet.to("cpu")
-                    clean_memory_on_device(accelerator.device)
-                    self.flux_upper.to(accelerator.device)
-
-                    # upper model does not require grad
-                    with torch.no_grad():
-                        intermediate_img, intermediate_txt, vec, pe = self.flux_upper(
-                            img=packed_noisy_model_input,
-                            img_ids=img_ids,
-                            txt=t5_out,
-                            txt_ids=txt_ids,
-                            y=l_pooled,
-                            timesteps=timesteps / 1000,
-                            guidance=guidance_vec,
-                            txt_attention_mask=t5_attn_mask,
-                        )
-
-                    # move flux upper back to cpu, and then move flux lower to gpu
-                    self.flux_upper.to("cpu")
-                    clean_memory_on_device(accelerator.device)
-                    unet.to(accelerator.device)
-
-                    # lower model requires grad
-                    intermediate_img.requires_grad_(True)
-                    intermediate_txt.requires_grad_(True)
-                    vec.requires_grad_(True)
-                    pe.requires_grad_(True)
-                    model_pred = unet(img=intermediate_img, txt=intermediate_txt, vec=vec, pe=pe, txt_attention_mask=t5_attn_mask)
-            """
-
             return model_pred
 
         model_pred = call_dit(
@@ -540,6 +511,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 logger.info(f"prepare T5XXL for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}, add hooks")
                 text_encoder.to(te_weight_dtype)  # fp8
                 prepare_fp8(text_encoder, weight_dtype)
+
+    def on_validation_step_end(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
+        if self.is_swapping_blocks:
+            # prepare for next forward: because backward pass is not called, we need to prepare it here
+            accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
 
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module

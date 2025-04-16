@@ -14,6 +14,35 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Apr 6, 2025:
+- IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
+    - `--ip_noise_gamma` and `--ip_noise_gamma_random_strength` are available.
+  
+Mar 30, 2025:
+- LoRA-GGPO is added for FLUX.1 LoRA training. Thank you to rockerBOO for PR [#1974](https://github.com/kohya-ss/sd-scripts/pull/1974). 
+  - Specify `--network_args ggpo_sigma=0.03 ggpo_beta=0.01` in the command line or `network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]` in .toml file. See PR for details.
+- The interpolation method for resizing the original image to the training size can now be specified. Thank you to rockerBOO for PR [#1936](https://github.com/kohya-ss/sd-scripts/pull/1936).
+
+Mar 20, 2025:
+- `pytorch-optimizer` is added to requirements.txt. Thank you to gesen2egee for PR [#1985](https://github.com/kohya-ss/sd-scripts/pull/1985). 
+  - For example, you can use CAME optimizer with `--optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"`.
+
+Mar 6, 2025:
+
+- Added a utility script to merge the weights of SD3's DiT, VAE (optional), CLIP-L, CLIP-G, and T5XXL into a single .safetensors file. Run `tools/merge_sd3_safetensors.py`. See `--help` for usage. PR [#1960](https://github.com/kohya-ss/sd-scripts/pull/1960)
+
+Feb 26, 2025:
+
+- Improve the validation loss calculation in `train_network.py`, `sdxl_train_network.py`, `flux_train_network.py`, and `sd3_train_network.py`. PR [#1903](https://github.com/kohya-ss/sd-scripts/pull/1903)
+  - The validation loss uses the fixed timestep sampling and the fixed random seed. This is to ensure that the validation loss is not fluctuated by the random values.
+
+Jan 25, 2025:
+
+- `train_network.py`, `sdxl_train_network.py`, `flux_train_network.py`, and `sd3_train_network.py` now support validation loss. PR [#1864](https://github.com/kohya-ss/sd-scripts/pull/1864) Thank you to rockerBOO!
+  - For details on how to set it up, please refer to the PR. The documentation will be updated as needed.
+  - It will be added to other scripts as well.
+  - As a current limitation, validation loss is not supported when `--block_to_swap` is specified, or when schedule-free optimizer is used.
+
 Dec 15, 2024:
 
 - RAdamScheduleFree optimizer is supported. PR [#1830](https://github.com/kohya-ss/sd-scripts/pull/1830) Thanks to nhamanasu!
@@ -732,6 +761,8 @@ Not available yet.
 [__Change History__](#change-history) is moved to the bottom of the page. 
 更新履歴は[ページ末尾](#change-history)に移しました。
 
+Latest update: 2025-03-21 (Version 0.9.1)
+
 [日本語版READMEはこちら](./README-ja.md)
 
 The development version is in the `dev` branch. Please check the dev branch for the latest changes.
@@ -754,7 +785,7 @@ This repository contains the scripts for:
 
 The file does not contain requirements for PyTorch. Because the version of PyTorch depends on the environment, it is not included in the file. Please install PyTorch first according to the environment. See installation instructions below.
 
-The scripts are tested with Pytorch 2.1.2. 2.0.1 and 1.12.1 is not tested but should work.
+The scripts are tested with Pytorch 2.1.2. PyTorch 2.2 or later will work. Please install the appropriate version of PyTorch and xformers.
 
 ## Links to usage documentation
 
@@ -780,6 +811,8 @@ Python 3.10.6 and Git:
 
 - Python 3.10.6: https://www.python.org/ftp/python/3.10.6/python-3.10.6-amd64.exe
 - git: https://git-scm.com/download/win
+
+Python 3.10.x, 3.11.x, and 3.12.x will work but not tested.
 
 Give unrestricted script access to powershell so venv can work:
 
@@ -807,9 +840,11 @@ accelerate config
 
 If `python -m venv` shows only `python`, change `python` to `py`.
 
-__Note:__ Now `bitsandbytes==0.43.0`, `prodigyopt==1.0` and `lion-pytorch==0.0.6` are included in the requirements.txt. If you'd like to use the another version, please install it manually.
+Note: Now `bitsandbytes==0.44.0`, `prodigyopt==1.0` and `lion-pytorch==0.0.6` are included in the requirements.txt. If you'd like to use the another version, please install it manually.
 
 This installation is for CUDA 11.8. If you use a different version of CUDA, please install the appropriate version of PyTorch and xformers. For example, if you use CUDA 12, please install `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` and `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121`.
+
+If you use PyTorch 2.2 or later, please change `torch==2.1.2` and `torchvision==0.16.2` and `xformers==0.0.23.post1` to the appropriate version.
 
 <!-- 
 cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
@@ -871,11 +906,22 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 ## Change History
 
-### Working in progress
+### Mar 21, 2025 /  2025-03-21 Version 0.9.1
+
+- Fixed a bug where some of LoRA modules for CLIP Text Encoder were not trained. Thank you Nekotekina for PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964)
+  - The LoRA modules for CLIP Text Encoder are now 264 modules, which is the same as before. Only 88 modules were trained in the previous version. 
+
+### Jan 17, 2025 /  2025-01-17 Version 0.9.0
 
 - __important__ The dependent libraries are updated. Please see [Upgrade](#upgrade) and update the libraries.
   - bitsandbytes, transformers, accelerate and huggingface_hub are updated. 
   - If you encounter any issues, please report them.
+
+- The dev branch is merged into main. The documentation is delayed, and I apologize for that. I will gradually improve it.
+- The state just before the merge is released as Version 0.8.8, so please use it if you encounter any issues.
+- The following changes are included.
+
+#### Changes
 
 - Fixed a bug where the loss weight was incorrect when `--debiased_estimation_loss` was specified with `--v_parameterization`. PR [#1715](https://github.com/kohya-ss/sd-scripts/pull/1715) Thanks to catboxanon! See [the PR](https://github.com/kohya-ss/sd-scripts/pull/1715) for details.
   - Removed the warning when `--v_parameterization` is specified in SDXL and SD1.5. PR [#1717](https://github.com/kohya-ss/sd-scripts/pull/1717)
@@ -917,7 +963,6 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
   - See the [transformers documentation](https://huggingface.co/docs/transformers/v4.44.2/en/main_classes/optimizer_schedules#schedules) for details on each scheduler.
   - `--lr_warmup_steps` and `--lr_decay_steps` can now be specified as a ratio of the number of training steps, not just the step value. Example: `--lr_warmup_steps=0.1` or `--lr_warmup_steps=10%`, etc.
 
-https://github.com/kohya-ss/sd-scripts/pull/1393
 - When enlarging images in the script (when the size of the training image is small and bucket_no_upscale is not specified), it has been changed to use Pillow's resize and LANCZOS interpolation instead of OpenCV2's resize and Lanczos4 interpolation. The quality of the image enlargement may be slightly improved. PR [#1426](https://github.com/kohya-ss/sd-scripts/pull/1426) Thanks to sdbds!
 
 - Sample image generation during training now works on non-CUDA devices. PR [#1433](https://github.com/kohya-ss/sd-scripts/pull/1433) Thanks to millie-v!
@@ -986,6 +1031,12 @@ https://github.com/kohya-ss/sd-scripts/pull/1290) Thanks to frodo821!
 - Fixed some bugs when using DeepSpeed. Related [#1247](https://github.com/kohya-ss/sd-scripts/pull/1247)
 
 - Added a prompt option `--f` to `gen_imgs.py` to specify the file name when saving. Also, Diffusers-based keys for LoRA weights are now supported.
+
+#### 変更点
+
+- devブランチがmainにマージされました。ドキュメントの整備が遅れており申し訳ありません。少しずつ整備していきます。
+- マージ直前の状態が Version 0.8.8 としてリリースされていますので、問題があればそちらをご利用ください。
+- 以下の変更が含まれます。
 
 - SDXL の学習時に Fused optimizer が使えるようになりました。PR [#1259](https://github.com/kohya-ss/sd-scripts/pull/1259) 2kpr 氏に感謝します。
   - optimizer の backward pass に step を統合することで学習時のメモリ使用量を大きく削減します。学習結果は未適用時と同一ですが、メモリが潤沢にある場合は速度は遅くなります。
