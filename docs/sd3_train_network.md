@@ -1,3 +1,5 @@
+ステータス：内容を一通り確認した
+
 # `sd3_train_network.py` を用いたStable Diffusion 3/3.5モデルのLoRA学習ガイド
 
 このドキュメントでは、`sd-scripts`リポジトリに含まれる`sd3_train_network.py`を使用して、Stable Diffusion 3 (SD3) および Stable Diffusion 3.5 (SD3.5) モデルに対するLoRA (Low-Rank Adaptation) モデルを学習する基本的な手順について解説します。

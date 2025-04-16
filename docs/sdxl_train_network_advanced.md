@@ -1,4 +1,4 @@
-はい、承知いたしました。SDXL LoRA学習スクリプト `sdxl_train_network.py` の熟練した利用者向けの、機能全体の詳細を説明したドキュメントを作成します。
+ステータス：確認中
 
 ---
 
@@ -35,14 +35,14 @@
 *   `--no_half_vae`
     *   混合精度(`fp16`/`bf16`)使用時でもVAEを`float32`で動作させます。SDXLのVAEは`float16`で不安定になることがあるため、`fp16`指定時には有効にすることが推奨されます。`bf16`では通常不要です。
 *   `--fp8_base` / `--fp8_base_unet`
-    *   **実験的機能:** ベースモデル（U-Net, Text Encoder）またはU-NetのみをFP8で読み込み、VRAM使用量を削減します。PyTorch 2.1以上が必要です。詳細は[README](README.md#sd3-lora-training)の関連セクションを参照してください (SD3の説明ですがSDXLにも適用されます)。
+    *   **実験的機能:** ベースモデル（U-Net, Text Encoder）またはU-NetのみをFP8で読み込み、VRAM使用量を削減します。PyTorch 2.1以上が必要です。詳細は TODO 後でドキュメントを追加 の関連セクションを参照してください (SD3の説明ですがSDXLにも適用されます)。
 
 ### 1.2. データセット設定関連
 
-*   `--dataset_config="<設定ファイルのパス>"` **[必須]**
+*   `--dataset_config="<設定ファイルのパス>"` 
     *   データセットの設定を記述した`.toml`ファイルを指定します。SDXLでは高解像度データとバケツ機能（`.toml` で `enable_bucket = true` を指定）の利用が一般的です。
     *   `.toml`ファイルの書き方の詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください。
-    *   アスペクト比バケツの解像度ステップ(`bucket_reso_steps`)は、SDXLでは8の倍数（例: 64）が一般的です。
+    *   アスペクト比バケツの解像度ステップ(`bucket_reso_steps`)は、SDXLでは32の倍数とする必要があります。
 
 ### 1.3. 出力・保存関連
 
@@ -64,7 +64,7 @@
 *   `--no_metadata`
     *   出力モデルにメタデータを保存しません。
 *   `--save_state_to_huggingface` / `--huggingface_repo_id` など
-    *   Hugging Face Hubへのモデルやstateのアップロード関連オプション。詳細は[train\_util.py](train_util.py)や[huggingface\_util.py](huggingface_util.py)を参照してください。
+    *   Hugging Face Hubへのモデルやstateのアップロード関連オプション。詳細は TODO ドキュメントを追加 を参照してください。
 
 ### 1.4. ネットワークパラメータ (LoRA)
 
@@ -97,14 +97,14 @@
 *   `--network_train_text_encoder_only`
     *   Text EncoderのLoRAモジュールのみを学習します。U-Netの学習を行わない場合に指定します。
 *   `--network_weights="<重みファイル>"`
-    *   学習済みのLoRA重みを読み込んで学習を開始します。ファインチューニングや学習再開に使用します。
+    *   学習済みのLoRA重みを読み込んで学習を開始します。ファインチューニングや学習再開に使用します。`--resume` との違いは、このオプションはLoRAモジュールの重みのみを読み込み、`--resume` はOptimizerの状態や学習ステップ数なども復元します。
 *   `--dim_from_weights`
     *   `--network_weights` で指定した重みファイルからLoRAの次元数 (`dim`) を自動的に読み込みます。`--network_dim` の指定は不要になります。
 
 ### 1.5. 学習パラメータ
 
 *   `--learning_rate=LR`
-    *   全体の学習率。各モジュール(`unet_lr`, `text_encoder_lr1`, `text_encoder_lr2`)のデフォルト値となります。`1e-4` や `4e-5` などが試されることが多いです。
+    *   全体の学習率。各モジュール(`unet_lr`, `text_encoder_lr1`, `text_encoder_lr2`)のデフォルト値となります。`1e-3` や `1e-4` などが試されることが多いです。
 *   `--unet_lr=LR_U`
     *   U-Net部分のLoRAモジュールの学習率。
 *   `--text_encoder_lr1=LR_TE1`
@@ -120,7 +120,7 @@
 *   `--optimizer_args ...`
     *   Optimizerへの追加引数を `key=value` 形式で指定します (例: `"weight_decay=0.01"` `"betas=0.9,0.999"`).
 *   `--lr_scheduler="..."`
-    *   学習率スケジューラを指定します。`constant` (変化なし), `cosine` (コサインカーブ), `linear` (線形減衰), `constant_with_warmup` (ウォームアップ付き定数), `cosine_with_restarts` など。`cosine` や `constant_with_warmup` がよく使われます。
+    *   学習率スケジューラを指定します。`constant` (変化なし), `cosine` (コサインカーブ), `linear` (線形減衰), `constant_with_warmup` (ウォームアップ付き定数), `cosine_with_restarts` など。`constant` や `cosine` 、 `constant_with_warmup` がよく使われます。
     *   スケジューラによっては追加の引数が必要です (`--lr_scheduler_args`参照)。
     *   `DAdaptation` や `Prodigy` などの自己学習率調整機能付きOptimizerを使用する場合、スケジューラは不要です (`constant` を指定)。
 *   `--lr_warmup_steps=N`
@@ -132,7 +132,7 @@
 *   `--mixed_precision="bf16"` / `"fp16"` / `"no"`
     *   混合精度学習の設定。SDXLでは `bf16` (対応GPUの場合) または `fp16` の使用が強く推奨されます。VRAM使用量を削減し、学習速度を向上させます。
 *   `--full_fp16` / `--full_bf16`
-    *   勾配計算も含めて完全に半精度/bf16で行います。VRAM使用量をさらに削減できますが、学習の安定性に影響する可能性があります。
+    *   勾配計算も含めて完全に半精度/bf16で行います。VRAM使用量をさらに削減できますが、学習の安定性に影響する可能性があります。VRAMがどうしても足りない場合に使用します。
 *   `--gradient_accumulation_steps=N`
     *   勾配をNステップ分蓄積してからOptimizerを更新します。実質的なバッチサイズを `train_batch_size * N` に増やし、少ないVRAMで大きなバッチサイズ相当の効果を得られます。デフォルトは1。
 *   `--max_grad_norm=N`
@@ -190,13 +190,13 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 ### 1.9. 正則化・高度な学習テクニック関連
 
 *   `--noise_offset=N`
-    *   ノイズオフセットを有効にし、その値を指定します。画像の明るさやコントラストの偏りを改善する効果が期待できます。SDXLのベースモデルはこの値で学習されているため、有効にすることが推奨されます (例: 0.0357)。
+    *   ノイズオフセットを有効にし、その値を指定します。画像の明るさやコントラストの偏りを改善する効果が期待できます。SDXLのベースモデルはこの値で学習されているため、有効にすることが推奨されます (例: 0.0357)。元々の技術解説は[こちら](https://www.crosslabs.org/blog/diffusion-with-offset-noise)。
 *   `--noise_offset_random_strength`
     *   ノイズオフセットの強度を0から指定値の間でランダムに変動させます。
 *   `--adaptive_noise_scale=N`
     *   Latentの平均絶対値に応じてノイズオフセットを調整します。`--noise_offset`と併用します。
 *   `--multires_noise_iterations=N` / `--multires_noise_discount=D`
-    *   複数解像度ノイズを有効にします。異なる周波数成分のノイズを加えることで、ディテールの再現性を向上させる効果が期待できます。イテレーション回数N (6-10程度) と割引率D (0.3程度) を指定します。
+    *   複数解像度ノイズを有効にします。異なる周波数成分のノイズを加えることで、ディテールの再現性を向上させる効果が期待できます。イテレーション回数N (6-10程度) と割引率D (0.3程度) を指定します。技術解説は[こちら](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2)。
 *   `--ip_noise_gamma=G` / `--ip_noise_gamma_random_strength`
     *   Input Perturbation Noiseを有効にします。入力(Latent)に微小なノイズを加えて正則化を行います。Gamma値 (0.1程度) を指定します。`random_strength`で強度をランダム化できます。
 *   `--min_snr_gamma=N`
