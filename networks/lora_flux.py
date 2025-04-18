@@ -128,6 +128,9 @@ class LoRAModule(torch.nn.Module):
             AID(aid_dropout) if aid_dropout is not None else torch.nn.Identity()
         )  # AID activation
 
+        if aid_dropout is not None:
+            self.register_buffer("aid_p", torch.tensor(aid_dropout))
+
         self.ggpo_sigma = ggpo_sigma
         self.ggpo_beta = ggpo_beta
 
@@ -1115,6 +1118,7 @@ class LoRANetwork(torch.nn.Module):
             up_weights = [state_dict.pop(f"{lora_name}.lora_up.{i}.weight") for i in range(len(split_dims))]
 
             alpha = state_dict.pop(f"{lora_name}.alpha")
+            aid_p = state_dict.pop(f"{lora_name}.aid_p")
 
             # merge down weight
             down_weight = torch.cat(down_weights, dim=0)  # (rank, split_dim) * 3 -> (rank*3, sum of split_dim)
@@ -1130,6 +1134,7 @@ class LoRANetwork(torch.nn.Module):
             new_state_dict[f"{lora_name}.lora_down.weight"] = down_weight
             new_state_dict[f"{lora_name}.lora_up.weight"] = up_weight
             new_state_dict[f"{lora_name}.alpha"] = alpha
+            new_state_dict[f"{lora_name}.aid_p"] = aid_p
 
             # print(
             #     f"merged {lora_name}: {lora_name}, {[w.shape for w in down_weights]}, {[w.shape for w in up_weights]} to {down_weight.shape}, {up_weight.shape}"
