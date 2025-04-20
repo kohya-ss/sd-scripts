@@ -1000,11 +1000,11 @@ class Flux(nn.Module):
             self.double_blocks = save_double_blocks
             self.single_blocks = save_single_blocks
 
-    def prepare_block_swap_before_forward(self):
+    def prepare_block_swap_before_forward(self, override_blocks_to_swap = None):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
-        self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
-        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
+        self.offloader_double.prepare_block_devices_before_forward(self.double_blocks, override_blocks_to_swap)
+        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks, override_blocks_to_swap)
 
     def forward(
         self,

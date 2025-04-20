@@ -194,18 +194,25 @@ class ModelOffloader(Offloader):
 
         return backward_hook
 
-    def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
+    def prepare_block_devices_before_forward(self, blocks: list[nn.Module], override_blocks_to_swap = None):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
-        if self.debug:
-            print("Prepare block devices before forward")
+        # More blocks might be sent to the card when e.g. performing sample image generation
+        if override_blocks_to_swap is None or override_blocks_to_swap == -1:  # 0 is a valid number of blocks to swap
+            blocks_to_swap = self.blocks_to_swap
+        else:
+            blocks_to_swap = override_blocks_to_swap
+            assert(override_blocks_to_swap <= self.blocks_to_swap, "Can't override with a greater number of blocks to swap.")
 
-        for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
+        if self.debug:
+            print(f"Prepare block devices before forward. Setting blocks to swap to {blocks_to_swap}.")
+
+        for b in blocks[0 : self.num_blocks - blocks_to_swap]:
             b.to(self.device)
             weighs_to_device(b, self.device)  # make sure weights are on device
 
-        for b in blocks[self.num_blocks - self.blocks_to_swap :]:
+        for b in blocks[self.num_blocks - blocks_to_swap :]:
             b.to(self.device)  # move block to device first
             weighs_to_device(b, "cpu")  # make sure weights are on cpu
 
