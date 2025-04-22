@@ -1004,7 +1004,8 @@ class Flux(nn.Module):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
         self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
-        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)    
+        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
+
     def forward(
         self,
         img: Tensor,
