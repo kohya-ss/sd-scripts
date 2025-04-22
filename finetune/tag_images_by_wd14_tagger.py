@@ -100,15 +100,19 @@ def main(args):
         else:
             for file in SUB_DIR_FILES:
                 hf_hub_download(
-                    args.repo_id,
-                    file,
+                    repo_id=args.repo_id,
+                    filename=file,
                     subfolder=SUB_DIR,
-                    cache_dir=os.path.join(model_location, SUB_DIR),
+                    local_dir=os.path.join(model_location, SUB_DIR),
                     force_download=True,
-                    force_filename=file,
                 )
         for file in files:
-            hf_hub_download(args.repo_id, file, cache_dir=model_location, force_download=True, force_filename=file)
+            hf_hub_download(
+                repo_id=args.repo_id,
+                filename=file,
+                local_dir=model_location,
+                force_download=True,
+            )
     else:
         logger.info("using existing wd14 tagger model")
 
