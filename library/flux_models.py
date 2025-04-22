@@ -1005,7 +1005,7 @@ class Flux(nn.Module):
             return
         self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
         self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
-
+    
     def forward(
         self,
         img: Tensor,

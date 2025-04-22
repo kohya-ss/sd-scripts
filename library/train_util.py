@@ -5495,6 +5495,11 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
 
 def patch_accelerator_for_fp16_training(accelerator):
+    
+    from accelerate import DistributedType
+    if accelerator.distributed_type == DistributedType.DEEPSPEED:
+        return
+    
     org_unscale_grads = accelerator.scaler._unscale_grads_
 
     def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
