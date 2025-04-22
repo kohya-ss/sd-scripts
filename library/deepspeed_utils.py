@@ -156,7 +156,8 @@ def prepare_deepspeed_model(args: argparse.Namespace, **models):
             forward_fn = model.forward
             
             def forward(*args, **kwargs):
-                with torch.autocast(device_type="cuda"):
+                device_type= "cuda" if torch.cuda.is_available() else "cpu"
+                with torch.autocast(device_type=device_type):
                     return forward_fn(*args, **kwargs)
             model.forward = forward    
             
