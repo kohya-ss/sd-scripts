@@ -5495,7 +5495,6 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
 
 def patch_accelerator_for_fp16_training(accelerator):
-    # patch for fp16 training
     
     from accelerate import DistributedType
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
