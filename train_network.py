@@ -43,6 +43,8 @@ from library.custom_train_functions import (
     add_v_prediction_like_loss,
     apply_debiased_estimation,
     apply_masked_loss,
+    diffusion_dpo_loss,
+    mapo_loss
 )
 from library.utils import setup_logging, add_logging_arguments
 
@@ -255,18 +257,18 @@ class NetworkTrainer:
 
     def get_noise_pred_and_target(
         self,
-        args,
-        accelerator,
+        args: argparse.Namespace,
+        accelerator: Accelerator,
         noise_scheduler,
-        latents,
-        batch,
+        latents: torch.FloatTensor,
+        batch: dict[str, torch.Tensor],
         text_encoder_conds,
         unet,
         network,
-        weight_dtype,
-        train_unet,
+        weight_dtype: torch.dtype,
+        train_unet: bool,
         is_train=True,
-    ):
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
         noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
@@ -321,9 +323,9 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        return noise_pred, noisy_latents, target, timesteps, None
 
-    def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
+    def post_process_loss(self, loss: torch.Tensor, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
             loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
         if args.scale_v_pred_loss_like_noise_pred:
@@ -380,10 +382,12 @@ class NetworkTrainer:
         is_train=True,
         train_text_encoder=True,
         train_unet=True,
-    ) -> torch.Tensor:
+        multipliers=1.0,
+    ) -> tuple[torch.Tensor, dict[str, float | int]]:
         """
         Process a batch for the network
         """
+        metrics: dict[str, float | int] = {}
         with torch.no_grad():
             if "latents" in batch and batch["latents"] is not None:
                 latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
@@ -446,7 +450,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, noisy_latents, target, timesteps, weighting = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -468,85 +472,34 @@ class NetworkTrainer:
             loss = apply_masked_loss(loss, batch)
 
         if args.beta_dpo is not None:
-            model_loss = loss.mean(dim=list(range(1, len(loss.shape))))
-            model_loss_w, model_loss_l = model_loss.chunk(2)
-            raw_model_loss = 0.5 * (model_loss_w.mean() + model_loss_l.mean())
-            model_diff = model_loss_w - model_loss_l
-
-            # ref loss
-            with torch.no_grad():
-                # disable network for reference
+            def call_unet():
                 accelerator.unwrap_model(network).set_multiplier(0.0)
+                ref_noise_pred = self.call_unet(
+                    args,
+                    accelerator,
+                    unet,
+                    noisy_latents.requires_grad_(train_unet),
+                    timesteps,
+                    text_encoder_conds,
+                    batch,
+                    weight_dtype,
+                )
 
-                with accelerator.autocast():
-                    ref_noise_pred = self.call_unet(
-                        args,
-                        accelerator,
-                        unet,
-                        noisy_latents.requires_grad_(train_unet),
-                        timesteps,
-                        text_encoder_conds,
-                        batch,
-                        weight_dtype,
-                    )
+                # reset network multipliers
+                accelerator.unwrap_model(network).set_multiplier(1.0)
+                return ref_noise_pred
+            def apply_loss(ref_noise_pred):
+                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
                 ref_loss = train_util.conditional_loss(
                     ref_noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
                 )
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     ref_loss = apply_masked_loss(ref_loss, batch)
+                return ref_loss
 
-                ref_loss = ref_loss.mean(dim=list(range(1, len(ref_loss.shape))))
-                ref_losses_w, ref_losses_l = ref_loss.chunk(2)
-                ref_diff = ref_losses_w - ref_losses_l
-                raw_ref_loss = ref_loss.mean()
-
-                # reset network multipliers
-                accelerator.unwrap_model(network).set_multiplier(multipliers)
-
-            scale_term = -0.5 * args.beta_dpo
-            inside_term = scale_term * (model_diff - ref_diff)
-            loss = -1 * torch.nn.functional.logsigmoid(inside_term)
-
-            implicit_acc = (inside_term > 0).sum().float() / inside_term.size(0)
-            implicit_acc += 0.5 * (inside_term == 0).sum().float() / inside_term.size(0)
-
-            accelerator.log({
-                "total_loss": model_loss.detach().mean().item(),
-                "raw_model_loss": raw_model_loss.detach().mean().item(),
-                "ref_loss": raw_ref_loss.detach().item(),
-                "implicit_acc": implicit_acc.detach().item(),
-            }, step=global_step)
+            loss, metrics = diffusion_dpo_loss(loss, call_unet, apply_loss, args.beta_dpo)
         elif args.mapo_weight is not None:
-            model_loss = loss.mean(dim=list(range(1, len(loss.shape))))
-
-            snr = 0.5
-            model_losses_w, model_losses_l = model_loss.chunk(2)
-            log_odds = (snr * model_losses_w) / (torch.exp(snr * model_losses_w) - 1) - (
-                snr * model_losses_l
-            ) / (torch.exp(snr * model_losses_l) - 1)
-
-            # Ratio loss.
-            # By multiplying T to the inner term, we try to maximize the margin throughout the overall denoising process.
-            ratio = torch.nn.functional.logsigmoid(log_odds * noise_scheduler.config.num_train_timesteps)
-            ratio_losses = args.mapo_weight * ratio
-
-            # Full MaPO loss
-            loss = model_losses_w.mean(dim=list(range(1, len(model_losses_w.shape)))) - ratio_losses.mean(dim=list(range(1, len(ratio_losses.shape))))
-
-            accelerator.log({
-                "total_loss": loss.detach().mean().item(),
-                "ratio_loss": -ratio_losses.mean().detach().item(),
-                "model_losses_w": model_losses_w.mean().detach().item(),
-                "model_losses_l": model_losses_l.mean().detach().item(),
-                "win_score": ((snr * model_losses_w) / (torch.exp(snr * model_losses_w) - 1))
-                .mean()
-                .detach()
-                .item(),
-                "lose_score": ((snr * model_losses_l) / (torch.exp(snr * model_losses_l) - 1))
-                .mean()
-                .detach()
-                .item()
-            }, step=global_step)
+            loss, metrics = mapo_loss(loss, args.mapo_weight, noise_scheduler.config.num_train_timesteps)
         else:
             loss = loss.mean([1, 2, 3])
 
@@ -555,7 +508,7 @@ class NetworkTrainer:
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-        return loss.mean()
+        return loss.mean(), metrics
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1482,7 +1435,7 @@ class NetworkTrainer:
                     # preprocess batch for each model
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True)
 
-                    loss = self.process_batch(
+                    loss, batch_metrics = self.process_batch(
                         batch,
                         text_encoders,
                         unet,
@@ -1584,7 +1537,7 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
-                    self.step_logging(accelerator, logs, global_step, epoch + 1)
+                    self.step_logging(accelerator, {**logs, **batch_metrics}, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
                 # for example, if validate_every_n_steps=100, validate at step 100, 200, 300, ...

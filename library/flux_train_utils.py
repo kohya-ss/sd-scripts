@@ -359,7 +359,7 @@ def denoise(
 
 
 # region train
-def get_sigmas(noise_scheduler, timesteps, device, n_dim=4, dtype=torch.float32):
+def get_sigmas(noise_scheduler, timesteps, device, n_dim=4, dtype=torch.float32) -> torch.FloatTensor:
     sigmas = noise_scheduler.sigmas.to(device=device, dtype=dtype)
     schedule_timesteps = noise_scheduler.timesteps.to(device)
     timesteps = timesteps.to(device)
@@ -390,7 +390,7 @@ def compute_density_for_timestep_sampling(
     return u
 
 
-def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
+def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas) -> torch.Tensor:
     """Computes loss weighting scheme for SD3 training.
 
     Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
@@ -407,35 +407,43 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
     return weighting
 
 
-def get_noisy_model_input_and_timesteps(
+def get_noisy_model_input_and_timestep(
     args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    """
+    Returns:
+        tuple[
+            noisy_model_input: noisy at sigma applied to latent
+            timesteps: timesteps betweeen 1.0 and 1000.0
+            sigmas: sigmas between 0.0 and 1.0
+        ]
+    """
     bsz, _, h, w = latents.shape
     assert bsz > 0, "Batch size not large enough"
-    num_timesteps = noise_scheduler.config.num_train_timesteps
+    num_timesteps: int = noise_scheduler.config.num_train_timesteps
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
         # Simple random sigma-based noise sampling
         if args.timestep_sampling == "sigmoid":
             # https://github.com/XLabs-AI/x-flux/tree/main
-            sigmas = torch.sigmoid(args.sigmoid_scale * torch.randn((bsz,), device=device))
+            sigma = torch.sigmoid(args.sigmoid_scale * torch.randn((bsz,), device=device))
         else:
-            sigmas = torch.rand((bsz,), device=device)
+            sigma = torch.rand((bsz,), device=device)
 
-        timesteps = sigmas * num_timesteps
+        timestep = sigma * num_timesteps
     elif args.timestep_sampling == "shift":
         shift = args.discrete_flow_shift
-        sigmas = torch.randn(bsz, device=device)
-        sigmas = sigmas * args.sigmoid_scale  # larger scale for more uniform sampling
-        sigmas = sigmas.sigmoid()
-        sigmas = (sigmas * shift) / (1 + (shift - 1) * sigmas)
-        timesteps = sigmas * num_timesteps
+        sigma = torch.randn(bsz, device=device)
+        sigma = sigma * args.sigmoid_scale  # larger scale for more uniform sampling
+        sigma = sigma.sigmoid()
+        sigma = (sigma * shift) / (1 + (shift - 1) * sigma)
+        timestep = sigma * num_timesteps
     elif args.timestep_sampling == "flux_shift":
-        sigmas = torch.randn(bsz, device=device)
-        sigmas = sigmas * args.sigmoid_scale  # larger scale for more uniform sampling
-        sigmas = sigmas.sigmoid()
+        sigma = torch.randn(bsz, device=device)
+        sigma = sigma * args.sigmoid_scale  # larger scale for more uniform sampling
+        sigma = sigma.sigmoid()
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2)) # we are pre-packed so must adjust for packed size 
-        sigmas = time_shift(mu, 1.0, sigmas)
-        timesteps = sigmas * num_timesteps
+        sigma = time_shift(mu, 1.0, sigma)
+        timestep = sigma * num_timesteps
     else:
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
@@ -447,28 +455,29 @@ def get_noisy_model_input_and_timesteps(
             mode_scale=args.mode_scale,
         )
         indices = (u * num_timesteps).long()
-        timesteps = noise_scheduler.timesteps[indices].to(device=device)
-        sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=latents.ndim, dtype=dtype)
+        timestep: torch.Tensor = noise_scheduler.timesteps[indices].to(device=device)
+        sigma = get_sigmas(noise_scheduler, timestep, device, n_dim=latents.ndim, dtype=dtype)
 
     # Broadcast sigmas to latent shape
-    sigmas = sigmas.view(-1, 1, 1, 1)
+    sigma = sigma.view(-1, 1, 1, 1)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
     if args.ip_noise_gamma:
+        assert isinstance(args.ip_noise_gamma, float)
         xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
         if args.ip_noise_gamma_random_strength:
             ip_noise_gamma = (torch.rand(1, device=latents.device, dtype=dtype) * args.ip_noise_gamma)
         else:
             ip_noise_gamma = args.ip_noise_gamma
-        noisy_model_input = (1.0 - sigmas) * latents + sigmas * (noise + ip_noise_gamma * xi)
+        noisy_model_input = (1.0 - sigma) * latents + sigma * (noise + ip_noise_gamma * xi)
     else:
-        noisy_model_input = (1.0 - sigmas) * latents + sigmas * noise
+        noisy_model_input = (1.0 - sigma) * latents + sigma * noise
 
-    return noisy_model_input.to(dtype), timesteps.to(dtype), sigmas
+    return noisy_model_input.to(dtype), timestep.to(dtype), sigma
 
 
-def apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas):
+def apply_model_prediction_type(args, model_pred: torch.FloatTensor, noisy_model_input, sigmas):
     weighting = None
     if args.model_prediction_type == "raw":
         pass
