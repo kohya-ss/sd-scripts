@@ -17,6 +17,7 @@ The command to install PyTorch is as follows:
 Apr 27, 2025:
 - FLUX.1 training now supports CFG scale in the sample generation during training. Please use `--g` option, to specify the CFG scale (note that `--l` is used as the embedded guidance scale.) PR [#2064](https://github.com/kohya-ss/sd-scripts/pull/2064).
     - See [here](#sample-image-generation-during-training) for details.
+    - If you have any issues with this, please let us know.
 
 Apr 6, 2025:
 - IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
