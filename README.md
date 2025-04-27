@@ -14,6 +14,11 @@ The command to install PyTorch is as follows:
 
 ### Recent Updates
 
+Apr 27, 2025:
+- FLUX.1 training now supports CFG scale in the sample generation during training. Please use `--g` option, to specify the CFG scale (note that `--l` is used as the embedded guidance scale.) PR [#2064](https://github.com/kohya-ss/sd-scripts/pull/2064).
+    - See [here](#sample-image-generation-during-training) for details.
+    - If you have any issues with this, please let us know.
+
 Apr 6, 2025:
 - IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
     - `--ip_noise_gamma` and `--ip_noise_gamma_random_strength` are available.
@@ -1344,11 +1349,13 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
   Lines beginning with `#` are comments. You can specify options for the generated image with options like `--n` after the prompt. The following can be used.
 
-  * `--n` Negative prompt up to the next option.
+  * `--n` Negative prompt up to the next option. Ignored when CFG scale is `1.0`.
   * `--w` Specifies the width of the generated image.
   * `--h` Specifies the height of the generated image.
   * `--d` Specifies the seed of the generated image.
   * `--l` Specifies the CFG scale of the generated image.
+    * In guidance distillation models like FLUX.1, this value is used as the embedded guidance scale for backward compatibility.
+  * `--g` Specifies the CFG scale for the models with embedded guidance scale. The default is `1.0`, `1.0` means no CFG. In general, should not be changed unless you train the un-distilled FLUX.1 models.
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
