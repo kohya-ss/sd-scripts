@@ -6178,6 +6178,11 @@ def line_to_prompt_dict(line: str) -> dict:
                 prompt_dict["scale"] = float(m.group(1))
                 continue
 
+            m = re.match(r"g ([\d\.]+)", parg, re.IGNORECASE)
+            if m:  # guidance scale
+                prompt_dict["guidance_scale"] = float(m.group(1))
+                continue
+
             m = re.match(r"n (.+)", parg, re.IGNORECASE)
             if m:  # negative prompt
                 prompt_dict["negative_prompt"] = m.group(1)
