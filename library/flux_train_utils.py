@@ -475,7 +475,7 @@ def get_noisy_model_input_and_timestep(
     Returns:
         tuple[
             noisy_model_input: noisy at sigma applied to latent
-            timesteps: timesteps betweeen 1.0 and 1000.0
+            timesteps: timesteps between 1.0 and 1000.0
             sigmas: sigmas between 0.0 and 1.0
         ]
     """
