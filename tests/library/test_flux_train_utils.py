@@ -164,10 +164,10 @@ def test_with_random_ip_noise(args, noise_scheduler, latents, noise, device):
 def test_float16_dtype(args, noise_scheduler, latents, noise, device):
     dtype = torch.float16
 
-    noisy_input, timesteps, sigmas = get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
+    noisy_input, timestep, sigma = get_noisy_model_input_and_timestep(args, noise_scheduler, latents, noise, device, dtype)
 
     assert noisy_input.dtype == dtype
-    assert timesteps.dtype == dtype
+    assert timestep.dtype == dtype
 
 
 # Test different batch sizes
