@@ -1,5 +1,8 @@
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import torch
+from torch import Tensor
+import torch.nn as nn
+import torch.nn.functional as F
 import argparse
 import random
 import re
@@ -601,6 +604,129 @@ def mapo_loss(loss: torch.Tensor, mapo_weight: float, num_train_timesteps=1000) 
     }
 
     return loss, metrics
+
+class FlowMatchingDDOLoss(nn.Module):
+    def __init__(self, alpha=4.0, beta=0.05):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(
+        self, v_theta: Tensor, v_theta_ref: Tensor, v_target: Tensor, time=None
+    ):
+        """
+        Compute DDO loss for flow matching models
+
+        Args:
+            v_theta: Vector field predicted by target model
+            v_theta_ref: Vector field predicted by reference model
+            v_target: Target vector field (e.g., straight-line for rectified flow)
+            time: Time parameter t
+
+        Returns:
+            DDO loss value
+        """
+        # For flow matching, error is based on vector field difference
+        error_theta = torch.sum((v_theta - v_target) ** 2, dim=[1, 2, 3])
+        error_theta_ref = torch.sum((v_theta_ref - v_target) ** 2, dim=[1, 2, 3])
+
+        # Likelihood ratio approximation
+        delta = error_theta_ref - error_theta
+        scaled_delta = self.beta * delta
+
+        # Split batch into real and fake parts
+        batch_size = v_theta.shape[0]
+        half_batch = batch_size // 2
+
+        real_delta = scaled_delta[:half_batch]
+        fake_delta = scaled_delta[half_batch:]
+
+        real_loss = -F.logsigmoid(real_delta).mean()
+        fake_loss = -F.logsigmoid(-fake_delta).mean()
+
+        loss = real_loss + self.alpha * fake_loss
+
+        return loss
+
+def compute_target_velocity(x_t: Tensor, t: Tensor):
+    """
+    Compute the target velocity vector field for flow matching.
+
+    For rectified flow, the target velocity is the straight-line path derivative.
+
+    Args:
+        x_t: Points along the path at time t (batch_size, channels, height, width)
+        t: Time values in [0,1] (batch_size,)
+
+    Returns:
+        Target velocity vectors v(x_t, t) for flow matching
+    """
+    batch_size = x_t.shape[0]
+
+    # Get corresponding data and noise endpoints
+    with torch.no_grad():
+        # For each interpolated point, we need the endpoints of its path
+        # In practice, these might come from a cache or be passed as arguments
+        x1 = get_data_endpoints(x_t, t)  # Real data endpoint (t=0)
+        x0 = get_noise_endpoints(x_t, t)  # Noise endpoint (t=1)
+
+        # Reshape t for broadcasting
+        t = t.view(batch_size, 1, 1, 1)
+
+        # For standard rectified flow, the target velocity is constant along the path:
+        # v(x_t, t) = x1 - x0
+        v_target = x1 - x0
+
+        # For time-dependent velocity fields (non-rectified), we would scale by time:
+        # v_target = v_target * g(t)  # where g(t) is a time-dependent scaling function
+
+    return v_target
+
+
+def get_data_endpoints(x_t: Tensor, t: Tensor):
+    """
+    Get the data endpoints (t=0) for the given points on the path.
+
+    For training with real data, this would typically use the encoded real data.
+    For inference or when using generated endpoints, we'd solve for them.
+
+    Args:
+        x_t: Points on the path at time t
+        t: Time values
+
+    Returns:
+        The data endpoints (x at t=0)
+    """
+    # Solve for x1 using the straight-line path: x_t = (1-t)*x1 + t*x0
+    t = t.view(-1, 1, 1, 1)
+    x0 = torch.randn_like(x_t)  # Noise endpoint
+
+    # Solve for x1: x1 = (x_t - t*x0) / (1-t)
+    # Add small epsilon to prevent division by zero
+    epsilon = 1e-8
+    x1 = (x_t - t * x0) / (torch.clamp(1 - t, min=epsilon))
+
+    return x1
+
+
+def get_noise_endpoints(x_t: Tensor, t: Tensor):
+    """
+    Get the noise endpoints (t=1) for the given points on the path.
+
+    For standard rectified flow, this is typically Gaussian noise.
+
+    Args:
+        x_t: Points on the path at time t
+        t: Time values
+
+    Returns:
+        The noise endpoints (x at t=1)
+    """
+
+    # Generate noise samples matching the shape of x_t
+    x0 = torch.randn_like(x_t)
+
+    return x0
 
 
 """
