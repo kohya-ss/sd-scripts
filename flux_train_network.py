@@ -384,6 +384,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             # grad is enabled even if unet is not in train mode, because Text Encoder is in train mode
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
+                accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
                 model_pred = unet(
                     img=img,
                     img_ids=img_ids,
