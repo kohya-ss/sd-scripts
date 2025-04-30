@@ -46,7 +46,7 @@ from library.custom_train_functions import (
     apply_masked_loss,
     diffusion_dpo_loss,
     mapo_loss,
-    calculate_ddo_loss_for_dit_flow_matching,
+    ddo_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
 
@@ -498,8 +498,8 @@ class NetworkTrainer:
             huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
             ref_loss= train_util.conditional_loss(ref_noise_pred.float(), ref_target.float(), args.loss_type, "none", huber_c)
             loss, metrics_ddo = ddo_loss(
-                loss, 
-                ref_loss, 
+                loss.mean(dim=(1, 2, 3)), 
+                ref_loss.mean(dim=(1, 2, 3)), 
                 args.ddo_alpha or 4.0, 
                 args.ddo_beta or 0.05,
                 weighting
