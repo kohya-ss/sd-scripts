@@ -9,6 +9,8 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
+If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+
 - [FLUX.1 training](#flux1-training)
 - [SD3 training](#sd3-training)
 
@@ -16,7 +18,7 @@ The command to install PyTorch is as follows:
 
 May 1, 2025:
 - The error when training FLUX.1 with mixed precision in flux_train.py with DeepSpeed enabled has been resolved. Thanks to sharlynxy for PR [#2060](https://github.com/kohya-ss/sd-scripts/pull/2060). Please refer to the PR for details.
-  - If you enable DeepSpeed, please install deepseed with `pip install deepspeed==0.16.7`.
+  - If you enable DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
 
 Apr 27, 2025:
 - FLUX.1 training now supports CFG scale in the sample generation during training. Please use `--g` option, to specify the CFG scale (note that `--l` is used as the embedded guidance scale.) PR [#2064](https://github.com/kohya-ss/sd-scripts/pull/2064).
