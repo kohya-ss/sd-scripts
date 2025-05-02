@@ -9,10 +9,21 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
+If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+
 - [FLUX.1 training](#flux1-training)
 - [SD3 training](#sd3-training)
 
 ### Recent Updates
+
+May 1, 2025:
+- The error when training FLUX.1 with mixed precision in flux_train.py with DeepSpeed enabled has been resolved. Thanks to sharlynxy for PR [#2060](https://github.com/kohya-ss/sd-scripts/pull/2060). Please refer to the PR for details.
+  - If you enable DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+
+Apr 27, 2025:
+- FLUX.1 training now supports CFG scale in the sample generation during training. Please use `--g` option, to specify the CFG scale (note that `--l` is used as the embedded guidance scale.) PR [#2064](https://github.com/kohya-ss/sd-scripts/pull/2064).
+    - See [here](#sample-image-generation-during-training) for details.
+    - If you have any issues with this, please let us know.
 
 Apr 6, 2025:
 - IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
@@ -870,6 +881,14 @@ Note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is o
 
 (Single GPU with id `0` will be used.)
 
+## DeepSpeed installation (experimental, Linux or WSL2 only)
+  
+To install DeepSpeed, run the following command in your activated virtual environment:
+
+```bash
+pip install deepspeed==0.16.7 
+```
+
 ## Upgrade
 
 When a new release comes out you can upgrade your repo with the following command:
@@ -1344,11 +1363,13 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
   Lines beginning with `#` are comments. You can specify options for the generated image with options like `--n` after the prompt. The following can be used.
 
-  * `--n` Negative prompt up to the next option.
+  * `--n` Negative prompt up to the next option. Ignored when CFG scale is `1.0`.
   * `--w` Specifies the width of the generated image.
   * `--h` Specifies the height of the generated image.
   * `--d` Specifies the seed of the generated image.
   * `--l` Specifies the CFG scale of the generated image.
+    * In guidance distillation models like FLUX.1, this value is used as the embedded guidance scale for backward compatibility.
+  * `--g` Specifies the CFG scale for the models with embedded guidance scale. The default is `1.0`, `1.0` means no CFG. In general, should not be changed unless you train the un-distilled FLUX.1 models.
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
