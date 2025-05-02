@@ -493,7 +493,7 @@ class NetworkTrainer:
 
             self.wavelet_loss.set_loss_fn(wavelet_loss_fn(args))
 
-            wav_loss, pred_combined_hf, target_combined_hf = self.wavelet_loss(model_denoised.float(), flow_based_clean.float())
+            wav_loss, wavelet_metrics = self.wavelet_loss(model_denoised.float(), flow_based_clean.float())
             # Weight the losses as needed
             loss = loss + args.wavelet_loss_alpha * wav_loss
 
@@ -1310,10 +1310,12 @@ class NetworkTrainer:
 
         if args.wavelet_loss:
             self.wavelet_loss = WaveletLoss(
+                transform_type=args.wavelet_loss_transform,
                 wavelet=args.wavelet_loss_wavelet, 
                 level=args.wavelet_loss_level, 
-                band_level_weights=args.wavelet_loss_band_level_weights, 
                 band_weights=args.wavelet_loss_band_weights, 
+                band_level_weights=args.wavelet_loss_band_level_weights, 
+                quaternion_component_weights=args.wavelet_loss_quaternion_component_weights,
                 ll_level_threshold=args.wavelet_loss_ll_level_threshold, 
                 device=accelerator.device
             )
@@ -1329,6 +1331,8 @@ class NetworkTrainer:
                 logger.info(f"\tBand weights: {args.wavelet_loss_band_weights}")
             if args.wavelet_loss_band_level_weights is not None:
                 logger.info(f"\tBand level weights: {args.wavelet_loss_band_level_weights}")
+            if args.wavelet_loss_quaternion_component_weights is not None:
+                logger.info(f"\tQuaternion component weights: {args.wavelet_loss_quaternion_component_weights}")
 
         del train_dataset_group
         if val_dataset_group is not None:
