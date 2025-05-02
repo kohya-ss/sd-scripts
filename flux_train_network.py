@@ -347,15 +347,22 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         weight_dtype: torch.dtype,
         train_unet: bool,
         is_train=True,
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
+        timesteps: torch.FloatTensor | None=None,
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
 
         # get noisy model input and timesteps
-        noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timestep(
+        noisy_model_input, rand_timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timestep(
             args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
         )
+
+        if timesteps is None:
+            timesteps = rand_timesteps
+        else:
+            # Convert timesteps into sigmas
+            sigmas: torch.FloatTensor = timesteps - noise_scheduler.config.num_train_timesteps
 
         # pack latents and get img_ids
         packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4

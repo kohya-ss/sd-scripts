@@ -270,10 +270,14 @@ class NetworkTrainer:
         weight_dtype: torch.dtype,
         train_unet: bool,
         is_train=True,
+        timesteps=None
     ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
-        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+        noise, noisy_latents, rand_timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+
+        if timesteps is None:
+            timesteps = rand_timesteps
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -475,34 +479,34 @@ class NetworkTrainer:
             loss = apply_masked_loss(loss, batch)
 
         if args.ddo_beta is not None or args.ddo_alpha is not None:
-            with torch.no_grad():
-                accelerator.unwrap_model(network).set_multiplier(0.0)
-                ref_noise_pred, ref_noisy_latents, ref_target, ref_sigmas, ref_timesteps, _weighting = self.get_noise_pred_and_target(
-                    args,
-                    accelerator,
-                    noise_scheduler,
-                    latents,
-                    batch,
-                    text_encoder_conds,
-                    unet,
-                    network,
-                    weight_dtype,
-                    train_unet,
-                    is_train=False,
-                )
+            accelerator.unwrap_model(network).set_multiplier(0.0)
+            ref_noise_pred, ref_noisy_latents, ref_target, ref_sigmas, ref_timesteps, ref_weighting = self.get_noise_pred_and_target(
+                args,
+                accelerator,
+                noise_scheduler,
+                latents,
+                batch,
+                text_encoder_conds,
+                unet,
+                network,
+                weight_dtype,
+                train_unet,
+                is_train=False,
+                timesteps=timesteps,
+            )
 
-                # reset network multipliers
-                accelerator.unwrap_model(network).set_multiplier(1.0)
+            # reset network multipliers
+            accelerator.unwrap_model(network).set_multiplier(1.0)
             
-            # Apply DDO loss
-            huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+            huber_c = train_util.get_huber_threshold_if_needed(args, ref_timesteps, noise_scheduler)
             ref_loss= train_util.conditional_loss(ref_noise_pred.float(), ref_target.float(), args.loss_type, "none", huber_c)
+            if weighting is not None and ref_weighting is not None:
+                ddo_weighting = weighting * ref_weighting 
             loss, metrics_ddo = ddo_loss(
-                loss.mean(dim=(1, 2, 3)), 
-                ref_loss.mean(dim=(1, 2, 3)), 
+                loss.mean(dim=(1, 2, 3)) * (weighting if weighting is not None else 1), 
+                ref_loss.mean(dim=(1, 2, 3)) * (ref_weighting if ref_weighting is not None else 1), 
                 args.ddo_alpha or 4.0, 
                 args.ddo_beta or 0.05,
-                weighting
             )
             metrics = {**metrics, **metrics_ddo}
         elif args.beta_dpo is not None:
