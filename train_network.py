@@ -389,6 +389,7 @@ class NetworkTrainer:
         """
         Process a batch for the network
         """
+        metrics: dict[str, int | float] = {}
         with torch.no_grad():
             if "latents" in batch and batch["latents"] is not None:
                 latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
@@ -471,36 +472,35 @@ class NetworkTrainer:
         wav_loss = None
         if args.wavelet_loss:
             if args.wavelet_loss_rectified_flow:
-                # Calculate flow-based clean estimate using the target
-                flow_based_clean = noisy_latents - sigmas.view(-1, 1, 1, 1) * target
+                # Estimate clean target
+                clean_target = noisy_latents - sigmas.view(-1, 1, 1, 1) * target
                 
-                # Calculate model-based denoised estimate
-                model_denoised = noisy_latents - sigmas.view(-1, 1, 1, 1) * noise_pred
+                # Estimate clean pred
+                clean_pred = noisy_latents - sigmas.view(-1, 1, 1, 1) * noise_pred
             else:
-                flow_based_clean = target
-                model_denoised = noise_pred
+                clean_target = target
+                clean_pred = noise_pred
 
             def wavelet_loss_fn(args):
                 loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
                 def loss_fn(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
-                    # TODO: we need to get the proper huber_c here, or apply the loss_fn before we get the loss
-                    # To get the noise scheduler, timesteps, and latents
                     huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, latents, noise_scheduler)
                     return train_util.conditional_loss(input.float(), target.float(), loss_type, reduction, huber_c)
 
                 return loss_fn
 
-
             self.wavelet_loss.set_loss_fn(wavelet_loss_fn(args))
 
-            wav_loss, wavelet_metrics = self.wavelet_loss(model_denoised.float(), flow_based_clean.float())
+            wav_loss, wavelet_metrics = self.wavelet_loss(clean_pred.float(), clean_target.float())
             # Weight the losses as needed
             loss = loss + args.wavelet_loss_alpha * wav_loss
+            metrics['loss/wavelet'] = wav_loss.detach().item()
 
         if weighting is not None:
             loss = loss * weighting
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
+
         loss = loss.mean([1, 2, 3])
 
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
