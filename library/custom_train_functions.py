@@ -659,8 +659,16 @@ class DiscreteWaveletTransform(WaveletTransform):
         batch, channels, height, width = x.shape
         x = x.view(batch * channels, 1, height, width)
 
+        # Calculate proper padding for the filter size
+        filter_size = self.dec_lo.size(0)
+        pad_size = filter_size // 2
+        
         # Pad for proper convolution
-        x_pad = F.pad(x, (self.dec_lo.size(0) // 2,) * 4, mode="reflect")
+        try:
+            x_pad = F.pad(x, (pad_size,) * 4, mode="reflect")
+        except RuntimeError:
+            # Fallback for very small tensors
+            x_pad = F.pad(x, (pad_size,) * 4, mode="constant")
 
         # Apply filter to rows
         lo = F.conv2d(x_pad, self.dec_lo.view(1, 1, -1, 1), stride=(2, 1))
@@ -945,8 +953,16 @@ class QuaternionWaveletTransform(WaveletTransform):
         batch, channels, height, width = x.shape
         x = x.view(batch * channels, 1, height, width)
 
+        # Calculate proper padding for the filter size
+        filter_size = self.dec_lo.size(0)
+        pad_size = filter_size // 2
+        
         # Pad for proper convolution
-        x_pad = F.pad(x, (self.dec_lo.size(0) // 2,) * 4, mode="reflect")
+        try:
+            x_pad = F.pad(x, (pad_size,) * 4, mode="reflect")
+        except RuntimeError:
+            # Fallback for very small tensors
+            x_pad = F.pad(x, (pad_size,) * 4, mode="constant")
 
         # Apply filter to rows
         lo = F.conv2d(x_pad, self.dec_lo.view(1, 1, -1, 1), stride=(2, 1))
@@ -1023,6 +1039,8 @@ class WaveletLoss(nn.Module):
                 "j": 0.7,  # y-Hilbert (imaginary part)
                 "k": 0.5,  # xy-Hilbert (imaginary part)
             }
+
+            print("component weights", self.component_weights)
 
         # Register wavelet filters as module buffers
         self.register_buffer("dec_lo", self.transform.dec_lo.to(device))
@@ -1132,7 +1150,12 @@ class WaveletLoss(nn.Module):
                 band_weight = self.band_weights[band]
 
                 for level_idx in range(self.level):
-                    level_weight = self.band_level_weights[f"{band}{level_idx + 1}"]
+                    band_level_key = f"{band}{level_idx + 1}"
+                    # band_level_weights take priority over band_weight if exists
+                    if band_level_key in self.band_level_weights:
+                        level_weight = self.band_level_weights[band_level_key] 
+                    else:
+                        level_weight = band_weight
 
                     # Get coefficients at this level
                     pred_coeff = pred_qwt[component][band][level_idx]
@@ -1142,7 +1165,7 @@ class WaveletLoss(nn.Module):
                     level_loss = self.loss_fn(pred_coeff, target_coeff)
 
                     # Apply weights
-                    weighted_loss = component_weight * band_weight * level_weight * level_loss
+                    weighted_loss = component_weight * level_weight * level_loss
 
                     # Add to total loss
                     total_loss += weighted_loss
@@ -1173,6 +1196,9 @@ class WaveletLoss(nn.Module):
         return padded_tensors
 
     def set_loss_fn(self, loss_fn: LossCallable):
+        """
+        Set loss function to use. Wavelet loss wants l1 or huber loss.
+        """
         self.loss_fn = loss_fn
 
 
@@ -1284,6 +1310,96 @@ def visualize_qwt_results(qwt_transform, lr_image, pred_latent, target_latent, f
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
+
+
+def diffusion_dpo_loss(loss: torch.Tensor, ref_loss: Tensor, beta_dpo: float):
+    """
+    Diffusion DPO loss
+
+    Args:
+        loss: pairs of w, l losses B//2
+        ref_loss: ref pairs of w, l losses B//2
+        beta_dpo: beta_dpo weight
+    """
+
+    loss_w, loss_l = loss.chunk(2)
+    raw_loss = 0.5 * (loss_w.mean(dim=1) + loss_l.mean(dim=1))
+    model_diff = loss_w - loss_l
+
+    ref_losses_w, ref_losses_l = ref_loss.chunk(2)
+    ref_diff = ref_losses_w - ref_losses_l
+    raw_ref_loss = ref_loss.mean(dim=1)
+
+    scale_term = -0.5 * beta_dpo
+    inside_term = scale_term * (model_diff - ref_diff)
+    loss = -1 * torch.nn.functional.logsigmoid(inside_term)
+
+    implicit_acc = (inside_term > 0).sum().float() / inside_term.size(0)
+    implicit_acc += 0.5 * (inside_term == 0).sum().float() / inside_term.size(0)
+
+    metrics = {
+        "loss/diffusion_dpo_total_loss": loss.detach().mean().item(),
+        "loss/diffusion_dpo_raw_loss": raw_loss.detach().mean().item(),
+        "loss/diffusion_dpo_ref_loss": raw_ref_loss.detach().item(),
+        "loss/diffusion_dpo_implicit_acc": implicit_acc.detach().item(),
+    }
+
+    return loss, metrics
+
+
+def mapo_loss(loss: torch.Tensor, mapo_weight: float, num_train_timesteps=1000) -> tuple[torch.Tensor, dict[str, int | float]]:
+    """
+    MaPO loss
+
+    Args:
+        loss: pairs of w, l losses B//2, C, H, W
+        mapo_weight: mapo weight
+        num_train_timesteps: number of timesteps
+    """
+
+    snr = 0.5
+    loss_w, loss_l = loss.chunk(2)
+    log_odds = (snr * loss_w) / (torch.exp(snr * loss_w) - 1) - (snr * loss_l) / (torch.exp(snr * loss_l) - 1)
+
+    # Ratio loss.
+    # By multiplying T to the inner term, we try to maximize the margin throughout the overall denoising process.
+    ratio = torch.nn.functional.logsigmoid(log_odds * num_train_timesteps)
+    ratio_losses = mapo_weight * ratio
+
+    # Full MaPO loss
+    loss = loss_w.mean(dim=1) - ratio_losses.mean(dim=1)
+
+    metrics = {
+        "loss/diffusion_dpo_total": loss.detach().mean().item(),
+        "loss/diffusion_dpo_ratio": -ratio_losses.detach().mean().item(),
+        "loss/diffusion_dpo_w_loss": loss_w.detach().mean().item(),
+        "loss/diffusion_dpo_l_loss": loss_l.detach().mean().item(),
+        "loss/diffusion_dpo_win_score": ((snr * loss_w) / (torch.exp(snr * loss_w) - 1)).detach().mean().item(),
+        "loss/diffusion_dpo_lose_score": ((snr * loss_l) / (torch.exp(snr * loss_l) - 1)).detach().mean().item(),
+    }
+
+    return loss, metrics
+
+
+def ddo_loss(loss, ref_loss, ddo_alpha: float = 4.0, ddo_beta: float = 0.05):
+    ref_loss = ref_loss.detach()  # Ensure no gradients to reference
+    log_ratio = ddo_beta * (ref_loss - loss)
+    real_loss = -torch.log(torch.sigmoid(log_ratio) + 1e-6).mean()
+    fake_loss = -ddo_alpha * torch.log(1 - torch.sigmoid(log_ratio) + 1e-6).mean()
+    total_loss = real_loss + fake_loss
+
+    metrics = {
+        "loss/ddo_real": real_loss.detach().item(),
+        "loss/ddo_fake": fake_loss.detach().item(),
+        "loss/ddo_total": total_loss.detach().item(),
+        "loss/ddo_sigmoid_log_ratio": torch.sigmoid(log_ratio).mean().item(),
+    }
+
+    # logger.debug(f"loss mean: {loss.mean().item()}, ref_loss mean: {ref_loss.mean().item()}")
+    # logger.debug(f"difference: {(ref_loss - loss).mean().item()}")
+    # logger.debug(f"log_ratio range: {log_ratio.min().item()} to {log_ratio.max().item()}")
+    # logger.debug(f"sigmoid(log_ratio) mean: {torch.sigmoid(log_ratio).mean().item()}")
+    return total_loss, metrics
 
 
 """

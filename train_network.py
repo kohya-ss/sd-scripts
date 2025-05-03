@@ -1083,6 +1083,7 @@ class NetworkTrainer:
             "ss_wavelet_loss_level": args.wavelet_loss_level,
             "ss_wavelet_loss_band_weights": json.dumps(args.wavelet_loss_band_weights) if args.wavelet_loss_band_weights is not None else None,
             "ss_wavelet_loss_band_level_weights": json.dumps(args.wavelet_loss_band_level_weights) if args.wavelet_loss_band_weights is not None else None,
+            "ss_wavelet_loss_quaternion_component_weights": json.dumps(args.wavelet_loss_quaternion_component_weights) if args.wavelet_loss_quaternion_component_weights is not None else None,
             "ss_wavelet_loss_ll_level_threshold": args.wavelet_loss_ll_level_threshold,
             "ss_wavelet_loss_rectified_flow": args.wavelet_loss_rectified_flow,
         }
