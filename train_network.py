@@ -385,7 +385,7 @@ class NetworkTrainer:
         is_train=True,
         train_text_encoder=True,
         train_unet=True,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, dict[str, int | float]]:
         """
         Process a batch for the network
         """
@@ -508,7 +508,7 @@ class NetworkTrainer:
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-        return loss.mean(), wav_loss
+        return loss.mean(), metrics
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1475,7 +1475,7 @@ class NetworkTrainer:
                     # preprocess batch for each model
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True)
 
-                    loss, wav_loss = self.process_batch(
+                    loss, metrics = self.process_batch(
                         batch,
                         text_encoders,
                         unet,
@@ -1580,6 +1580,7 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
+                    logs = {**logs, **metrics}
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
@@ -1606,7 +1607,7 @@ class NetworkTrainer:
 
                             args.min_timestep = args.max_timestep = timestep  # dirty hack to change timestep
 
-                            loss, wav_loss = self.process_batch(
+                            loss, metrics = self.process_batch(
                                 batch,
                                 text_encoders,
                                 unet,
@@ -1686,7 +1687,7 @@ class NetworkTrainer:
                         # temporary, for batch processing
                         self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
 
-                        loss, wav_loss = self.process_batch(
+                        loss, metrics = self.process_batch(
                             batch,
                             text_encoders,
                             unet,

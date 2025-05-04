@@ -724,29 +724,29 @@ class StationaryWaveletTransform(WaveletTransform):
         """Perform multi-level SWT decomposition."""
         bands = {
             "ll": [],  # or "aa" if you prefer PyWavelets nomenclature
-            "lh": [],  # or "da" 
+            "lh": [],  # or "da"
             "hl": [],  # or "ad"
-            "hh": []   # or "dd"
+            "hh": [],  # or "dd"
         }
-        
+
         # Start with input as low frequency
         ll = x
-        
+
         for j in range(level):
             # Get upsampled filters for current level
             dec_lo, dec_hi = self._get_filters_for_level(j)
-            
+
             # Decompose current approximation
             ll, lh, hl, hh = self._swt_single_level(ll, dec_lo, dec_hi)
-            
+
             # Store results in bands
             bands["ll"].append(ll)
             bands["lh"].append(lh)
             bands["hl"].append(hl)
             bands["hh"].append(hh)
-            
+
             # No need to update ll explicitly as it's already the next approximation
-        
+
         return bands
 
     def _get_filters_for_level(self, level: int) -> tuple[Tensor, Tensor]:
@@ -770,53 +770,53 @@ class StationaryWaveletTransform(WaveletTransform):
     def _swt_single_level(self, x: Tensor, dec_lo: Tensor, dec_hi: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Perform single-level SWT decomposition with 1D convolutions."""
         batch, channels, height, width = x.shape
-        
+
         # Prepare output tensors
         ll = torch.zeros((batch, channels, height, width), device=x.device)
         lh = torch.zeros((batch, channels, height, width), device=x.device)
         hl = torch.zeros((batch, channels, height, width), device=x.device)
         hh = torch.zeros((batch, channels, height, width), device=x.device)
-        
+
         # Prepare 1D filter kernels
         dec_lo_1d = dec_lo.view(1, 1, -1)
         dec_hi_1d = dec_hi.view(1, 1, -1)
         pad_len = dec_lo.size(0) - 1
-        
+
         for b in range(batch):
             for c in range(channels):
                 # Extract single channel/batch and reshape for 1D convolution
                 x_bc = x[b, c]  # Shape: [height, width]
-                
+
                 # Process rows with 1D convolution
                 # Reshape to [width, 1, height] for treating each row as a batch
                 x_rows = x_bc.transpose(0, 1).unsqueeze(1)  # Shape: [width, 1, height]
-                
+
                 # Pad for circular convolution
                 x_rows_padded = F.pad(x_rows, (pad_len, 0), mode="circular")
-                
+
                 # Apply filters to rows
                 x_lo_rows = F.conv1d(x_rows_padded, dec_lo_1d)  # [width, 1, height]
                 x_hi_rows = F.conv1d(x_rows_padded, dec_hi_1d)  # [width, 1, height]
-                
+
                 # Reshape and transpose back
                 x_lo_rows = x_lo_rows.squeeze(1).transpose(0, 1)  # [height, width]
                 x_hi_rows = x_hi_rows.squeeze(1).transpose(0, 1)  # [height, width]
-                
+
                 # Process columns with 1D convolution
                 # Reshape for column filtering (no transpose needed)
                 x_lo_cols = x_lo_rows.unsqueeze(1)  # [height, 1, width]
                 x_hi_cols = x_hi_rows.unsqueeze(1)  # [height, 1, width]
-                
+
                 # Pad for circular convolution
                 x_lo_cols_padded = F.pad(x_lo_cols, (pad_len, 0), mode="circular")
                 x_hi_cols_padded = F.pad(x_hi_cols, (pad_len, 0), mode="circular")
-                
+
                 # Apply filters to columns
                 ll[b, c] = F.conv1d(x_lo_cols_padded, dec_lo_1d).squeeze(1)  # [height, width]
                 lh[b, c] = F.conv1d(x_lo_cols_padded, dec_hi_1d).squeeze(1)  # [height, width]
                 hl[b, c] = F.conv1d(x_hi_cols_padded, dec_lo_1d).squeeze(1)  # [height, width]
                 hh[b, c] = F.conv1d(x_hi_cols_padded, dec_hi_1d).squeeze(1)  # [height, width]
-        
+
         return ll, lh, hl, hh
 
 
@@ -1103,8 +1103,9 @@ class WaveletLoss(nn.Module):
                 "j": 0.7,  # y-Hilbert (imaginary part)
                 "k": 0.5,  # xy-Hilbert (imaginary part)
             }
+        else:
+            raise RuntimeError(f"Invalid transform type {transform_type}")
 
-            print("component weights", self.component_weights)
 
         # Register wavelet filters as module buffers
         self.register_buffer("dec_lo", self.transform.dec_lo.to(device))

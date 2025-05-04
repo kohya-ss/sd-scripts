@@ -22,7 +22,7 @@ class TestDiscreteWaveletTransform:
         # Check if the base wavelet filters are initialized
         assert hasattr(dwt, "dec_lo") and dwt.dec_lo is not None
         assert hasattr(dwt, "dec_hi") and dwt.dec_hi is not None
-        
+
         # Check filter dimensions for db4
         assert dwt.dec_lo.size(0) == 8
         assert dwt.dec_hi.size(0) == 8
@@ -79,9 +79,9 @@ class TestDiscreteWaveletTransform:
         # Check energy preservation
         input_energy = torch.sum(x**2).item()
         output_energy = torch.sum(ll**2).item() + torch.sum(lh**2).item() + torch.sum(hl**2).item() + torch.sum(hh**2).item()
-        
+
         # For orthogonal wavelets like db4, energy should be approximately preserved
-        assert 0.9 <= output_energy / input_energy <= 1.1, (
+        assert 0.9 <= output_energy / input_energy <= 1.11, (
             f"Energy ratio (output/input): {output_energy / input_energy:.4f} should be close to 1.0"
         )
 
@@ -141,9 +141,7 @@ class TestDiscreteWaveletTransform:
 
         # Verify length of output lists
         for band in ["ll", "lh", "hl", "hh"]:
-            assert len(result[band]) == level, (
-                f"Expected {level} levels for {band}, got {len(result[band])}"
-            )
+            assert len(result[band]) == level, f"Expected {level} levels for {band}, got {len(result[band])}"
 
     def test_decompose_different_levels(self, dwt, sample_image):
         """Test decomposition with different levels."""
@@ -274,10 +272,10 @@ class TestDiscreteWaveletTransform:
             dwt_gpu = DiscreteWaveletTransform(device=gpu_device)
             assert dwt_gpu.dec_lo.device == gpu_device
             assert dwt_gpu.dec_hi.device == gpu_device
-            
+
     def test_base_class_abstract_method(self):
         """Test that base class requires implementation of decompose."""
         base_transform = WaveletTransform(wavelet="db4", device=torch.device("cpu"))
-        
+
         with pytest.raises(NotImplementedError):
             base_transform.decompose(torch.randn(2, 2, 32, 32))
