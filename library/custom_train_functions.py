@@ -558,7 +558,7 @@ def apply_masked_loss(loss, batch) -> torch.FloatTensor:
         # print(f"conditioning_image: {mask_image.shape}")
     elif "alpha_masks" in batch and batch["alpha_masks"] is not None:
         # alpha mask is 0 to 1
-        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1) # add channel dimension
+        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1)  # add channel dimension
         # print(f"mask_image: {mask_image.shape}, {mask_image.mean()}")
     else:
         return loss
@@ -567,6 +567,7 @@ def apply_masked_loss(loss, batch) -> torch.FloatTensor:
     mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
     loss = loss * mask_image
     return loss
+
 
 class LossCallableMSE(Protocol):
     def __call__(
@@ -662,7 +663,7 @@ class DiscreteWaveletTransform(WaveletTransform):
         # Calculate proper padding for the filter size
         filter_size = self.dec_lo.size(0)
         pad_size = filter_size // 2
-        
+
         # Pad for proper convolution
         try:
             x_pad = F.pad(x, (pad_size,) * 4, mode="reflect")
@@ -692,67 +693,130 @@ class DiscreteWaveletTransform(WaveletTransform):
 class StationaryWaveletTransform(WaveletTransform):
     """Stationary Wavelet Transform (SWT) implementation."""
 
+    def __init__(self, wavelet="db4", device=torch.device("cpu")):
+        """Initialize wavelet filters."""
+        super().__init__(wavelet, device)
+
+        # Store original filters
+        self.orig_dec_lo = self.dec_lo.clone()
+        self.orig_dec_hi = self.dec_hi.clone()
+
+    # def decompose(self, x: Tensor, level=1) -> dict[str, list[Tensor]]:
+    #     """Perform multi-level SWT decomposition."""
+    #     coeffs = []
+    #     approx = x
+    #
+    #     for j in range(level):
+    #         # Get upsampled filters for current level
+    #         dec_lo, dec_hi = self._get_filters_for_level(j)
+    #
+    #         # Decompose current approximation
+    #         cA, cH, cV, cD = self._swt_single_level(approx, dec_lo, dec_hi)
+    #
+    #         # Store coefficients
+    #         coeffs.append({"aa": cA, "da": cH, "ad": cV, "dd": cD})
+    #
+    #         # Next level starts with current approximation
+    #         approx = cA
+    #
+    #     return coeffs
     def decompose(self, x: Tensor, level=1) -> dict[str, list[Tensor]]:
-        """
-        Perform multi-level SWT decomposition.
-
-        Args:
-            x: Input tensor [B, C, H, W]
-            level: Number of decomposition levels
-
-        Returns:
-            Dictionary containing decomposition coefficients
-        """
-        bands: dict[str, list[Tensor]] = {
-            "ll": [],
-            "lh": [],
-            "hl": [],
-            "hh": [],
+        """Perform multi-level SWT decomposition."""
+        bands = {
+            "ll": [],  # or "aa" if you prefer PyWavelets nomenclature
+            "lh": [],  # or "da" 
+            "hl": [],  # or "ad"
+            "hh": []   # or "dd"
         }
-
-        # Start low frequency with input
+        
+        # Start with input as low frequency
         ll = x
-
-        for _ in range(level):
-            ll, lh, hl, hh = self._swt_single_level(ll)
-
-            # For next level, use LL band
+        
+        for j in range(level):
+            # Get upsampled filters for current level
+            dec_lo, dec_hi = self._get_filters_for_level(j)
+            
+            # Decompose current approximation
+            ll, lh, hl, hh = self._swt_single_level(ll, dec_lo, dec_hi)
+            
+            # Store results in bands
             bands["ll"].append(ll)
             bands["lh"].append(lh)
             bands["hl"].append(hl)
             bands["hh"].append(hh)
-
+            
+            # No need to update ll explicitly as it's already the next approximation
+        
         return bands
 
-    def _swt_single_level(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Perform single-level SWT decomposition."""
+    def _get_filters_for_level(self, level: int) -> tuple[Tensor, Tensor]:
+        """Get upsampled filters for the specified level."""
+        if level == 0:
+            return self.orig_dec_lo, self.orig_dec_hi
+
+        # Calculate number of zeros to insert
+        zeros = 2**level - 1
+
+        # Create upsampled filters
+        upsampled_dec_lo = torch.zeros(len(self.orig_dec_lo) + (len(self.orig_dec_lo) - 1) * zeros, device=self.orig_dec_lo.device)
+        upsampled_dec_hi = torch.zeros(len(self.orig_dec_hi) + (len(self.orig_dec_hi) - 1) * zeros, device=self.orig_dec_hi.device)
+
+        # Insert original coefficients with zeros in between
+        upsampled_dec_lo[:: zeros + 1] = self.orig_dec_lo
+        upsampled_dec_hi[:: zeros + 1] = self.orig_dec_hi
+
+        return upsampled_dec_lo, upsampled_dec_hi
+
+    def _swt_single_level(self, x: Tensor, dec_lo: Tensor, dec_hi: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Perform single-level SWT decomposition with 1D convolutions."""
         batch, channels, height, width = x.shape
-        x = x.view(batch * channels, 1, height, width)
-
-        # Apply filter to rows
-        x_lo = F.conv2d(
-            F.pad(x, (self.dec_lo.size(0) // 2,) * 4, mode="reflect"),
-            self.dec_lo.view(1, 1, -1, 1).repeat(x.size(1), 1, 1, 1),
-            groups=x.size(1),
-        )
-        x_hi = F.conv2d(
-            F.pad(x, (self.dec_hi.size(0) // 2,) * 4, mode="reflect"),
-            self.dec_hi.view(1, 1, -1, 1).repeat(x.size(1), 1, 1, 1),
-            groups=x.size(1),
-        )
-
-        # Apply filter to columns
-        ll = F.conv2d(x_lo, self.dec_lo.view(1, 1, 1, -1).repeat(x.size(1), 1, 1, 1), groups=x.size(1))
-        lh = F.conv2d(x_lo, self.dec_hi.view(1, 1, 1, -1).repeat(x.size(1), 1, 1, 1), groups=x.size(1))
-        hl = F.conv2d(x_hi, self.dec_lo.view(1, 1, 1, -1).repeat(x.size(1), 1, 1, 1), groups=x.size(1))
-        hh = F.conv2d(x_hi, self.dec_hi.view(1, 1, 1, -1).repeat(x.size(1), 1, 1, 1), groups=x.size(1))
-
-        # Reshape back to batch format
-        ll = ll.view(batch, channels, ll.shape[2], ll.shape[3]).to(x.device)
-        lh = lh.view(batch, channels, lh.shape[2], lh.shape[3]).to(x.device)
-        hl = hl.view(batch, channels, hl.shape[2], hl.shape[3]).to(x.device)
-        hh = hh.view(batch, channels, hh.shape[2], hh.shape[3]).to(x.device)
-
+        
+        # Prepare output tensors
+        ll = torch.zeros((batch, channels, height, width), device=x.device)
+        lh = torch.zeros((batch, channels, height, width), device=x.device)
+        hl = torch.zeros((batch, channels, height, width), device=x.device)
+        hh = torch.zeros((batch, channels, height, width), device=x.device)
+        
+        # Prepare 1D filter kernels
+        dec_lo_1d = dec_lo.view(1, 1, -1)
+        dec_hi_1d = dec_hi.view(1, 1, -1)
+        pad_len = dec_lo.size(0) - 1
+        
+        for b in range(batch):
+            for c in range(channels):
+                # Extract single channel/batch and reshape for 1D convolution
+                x_bc = x[b, c]  # Shape: [height, width]
+                
+                # Process rows with 1D convolution
+                # Reshape to [width, 1, height] for treating each row as a batch
+                x_rows = x_bc.transpose(0, 1).unsqueeze(1)  # Shape: [width, 1, height]
+                
+                # Pad for circular convolution
+                x_rows_padded = F.pad(x_rows, (pad_len, 0), mode="circular")
+                
+                # Apply filters to rows
+                x_lo_rows = F.conv1d(x_rows_padded, dec_lo_1d)  # [width, 1, height]
+                x_hi_rows = F.conv1d(x_rows_padded, dec_hi_1d)  # [width, 1, height]
+                
+                # Reshape and transpose back
+                x_lo_rows = x_lo_rows.squeeze(1).transpose(0, 1)  # [height, width]
+                x_hi_rows = x_hi_rows.squeeze(1).transpose(0, 1)  # [height, width]
+                
+                # Process columns with 1D convolution
+                # Reshape for column filtering (no transpose needed)
+                x_lo_cols = x_lo_rows.unsqueeze(1)  # [height, 1, width]
+                x_hi_cols = x_hi_rows.unsqueeze(1)  # [height, 1, width]
+                
+                # Pad for circular convolution
+                x_lo_cols_padded = F.pad(x_lo_cols, (pad_len, 0), mode="circular")
+                x_hi_cols_padded = F.pad(x_hi_cols, (pad_len, 0), mode="circular")
+                
+                # Apply filters to columns
+                ll[b, c] = F.conv1d(x_lo_cols_padded, dec_lo_1d).squeeze(1)  # [height, width]
+                lh[b, c] = F.conv1d(x_lo_cols_padded, dec_hi_1d).squeeze(1)  # [height, width]
+                hl[b, c] = F.conv1d(x_hi_cols_padded, dec_lo_1d).squeeze(1)  # [height, width]
+                hh[b, c] = F.conv1d(x_hi_cols_padded, dec_hi_1d).squeeze(1)  # [height, width]
+        
         return ll, lh, hl, hh
 
 
@@ -956,7 +1020,7 @@ class QuaternionWaveletTransform(WaveletTransform):
         # Calculate proper padding for the filter size
         filter_size = self.dec_lo.size(0)
         pad_size = filter_size // 2
-        
+
         # Pad for proper convolution
         try:
             x_pad = F.pad(x, (pad_size,) * 4, mode="reflect")
@@ -1153,7 +1217,7 @@ class WaveletLoss(nn.Module):
                     band_level_key = f"{band}{level_idx + 1}"
                     # band_level_weights take priority over band_weight if exists
                     if band_level_key in self.band_level_weights:
-                        level_weight = self.band_level_weights[band_level_key] 
+                        level_weight = self.band_level_weights[band_level_key]
                     else:
                         level_weight = band_weight
 
