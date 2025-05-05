@@ -519,14 +519,13 @@ def diffusion_dpo_loss(loss: torch.Tensor, ref_loss: Tensor, beta_dpo: float):
         ref_loss: ref pairs of w, l losses B//2
         beta_dpo: beta_dpo weight
     """
-
     loss_w, loss_l = loss.chunk(2)
-    raw_loss = 0.5 * (loss_w.mean(dim=1) + loss_l.mean(dim=1))
+    raw_loss = 0.5 * (loss_w + loss_l)
     model_diff = loss_w - loss_l
 
     ref_losses_w, ref_losses_l = ref_loss.chunk(2)
     ref_diff = ref_losses_w - ref_losses_l
-    raw_ref_loss = ref_loss.mean(dim=1)
+    raw_ref_loss = ref_loss
 
     scale_term = -0.5 * beta_dpo
     inside_term = scale_term * (model_diff - ref_diff)
@@ -538,8 +537,8 @@ def diffusion_dpo_loss(loss: torch.Tensor, ref_loss: Tensor, beta_dpo: float):
     metrics = {
         "loss/diffusion_dpo_total_loss": loss.detach().mean().item(),
         "loss/diffusion_dpo_raw_loss": raw_loss.detach().mean().item(),
-        "loss/diffusion_dpo_ref_loss": raw_ref_loss.detach().item(),
-        "loss/diffusion_dpo_implicit_acc": implicit_acc.detach().item(),
+        "loss/diffusion_dpo_ref_loss": raw_ref_loss.detach().mean().item(),
+        "loss/diffusion_dpo_implicit_acc": implicit_acc.detach().mean().item(),
     }
 
     return loss, metrics
@@ -550,7 +549,7 @@ def mapo_loss(loss: torch.Tensor, mapo_weight: float, num_train_timesteps=1000) 
     MaPO loss
 
     Args:
-        loss: pairs of w, l losses B//2, C, H, W
+        loss: pairs of w, l losses B//2
         mapo_weight: mapo weight
         num_train_timesteps: number of timesteps
     """
@@ -578,6 +577,7 @@ def mapo_loss(loss: torch.Tensor, mapo_weight: float, num_train_timesteps=1000) 
 
     return loss, metrics
 
+
 def ddo_loss(loss, ref_loss, ddo_alpha: float = 4.0, ddo_beta: float = 0.05):
     ref_loss = ref_loss.detach()  # Ensure no gradients to reference
     log_ratio = ddo_beta * (ref_loss - loss)
@@ -597,6 +597,7 @@ def ddo_loss(loss, ref_loss, ddo_alpha: float = 4.0, ddo_beta: float = 0.05):
     # logger.debug(f"log_ratio range: {log_ratio.min().item()} to {log_ratio.max().item()}")
     # logger.debug(f"sigmoid(log_ratio) mean: {torch.sigmoid(log_ratio).mean().item()}")
     return total_loss, metrics
+
 
 """
 ##########################################
