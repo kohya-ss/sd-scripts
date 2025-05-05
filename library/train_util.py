@@ -4268,17 +4268,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
     )
-    parser.add_argument(
-        "--beta_dpo",
-        type=int,
-        help="DPO KL Divergence penalty. Recommended values for SD1.5 B=2000, SDXL B=5000 / DPO KL 発散ペナルティ。SD1.5 の推奨値 B=2000、SDXL B=5000",
-    )
-    parser.add_argument(
-        "--mapo_weight",
-        type=float,
-        help="MaPO weight for relative ratio loss. Recommended values of 0.1 to 0.25 / 相対比損失の ORPO 重み。推奨値は 0.1 ～ 0.25 です",
-    )
-
     if support_dreambooth:
         # DreamBooth training
         parser.add_argument(
