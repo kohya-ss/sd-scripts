@@ -484,7 +484,7 @@ class NetworkTrainer:
             def wavelet_loss_fn(args):
                 loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
                 def loss_fn(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
-                    huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, latents, noise_scheduler)
+                    huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
                     return train_util.conditional_loss(input.float(), target.float(), loss_type, reduction, huber_c)
 
                 return loss_fn
