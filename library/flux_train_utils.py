@@ -621,6 +621,5 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
-
-    parser.add_argument("--proportional_attention", action="store_true", help="Proportional attention to the image sequence length URAE")
-    parser.add_argument("--ntk_factor", type=float, default=1.0, help="NTK Factor for increasing the embedding space for RoPE")
+    parser.add_argument("--proportional_attention", action="store_true", help="Dynamic attention scale with respect to the resolution. Proportional attention to the image sequence length. From URAE paper")
+    parser.add_argument("--ntk_factor", type=float, default=1.0, help="NTK Factor for increasing the embedding space for RoPE. Defaults to 1.0. 10.0 for 2k/4k images. From URAE paper.")

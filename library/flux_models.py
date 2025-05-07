@@ -38,6 +38,9 @@ class FluxParams:
     theta: int
     qkv_bias: bool
     guidance_embed: bool
+    # URAE
+    proportional_attention: bool
+    ntk_factor: float
 
 
 # region autoencoder
@@ -392,6 +395,8 @@ configs = {
             theta=10_000,
             qkv_bias=True,
             guidance_embed=True,
+            proportional_attention=False,
+            ntk_factor=1.0,
         ),
         ae_path=None,  # os.getenv("AE"),
         ae_params=AutoEncoderParams(
@@ -424,6 +429,8 @@ configs = {
             theta=10_000,
             qkv_bias=True,
             guidance_embed=False,
+            proportional_attention=False,
+            ntk_factor=1.0,
         ),
         ae_path=None,  # os.getenv("AE"),
         ae_params=AutoEncoderParams(
@@ -1108,10 +1115,13 @@ class Flux(nn.Module):
         guidance: Tensor | None = None,
         txt_attention_mask: Tensor | None = None,
         proportional_attention=None,
-        ntk_factor=1.0,
+        ntk_factor=None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
+
+        proportional_attention = proportional_attention or self.params.proportional_attention
+        ntk_factor = ntk_factor or self.params.ntk_factor
 
         # running on sequences img
         img = self.img_in(img)
