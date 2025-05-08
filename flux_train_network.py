@@ -144,6 +144,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # Apply partitioned for Diffusion4k
         if args.partitioned_vae:
             ae.decoder.partitioned = True
+            ae.decoder.stride = 2 # Diffusion4k stride
 
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
 
