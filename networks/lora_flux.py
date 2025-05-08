@@ -19,7 +19,7 @@ from tqdm import tqdm
 import re
 from library.utils import setup_logging
 from library.device_utils import clean_memory_on_device
-from library.network_utils import initialize_lora, initialize_pissa, initialize_urae, initialize_parse_opts
+from library.network_utils import initialize_lora, initialize_pissa, initialize_urae
 
 setup_logging()
 import logging
