@@ -141,6 +141,10 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
+        # Apply partitioned for Diffusion4k
+        if args.partitioned_vae:
+            ae.decoder.partitioned = True
+
         return flux_utils.MODEL_VERSION_FLUX_V1, [clip_l, t5xxl], ae, model
 
     def get_tokenize_strategy(self, args):
@@ -360,7 +364,13 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # pack latents and get img_ids
         packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
         packed_latent_height, packed_latent_width = noisy_model_input.shape[2] // 2, noisy_model_input.shape[3] // 2
-        img_ids = flux_utils.prepare_img_ids(bsz, packed_latent_height, packed_latent_width).to(device=accelerator.device)
+
+        if args.partitioned_vae:
+            packed_latent_height, packed_latent_width = noisy_model_input.shape[2], noisy_model_input.shape[3]
+            img_ids = flux_utils.prepare_paritioned_img_ids(bsz, packed_latent_height, packed_latent_width).to(device=accelerator.device)
+        else:
+            packed_latent_height, packed_latent_width = noisy_model_input.shape[2] // 2, noisy_model_input.shape[3] // 2
+            img_ids = flux_utils.prepare_img_ids(bsz, packed_latent_height, packed_latent_width).to(device=accelerator.device)
 
         # get guidance
         # ensure guidance_scale in args is float
@@ -408,7 +418,11 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         )
 
         # unpack latents
-        model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
+        if args.partitioned_vae:
+            model_pred = flux_utils.unpack_partitioned_latents(model_pred, packed_latent_height, packed_latent_width)
+        else:
+            # unpack latents
+            model_pred = flux_utils.unpack_latents(model_pred, packed_latent_height, packed_latent_width)
 
         # apply model prediction type
         model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
