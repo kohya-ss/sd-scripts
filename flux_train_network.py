@@ -363,8 +363,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         # pack latents and get img_ids
         packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
-        packed_latent_height, packed_latent_width = noisy_model_input.shape[2] // 2, noisy_model_input.shape[3] // 2
-
         if args.partitioned_vae:
             packed_latent_height, packed_latent_width = noisy_model_input.shape[2], noisy_model_input.shape[3]
             img_ids = flux_utils.prepare_paritioned_img_ids(bsz, packed_latent_height, packed_latent_width).to(device=accelerator.device)
