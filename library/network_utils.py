@@ -11,7 +11,7 @@ class InitializeParams:
     """Parameters for initialization methods (PiSSA, URAE)"""
 
     use_ipca: bool = False
-    use_lowrank: bool = True
+    use_lowrank: bool = False
     lowrank_q: Optional[int] = None
     lowrank_niter: int = 4
     lowrank_seed: Optional[int] = None
@@ -187,7 +187,7 @@ def initialize_pissa(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
     use_ipca: bool = False,
-    use_lowrank: bool = True,
+    use_lowrank: bool = False,
     lowrank_q: Optional[int] = None,
     lowrank_niter: int = 4,
     lowrank_seed: Optional[int] = None,

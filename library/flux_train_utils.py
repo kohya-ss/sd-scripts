@@ -689,3 +689,33 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
+<<<<<<< Updated upstream
+=======
+    parser.add_argument(
+        "--redux_model_path",
+        type=str,
+        help="path to Redux model (*.sft or *.safetensors), should be float16",
+    )
+    parser.add_argument(
+        "--vision_cond_downsample",
+        type=int,
+        default=0,
+        help="Downsample Redux tokens to the specified grid size (default is 27). Zero disables this feature.",
+    )
+
+    parser.add_argument(
+        "--vision_cond_dropout",
+        type=float,
+        default=1.0,
+        help="Probability of dropout for Redux conditioning.",
+    )
+    # bypass guidance module for flux
+    parser.add_argument(
+        "--bypass_flux_guidance"
+        , action="store_true"
+        , help="bypass flux guidance module for Flex.1-Alpha Training / Flex.1-Alpha トレーニング用バイパス フラックス ガイダンス モジュール"
+    )
+    parser.add_argument("--proportional_attention", action="store_true", help="Dynamic attention scale with respect to the resolution. Proportional attention to the image sequence length. From URAE paper")
+    parser.add_argument("--ntk_factor", type=float, default=1.0, help="NTK Factor for increasing the embedding space for RoPE. Defaults to 1.0. 10.0 for 2k/4k images. From URAE paper.")
+    parser.add_argument("--partitioned_vae", action="store_true", help="Partitioned VAE from Diffusion4k paper")
+>>>>>>> Stashed changes
