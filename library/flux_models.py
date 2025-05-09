@@ -301,6 +301,7 @@ class Decoder(nn.Module):
         # Diffusion4k
         partitioned = partitioned if not None else self.partitioned
         if self.stride > 1 and partitioned:
+            h = self.norm_out(h)
             h = swish(h)
 
             overlap_size = 1 # because last conv kernel_size = 3
