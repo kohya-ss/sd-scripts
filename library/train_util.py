@@ -958,8 +958,11 @@ class BaseDataset(torch.utils.data.Dataset):
                     self.bucket_info["buckets"][i] = {"resolution": reso, "count": len(bucket)}
                     logger.info(f"bucket {i}: resolution {reso}, count: {len(bucket)}")
 
-            img_ar_errors = np.array(img_ar_errors)
-            mean_img_ar_error = np.mean(np.abs(img_ar_errors))
+            if len(img_ar_errors) == 0:
+                mean_img_ar_error = 0  # avoid NaN
+            else:
+                img_ar_errors = np.array(img_ar_errors)
+                mean_img_ar_error = np.mean(np.abs(img_ar_errors))
             self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
             logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
 
