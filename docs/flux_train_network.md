@@ -1,3 +1,85 @@
+Status: reviewed
+
+# LoRA Training Guide for FLUX.1 using `flux_train_network.py` / `flux_train_network.py` を用いたFLUX.1モデルのLoRA学習ガイド
+
+This document explains how to train LoRA models for the FLUX.1 model using `flux_train_network.py` included in the `sd-scripts` repository.
+
+## 1. Introduction / はじめに
+
+`flux_train_network.py` trains additional networks such as LoRA on the FLUX.1 model, which uses a transformer-based architecture different from Stable Diffusion. Two text encoders, CLIP-L and T5-XXL, and a dedicated AutoEncoder are used.
+
+This guide assumes you know the basics of LoRA training. For common options see [train_network.py](train_network.md) and [sdxl_train_network.py](sdxl_train_network.md).
+
+**Prerequisites:**
+
+* The repository is cloned and the Python environment is ready.
+* A training dataset is prepared. See the dataset configuration guide.
+
+## 2. Differences from `train_network.py` / `train_network.py` との違い
+
+`flux_train_network.py` is based on `train_network.py` but adapted for FLUX.1. Main differences include required arguments for the FLUX.1 model, CLIP-L, T5-XXL and AE, different model structure, and some incompatible options from Stable Diffusion.
+
+## 3. Preparation / 準備
+
+Before starting training you need:
+
+1. **Training script:** `flux_train_network.py`
+2. **FLUX.1 model file** and text encoder files (`clip_l`, `t5xxl`) and AE file.
+3. **Dataset definition file (.toml)** such as `my_flux_dataset_config.toml`.
+
+## 4. Running the Training / 学習の実行
+
+Run `flux_train_network.py` from the terminal with FLUX.1 specific arguments. Example:
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 flux_train_network.py \
+  --pretrained_model_name_or_path="<path to FLUX.1 model>" \
+  --clip_l="<path to CLIP-L model>" \
+  --t5xxl="<path to T5-XXL model>" \
+  --ae="<path to AE model>" \
+  --dataset_config="my_flux_dataset_config.toml" \
+  --output_dir="<output directory>" \
+  --output_name="my_flux_lora" \
+  --save_model_as=safetensors \
+  --network_module=networks.lora_flux \
+  --network_dim=16 \
+  --network_alpha=1 \
+  --learning_rate=1e-4 \
+  --optimizer_type="AdamW8bit" \
+  --lr_scheduler="constant" \
+  --sdpa \
+  --max_train_epochs=10 \
+  --save_every_n_epochs=1 \
+  --mixed_precision="fp16" \
+  --gradient_checkpointing \
+  --guidance_scale=1.0 \
+  --timestep_sampling="flux_shift" \
+  --blocks_to_swap=18 \
+  --cache_text_encoder_outputs \
+  --cache_latents
+```
+
+### 4.1. Explanation of Key Options / 主要なコマンドライン引数の解説
+
+The script adds FLUX.1 specific arguments such as guidance scale, timestep sampling, block swapping, and options for training CLIP-L and T5-XXL LoRA modules. Some Stable Diffusion options like `--v2` and `--clip_skip` are not used.
+
+### 4.2. Starting Training / 学習の開始
+
+Training begins once you run the command with the required options. Log checking is the same as in `train_network.py`.
+
+## 5. Using the Trained Model / 学習済みモデルの利用
+
+After training, a LoRA model file is saved in `output_dir` and can be used in inference environments supporting FLUX.1 (e.g. ComfyUI + Flux nodes).
+
+## 6. Others / その他
+
+Additional notes on VRAM optimization, training options, multi-resolution datasets, block selection and text encoder LoRA are provided in the Japanese section.
+
+<details>
+<summary>日本語</summary>
+
+
+
 # `flux_train_network.py` を用いたFLUX.1モデルのLoRA学習ガイド
 
 このドキュメントでは、`sd-scripts`リポジトリに含まれる`flux_train_network.py`を使用して、FLUX.1モデルに対するLoRA (Low-Rank Adaptation) モデルを学習する基本的な手順について解説します。
@@ -312,4 +394,4 @@ resolution = [512, 512]
   num_repeats = 1
 ```
 
-各解像度セクションの`[[datasets.subsets]]`部分は、データセットディレクトリを定義します。各解像度に対して同じディレクトリを指定してください。
+各解像度セクションの`[[datasets.subsets]]`部分は、データセットディレクトリを定義します。各解像度に対して同じディレクトリを指定してください。</details>
