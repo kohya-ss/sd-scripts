@@ -823,9 +823,13 @@ class SdxlUNet2DConditionModel(nn.Module):
 
     def __init__(
         self,
+        *,
+        downscale_freq_shift: float = 0,
         **kwargs,
     ):
         super().__init__()
+
+        self.downscale_freq_shift = downscale_freq_shift
 
         self.in_channels = IN_CHANNELS
         self.out_channels = OUT_CHANNELS
@@ -1076,7 +1080,9 @@ class SdxlUNet2DConditionModel(nn.Module):
         timesteps = timesteps.expand(x.shape[0])
 
         hs = []
-        t_emb = get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
+        t_emb = get_timestep_embedding(
+            timesteps, self.model_channels, downscale_freq_shift=self.downscale_freq_shift
+        )  # , repeat_only=False)
         t_emb = t_emb.to(x.dtype)
         emb = self.time_embed(t_emb)
 
@@ -1166,7 +1172,9 @@ class InferSdxlUNet2DConditionModel:
         timesteps = timesteps.expand(x.shape[0])
 
         hs = []
-        t_emb = get_timestep_embedding(timesteps, _self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
+        t_emb = get_timestep_embedding(
+            timesteps, _self.model_channels, downscale_freq_shift=_self.downscale_freq_shift
+        )  # , repeat_only=False)
         t_emb = t_emb.to(x.dtype)
         emb = _self.time_embed(t_emb)
 
