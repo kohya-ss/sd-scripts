@@ -1,4 +1,86 @@
-ステータス：確認中
+Status: under review
+
+# Advanced Settings: Detailed Guide for SDXL LoRA Training Script `sdxl_train_network.py` / 高度な設定: SDXL LoRA学習スクリプト `sdxl_train_network.py` 詳細ガイド
+
+This document describes the advanced options available when training LoRA models for SDXL (Stable Diffusion XL) with `sdxl_train_network.py` in the `sd-scripts` repository. For the basics, please read [How to Use the LoRA Training Script `train_network.py`](train_network.md) and [How to Use the SDXL LoRA Training Script `sdxl_train_network.py`](sdxl_train_network.md).
+
+This guide targets experienced users who want to fine tune settings in detail.
+
+**Prerequisites:**
+
+* You have cloned the `sd-scripts` repository and prepared a Python environment.
+* A training dataset and its `.toml` configuration are ready (see the dataset configuration guide).
+* You are familiar with running basic LoRA training commands.
+
+## 1. Command Line Options / コマンドライン引数 詳細解説
+
+`sdxl_train_network.py` inherits the functionality of `train_network.py` and adds SDXL-specific features. Major options are grouped and explained below. For common arguments, see the other guides mentioned above.
+
+### 1.1. Model Loading
+
+* `--pretrained_model_name_or_path="<model path>"` (required): specify the base SDXL model. Supports a Hugging Face model ID, a local Diffusers directory or a `.safetensors` file.
+* `--vae="<VAE path>"`: optionally use a different VAE.
+* `--no_half_vae`: keep the VAE in float32 even with fp16/bf16 training.
+* `--fp8_base` / `--fp8_base_unet`: **experimental** load the base model or just the U-Net in FP8 to reduce VRAM (requires PyTorch 2.1+).
+
+### 1.2. Dataset Settings
+
+* `--dataset_config="<path to config>"`: specify a `.toml` dataset config. High resolution data and aspect ratio buckets are common for SDXL. Bucket resolution steps must be multiples of 32.
+
+### 1.3. Output and Saving
+
+Options match `train_network.py`:
+
+* `--output_dir`, `--output_name` (both required)
+* `--save_model_as` (recommended `safetensors`)
+* `--save_precision`, `--save_every_n_epochs`, `--save_every_n_steps`
+* `--save_last_n_epochs`, `--save_last_n_steps`
+* `--save_state`, `--save_state_on_train_end`, `--save_last_n_epochs_state`, `--save_last_n_steps_state`
+* `--no_metadata`
+* `--save_state_to_huggingface` and related options
+
+### 1.4. Network Parameters (LoRA)
+
+* `--network_module=networks.lora` and `--network_dim` (required)
+* `--network_alpha`, `--network_dropout`
+* `--network_args` allows advanced settings such as block-wise dims/alphas and LoRA+ options
+* `--network_train_unet_only` / `--network_train_text_encoder_only`
+* `--network_weights` and `--dim_from_weights`
+
+### 1.5. Training Parameters
+
+Includes options for learning rate, optimizer, scheduler, mixed precision, gradient accumulation, gradient checkpointing, fused backward pass, resume, and more. See `--help` for details.
+
+### 1.6. Caching
+
+Options to cache latents or text encoder outputs in memory or on disk to speed up training.
+
+### 1.7. Sample Image Generation
+
+Options to generate sample images periodically during training.
+
+### 1.8. Logging & Tracking
+
+TensorBoard and wandb logging related options.
+
+### 1.9. Regularization and Advanced Techniques
+
+Various options such as noise offset, multires noise, input perturbation, min-SNR weighting, loss type selection, and masked loss.
+
+### 1.10. Distributed Training and Others
+
+General options like random seed, max token length, clip skip, lowram/highvram, data loader workers, config files, and Accelerate/DeepSpeed settings.
+
+## 2. Other Tips / その他のTips
+
+Hints on reducing VRAM usage, appropriate learning rates, training time considerations and troubleshooting.
+
+## 3. Conclusion / おわりに
+
+`sdxl_train_network.py` offers many options to customize SDXL LoRA training. Refer to `--help`, other documents and the source code for further details.
+
+<details>
+<summary>日本語</summary>
 
 ---
 
@@ -258,3 +340,6 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 不明な点や詳細については、各スクリプトの `--help` オプションや、リポジトリ内の他のドキュメント、実装コード自体を参照してください。
 
 ---
+
+
+</details>
