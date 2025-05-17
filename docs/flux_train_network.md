@@ -252,6 +252,15 @@ FLUX.1モデルは比較的大きなモデルであるため、十分なVRAMを�
 - **T5XXLのfp8形式の使用**：
   10GB未満のVRAMを持つGPUでは、T5XXLのfp8形式チェックポイントの使用を推奨します。[comfyanonymous/flux_text_encoders](https://huggingface.co/comfyanonymous/flux_text_encoders)から`t5xxl_fp8_e4m3fn.safetensors`をダウンロードできます（`scaled`なしで使用してください）。
 
+- **FP8/FP16 混合学習 [実験的機能]**：
+  `--fp8_base_unet` オプションを指定すると、FLUX.1モデル本体をFP8形式で学習し、Text Encoder (CLIP-L/T5XXL) をBF16/FP16形式で学習できます。これにより、さらにVRAM使用量を削減できる可能性があります。このオプションを指定すると、`--fp8_base` オプションも自動的に有効になります。
+
+- **`pytorch-optimizer` の利用**:
+  `pytorch-optimizer` ライブラリに含まれる様々なオプティマイザを使用できます。`requirements.txt` に追加されているため、別途インストールは不要です。
+  例えば、CAME オプティマイザを使用する場合は以下のように指定します。
+  ```bash
+  --optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"
+ 
 ## 2. FLUX.1 LoRA学習の重要な設定オプション
 
 FLUX.1の学習には多くの未知の点があり、いくつかの設定は引数で指定できます。以下に重要な引数とその説明を示します。
@@ -265,6 +274,27 @@ FLUX.1の学習には多くの未知の点があり、いくつかの設定は�
 - `sigmoid`：正規分布乱数のシグモイド（x-flux、AI-toolkitなどと同様）
 - `shift`：正規分布乱数のシグモイド値をシフト
 - `flux_shift`：解像度に応じて正規分布乱数のシグモイド値をシフト（FLUX.1 dev推論と同様）。この設定では`--discrete_flow_shift`は無視されます。
+
+
+#### タイムステップ分布の可視化
+
+`--timestep_sampling`, `--sigmoid_scale`, `--discrete_flow_shift` の組み合わせによって、学習中にサンプリングされるタイムステップの分布が変化します。以下にいくつかの例を示します。
+
+*   `--timestep_sampling shift` と `--discrete_flow_shift` の効果 (`--sigmoid_scale` はデフォルトの1.0):
+    ![Figure_2](https://github.com/user-attachments/assets/d9de42f9-f17d-40da-b88d-d964402569c6)
+
+*   `--timestep_sampling sigmoid` と `--timestep_sampling uniform` の比較 (`--discrete_flow_shift` は無視される):
+    ![Figure_3](https://github.com/user-attachments/assets/27029009-1f5d-4dc0-bb24-13d02ac4fdad)
+
+*   `--timestep_sampling sigmoid` と `--sigmoid_scale` の効果 (`--discrete_flow_shift` は無視される):
+    ![Figure_4](https://github.com/user-attachments/assets/08a2267c-e47e-48b7-826e-f9a080787cdc)
+
+#### AI Toolkit 設定との比較
+
+[Ostris氏のAI Toolkit](https://github.com/ostris/ai-toolkit) で使用されている設定は、概ね以下のオプションに相当すると考えられます。
+```
+--timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0
+```
 
 ### 2.2 モデル予測の処理方法
 
@@ -282,6 +312,37 @@ FLUX.1の学習には多くの未知の点があり、いくつかの設定は�
 ```
 
 ガイダンススケールについて：FLUX.1 dev版は特定のガイダンススケール値で蒸留されていますが、学習時には`--guidance_scale 1.0`を指定してガイダンススケールを無効化することを推奨します。
+
+
+### 2.4 T5 Attention Mask の適用
+
+`--apply_t5_attn_mask` オプションを指定すると、T5XXL Text Encoder の学習および推論時に Attention Mask が適用されます。
+
+Attention Maskに対応した推論環境が限られるため、このオプションは推奨されません。
+
+### 2.5 IP ノイズガンマ
+
+`--ip_noise_gamma` および `--ip_noise_gamma_random_strength` オプションを使用することで、学習時に Input Perturbation ノイズのガンマ値を調整できます。詳細は Stable Diffusion 3 の学習オプションを参照してください。
+
+### 2.6 LoRA-GGPO サポート
+
+LoRA-GGPO (Gradient Group Proportion Optimizer) を使用できます。これは LoRA の学習を安定化させるための手法です。以下の `network_args` を指定して有効化します。ハイパーパラメータ (`ggpo_sigma`, `ggpo_beta`) は調整が必要です。
+
+```bash
+--network_args "ggpo_sigma=0.03" "ggpo_beta=0.01"
+```
+TOMLファイルで指定する場合:
+```toml
+network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]
+```
+
+### 2.7 Q/K/V 射影層の分割 [実験的機能]
+
+`--network_args "split_qkv=True"` を指定することで、Attention層内の Q/K/V (および SingleStreamBlock の Text) 射影層を個別に分割し、それぞれに LoRA を適用できます。
+
+**技術的詳細:**
+FLUX.1 の元々の実装では、Q/K/V (および Text) の射影層は一つに結合されています。ここに LoRA を適用すると、一つの大きな LoRA モジュールが適用されます。一方、Diffusers の実装ではこれらの射影層は分離されており、それぞれに小さな LoRA モジュールが適用されます。このオプションは後者の挙動を模倣します。
+保存される LoRA モデルの互換性は維持されますが、内部的には分割された LoRA の重みを結合して保存するため、ゼロ要素が多くなりモデルサイズが大きくなる可能性があります。`convert_flux_lora.py` スクリプトを使用して Diffusers (AI-Toolkit) 形式に変換すると、サイズが削減されます。
 
 ## 3. 各層に対するランク指定
 
@@ -395,3 +456,54 @@ resolution = [512, 512]
 ```
 
 各解像度セクションの`[[datasets.subsets]]`部分は、データセットディレクトリを定義します。各解像度に対して同じディレクトリを指定してください。</details>
+
+## 7. 検証 (Validation)
+
+学習中に検証データセットを使用して損失 (Validation Loss) を計算し、モデルの汎化性能を評価できます。
+
+検証を設定するには、データセット設定 TOML ファイルに `[validation]` セクションを追加します。設定方法は学習データセットと同様ですが、`num_repeats` は通常 1 に設定します。
+
+```toml
+# ... (学習データセットの設定) ...
+
+[validation]
+batch_size = 1
+enable_bucket = true
+resolution = [1024, 1024] # 検証に使用する解像度
+
+  [[validation.subsets]]
+  image_dir = "検証用画像ディレクトリへのパス"
+  num_repeats = 1
+  caption_extension = ".txt"
+  # ... 他の検証データセット固有の設定 ...
+```
+
+**注意点:**
+
+*   検証損失の計算は、固定されたタイムステップサンプリングと乱数シードで行われます。これにより、ランダム性による損失の変動を抑え、より安定した評価が可能になります。
+*   現在のところ、`--blocks_to_swap` オプションを使用している場合、または Schedule-Free オプティマイザ (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`) を使用している場合は、検証損失はサポートされていません。
+
+## 8. データセット関連の追加オプション
+
+### 8.1 リサイズ時の補間方法指定
+
+データセットの画像を学習解像度にリサイズする際の補間方法を指定できます。データセット設定 TOML ファイルの `[[datasets]]` セクションまたは `[general]` セクションで `interpolation_type` を指定します。
+
+利用可能な値: `bicubic` (デフォルト), `bilinear`, `lanczos`, `nearest`, `area`
+
+```toml
+[[datasets]]
+resolution = [1024, 1024]
+enable_bucket = true
+interpolation_type = "lanczos" # 例: Lanczos補間を使用
+# ...
+```
+
+## 9. 関連ツール
+
+`flux_train_network.py` で学習したモデルや、学習プロセスに役立つ関連スクリプトが提供されています。
+
+*   **`networks/flux_extract_lora.py`**: 学習済みモデルとベースモデルの差分から LoRA モデルを抽出します。
+*   **`convert_flux_lora.py`**: 学習した LoRA モデルを Diffusers (AI-Toolkit) 形式など、他の形式に変換します。Q/K/V分割オプションで学習した場合、このスクリプトで変換するとモデルサイズを削減できます。
+*   **`networks/flux_merge_lora.py`**: 学習した LoRA モデルを FLUX.1 ベースモデルにマージします。
+*   **`flux_minimal_inference.py`**: 学習した LoRA モデルを適用して画像を生成するためのシンプルな推論スクリプトです。
