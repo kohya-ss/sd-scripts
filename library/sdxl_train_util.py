@@ -365,6 +365,16 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         default=0.0,
         help="set downscale_freq_shift=1 for timestep embeddings / timestep embedding の downscale_freq_shift を1にする",
     )
+    parser.add_argument(
+        "--skip_grad_norm",
+        action="store_true",
+        help="skip step if gradient norm exceeds moving average + 2.5 sigma / 勾配ノルムが移動平均+2.5σを超える場合にステップをスキップする",
+    )
+    parser.add_argument(
+        "--grad_norm_log",
+        action="store_true",
+        help="output gradient norm logs to gradient_logs.txt / 勾配ノルムのログをgradient_logs.txtに出力する",
+    )
 
 
 def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
