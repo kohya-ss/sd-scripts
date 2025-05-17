@@ -18,62 +18,145 @@ This guide targets experienced users who want to fine tune settings in detail.
 
 ### 1.1. Model Loading
 
-* `--pretrained_model_name_or_path="<model path>"` (required): specify the base SDXL model. Supports a Hugging Face model ID, a local Diffusers directory or a `.safetensors` file.
-* `--vae="<VAE path>"`: optionally use a different VAE.
-* `--no_half_vae`: keep the VAE in float32 even with fp16/bf16 training.
-* `--fp8_base` / `--fp8_base_unet`: **experimental** load the base model or just the U-Net in FP8 to reduce VRAM (requires PyTorch 2.1+).
+* `--pretrained_model_name_or_path=\"<model path>\"` **[Required]**: specify the base SDXL model. Supports a Hugging Face model ID, a local Diffusers directory or a `.safetensors` file.
+* `--vae=\"<VAE path>\"`: optionally use a different VAE. Specify when using a VAE other than the one included in the SDXL model. Can specify `.ckpt` or `.safetensors` files.
+* `--no_half_vae`: keep the VAE in float32 even with fp16/bf16 training. The VAE for SDXL can become unstable with `float16`, so it is recommended to enable this when `fp16` is specified. Usually unnecessary for `bf16`.
+* `--fp8_base` / `--fp8_base_unet`: **Experimental**: load the base model (U-Net, Text Encoder) or just the U-Net in FP8 to reduce VRAM (requires PyTorch 2.1+). For details, refer to the relevant section in TODO add document later (this is an SD3 explanation but also applies to SDXL).
 
 ### 1.2. Dataset Settings
 
-* `--dataset_config="<path to config>"`: specify a `.toml` dataset config. High resolution data and aspect ratio buckets are common for SDXL. Bucket resolution steps must be multiples of 32.
+* `--dataset_config=\"<path to config>\"`: specify a `.toml` dataset config. High resolution data and aspect ratio buckets (specify `enable_bucket = true` in `.toml`) are common for SDXL. The resolution steps for aspect ratio buckets (`bucket_reso_steps`) must be multiples of 32 for SDXL. For details on writing `.toml` files, refer to the [Dataset Configuration Guide](link/to/dataset/config/doc).
 
 ### 1.3. Output and Saving
 
 Options match `train_network.py`:
 
 * `--output_dir`, `--output_name` (both required)
-* `--save_model_as` (recommended `safetensors`)
-* `--save_precision`, `--save_every_n_epochs`, `--save_every_n_steps`
-* `--save_last_n_epochs`, `--save_last_n_steps`
-* `--save_state`, `--save_state_on_train_end`, `--save_last_n_epochs_state`, `--save_last_n_steps_state`
-* `--no_metadata`
-* `--save_state_to_huggingface` and related options
+* `--save_model_as` (recommended `safetensors`), `ckpt`, `pt`, `diffusers`, `diffusers_safetensors`
+* `--save_precision=\"fp16\"`, `\"bf16\"`, `\"float\"`: Specifies the precision for saving the model. If not specified, the model is saved with the training precision (`fp16`, `bf16`, etc.).
+* `--save_every_n_epochs=N`, `--save_every_n_steps=N`: Saves the model every N epochs/steps.
+* `--save_last_n_epochs=M`, `--save_last_n_steps=M`: When saving at every epoch/step, only the latest M files are kept, and older ones are deleted.
+* `--save_state`, `--save_state_on_train_end`: Saves the training state (`state`), including Optimizer status, etc., when saving the model or at the end of training. Required for resuming training with the `--resume` option.
+* `--save_last_n_epochs_state=M`, `--save_last_n_steps_state=M`: Limits the number of saved `state` files to M. Overrides the `--save_last_n_epochs/steps` specification.
+* `--no_metadata`: Does not save metadata to the output model.
+* `--save_state_to_huggingface` and related options (e.g., `--huggingface_repo_id`): Options related to uploading models and states to Hugging Face Hub. See TODO add document for details.
 
 ### 1.4. Network Parameters (LoRA)
 
-* `--network_module=networks.lora` and `--network_dim` (required)
-* `--network_alpha`, `--network_dropout`
-* `--network_args` allows advanced settings such as block-wise dims/alphas and LoRA+ options
-* `--network_train_unet_only` / `--network_train_text_encoder_only`
-* `--network_weights` and `--dim_from_weights`
+* `--network_module=networks.lora` **[Required]**
+* `--network_dim=N` **[Required]**: Specifies the rank (dimensionality) of LoRA. For SDXL, values like 32 or 64 are often tried, but adjustment is necessary depending on the dataset and purpose.
+* `--network_alpha=M`: LoRA alpha value. Generally around half of `network_dim` or the same value as `network_dim`. Default is 1.
+* `--network_dropout=P`: Dropout rate (0.0-1.0) within LoRA modules. Can be effective in suppressing overfitting. Default is None (no dropout).
+* `--network_args ...`: Allows advanced settings by specifying additional arguments to the network module in `key=value` format. For LoRA, the following advanced settings are available:
+    *   **Block-wise dimensions/alphas:**
+        *   Allows specifying different `dim` and `alpha` for each block of the U-Net. This enables adjustments to strengthen or weaken the influence of specific layers.
+        *   `block_dims`: Comma-separated dims for Linear and Conv2d 1x1 layers in U-Net (23 values for SDXL).
+        *   `block_alphas`: Comma-separated alpha values corresponding to the above.
+        *   `conv_block_dims`: Comma-separated dims for Conv2d 3x3 layers in U-Net.
+        *   `conv_block_alphas`: Comma-separated alpha values corresponding to the above.
+        *   Blocks not specified will use values from `--network_dim`/`--network_alpha` or `--conv_dim`/`--conv_alpha` (if they exist).
+        *   For details, refer to [Block-wise learning rate for LoRA](train_network.md#lora-の階層別学習率) (in train_network.md, applicable to SDXL) and the implementation ([lora.py](lora.py)).
+    *   **LoRA+:**
+        *   `loraplus_lr_ratio=R`: Sets the learning rate of LoRA's upward weights (UP) to R times the learning rate of downward weights (DOWN). Expected to improve learning speed. Paper recommends 16.
+        *   `loraplus_unet_lr_ratio=RU`: Specifies the LoRA+ learning rate ratio for the U-Net part individually.
+        *   `loraplus_text_encoder_lr_ratio=RT`: Specifies the LoRA+ learning rate ratio for the Text Encoder part individually (multiplied by the learning rates specified with `--text_encoder_lr1`, `--text_encoder_lr2`).
+        *   For details, refer to [README](../README.md#jan-17-2025--2025-01-17-version-090) and the implementation ([lora.py](lora.py)).
+* `--network_train_unet_only`: Trains only the LoRA modules of the U-Net. Specify this if not training Text Encoders. Required when using `--cache_text_encoder_outputs`.
+* `--network_train_text_encoder_only`: Trains only the LoRA modules of the Text Encoders. Specify this if not training the U-Net.
+* `--network_weights=\"<weight file>\"`: Starts training by loading pre-trained LoRA weights. Used for fine-tuning or resuming training. The difference from `--resume` is that this option only loads LoRA module weights, while `--resume` also restores Optimizer state, step count, etc.
+* `--dim_from_weights`: Automatically reads the LoRA dimension (`dim`) from the weight file specified by `--network_weights`. Specification of `--network_dim` becomes unnecessary.
 
 ### 1.5. Training Parameters
 
-Includes options for learning rate, optimizer, scheduler, mixed precision, gradient accumulation, gradient checkpointing, fused backward pass, resume, and more. See `--help` for details.
+*   `--learning_rate=LR`: Sets the overall learning rate. This becomes the default value for each module (`unet_lr`, `text_encoder_lr1`, `text_encoder_lr2`). Values like `1e-3` or `1e-4` are often tried.
+*   `--unet_lr=LR_U`: Learning rate for the LoRA module of the U-Net part.
+*   `--text_encoder_lr1=LR_TE1`: Learning rate for the LoRA module of Text Encoder 1 (OpenCLIP ViT-G/14). Usually, a smaller value than U-Net (e.g., `1e-5`, `2e-5`) is recommended.
+*   `--text_encoder_lr2=LR_TE2`: Learning rate for the LoRA module of Text Encoder 2 (CLIP ViT-L/14). Usually, a smaller value than U-Net (e.g., `1e-5`, `2e-5`) is recommended.
+*   `--optimizer_type=\"...\"`: Specifies the optimizer to use. Options include `AdamW8bit` (memory-efficient, common), `Adafactor` (even more memory-efficient, proven in SDXL full model training), `Lion`, `DAdaptation`, `Prodigy`, etc. Each optimizer may require additional arguments (see `--optimizer_args`). `AdamW8bit` or `PagedAdamW8bit` (requires `bitsandbytes`) are common. `Adafactor` is memory-efficient but slightly complex to configure (relative step (`relative_step=True`) recommended, `adafactor` learning rate scheduler recommended). `DAdaptation`, `Prodigy` have automatic learning rate adjustment but cannot be used with LoRA+. Specify a learning rate around `1.0`. For details, see the `get_optimizer` function in [train_util.py](train_util.py).
+*   `--optimizer_args ...`: Specifies additional arguments to the optimizer in `key=value` format (e.g., `\"weight_decay=0.01\"` `\"betas=0.9,0.999\"`).
+*   `--lr_scheduler=\"...\"`: Specifies the learning rate scheduler. Options include `constant` (no change), `cosine` (cosine curve), `linear` (linear decay), `constant_with_warmup` (constant with warmup), `cosine_with_restarts`, etc. `constant`, `cosine`, and `constant_with_warmup` are commonly used. Some schedulers require additional arguments (see `--lr_scheduler_args`). If using optimizers with auto LR adjustment like `DAdaptation` or `Prodigy`, a scheduler is not needed (`constant` should be specified).
+*   `--lr_warmup_steps=N`: Number of warmup steps for the learning rate scheduler. The learning rate gradually increases during this period at the start of training. If N < 1, it's interpreted as a fraction of total steps.
+*   `--lr_scheduler_num_cycles=N` / `--lr_scheduler_power=P`: Parameters for specific schedulers (`cosine_with_restarts`, `polynomial`).
+*   `--max_train_steps=N` / `--max_train_epochs=N`: Specifies the total number of training steps or epochs. Epoch specification takes precedence.
+*   `--mixed_precision=\"bf16\"` / `\"fp16\"` / `\"no\"`: Mixed precision training settings. For SDXL, using `bf16` (if GPU supports it) or `fp16` is strongly recommended. Reduces VRAM usage and improves training speed.
+*   `--full_fp16` / `--full_bf16`: Performs gradient calculations entirely in half-precision/bf16. Can further reduce VRAM usage but may affect training stability. Use if VRAM is critically low.
+*   `--gradient_accumulation_steps=N`: Accumulates gradients for N steps before updating the optimizer. Effectively increases the batch size to `train_batch_size * N`, achieving the effect of a larger batch size with less VRAM. Default is 1.
+*   `--max_grad_norm=N`: Gradient clipping threshold. Clips gradients if their norm exceeds N. Default is 1.0. `0` disables it.
+*   `--gradient_checkpointing`: Significantly reduces memory usage but slightly decreases training speed. Recommended for SDXL due to high memory consumption.
+*   `--fused_backward_pass`: **Experimental**: Fuses gradient calculation and optimizer steps to reduce VRAM usage. Available for SDXL. Currently only supports `Adafactor` optimizer. Cannot be used with Gradient Accumulation.
+*   `--resume=\"<state directory>\"`: Resumes training from a saved state (saved with `--save_state`). Restores optimizer state, step count, etc.
 
 ### 1.6. Caching
 
-Options to cache latents or text encoder outputs in memory or on disk to speed up training.
+Caching is effective for SDXL due to its high computational cost.
+
+*   `--cache_latents`: Caches VAE outputs (latents) in memory. Skips VAE computation, reducing VRAM usage and speeding up training. **Note:** Image augmentations (`color_aug`, `flip_aug`, `random_crop`, etc.) will be disabled.
+*   `--cache_latents_to_disk`: Used with `--cache_latents` to cache to disk. Particularly effective for large datasets or multiple training runs. Caches are generated on disk during the first run and loaded from there on subsequent runs.
+*   `--cache_text_encoder_outputs`: Caches Text Encoder outputs in memory. Skips Text Encoder computation, reducing VRAM usage and speeding up training. **Note:** Caption augmentations (`shuffle_caption`, `caption_dropout_rate`, etc.) will be disabled. **Also, when using this option, Text Encoder LoRA modules cannot be trained (requires `--network_train_unet_only`).**
+*   `--cache_text_encoder_outputs_to_disk`: Used with `--cache_text_encoder_outputs` to cache to disk.
+*   `--skip_cache_check`: Skips validation of cache file contents. File existence is checked, and if not found, caches are generated. Usually not needed unless intentionally re-caching for debugging, etc.
 
 ### 1.7. Sample Image Generation
 
-Options to generate sample images periodically during training.
+Basic options are common with `train_network.py`.
+
+*   `--sample_every_n_steps=N` / `--sample_every_n_epochs=N`: Generates sample images every N steps/epochs.
+*   `--sample_at_first`: Generates sample images before training starts.
+*   `--sample_prompts=\"<prompt file>\"`: Specifies a file (`.txt`, `.toml`, `.json`) containing prompts for sample image generation. Format follows [gen_img_diffusers.py](gen_img_diffusers.py). See [documentation](gen_img_README-ja.md) for details.
+*   `--sample_sampler=\"...\"`: Specifies the sampler (scheduler) for sample image generation. `euler_a`, `dpm++_2m_karras`, etc., are common. See `--help` for choices.
 
 ### 1.8. Logging & Tracking
 
-TensorBoard and wandb logging related options.
+*   `--logging_dir=\"<log directory>\"`: Specifies the directory for TensorBoard and other logs. If not specified, logs are not output.
+*   `--log_with=\"tensorboard\"` / `\"wandb\"` / `\"all\"`: Specifies the logging tool to use. If using `wandb`, `pip install wandb` is required.
+*   `--log_prefix=\"<prefix>\"`: Specifies the prefix for subdirectory names created within `logging_dir`.
+*   `--wandb_api_key=\"<API key>\"` / `--wandb_run_name=\"<run name>\"`: Options for Weights & Biases (wandb).
+*   `--log_tracker_name` / `--log_tracker_config`: Advanced tracker configuration options. Usually not needed.
+*   `--log_config`: Logs the training configuration used (excluding some sensitive information) at the start of training. Helps ensure reproducibility.
 
 ### 1.9. Regularization and Advanced Techniques
 
-Various options such as noise offset, multires noise, input perturbation, min-SNR weighting, loss type selection, and masked loss.
+*   `--noise_offset=N`: Enables noise offset and specifies its value. Expected to improve bias in image brightness and contrast. Recommended to enable as SDXL base models are trained with this (e.g., 0.0357). Original technical explanation [here](https://www.crosslabs.org/blog/diffusion-with-offset-noise).
+*   `--noise_offset_random_strength`: Randomly varies noise offset strength between 0 and the specified value.
+*   `--adaptive_noise_scale=N`: Adjusts noise offset based on the mean absolute value of latents. Used with `--noise_offset`.
+*   `--multires_noise_iterations=N` / `--multires_noise_discount=D`: Enables multi-resolution noise. Adding noise of different frequency components is expected to improve detail reproduction. Specify iteration count N (around 6-10) and discount rate D (around 0.3). Technical explanation [here](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2).
+*   `--ip_noise_gamma=G` / `--ip_noise_gamma_random_strength`: Enables Input Perturbation Noise. Adds small noise to input (latents) for regularization. Specify Gamma value (around 0.1). Strength can be randomized with `random_strength`.
+*   `--min_snr_gamma=N`: Applies Min-SNR Weighting Strategy. Adjusts loss weights for timesteps with high noise in early training to stabilize learning. `N=5` etc. are used.
+*   `--scale_v_pred_loss_like_noise_pred`: In v-prediction models, scales v-prediction loss similarly to noise prediction loss. **Not typically used for SDXL** as it's not a v-prediction model.
+*   `--v_pred_like_loss=N`: Adds v-prediction-like loss to noise prediction models. `N` specifies its weight. **Not typically used for SDXL**.
+*   `--debiased_estimation_loss`: Calculates loss using Debiased Estimation. Similar purpose to Min-SNR but a different approach.
+*   `--loss_type=\"l1\"` / `\"l2\"` / `\"huber\"` / `\"smooth_l1\"`: Specifies the loss function. Default is `l2` (MSE). `huber` and `smooth_l1` are robust to outliers.
+*   `--huber_schedule=\"constant\"` / `\"exponential\"` / `\"snr\"`: Scheduling method when using `huber` or `smooth_l1` loss. `snr` is recommended.
+*   `--huber_c=C` / `--huber_scale=S`: Parameters for `huber` or `smooth_l1` loss.
+*   `--masked_loss`: Limits loss calculation area based on a mask image. Requires specifying mask images (black and white) in `conditioning_data_dir` in dataset settings. See [About Masked Loss](masked_loss_README.md) for details.
 
 ### 1.10. Distributed Training and Others
 
-General options like random seed, max token length, clip skip, lowram/highvram, data loader workers, config files, and Accelerate/DeepSpeed settings.
+*   `--seed=N`: Specifies the random seed. Set this to ensure training reproducibility.
+*   `--max_token_length=N` (`75`, `150`, `225`): Maximum token length processed by Text Encoders. For SDXL, typically `75` (default), `150`, or `225`. Longer lengths can handle more complex prompts but increase VRAM usage.
+*   `--clip_skip=N`: Uses the output from N layers skipped from the final layer of Text Encoders. **Not typically used for SDXL**.
+*   `--lowram` / `--highvram`: Options for memory usage optimization. `--lowram` is for environments like Colab where RAM < VRAM, `--highvram` is for environments with ample VRAM.
+*   `--persistent_data_loader_workers` / `--max_data_loader_n_workers=N`: Settings for DataLoader worker processes. Affects wait time between epochs and memory usage.
+*   `--config_file=\"<config file>\"` / `--output_config`: Options to use/output a `.toml` file instead of command line arguments.
+*   **Accelerate/DeepSpeed related:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`): Detailed settings for distributed training. Accelerate settings (`accelerate config`) are usually sufficient. DeepSpeed requires separate configuration.
 
 ## 2. Other Tips / その他のTips
 
-Hints on reducing VRAM usage, appropriate learning rates, training time considerations and troubleshooting.
+*   **VRAM Usage:** SDXL LoRA training requires a lot of VRAM. Even with 24GB VRAM, you might run out of memory depending on settings. Reduce VRAM usage with these settings:
+    *   `--mixed_precision=\"bf16\"` or `\"fp16\"` (essential)
+    *   `--gradient_checkpointing` (strongly recommended)
+    *   `--cache_latents` / `--cache_text_encoder_outputs` (highly effective, with limitations)
+    *   `--optimizer_type=\"AdamW8bit\"` or `\"Adafactor\"`
+    *   Increase `--gradient_accumulation_steps` (reduce batch size)
+    *   `--full_fp16` / `--full_bf16` (be mindful of stability)
+    *   `--fp8_base` / `--fp8_base_unet` (experimental)
+    *   `--fused_backward_pass` (Adafactor only, experimental)
+*   **Learning Rate:** Appropriate learning rates for SDXL LoRA depend on the dataset and `network_dim`/`alpha`. Starting around `1e-4` ~ `4e-5` (U-Net), `1e-5` ~ `2e-5` (Text Encoders) is common.
+*   **Training Time:** Training takes time due to high-resolution data and the size of the SDXL model. Using caching features and appropriate hardware is important.
+*   **Troubleshooting:**
+    *   **NaN Loss:** Learning rate might be too high, mixed precision settings incorrect (e.g., `--no_half_vae` not specified with `fp16`), or dataset issues.
+    *   **Out of Memory (OOM):** Try the VRAM reduction measures listed above.
+    *   **Training not progressing:** Learning rate might be too low, optimizer/scheduler settings incorrect, or dataset issues.
 
 ## 3. Conclusion / おわりに
 
