@@ -121,51 +121,52 @@ def initialize_urae(
     # Move original weight to chosen device and use float32 for numerical stability
     weight = org_module.weight.data.to(device, dtype=torch.float32)
 
-    # Perform SVD decomposition (either directly or with IPCA for memory efficiency)
-    if use_ipca:
-        ipca = IncrementalPCA(
-            n_components=None,
-            batch_size=1024,
-            lowrank=use_lowrank,
-            lowrank_q=lowrank_q if lowrank_q is not None else min(weight.shape),
-            lowrank_niter=lowrank_niter,
-            lowrank_seed=lowrank_seed,
-        )
-        ipca.fit(weight)
+    with torch.autocast(device.type), torch.no_grad():
+        # Perform SVD decomposition (either directly or with IPCA for memory efficiency)
+        if use_ipca:
+            ipca = IncrementalPCA(
+                n_components=None,
+                batch_size=1024,
+                lowrank=use_lowrank,
+                lowrank_q=lowrank_q if lowrank_q is not None else min(weight.shape),
+                lowrank_niter=lowrank_niter,
+                lowrank_seed=lowrank_seed,
+            )
+            ipca.fit(weight)
 
-        # Extract singular values and vectors, focusing on the minor components (smallest singular values)
-        S_full = ipca.singular_values_
-        V_full = ipca.components_.T  # Shape: [out_features, total_rank]
+            # Extract singular values and vectors, focusing on the minor components (smallest singular values)
+            S_full = ipca.singular_values_
+            V_full = ipca.components_.T  # Shape: [out_features, total_rank]
 
-        # Get identity matrix to transform for right singular vectors
-        identity = torch.eye(weight.shape[1], device=weight.device)
-        Uhr_full = ipca.transform(identity).T  # Shape: [total_rank, in_features]
+            # Get identity matrix to transform for right singular vectors
+            identity = torch.eye(weight.shape[1], device=weight.device)
+            Uhr_full = ipca.transform(identity).T  # Shape: [total_rank, in_features]
 
-        # Extract the last 'rank' components (the minor/smallest ones)
-        Sr = S_full[-rank:]
-        Vr = V_full[:, -rank:]
-        Uhr = Uhr_full[-rank:]
+            # Extract the last 'rank' components (the minor/smallest ones)
+            Sr = S_full[-rank:]
+            Vr = V_full[:, -rank:]
+            Uhr = Uhr_full[-rank:]
 
-        # Scale singular values
-        Sr = Sr / rank
-    else:
-        # Direct SVD approach
-        U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
+            # Scale singular values
+            Sr = Sr / rank
+        else:
+            # Direct SVD approach
+            U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
 
-        # Extract the minor components (smallest singular values)
-        Sr = S[-rank:]
-        Vr = U[:, -rank:]
-        Uhr = Vh[-rank:]
+            # Extract the minor components (smallest singular values)
+            Sr = S[-rank:]
+            Vr = U[:, -rank:]
+            Uhr = Vh[-rank:]
 
-        # Scale singular values
-        Sr = Sr / rank
+            # Scale singular values
+            Sr = Sr / rank
 
-    # Create the low-rank adapter matrices by splitting the minor components
-    # Down matrix: scaled right singular vectors with singular values
-    down_matrix = torch.diag(torch.sqrt(Sr)) @ Uhr
+        # Create the low-rank adapter matrices by splitting the minor components
+        # Down matrix: scaled right singular vectors with singular values
+        down_matrix = torch.diag(torch.sqrt(Sr)) @ Uhr
 
-    # Up matrix: scaled left singular vectors with singular values
-    up_matrix = Vr @ torch.diag(torch.sqrt(Sr))
+        # Up matrix: scaled left singular vectors with singular values
+        up_matrix = Vr @ torch.diag(torch.sqrt(Sr))
 
     # Assign to LoRA modules
     lora_down.weight.data = down_matrix.to(device=device, dtype=dtype)
@@ -223,7 +224,8 @@ def initialize_pissa(
 
             # We need to get Uhr from transforming an identity matrix
             identity = torch.eye(weight.shape[1], device=weight.device)
-            Uhr = ipca.transform(identity).T  # [rank, in_features]
+            with torch.autocast(device.type, dtype=torch.float64):
+                Uhr = ipca.transform(identity).T  # [rank, in_features]
 
         elif use_lowrank:
             # Use low-rank SVD approximation which is faster
@@ -248,9 +250,11 @@ def initialize_pissa(
             Sr /= rank
             Uhr = Uh[:rank]
 
-        # Create down and up matrices
-        down = torch.diag(torch.sqrt(Sr)) @ Uhr
-        up = Vr @ torch.diag(torch.sqrt(Sr))
+        # Uhr may be in higher precision
+        with torch.autocast(device.type, dtype=Uhr.dtype):
+            # Create down and up matrices
+            down = torch.diag(torch.sqrt(Sr)) @ Uhr
+            up = Vr @ torch.diag(torch.sqrt(Sr))
 
         # Get expected shapes
         expected_down_shape = lora_down.weight.shape
@@ -272,19 +276,20 @@ def initialize_pissa(
 
 
 def convert_pissa_to_standard_lora(trained_up: Tensor, trained_down: Tensor, orig_up: Tensor, orig_down: Tensor, rank: int):
-    # Calculate ΔW = A'B' - AB
-    delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
+    with torch.no_grad():
+        # Calculate ΔW = A'B' - AB
+        delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
 
-    # We need to create new low-rank matrices that represent this delta
-    U, S, V = torch.linalg.svd(delta_w.to(device="cuda", dtype=torch.float32), full_matrices=False)
+        # We need to create new low-rank matrices that represent this delta
+        U, S, V = torch.linalg.svd(delta_w.to(device="cuda", dtype=torch.float32), full_matrices=False)
 
-    # Take the top 2*r singular values (as suggested in the paper)
-    rank = rank * 2
-    rank = min(rank, len(S))  # Make sure we don't exceed available singular values
+        # Take the top 2*r singular values (as suggested in the paper)
+        rank = rank * 2
+        rank = min(rank, len(S))  # Make sure we don't exceed available singular values
 
-    # Create new LoRA matrices
-    new_up = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
-    new_down = torch.diag(torch.sqrt(S[:rank])) @ V[:rank, :]
+        # Create new LoRA matrices
+        new_up = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
+        new_down = torch.diag(torch.sqrt(S[:rank])) @ V[:rank, :]
 
     # These matrices can now be used as standard LoRA weights
     return new_up, new_down
@@ -314,63 +319,64 @@ def convert_urae_to_standard_lora(
         lora_down: Standard LoRA down matrix
         alpha: Appropriate alpha value for the LoRA
     """
-    # Calculate the weight delta
-    delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
+    with torch.no_grad():
+        # Calculate the weight delta
+        delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
 
-    # Perform SVD on the delta
-    U, S, V = torch.linalg.svd(delta_w.to(dtype=torch.float32), full_matrices=False)
+        # Perform SVD on the delta
+        U, S, V = torch.linalg.svd(delta_w.to(dtype=torch.float32), full_matrices=False)
 
-    # If rank is not specified, use the same rank as the trained matrices
-    if rank is None:
-        rank = trained_up.shape[1]
-    else:
-        # Ensure we don't exceed available singular values
-        rank = min(rank, len(S))
+        # If rank is not specified, use the same rank as the trained matrices
+        if rank is None:
+            rank = trained_up.shape[1]
+        else:
+            # Ensure we don't exceed available singular values
+            rank = min(rank, len(S))
 
-    # Create standard LoRA matrices using top singular values
-    # This is now standard LoRA (using top values), not URAE (which used bottom values during training)
-    lora_up = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
-    lora_down = torch.diag(torch.sqrt(S[:rank])) @ V[:rank, :]
+        # Create standard LoRA matrices using top singular values
+        # This is now standard LoRA (using top values), not URAE (which used bottom values during training)
+        lora_up = U[:, :rank] @ torch.diag(torch.sqrt(S[:rank]))
+        lora_down = torch.diag(torch.sqrt(S[:rank])) @ V[:rank, :]
 
-    # Method 1: Preserve the Frobenius norm of the delta
-    original_effect: float = torch.norm(delta_w, p="fro").item()
-    unscaled_lora_effect: float = torch.norm(lora_up @ lora_down, p="fro").item()
+        # Method 1: Preserve the Frobenius norm of the delta
+        original_effect: float = torch.norm(delta_w, p="fro").item()
+        unscaled_lora_effect: float = torch.norm(lora_up @ lora_down, p="fro").item()
 
-    # The scaling factor in lora is (alpha/r), so:
-    # alpha/r × ||AB|| = ||delta_W||
-    # alpha = r × ||delta_W|| / ||AB||
-    if unscaled_lora_effect > 0:
-        norm_based_alpha = rank * (original_effect / unscaled_lora_effect)
-    else:
-        norm_based_alpha = 1.0  # Fallback
+        # The scaling factor in lora is (alpha/r), so:
+        # alpha/r × ||AB|| = ||delta_W||
+        # alpha = r × ||delta_W|| / ||AB||
+        if unscaled_lora_effect > 0:
+            norm_based_alpha = rank * (original_effect / unscaled_lora_effect)
+        else:
+            norm_based_alpha = 1.0  # Fallback
 
-    # Method 2: If initial_alpha is provided, adjust based on rank change
-    if initial_alpha is not None:
-        initial_rank = trained_up.shape[1]
-        # Scale alpha proportionally if rank changed
-        rank_adjusted_alpha = initial_alpha * (rank / initial_rank)
-    else:
-        rank_adjusted_alpha = None
+        # Method 2: If initial_alpha is provided, adjust based on rank change
+        if initial_alpha is not None:
+            initial_rank = trained_up.shape[1]
+            # Scale alpha proportionally if rank changed
+            rank_adjusted_alpha = initial_alpha * (rank / initial_rank)
+        else:
+            rank_adjusted_alpha = None
 
-    # Choose the appropriate alpha
-    if rank_adjusted_alpha is not None:
-        # Use the rank-adjusted alpha, but ensure it's not too different from norm-based
-        # Cap the difference to avoid extreme values
-        alpha = rank_adjusted_alpha
-        # Optional: Cap alpha to be within a reasonable range of norm_based_alpha
-        if norm_based_alpha > 0:
-            max_factor = 5.0  # Allow up to 5x difference
-            upper_bound = norm_based_alpha * max_factor
-            lower_bound = norm_based_alpha / max_factor
-            alpha = min(max(alpha, lower_bound), upper_bound)
-    else:
-        # Use norm-based alpha
-        alpha = norm_based_alpha
+        # Choose the appropriate alpha
+        if rank_adjusted_alpha is not None:
+            # Use the rank-adjusted alpha, but ensure it's not too different from norm-based
+            # Cap the difference to avoid extreme values
+            alpha = rank_adjusted_alpha
+            # Optional: Cap alpha to be within a reasonable range of norm_based_alpha
+            if norm_based_alpha > 0:
+                max_factor = 5.0  # Allow up to 5x difference
+                upper_bound = norm_based_alpha * max_factor
+                lower_bound = norm_based_alpha / max_factor
+                alpha = min(max(alpha, lower_bound), upper_bound)
+        else:
+            # Use norm-based alpha
+            alpha = norm_based_alpha
 
-    # Round to a clean value for better usability
-    alpha = round(alpha, 2)
+        # Round to a clean value for better usability
+        alpha = round(alpha, 2)
 
-    # Ensure alpha is positive and within reasonable bounds
-    alpha = max(0.1, min(alpha, 1024.0))
+        # Ensure alpha is positive and within reasonable bounds
+        alpha = max(0.1, min(alpha, 1024.0))
 
     return lora_up, lora_down, alpha
