@@ -1,4 +1,5 @@
 import argparse
+import importlib
 
 import torch
 from library.device_utils import init_ipex, clean_memory_on_device
@@ -16,6 +17,21 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         super().__init__()
         self.vae_scale_factor = sdxl_model_util.VAE_SCALE_FACTOR
         self.is_sdxl = True
+
+    def train(self, args):
+        if getattr(args, "te_mlp_fc_only", False):
+            try:
+                network_module = importlib.import_module(args.network_module)
+                if hasattr(network_module, "LoRANetwork") and hasattr(
+                    network_module.LoRANetwork, "TEXT_ENCODER_TARGET_REPLACE_MODULE"
+                ):
+                    network_module.LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE = [
+                        "CLIPMLP"
+                    ]
+            except Exception as e:
+                logger.warning(f"failed to set text encoder target modules: {e}")
+
+        super().train(args)
 
     def assert_extra_args(self, args, train_dataset_group):
         sdxl_train_util.verify_sdxl_training_args(args)
@@ -170,6 +186,11 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     sdxl_train_util.add_sdxl_training_arguments(parser)
+    parser.add_argument(
+        "--te_mlp_fc_only",
+        action="store_true",
+        help="train only mlp_fc1 and mlp_fc2 of Text Encoder / Text Encoderのmlp_fc1とmlp_fc2のみ学習する",
+    )
     return parser
 
 
