@@ -1,3 +1,17 @@
+<!--- ここから自分の追記 -->
+
+## 非公式：追加オプション（**`sdxl_train_network.py` 専用**）
+
+| オプション | 機能概要 | 既定値 ↔ 指定時 | 備考・出典 |
+| --- | --- | --- | --- |
+| `--downscale_freq_shift` | `library/sdxl_original_unet.py` 内の `get_timestep_embedding()` に渡す **`downscale_freq_shift`** を切り替えます。 | 0.0 → **1.0** | もともと 1.0 だったものがアーティファクト対策で 0.0 に変更（本家 PR [#1187](https://github.com/kohya-ss/sd-scripts/pull/1187)）。キャラクター性を学習させるタスクでは 1.0 の方が定着しやすい印象。 |
+| `--skip_grad_norm` | 直近 **200 step の移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。 | ― | 上限などはソース内の定数で調整可。勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。 |
+| `--grad_norm_log` | `--skip_grad_norm` と併用推奨。**100 step ごと**に `(epoch, step, norm, threshold)` を `gradient_logs.txt` に追記。既存ファイルがあれば上書き。 | ― | ログを後から Excel／Pandas へ読み込み、閾値設定の妥当性チェックに利用。 |
+| `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 Issue [#1964](https://github.com/kohya-ss/sd-scripts/issues/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定するという報告に基づく実験オプション。 |
+
+<!--- ここまで自分の追記 --->
+
+
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
 [__Change History__](#change-history) is moved to the bottom of the page. 
