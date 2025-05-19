@@ -78,7 +78,7 @@ class TestWaveletLoss:
         
         # Check loss is a scalar tensor
         assert isinstance(loss, Tensor)
-        assert loss.dim() == 0
+        assert loss.dim() == 1
         
         # Check details contains expected keys
         assert "combined_hf_pred" in details
@@ -86,7 +86,8 @@ class TestWaveletLoss:
         
         # For identical inputs, loss should be small but not zero due to numerical precision
         same_loss, _ = loss_fn(target, target)
-        assert same_loss.item() < 1e-5
+        for item in same_loss:
+            assert item.item() < 1e-5
 
     def test_forward_swt(self, setup_inputs):
         pred, target, device = setup_inputs
@@ -97,11 +98,12 @@ class TestWaveletLoss:
         
         # Check loss is a scalar tensor
         assert isinstance(loss, Tensor)
-        assert loss.dim() == 0
+        assert loss.dim() == 1
         
         # For identical inputs, loss should be small
         same_loss, _ = loss_fn(target, target)
-        assert same_loss.item() < 1e-5
+        for item in same_loss:
+            assert item.item() < 1e-5
 
     def test_forward_qwt(self, setup_inputs):
         pred, target, device = setup_inputs
@@ -184,8 +186,9 @@ class TestWaveletLoss:
         loss1, _ = loss_fn1(pred, target)
         loss2, _ = loss_fn2(pred, target)
         
-        # Loss with more ll levels should be different
-        assert loss1.item() != loss2.item()
+        for item1, item2 in zip(loss1, loss2):
+            # Loss with more ll levels should be different
+            assert item1.item() != item2.item()
 
     def test_set_loss_fn(self, setup_inputs):
         pred, target, device = setup_inputs

@@ -347,7 +347,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         weight_dtype,
         train_unet,
         is_train=True,
-    ):
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None, torch.Tensor]:
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
@@ -448,7 +448,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 )
                 target[diff_output_pr_indices] = model_pred_prior.to(target.dtype)
 
-        return model_pred, noisy_model_input, target, sigmas, timesteps, weighting
+        return model_pred, noisy_model_input, target, sigmas, timesteps, weighting, noise
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         return loss
