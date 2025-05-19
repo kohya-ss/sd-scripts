@@ -877,8 +877,9 @@ class NetworkTrainer:
                             gradient_norm += grad.norm() ** 2
                 gradient_norm = gradient_norm.sqrt().item()
 
-                # 移動平均窓に追加
-                moving_avg_window.append(gradient_norm)
+                # 勾配ノルムがNaNの場合は窓に追加せずにスキップ判定
+                if not math.isnan(gradient_norm):
+                    moving_avg_window.append(gradient_norm)
 
                 # 窓がいっぱいになったら平均+2.5σを計算
                 if len(moving_avg_window) == moving_avg_window.maxlen:
@@ -899,6 +900,10 @@ class NetworkTrainer:
                         with open(log_file_path, "a") as f:
                             f.writelines(log_buffer)
                         log_buffer.clear()
+
+                # 勾配ノルムがNaNの場合もステップをスキップ
+                if math.isnan(gradient_norm):
+                    return True
 
                 # 閾値を超えた場合はこのステップをスキップ
                 return gradient_norm > dynamic_threshold
