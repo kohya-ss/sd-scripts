@@ -371,7 +371,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         else:
             img_ids = flux_utils.prepare_img_ids(bsz, latent_height // 2, latent_width // 2).to(device=accelerator.device)
 
-        assert packed_noisy_model_input.shape[2] * packed_noisy_model_input.shape[3] == img_ids.shape[1], "Packed latent dimensions are not aligned with img ids"
+        assert packed_noisy_model_input.shape[1] == img_ids.shape[1], "Packed latent dimensions are not aligned with img ids"
 
         # get guidance
         # ensure guidance_scale in args is float
