@@ -12,6 +12,9 @@ on:
       - dev
       - sd3
 
+# CKV2_GHA_1: "Ensure top-level permissions are not set to write-all"
+permissions: read-all
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -40,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           # Pre-install torch to pin version (requirements.txt has dependencies like transformers which requires pytorch)
-          pip install dadaptation==3.2 torch==${{ matrix.pytorch-version }} torchvision==0.19.0 pytest==8.3.4
+          pip install dadaptation==3.2 torch==${{ matrix.pytorch-version }} torchvision pytest==8.3.4
           pip install -r requirements.txt
 
       - name: Test with pytest
