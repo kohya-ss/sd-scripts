@@ -12,6 +12,9 @@ on:
       - synchronize
       - reopened
 
+# CKV2_GHA_1: "Ensure top-level permissions are not set to write-all"
+permissions: read-all
+
 jobs:
   build:
     runs-on: ubuntu-latest
