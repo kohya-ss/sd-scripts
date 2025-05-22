@@ -1721,7 +1721,10 @@ class DreamBoothDataset(BaseDataset):
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
-                    reg_infos.append((info, subset))
+                    if subset.num_repeats > 1:
+                        info.num_repeats = 1
+                    for i in range(subset.num_repeats):
+                        reg_infos.append((info, subset))
                 else:
                     self.register_image(info, subset)
 
