@@ -360,9 +360,7 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--downscale_freq_shift",
-        action="store_const",
-        const=1.0,
-        default=0.0,
+        action="store_true",
         help="set downscale_freq_shift=1 for timestep embeddings / timestep embedding の downscale_freq_shift を1にする",
     )
     parser.add_argument(
