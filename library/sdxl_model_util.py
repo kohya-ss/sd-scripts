@@ -166,14 +166,7 @@ def _load_state_dict_on_device(model, state_dict, device, dtype=None):
     raise RuntimeError("Error(s) in loading state_dict for {}:\n\t{}".format(model.__class__.__name__, "\n\t".join(error_msgs)))
 
 
-def load_models_from_sdxl_checkpoint(
-    model_version,
-    ckpt_path,
-    map_location,
-    dtype=None,
-    disable_mmap=False,
-    downscale_freq_shift: float = 0,
-):
+def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dtype=None, disable_mmap=False):
     # model_version is reserved for future use
     # dtype is used for full_fp16/bf16 integration. Text Encoder will remain fp32, because it runs on CPU when caching
 
@@ -204,9 +197,7 @@ def load_models_from_sdxl_checkpoint(
     # U-Net
     logger.info("building U-Net")
     with init_empty_weights():
-        unet = sdxl_original_unet.SdxlUNet2DConditionModel(
-            downscale_freq_shift=downscale_freq_shift
-        )
+        unet = sdxl_original_unet.SdxlUNet2DConditionModel()
 
     logger.info("loading U-Net from checkpoint")
     unet_sd = {}

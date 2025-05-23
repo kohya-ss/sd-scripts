@@ -48,7 +48,6 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
                 accelerator.device if args.lowram else "cpu",
                 model_dtype,
                 args.disable_mmap_load_safetensors,
-                args.downscale_freq_shift,
             )
 
             # work on low-ram device
@@ -65,14 +64,7 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
 
 
 def _load_target_model(
-    name_or_path: str,
-    vae_path: Optional[str],
-    model_version: str,
-    weight_dtype,
-    device="cpu",
-    model_dtype=None,
-    disable_mmap=False,
-    downscale_freq_shift: float = 0,
+    name_or_path: str, vae_path: Optional[str], model_version: str, weight_dtype, device="cpu", model_dtype=None, disable_mmap=False
 ):
     # model_dtype only work with full fp16/bf16
     name_or_path = os.readlink(name_or_path) if os.path.islink(name_or_path) else name_or_path
@@ -87,14 +79,7 @@ def _load_target_model(
             unet,
             logit_scale,
             ckpt_info,
-        ) = sdxl_model_util.load_models_from_sdxl_checkpoint(
-            model_version,
-            name_or_path,
-            device,
-            model_dtype,
-            disable_mmap,
-            downscale_freq_shift,
-        )
+        ) = sdxl_model_util.load_models_from_sdxl_checkpoint(model_version, name_or_path, device, model_dtype, disable_mmap)
     else:
         # Diffusers model is loaded to CPU
         from diffusers import StableDiffusionXLPipeline
@@ -134,9 +119,7 @@ def _load_target_model(
         # Diffusers U-Net to original U-Net
         state_dict = sdxl_model_util.convert_diffusers_unet_state_dict_to_sdxl(unet.state_dict())
         with init_empty_weights():
-            unet = sdxl_original_unet.SdxlUNet2DConditionModel(
-                downscale_freq_shift=downscale_freq_shift
-            )  # overwrite unet
+            unet = sdxl_original_unet.SdxlUNet2DConditionModel()  # overwrite unet
         sdxl_model_util._load_state_dict_on_device(unet, state_dict, device=device, dtype=model_dtype)
         logger.info("U-Net converted to original U-Net")
 
@@ -357,11 +340,6 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         "--disable_mmap_load_safetensors",
         action="store_true",
         help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
-    )
-    parser.add_argument(
-        "--downscale_freq_shift",
-        action="store_true",
-        help="set downscale_freq_shift=1 for timestep embeddings / timestep embedding の downscale_freq_shift を1にする",
     )
     parser.add_argument(
         "--skip_grad_norm",
