@@ -6,6 +6,7 @@ init_ipex()
 
 from library import sdxl_model_util, sdxl_train_util, train_util
 import train_network
+import maruo_global_config as cfg
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -170,6 +171,16 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     sdxl_train_util.add_sdxl_training_arguments(parser)
+    parser.add_argument(
+        "--downscale_freq_shift",
+        action="store_true",
+        help="Enable downscale_freq_shift; sets cfg.downscale_freq_shift = True",
+    )
+    parser.add_argument(
+        "--te_mlp_fc_only",
+        action="store_true",
+        help="Enable TE-MLP-FC-only training; sets cfg.te_mlp_fc_only = True",
+    )
     return parser
 
 
@@ -179,6 +190,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
+    # map CLI options to global config
+    cfg.downscale_freq_shift = bool(getattr(args, "downscale_freq_shift", False))
+    cfg.te_mlp_fc_only = bool(getattr(args, "te_mlp_fc_only", False))
 
     trainer = SdxlNetworkTrainer()
     trainer.train(args)
