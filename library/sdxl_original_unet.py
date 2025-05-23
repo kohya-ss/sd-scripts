@@ -31,6 +31,7 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from .utils import setup_logging
+from . import maruo_global_config as maruoCfg
 
 setup_logging()
 import logging
@@ -1076,7 +1077,12 @@ class SdxlUNet2DConditionModel(nn.Module):
         timesteps = timesteps.expand(x.shape[0])
 
         hs = []
-        t_emb = get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
+        if maruoCfg.downscale_freq_shift:
+            #改造ルート (downscale_freq_shiftを渡さないことで1になる)
+            t_emb = get_timestep_embedding(timesteps, self.model_channels)  # , repeat_only=False)
+        else:
+            # 通常ルート
+            t_emb = get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
         t_emb = t_emb.to(x.dtype)
         emb = self.time_embed(t_emb)
 
@@ -1166,7 +1172,12 @@ class InferSdxlUNet2DConditionModel:
         timesteps = timesteps.expand(x.shape[0])
 
         hs = []
-        t_emb = get_timestep_embedding(timesteps, _self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
+        if maruoCfg.downscale_freq_shift:
+            # 改造ルート (downscale_freq_shiftを渡さないことで1になる)
+            t_emb = get_timestep_embedding(timesteps, _self.model_channels)  # , repeat_only=False)
+        else:
+            # 通常ルート
+            t_emb = get_timestep_embedding(timesteps, _self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
         t_emb = t_emb.to(x.dtype)
         emb = _self.time_embed(t_emb)
 
