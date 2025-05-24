@@ -349,7 +349,7 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--grad_norm_log",
         action="store_true",
-        help="output gradient norm logs to gradient_logs.txt / 勾配ノルムのログをgradient_logs.txtに出力する",
+        help="output gradient norm logs to gradient_logs.txt; without --skip_grad_norm only logging is performed / 勾配ノルムのログをgradient_logs.txtに出力します。--skip_grad_normを付けない場合はスキップせずログのみ記録されます",
     )
 
 

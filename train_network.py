@@ -854,7 +854,8 @@ class NetworkTrainer:
         skip_grad_norm = getattr(args, "skip_grad_norm", False)
         log_grad_norm = getattr(args, "grad_norm_log", False)
         logger.info(f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}")
-        if skip_grad_norm:
+        use_grad_norm = skip_grad_norm or log_grad_norm
+        if use_grad_norm:
             # 勾配ノルムの履歴を保持するキュー
             moving_avg_window = deque(maxlen=200)
             log_buffer = []
@@ -877,7 +878,7 @@ class NetworkTrainer:
                             gradient_norm += grad.norm() ** 2
                 gradient_norm = gradient_norm.sqrt().item()
 
-                # 勾配ノルムがNaNやinfの場合は窓に追加せずにスキップ判定
+                # 勾配ノルムがNaNやinfの場合は窓に追加しない
                 if not math.isnan(gradient_norm) and not math.isinf(gradient_norm):
                     moving_avg_window.append(gradient_norm)
 
@@ -900,6 +901,9 @@ class NetworkTrainer:
                         with open(log_file_path, "a") as f:
                             f.writelines(log_buffer)
                         log_buffer.clear()
+
+                if not skip_grad_norm:
+                    return False
 
                 # 勾配ノルムがNaNやinfの場合もステップをスキップ
                 if math.isnan(gradient_norm) or math.isinf(gradient_norm):
