@@ -14,6 +14,7 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+import library.maruo_global_config as maruoCfg
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -755,7 +756,12 @@ class LoRANetwork(torch.nn.Module):
 
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
+    if maruoCfg.te_mlp_fc_only:
+        # 改造ルート
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]  # 昔のバージョンの状態と同じにしたい場合用(実験用)
+    else:
+        # 通常ルート
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 

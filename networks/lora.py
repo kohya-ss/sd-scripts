@@ -11,9 +11,9 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+import library.maruo_global_config as maruoCfg
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
-import library.maruo_global_config as maruoCfg
 
 setup_logging()
 import logging
@@ -867,8 +867,13 @@ class LoRANetwork(torch.nn.Module):
 
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE_MLPONLY = ["CLIPAttention", "CLIPMLP"]  # 昔のバージョンの状態と同じにしたい場合用(実験用)
+    if maruoCfg.te_mlp_fc_only:
+        # 改造ルート
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]  # 昔のバージョンの状態と同じにしたい場合用(実験用)
+    else:
+        # 通常ルート
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
+
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
@@ -1031,12 +1036,7 @@ class LoRANetwork(torch.nn.Module):
                 index = None
                 logger.info(f"create LoRA for Text Encoder:")
 
-            if maruoCfg.te_mlp_fc_only:
-                # 改造ルート
-                text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE_MLPONLY)
-            else:
-                # 通常ルート
-                text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
             self.text_encoder_loras.extend(text_encoder_loras)
             skipped_te += skipped
         logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
