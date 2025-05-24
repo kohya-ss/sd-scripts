@@ -9,10 +9,34 @@ __Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchv
 The command to install PyTorch is as follows:
 `pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
 
+If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+
 - [FLUX.1 training](#flux1-training)
 - [SD3 training](#sd3-training)
 
 ### Recent Updates
+
+May 1, 2025:
+- The error when training FLUX.1 with mixed precision in flux_train.py with DeepSpeed enabled has been resolved. Thanks to sharlynxy for PR [#2060](https://github.com/kohya-ss/sd-scripts/pull/2060). Please refer to the PR for details.
+  - If you enable DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+
+Apr 27, 2025:
+- FLUX.1 training now supports CFG scale in the sample generation during training. Please use `--g` option, to specify the CFG scale (note that `--l` is used as the embedded guidance scale.) PR [#2064](https://github.com/kohya-ss/sd-scripts/pull/2064).
+    - See [here](#sample-image-generation-during-training) for details.
+    - If you have any issues with this, please let us know.
+
+Apr 6, 2025:
+- IP noise gamma has been enabled in FLUX.1. Thanks to rockerBOO for PR [#1992](https://github.com/kohya-ss/sd-scripts/pull/1992). See the PR for details.
+    - `--ip_noise_gamma` and `--ip_noise_gamma_random_strength` are available.
+  
+Mar 30, 2025:
+- LoRA-GGPO is added for FLUX.1 LoRA training. Thank you to rockerBOO for PR [#1974](https://github.com/kohya-ss/sd-scripts/pull/1974). 
+  - Specify `--network_args ggpo_sigma=0.03 ggpo_beta=0.01` in the command line or `network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]` in .toml file. See PR for details.
+- The interpolation method for resizing the original image to the training size can now be specified. Thank you to rockerBOO for PR [#1936](https://github.com/kohya-ss/sd-scripts/pull/1936).
+
+Mar 20, 2025:
+- `pytorch-optimizer` is added to requirements.txt. Thank you to gesen2egee for PR [#1985](https://github.com/kohya-ss/sd-scripts/pull/1985). 
+  - For example, you can use CAME optimizer with `--optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"`.
 
 Mar 6, 2025:
 
@@ -748,6 +772,8 @@ Not available yet.
 [__Change History__](#change-history) is moved to the bottom of the page. 
 更新履歴は[ページ末尾](#change-history)に移しました。
 
+Latest update: 2025-03-21 (Version 0.9.1)
+
 [日本語版READMEはこちら](./README-ja.md)
 
 The development version is in the `dev` branch. Please check the dev branch for the latest changes.
@@ -855,6 +881,14 @@ Note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is o
 
 (Single GPU with id `0` will be used.)
 
+## DeepSpeed installation (experimental, Linux or WSL2 only)
+  
+To install DeepSpeed, run the following command in your activated virtual environment:
+
+```bash
+pip install deepspeed==0.16.7 
+```
+
 ## Upgrade
 
 When a new release comes out you can upgrade your repo with the following command:
@@ -890,6 +924,11 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 
 ## Change History
+
+### Mar 21, 2025 /  2025-03-21 Version 0.9.1
+
+- Fixed a bug where some of LoRA modules for CLIP Text Encoder were not trained. Thank you Nekotekina for PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964)
+  - The LoRA modules for CLIP Text Encoder are now 264 modules, which is the same as before. Only 88 modules were trained in the previous version. 
 
 ### Jan 17, 2025 /  2025-01-17 Version 0.9.0
 
@@ -1324,11 +1363,13 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
   Lines beginning with `#` are comments. You can specify options for the generated image with options like `--n` after the prompt. The following can be used.
 
-  * `--n` Negative prompt up to the next option.
+  * `--n` Negative prompt up to the next option. Ignored when CFG scale is `1.0`.
   * `--w` Specifies the width of the generated image.
   * `--h` Specifies the height of the generated image.
   * `--d` Specifies the seed of the generated image.
   * `--l` Specifies the CFG scale of the generated image.
+    * In guidance distillation models like FLUX.1, this value is used as the embedded guidance scale for backward compatibility.
+  * `--g` Specifies the CFG scale for the models with embedded guidance scale. The default is `1.0`, `1.0` means no CFG. In general, should not be changed unless you train the un-distilled FLUX.1 models.
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
