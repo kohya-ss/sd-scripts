@@ -859,7 +859,8 @@ class NetworkTrainer:
             # 勾配ノルムの履歴を保持するキュー
             moving_avg_window = deque(maxlen=200)
             log_buffer = []
-            log_file_path = "gradient_logs.txt"
+            model_name = train_util.default_if_none(args.output_name, train_util.DEFAULT_LAST_OUTPUT_NAME)
+            log_file_path = f"gradient_logs+{model_name}.txt"
 
             # ログ用のヘッダーを書き出す
             if log_grad_norm:
@@ -1178,6 +1179,11 @@ class NetworkTrainer:
 
         # metadata["ss_epoch"] = str(num_train_epochs)
         metadata["ss_training_finished_at"] = str(time.time())
+
+        if log_grad_norm and len(log_buffer) > 0:
+            with open(log_file_path, "a") as f:
+                f.writelines(log_buffer)
+            log_buffer.clear()
 
         if is_main_process:
             network = accelerator.unwrap_model(network)
