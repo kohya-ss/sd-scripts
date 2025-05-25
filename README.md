@@ -15,6 +15,8 @@
 小数の画像を、少ないタグで、１万step以上学習させるとき安定する狙い
 そういう学習でないと効果ないかも
 
+![20250525_cond1-4_norm_graph](https://github.com/user-attachments/assets/fe5abbb7-7cf4-4ee5-bfc6-2368d386b5f9)
+
 生成された画像の印象
 
 条件1：無難　ほどよくキャラクターを学習できる
