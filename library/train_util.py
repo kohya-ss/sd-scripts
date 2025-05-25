@@ -1207,9 +1207,9 @@ class BaseDataset(torch.utils.data.Dataset):
                     if info.image_key in self.reg_infos:
                         self.reg_infos[info.image_key][0].text_encoder_outputs_npz = te_out_npz
                         self.reg_infos[info.image_key][0].te_cache_checked = True
-                        self.reg_infos[info.image_key][0]. = info.text_encoder_outputs1 = hidden_state1
-                        self.reg_infos[info.image_key][0]. = info.text_encoder_outputs2 = hidden_state2
-                        self.reg_infos[info.image_key][0]. = info.text_encoder_pool2 = pool2
+                        self.reg_infos[info.image_key][0].text_encoder_outputs1 = info.text_encoder_outputs1
+                        self.reg_infos[info.image_key][0].text_encoder_outputs2 = info.text_encoder_outputs2
+                        self.reg_infos[info.image_key][0].text_encoder_pool2 = info.text_encoder_pool2
 
     def get_image_size(self, image_path):
         return imagesize.get(image_path)
