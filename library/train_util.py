@@ -1616,6 +1616,7 @@ class DreamBoothDataset(BaseDataset):
         self.latents_cache = None
         self.reg_infos: Dict[str, Tuple[ImageInfo, DreamBoothSubset]] = {}
         self.reg_infos_index: List[str] = []
+        self.reg_infos_index_traverser = 0
 
         self.enable_bucket = enable_bucket
         if self.enable_bucket:
@@ -1790,6 +1791,7 @@ class DreamBoothDataset(BaseDataset):
 
         logger.info(f"{num_reg_images} reg images.")
         self.num_reg_images = num_reg_images
+        self.reg_infos_index_traverser = 0
 
     def set_reg_randomize(self, reg_randomize = False):
         self.reg_randomize = reg_randomize
