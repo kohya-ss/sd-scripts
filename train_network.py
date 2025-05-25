@@ -858,7 +858,6 @@ class NetworkTrainer:
             )
 
         loss_recorder = train_util.LossRecorder()
-        del train_dataset_group
 
         # callback for step start
         if hasattr(accelerator.unwrap_model(network), "on_step_start"):
