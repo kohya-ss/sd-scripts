@@ -864,9 +864,9 @@ class NetworkTrainer:
             # ログ用のヘッダーを書き出す
             if log_grad_norm:
                 with open(log_file_path, "w") as f:
-                    f.write("Epoch,Step,Gradient Norm,Threshold\n")
+                    f.write("Epoch,Step,Gradient Norm,Threshold,Loss\n")
 
-            def check_gradients_and_skip_update(model, epoch, step):
+            def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 device = next(model.parameters()).device
                 gradient_norm = torch.tensor(0.0, device=device)
 
@@ -895,7 +895,7 @@ class NetworkTrainer:
                 # ログをファイルに出力
                 if log_grad_norm:
                     log_buffer.append(
-                        f"{epoch},{step},{gradient_norm},{dynamic_threshold}\n"
+                        f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val}\n"
                     )
                     if step % 100 == 0:
                         with open(log_file_path, "a") as f:
@@ -912,7 +912,7 @@ class NetworkTrainer:
                 # 閾値を超えた場合はこのステップをスキップ
                 return gradient_norm > dynamic_threshold
         else:
-            def check_gradients_and_skip_update(model, epoch, step):
+            def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 return False
 
         # callback for step start
@@ -1080,7 +1080,7 @@ class NetworkTrainer:
 
                     accelerator.backward(loss)
                     skip_step = False
-                    if check_gradients_and_skip_update(network, epoch, step):
+                    if check_gradients_and_skip_update(network, epoch, step, loss.detach().item()):
                         accelerator.print(
                             f"\nSkipping update at Epoch: {epoch}, Step: {step} due to large gradients."
                         )
