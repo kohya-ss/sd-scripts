@@ -853,7 +853,10 @@ class NetworkTrainer:
         # prepare gradient skipping if enabled (複数 GPUではrankごとに判定がズレる恐れありらしい)
         skip_grad_norm = getattr(args, "skip_grad_norm", False)
         log_grad_norm = getattr(args, "grad_norm_log", False)
-        logger.info(f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}")
+        skip_grad_norm_max = getattr(args, "skip_grad_norm_max", None)
+        logger.info(
+            f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, skip_grad_norm_max: {skip_grad_norm_max}"
+        )
         use_grad_norm = skip_grad_norm or log_grad_norm
         if use_grad_norm:
             # 勾配ノルムの履歴を保持するキュー
@@ -888,9 +891,10 @@ class NetworkTrainer:
                     mean_norm = np.mean(moving_avg_window)
                     std_norm = np.std(moving_avg_window)
                     dynamic_threshold = mean_norm + 2.5 * std_norm
-                    if dynamic_threshold > 200_000:
-                        dynamic_threshold = 200_000
+                    if skip_grad_norm_max is not None and dynamic_threshold > skip_grad_norm_max:
+                        dynamic_threshold = skip_grad_norm_max
                 else:
+                    # 窓が埋まるまでは十分大きい値をセットしてスキップされないようにする
                     dynamic_threshold = 200_000
 
                 # ログをファイルに出力

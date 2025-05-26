@@ -347,6 +347,12 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         help="skip step if gradient norm exceeds moving average + 2.5 sigma / 勾配ノルムが移動平均+2.5σを超える場合にステップをスキップする",
     )
     parser.add_argument(
+        "--skip_grad_norm_max",
+        type=float,
+        default=None,
+        help="upper bound of dynamic threshold for --skip_grad_norm; no limit if omitted / skip_grad_norm 使用時の dynamic_threshold の上限値。省略時は無制限",
+    )
+    parser.add_argument(
         "--grad_norm_log",
         action="store_true",
         help="output gradient norm logs to gradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txt; without --skip_grad_norm only logging is performed / 勾配ノルムとlossのログをgradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txtに出力します。--skip_grad_normを付けない場合はスキップせずログのみ記録されます",
