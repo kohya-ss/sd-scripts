@@ -4140,6 +4140,19 @@ def get_optimizer(args, trainable_params: Union[List[Dict[str, Any]], List[torch
     if optimizer_type == "lion":
         optimizer_class = _get_lion_optimizer_class()
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+    
+    elif optimizer_type.startswith("galore"):
+        optimizer_class = _get_galore_optimizer_class(optimizer_type)
+
+        rank = optimizer_kwargs.get("rank", 128)
+        update_proj_gap = optimizer_kwargs.get("update_proj_gap", 200)
+        scale = optimizer_kwargs.get("scale", 0.25)
+        proj_type = optimizer_kwargs.get("proj_type", "std")
+
+        trainable_params = [{"params": trainable_params, "rank": rank, "update_proj_gap":update_proj_gap, "scale":scale, "proj_type":proj_type }]
+
+        optimizer = optimizer_class(trainable_params, lr=lr)
+
 
     elif optimizer_type.endswith("8bit"):
         optimizer_class = _get_8bit_optimizer_class(optimizer_type)
@@ -4204,6 +4217,27 @@ def _get_lion_optimizer_class() -> torch.optim.Optimizer:
         return lion_pytorch.Lion
     except ImportError:
         raise ImportError("Lion optimizer is not installed.")
+
+
+def _get_galore_optimizer_class(optimizer_type: str) -> torch.optim.Optimizer:
+    try:
+        from galore_torch import GaLoreAdamW, GaLoreAdamW8bit, GaLoreAdafactor
+    except ImportError:
+        raise ImportError("Galore optimizers is not installed.")
+
+
+    optimizer_classes = {
+        "galoreadamW": GaLoreAdamW,
+        "galoreadamw8bit": GaLoreAdamW8bit,
+        "galoreadafactor": GaLoreAdafactor,
+    }
+
+    if optimizer_type not in optimizer_classes:
+        raise ValueError(f"Unknown galore optimizer type: {optimizer_type}")
+
+    return optimizer_classes[optimizer_type]
+    
+
 
 def _get_8bit_optimizer_class(optimizer_type: str) -> torch.optim.Optimizer:
     """
