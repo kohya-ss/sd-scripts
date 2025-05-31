@@ -19,20 +19,20 @@
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
 
-追加したオプションは、batch_size=1 で、小数の画像を、少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
+追加したオプションは、batch_size=1 で、fp16で、小数の画像を少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
 
 ・**設定1（デフォルト動作のskip_grad_norm案 → いまひとつ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000  
 
 ※normがどんどん大きくなっていく １万step以上学習していくと後半ほとんどskipになる　学習結果もあまり良くない気がする
-→デフォルト動作では NaN をskipしてるので、GradScaler がscaleを自動調整してくれないらしい
+→デフォルト動作では NaN をskipしてるので、GradScaler がscaleを自動調整してくれないらしい(fp16のとき限定?)
 
 ・**設定2（NaNとInfをskipしないskip_grad_norm案　→　運要素あり おすすめ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
 
-※NaNでもskipせずに処理することで、GradScaler がscaleを自動調整してくれる  これによりnormの抑制ができて後半でもskipの頻発を防げる
+※NaNでもskipせずに処理することで、GradScaler がscaleを自動調整してくれる  これによりnormの抑制ができて後半でもskipの頻発を防げる(fp16のとき限定?)
 ※窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素） 
 →2つが組み合わさって偶然いい感じになる可能性あり  
 
@@ -45,7 +45,7 @@
 auto_cap_release オプション狙い効果：高止まり＝谷底停滞 とみなし、一時的にキャップを緩くして 探索的スパイクを許容 → 別の谷へ滑り込むことを期待。  
 検知フェーズ：窓平均＋2.5σ が max × 0.66 を 200 step 連続で上回る ⇒ 停滞と判断  
 開放フェーズ： 次の 200 step は skip_grad_norm_max × 3 へ上限を緩和  
-→NaN をskipしてるので、GradScaler がscaleを自動調整してくれなくてnormがどんどん大きくなっていくのを止められないらしい
+→NaN をskipしてるので、GradScaler がscaleを自動調整してくれなくてnormがどんどん大きくなっていくのを止められないらしい(fp16のとき限定?)
  
 
 ## オプションを付け変えて、--grad_norm_log でとったログを o3 に見てもらった結果（全部OFFは見てない)　以下は、NaNとInfをskipしていたときの結果
