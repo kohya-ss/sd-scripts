@@ -19,36 +19,43 @@
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
 
-追加したオプションは、batch_size=1 で、fp16で、小数の画像を少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
+追加したオプションは、batch_size=1 で、fp16で、小さめのdimで、小数の画像を少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
+
+## ■おすすめ設定
 
 ・**設定1（デフォルト動作のskip_grad_norm案 → いまひとつ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000  
 
-※normがどんどん大きくなっていく １万step以上学習していくと後半ほとんどskipになる　学習結果もあまり良くない気がする
-→デフォルト動作では NaN をskipしてるので、GradScaler がscaleを自動調整してくれないらしい(fp16のとき限定?)
-
+※normがどんどん大きくなっていく １万step以上学習していくと後半ほとんどskipになる　学習結果もあまり良くない気がする  
+→デフォルト動作ではNaNとInfをskipしてるので、GradScaler がscaleを自動調整してくれないためらしい(fp16のとき限定?)  
+ デフォルトの動作をNaNとInfを窓に入れず即skipする動作にしたのは微妙だった(fp16の時以外は未知数)  
+→dimが小さい時にnormを大きくしすぎるとよくないらしい
+  
+  
 ・**設定2（NaNとInfをskipしないskip_grad_norm案　→　運要素あり おすすめ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
 
 ※NaNでもskipせずに処理することで、GradScaler がscaleを自動調整してくれる  これによりnormの抑制ができて後半でもskipの頻発を防げる(fp16のとき限定?)
-※窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素） 
-→2つが組み合わさって偶然いい感じになる可能性あり  
-
+※窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。(たまたまそうなっていた)  
+ これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素）  
+  
+  
 ・**設定3（設定2のブレーキを外す効果を意図的に起こす実験　→　いまひとつ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --auto_cap_release  
-
+  
 ※--cap_release_trigger_ratio, --cap_release_trigger_steps, --cap_release_length, --cap_release_scale は適当に決めたデフォルト値で試した  
-
+  
 auto_cap_release オプション狙い効果：高止まり＝谷底停滞 とみなし、一時的にキャップを緩くして 探索的スパイクを許容 → 別の谷へ滑り込むことを期待。  
 検知フェーズ：窓平均＋2.5σ が max × 0.66 を 200 step 連続で上回る ⇒ 停滞と判断  
 開放フェーズ： 次の 200 step は skip_grad_norm_max × 3 へ上限を緩和  
-→NaN をskipしてるので、GradScaler がscaleを自動調整してくれなくてnormがどんどん大きくなっていくのを止められないらしい(fp16のとき限定?)
+※normがどんどん大きくなっていく １万step以上学習していくと後半ほとんどskipになる　学習結果もあまり良くない気がする  
+→デフォルト動作ではNaNとInfをskipしてるので、GradScaler がscaleを自動調整してくれないためらしい(fp16のとき限定?)  
  
 
-## オプションを付け変えて、--grad_norm_log でとったログを o3 に見てもらった結果（全部OFFは見てない)　以下は、NaNとInfをskipしていたときの結果
+## ■`--downscale_freq_shift` と `--te_mlp_fc_only` の効果確認 （`--skip_grad_norm`はNaNとInfを窓に入れる＆skipする設定）
 
 ![20250525_cond1-4_norm_graph](https://github.com/user-attachments/assets/fe5abbb7-7cf4-4ee5-bfc6-2368d386b5f9)
 
@@ -92,18 +99,7 @@ auto_cap_release オプション狙い効果：高止まり＝谷底停滞 と�
     グラフは 30 万付近で安定し、閾値ライン（移動平均＋2.5 σ）に沿って上限が制御されています。
     
 5.  **条件 4 だけ _norm_ が極端に小さい理由**
-    
-    -   \*\*skip\_grad\_norm を外したことで、スパイクを「測定はするがスキップせず適用」\*\*する流れになっています。
-        
-    -   その結果、初期の大きな勾配が即座にパラメータへ反映 → 以降の誤差が急激に減少し、_norm_ が一気に沈む。
-        
-    -   さらに、`--grad_norm_log` の実装上 _skip\_grad\_norm_ 経由で **`unscale_()` を呼ぶか否か**が変わります。
-        FP16 ではバックプロパゲーション時に GradScaler が掛っているので、
-        
-        -   **skip 有り**：`unscale_()` 後の“実際の勾配値”を測定 → 数値が大きめ
-            
-        -   **skip 無し**：スケールされたまま or サブセットのみ測定 → 数値が小さめ
-            つまり“測り方”が違うため、単純に学習がより安定したと誤解しやすいです。
+    ・fp16で学習したので、NanやInfが出た時にGradScaler がscaleを自動調整して勾配を小さくするため。
             
 
 * * *
