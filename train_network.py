@@ -926,9 +926,10 @@ class NetworkTrainer:
                 # auto_cap_release の処理：連続して閾値を超えている場合に一時的に上限を緩和
                 effective_max = skip_grad_norm_max
                 if auto_cap_release and skip_grad_norm_max is not None:
-                    # キャップ開放中は倍率を掛けた値を使用し、カウンターを減算
                     if cap_release_counter > 0:
+                        # キャップ解放中は閾値を強制的に拡大した値にする
                         effective_max = skip_grad_norm_max * cap_release_scale
+                        dynamic_threshold_pre_cap = effective_max
                         cap_release_counter -= 1
                     else:
                         # 閾値超過が一定回数続いたらキャップ開放を開始
