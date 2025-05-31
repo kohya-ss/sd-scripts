@@ -6,13 +6,13 @@
 | --- | --- | --- | --- |
 | `--downscale_freq_shift` | `library/sdxl_original_unet.py` 内の `get_timestep_embedding()` に渡す **`downscale_freq_shift`** を切り替えます。 | 0.0 → **1.0** | 過去に 1.0 だったものが 0.0 に変更になった経緯あり（本家 PR [#1187](https://github.com/kohya-ss/sd-scripts/pull/1187)）。キャラクター性を学習させるタスクでは 1.0 の方が定着しやすい印象。 |
 | `--skip_grad_norm` | 直近 **200 step のnormの移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。`--skip_grad_norm_max` で動的閾値の上限を指定可能。 | ― | 勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。 |
-| `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：200000 |
+| `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ 低めに抑えることで安定化？ |
 | `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。 |
 | `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 現行互換が既定 |
 | `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
 | `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | “安全が既定” |
 | `--skip_inf_immediate` / `--no-skip_inf_immediate` | Inf が出た step を同上 | **True** ↔ False | Inf は破壊力大なので既定で True を維持 |
-| `--auto_cap_release` | 停滞と判断したら一時的にキャップを開放する | False ↔ **True** | |
+| `--auto_cap_release` | 停滞と判断したら一時的にキャップを開放する(skip_grad_norm_max関連機能) | False ↔ **True** |実験してみたが微妙だった |
 | `--cap_release_trigger_ratio` | `dynamic_threshold ≥ ratio × skip_grad_norm_max` が連続 `trigger_steps` 回続いたら発動 | 0.66 | |
 | `--cap_release_trigger_steps` | 〃 | 200 | |
 | `--cap_release_length` | 発動後、何 step キャップを開放するか | 200 | |
@@ -21,30 +21,34 @@
 
 追加したオプションは、batch_size=1 で、小数の画像を、少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
 
-・**設定1（いまひとつ）**  
+・**設定1（デフォルト動作のskip_grad_norm案 → いまひとつ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000  
 
-※--skip_grad_norm_max はもっと大きい方がいいかもしれない dim によっても増やしたほうがいいらしい。
+※normがどんどん大きくなっていく １万step以上学習していくと後半ほとんどskipになる　学習結果もあまり良くない気がする
+→デフォルト動作では NaN をskipしてるので、GradScaler がscaleを自動調整してくれないらしい
 
-・**設定2（過去に上手くいったプロトタイプと挙動を合わせる）**  
+・**設定2（NaNとInfをskipしないskip_grad_norm案　→　運要素あり おすすめ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
 
-窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。これにより ランダムな大勾配を取り込み、偶発的に局所停滞を抜けるチャンスが生まれるらしい。  
+※NaNでもskipせずに処理することで、GradScaler がscaleを自動調整してくれる  これによりnormの抑制ができて後半でもskipの頻発を防げる
+※窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素） 
+→2つが組み合わさって偶然いい感じになる可能性あり  
 
-・**設定3（設定2の効果を意図的に起こす実験）**  
+・**設定3（設定2のブレーキを外す効果を意図的に起こす実験　→　いまひとつ）**  
 
 --downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --auto_cap_release  
 
-※--cap_release_trigger_ratio, --cap_release_trigger_steps, --cap_release_length, --cap_release_scale はまずは適当に決めたデフォルト値で試す  
+※--cap_release_trigger_ratio, --cap_release_trigger_steps, --cap_release_length, --cap_release_scale は適当に決めたデフォルト値で試した  
 
 auto_cap_release オプション狙い効果：高止まり＝谷底停滞 とみなし、一時的にキャップを緩くして 探索的スパイクを許容 → 別の谷へ滑り込むことを期待。  
 検知フェーズ：窓平均＋2.5σ が max × 0.66 を 200 step 連続で上回る ⇒ 停滞と判断  
 開放フェーズ： 次の 200 step は skip_grad_norm_max × 3 へ上限を緩和  
+→NaN をskipしてるので、GradScaler がscaleを自動調整してくれなくてnormがどんどん大きくなっていくのを止められないらしい
  
 
-## オプションを付け変えて、--grad_norm_log でとったログを o3 に見てもらった結果（全部OFFは見てない)
+## オプションを付け変えて、--grad_norm_log でとったログを o3 に見てもらった結果（全部OFFは見てない)　以下は、NaNとInfをskipしていたときの結果
 
 ![20250525_cond1-4_norm_graph](https://github.com/user-attachments/assets/fe5abbb7-7cf4-4ee5-bfc6-2368d386b5f9)
 
