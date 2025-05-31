@@ -19,11 +19,32 @@
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
 
+追加したオプションは、batch_size=1 で、小数の画像を、少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。
+
+・**設定1（いまひとつ）**  
+
+--downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000  
+
+※--skip_grad_norm_max はもっと大きい方がいいかもしれない dim によっても増やしたほうがいいらしい。
+
+・**設定2（過去に上手くいったプロトタイプと挙動を合わせる）**  
+
+--downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
+
+窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → 判定が全て False → 約 200 step ブレーキが外れる。これにより ランダムな大勾配を取り込み、偶発的に局所停滞を抜けるチャンスが生まれるらしい。  
+
+・**設定3（設定2の効果を意図的に起こす実験）**  
+
+--downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --auto_cap_release  
+
+※--cap_release_trigger_ratio, --cap_release_trigger_steps, --cap_release_length, --cap_release_scale はまずは適当に決めたデフォルト値で試す  
+
+auto_cap_release オプション狙い効果：高止まり＝谷底停滞 とみなし、一時的にキャップを緩くして 探索的スパイクを許容 → 別の谷へ滑り込むことを期待。  
+検知フェーズ：窓平均＋2.5σ が max × 0.66 を 200 step 連続で上回る ⇒ 停滞と判断  
+開放フェーズ： 次の 200 step は skip_grad_norm_max × 3 へ上限を緩和  
+ 
 
 ## オプションを付け変えて、--grad_norm_log でとったログを o3 に見てもらった結果（全部OFFは見てない)
-
-小数の画像を、少ないタグで、１万step以上学習させるとき安定する狙い
-そういう学習でないと効果ないかも
 
 ![20250525_cond1-4_norm_graph](https://github.com/user-attachments/assets/fe5abbb7-7cf4-4ee5-bfc6-2368d386b5f9)
 
