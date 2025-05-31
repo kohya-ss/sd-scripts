@@ -357,6 +357,57 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         action="store_true",
         help="output gradient norm logs to gradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txt; without --skip_grad_norm only logging is performed / 勾配ノルムとlossのログをgradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txtに出力します。--skip_grad_normを付けない場合はスキップせずログのみ記録されます",
     )
+    parser.add_argument(
+        "--nan_to_window",
+        action="store_true",
+        help="add NaN gradient norm to moving average window / NaN を移動平均窓に追加する",
+    )
+    parser.add_argument(
+        "--inf_to_window",
+        action="store_true",
+        help="add Inf gradient norm to moving average window / Inf を移動平均窓に追加する",
+    )
+    parser.add_argument(
+        "--skip_nan_immediate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="skip step immediately if gradient norm is NaN / NaN が出た step を閾値に関係なくスキップする",
+    )
+    parser.add_argument(
+        "--skip_inf_immediate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="skip step immediately if gradient norm is Inf / Inf が出た step を閾値に関係なくスキップする",
+    )
+    parser.add_argument(
+        "--auto_cap_release",
+        action="store_true",
+        help="temporarily relax skip_grad_norm_max when stagnation detected / 停滞時に一時的にキャップを緩和する",
+    )
+    parser.add_argument(
+        "--cap_release_trigger_ratio",
+        type=float,
+        default=0.66,
+        help="trigger ratio for --auto_cap_release / auto_cap_release 発動の閾値比率",
+    )
+    parser.add_argument(
+        "--cap_release_trigger_steps",
+        type=int,
+        default=200,
+        help="trigger steps for --auto_cap_release / auto_cap_release 発動までの連続ステップ数",
+    )
+    parser.add_argument(
+        "--cap_release_length",
+        type=int,
+        default=200,
+        help="release length in steps for --auto_cap_release / auto_cap_release 発動後の開放ステップ数",
+    )
+    parser.add_argument(
+        "--cap_release_scale",
+        type=float,
+        default=3.0,
+        help="multiplier for skip_grad_norm_max during release / 開放中の skip_grad_norm_max の倍率",
+    )
 
 
 def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):

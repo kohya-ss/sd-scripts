@@ -854,8 +854,17 @@ class NetworkTrainer:
         skip_grad_norm = getattr(args, "skip_grad_norm", False)
         log_grad_norm = getattr(args, "grad_norm_log", False)
         skip_grad_norm_max = getattr(args, "skip_grad_norm_max", None)
+        nan_to_window = getattr(args, "nan_to_window", False)
+        inf_to_window = getattr(args, "inf_to_window", False)
+        skip_nan_immediate = getattr(args, "skip_nan_immediate", True)
+        skip_inf_immediate = getattr(args, "skip_inf_immediate", True)
+        auto_cap_release = getattr(args, "auto_cap_release", False)
+        cap_release_trigger_ratio = getattr(args, "cap_release_trigger_ratio", 0.66)
+        cap_release_trigger_steps = getattr(args, "cap_release_trigger_steps", 200)
+        cap_release_length = getattr(args, "cap_release_length", 200)
+        cap_release_scale = getattr(args, "cap_release_scale", 3.0)
         logger.info(
-            f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, skip_grad_norm_max: {skip_grad_norm_max}"
+            f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, skip_grad_norm_max: {skip_grad_norm_max}, auto_cap_release: {auto_cap_release}"
         )
         use_grad_norm = skip_grad_norm or log_grad_norm
         if use_grad_norm:
@@ -870,7 +879,11 @@ class NetworkTrainer:
                 with open(log_file_path, "w") as f:
                     f.write("Epoch,Step,Gradient Norm,Threshold,Loss\n")
 
+            trigger_count = 0
+            cap_release_counter = 0
+
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
+                nonlocal trigger_count, cap_release_counter
                 device = next(model.parameters()).device
                 gradient_norm = torch.tensor(0.0, device=device)
 
@@ -882,20 +895,53 @@ class NetworkTrainer:
                             gradient_norm += grad.norm() ** 2
                 gradient_norm = gradient_norm.sqrt().item()
 
-                # 勾配ノルムがNaNやinfの場合は窓に追加しない
-                if not math.isnan(gradient_norm) and not math.isinf(gradient_norm):
+                # 勾配ノルムが NaN / Inf かどうかを判定
+                is_nan = math.isnan(gradient_norm)
+                is_inf = math.isinf(gradient_norm)
+
+                if not is_nan and not is_inf:
                     moving_avg_window.append(gradient_norm)
+                else:
+                    # 設定に応じて NaN / Inf も移動平均窓へ入れる
+                    if is_nan and nan_to_window:
+                        moving_avg_window.append(gradient_norm)
+                    if is_inf and inf_to_window:
+                        moving_avg_window.append(gradient_norm)
 
                 # 窓がいっぱいになったら平均+2.5σを計算
                 if len(moving_avg_window) == moving_avg_window.maxlen:
                     mean_norm = np.mean(moving_avg_window)
                     std_norm = np.std(moving_avg_window)
-                    dynamic_threshold = mean_norm + 2.5 * std_norm
-                    if skip_grad_norm_max is not None and dynamic_threshold > skip_grad_norm_max:
-                        dynamic_threshold = skip_grad_norm_max
+                    # 移動平均 + 2.5σ で動的閾値を算出
+                    dynamic_threshold_pre_cap = mean_norm + 2.5 * std_norm
                 else:
-                    # 窓が埋まるまでは十分大きい値をセットしてスキップされないようにする
-                    dynamic_threshold = 200_000
+                    # 窓が埋まるまでは十分大きな閾値を与える
+                    dynamic_threshold_pre_cap = 200_000
+
+                # auto_cap_release の処理：連続して閾値を超えている場合に一時的に上限を緩和
+                effective_max = skip_grad_norm_max
+                if auto_cap_release and skip_grad_norm_max is not None:
+                    # キャップ開放中は倍率を掛けた値を使用し、カウンターを減算
+                    if cap_release_counter > 0:
+                        effective_max = skip_grad_norm_max * cap_release_scale
+                        cap_release_counter -= 1
+                    else:
+                        # 閾値超過が一定回数続いたらキャップ開放を開始
+                        if not math.isnan(dynamic_threshold_pre_cap) and dynamic_threshold_pre_cap >= cap_release_trigger_ratio * skip_grad_norm_max:
+                            trigger_count += 1
+                            if trigger_count >= cap_release_trigger_steps:
+                                cap_release_counter = cap_release_length
+                                trigger_count = 0
+                        else:
+                            trigger_count = 0
+
+                # 有効な上限値を反映した実際の閾値を求める
+                dynamic_threshold = dynamic_threshold_pre_cap
+                if effective_max is not None and dynamic_threshold > effective_max:
+                    dynamic_threshold = effective_max
+                # 窓が埋まるまでは計算値をそのまま使用する
+                if len(moving_avg_window) < moving_avg_window.maxlen:
+                    dynamic_threshold = dynamic_threshold_pre_cap
 
                 # ログをファイルに出力
                 if log_grad_norm:
@@ -910,11 +956,9 @@ class NetworkTrainer:
                 if not skip_grad_norm:
                     return False
 
-                # 勾配ノルムがNaNやinfの場合もステップをスキップ
-                if math.isnan(gradient_norm) or math.isinf(gradient_norm):
+                if (is_nan and skip_nan_immediate) or (is_inf and skip_inf_immediate):
                     return True
 
-                # 閾値を超えた場合はこのステップをスキップ
                 return gradient_norm > dynamic_threshold
         else:
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
