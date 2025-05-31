@@ -864,7 +864,12 @@ class NetworkTrainer:
         cap_release_length = getattr(args, "cap_release_length", 200)
         cap_release_scale = getattr(args, "cap_release_scale", 3.0)
         logger.info(
-            f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, skip_grad_norm_max: {skip_grad_norm_max}, auto_cap_release: {auto_cap_release}"
+            f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, "
+            f"skip_grad_norm_max: {skip_grad_norm_max}, nan_to_window: {nan_to_window}, "
+            f"inf_to_window: {inf_to_window}, skip_nan_immediate: {skip_nan_immediate}, "
+            f"skip_inf_immediate: {skip_inf_immediate}, auto_cap_release: {auto_cap_release}, "
+            f"cap_release_trigger_ratio: {cap_release_trigger_ratio}, cap_release_trigger_steps: {cap_release_trigger_steps}, "
+            f"cap_release_length: {cap_release_length}, cap_release_scale: {cap_release_scale}"
         )
         use_grad_norm = skip_grad_norm or log_grad_norm
         if use_grad_norm:
