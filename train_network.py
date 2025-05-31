@@ -853,6 +853,8 @@ class NetworkTrainer:
         # prepare gradient skipping if enabled (複数 GPUではrankごとに判定がズレる恐れありらしい)
         skip_grad_norm = getattr(args, "skip_grad_norm", False)
         log_grad_norm = getattr(args, "grad_norm_log", False)
+        scaler_for_log = accelerator.scaler if hasattr(accelerator, "scaler") else None
+        log_grad_scale = log_grad_norm and scaler_for_log is not None
         skip_grad_norm_max = getattr(args, "skip_grad_norm_max", None)
         nan_to_window = getattr(args, "nan_to_window", False)
         inf_to_window = getattr(args, "inf_to_window", False)
@@ -882,7 +884,10 @@ class NetworkTrainer:
             # ログ用のヘッダーを書き出す
             if log_grad_norm:
                 with open(log_file_path, "w") as f:
-                    f.write("Epoch,Step,Gradient Norm,Threshold,Loss\n")
+                    header = "Epoch,Step,Gradient Norm,Threshold,Loss"
+                    if log_grad_scale:
+                        header += ",Scale"
+                    f.write(header + "\n")
 
             trigger_count = 0
             cap_release_counter = 0
@@ -951,9 +956,11 @@ class NetworkTrainer:
 
                 # ログをファイルに出力
                 if log_grad_norm:
-                    log_buffer.append(
-                        f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val}\n"
-                    )
+                    scale_val = scaler_for_log.get_scale() if log_grad_scale else None
+                    log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val}"
+                    if log_grad_scale:
+                        log_line += f",{scale_val}"
+                    log_buffer.append(log_line + "\n")
                     if step % 100 == 0:
                         with open(log_file_path, "a") as f:
                             f.writelines(log_buffer)
