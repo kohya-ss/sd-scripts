@@ -51,6 +51,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# import custom logger
+from custom_metrics.custom_logger import CustomLogger
 
 class NetworkTrainer:
     def __init__(self):
@@ -1430,6 +1432,10 @@ class NetworkTrainer:
                         if hasattr(network, "update_norms"):
                             network.update_norms()
 
+                    # add custom logger
+                    if custom_logger:
+                        custom_logger.log(loss.item(), global_step)
+
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
@@ -1877,6 +1883,11 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+
+    # add custom logger
+    if args.logging_dir is not None:
+        custom_logger = CustomLogger(args.gradient_accumulation_steps)
+
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
