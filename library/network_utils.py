@@ -11,11 +11,9 @@ from dataclasses import dataclass
 class InitializeParams:
     """Parameters for initialization methods (PiSSA, URAE)"""
 
-    use_ipca: bool = False
     use_lowrank: bool = False
     lowrank_q: Optional[int] = None
     lowrank_niter: int = 4
-    lowrank_seed: Optional[int] = None
 
 
 def initialize_parse_opts(key: str) -> InitializeParams:
@@ -26,7 +24,6 @@ def initialize_parse_opts(key: str) -> InitializeParams:
     - "pissa" -> Default PiSSA with lowrank=True, niter=4
     - "pissa_niter_4" -> PiSSA with niter=4
     - "pissa_lowrank_false" -> PiSSA without lowrank
-    - "pissa_ipca_true" -> PiSSA with IPCA
     - "pissa_q_16" -> PiSSA with lowrank_q=16
     - "pissa_seed_42" -> PiSSA with seed=42
     - "urae_..." -> Same options but for URAE
@@ -50,14 +47,7 @@ def initialize_parse_opts(key: str) -> InitializeParams:
     # Parse the remaining parts
     i = 1
     while i < len(parts):
-        if parts[i] == "ipca":
-            if i + 1 < len(parts) and parts[i + 1] in ["true", "false"]:
-                params.use_ipca = parts[i + 1] == "true"
-                i += 2
-            else:
-                params.use_ipca = True
-                i += 1
-        elif parts[i] == "lowrank":
+        if parts[i] == "lowrank":
             if i + 1 < len(parts) and parts[i + 1] in ["true", "false"]:
                 params.use_lowrank = parts[i + 1] == "true"
                 i += 2
@@ -73,12 +63,6 @@ def initialize_parse_opts(key: str) -> InitializeParams:
         elif parts[i] == "q":
             if i + 1 < len(parts) and parts[i + 1].isdigit():
                 params.lowrank_q = int(parts[i + 1])
-                i += 2
-            else:
-                i += 1
-        elif parts[i] == "seed":
-            if i + 1 < len(parts) and parts[i + 1].isdigit():
-                params.lowrank_seed = int(parts[i + 1])
                 i += 2
             else:
                 i += 1
@@ -188,11 +172,9 @@ def initialize_pissa(
     rank: int,
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
-    use_ipca: bool = False,
     use_lowrank: bool = False,
     lowrank_q: Optional[int] = None,
     lowrank_niter: int = 4,
-    lowrank_seed: Optional[int] = None,
 ):
     org_module_device = org_module.weight.device
     org_module_weight_dtype = org_module.weight.data.dtype
@@ -205,56 +187,21 @@ def initialize_pissa(
     weight = org_module.weight.data.clone().to(device, dtype=torch.float32)
 
     with torch.no_grad():
-        if use_ipca:
-            # Use Incremental PCA for large matrices
-            ipca = IncrementalPCA(
-                n_components=rank,
-                batch_size=1024,
-                lowrank=use_lowrank,
-                lowrank_q=lowrank_q if lowrank_q is not None else 2 * rank,
-                lowrank_niter=lowrank_niter,
-                lowrank_seed=lowrank_seed,
-            )
-            ipca.fit(weight)
-
-            # Extract principal components and singular values
-            Vr = ipca.components_.T  # [out_features, rank]
-            Sr = ipca.singular_values_  # [rank]
-            Sr /= rank
-
-            # We need to get Uhr from transforming an identity matrix
-            identity = torch.eye(weight.shape[1], device=weight.device)
-            with torch.autocast(device.type, dtype=torch.float64):
-                Uhr = ipca.transform(identity).T  # [rank, in_features]
-
-        elif use_lowrank:
-            # Use low-rank SVD approximation which is faster
-            seed_enabled = lowrank_seed is not None
+        if use_lowrank:
             q_value = lowrank_q if lowrank_q is not None else 2 * rank
-
-            with torch.random.fork_rng(enabled=seed_enabled):
-                if seed_enabled:
-                    torch.manual_seed(lowrank_seed)
-                U, S, V = torch.svd_lowrank(weight, q=q_value, niter=lowrank_niter)
-
-            Vr = U[:, :rank]  # First rank left singular vectors
-            Sr = S[:rank]  # First rank singular values
+            Vr, Sr, Ur = torch.svd_lowrank(weight.data, q=q_value, niter=lowrank_niter)
             Sr /= rank
-            Uhr = V[:rank]  # First rank right singular vectors
-
+            Uhr = Ur.t()
         else:
-            # Standard SVD approach
-            V, S, Uh = torch.linalg.svd(weight, full_matrices=False)
-            Vr = V[:, :rank]
-            Sr = S[:rank]
+            # USV^T = W <-> VSU^T = W^T, where W^T = weight.data in R^{out_channel, in_channel},
+            V, S, Uh = torch.linalg.svd(weight.data, full_matrices=False)
+            Vr = V[:, : rank]
+            Sr = S[: rank]
             Sr /= rank
-            Uhr = Uh[:rank]
+            Uhr = Uh[: rank]
 
-        # Uhr may be in higher precision
-        with torch.autocast(device.type, dtype=Uhr.dtype):
-            # Create down and up matrices
-            down = torch.diag(torch.sqrt(Sr)) @ Uhr
-            up = Vr @ torch.diag(torch.sqrt(Sr))
+        down = torch.diag(torch.sqrt(Sr)) @ Uhr
+        up = Vr @ torch.diag(torch.sqrt(Sr))
 
         # Get expected shapes
         expected_down_shape = lora_down.weight.shape
