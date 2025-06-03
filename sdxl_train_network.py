@@ -1,9 +1,11 @@
 import os
 import sys
 
+# プロジェクトのルートディレクトリを取得
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+custom_metrics_path = os.path.join(project_root, "custom_metrics")
 print("[DEBUG] Current working directory:", os.getcwd())
 print("[DEBUG] sys.path (before):", sys.path)
-custom_metrics_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_metrics")
 print("[DEBUG] custom_metrics_path:", custom_metrics_path)
 sys.path.append(custom_metrics_path)
 print("[DEBUG] sys.path (after):", sys.path)
