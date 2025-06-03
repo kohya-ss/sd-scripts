@@ -11,7 +11,7 @@ from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjecti
 
 # TODO remove circular import by moving ImageInfo to a separate file
 # from library.train_util import ImageInfo
-
+# from library.train_util import ImageSetInfo
 from library.utils import setup_logging
 
 setup_logging()
@@ -513,6 +513,7 @@ class LatentsCachingStrategy:
                 if flip_aug:
                     info.latents_flipped = flipped_latent
                 info.alpha_mask = alpha_mask
+
 
     def load_latents_from_disk(
         self, npz_path: str, bucket_reso: Tuple[int, int]

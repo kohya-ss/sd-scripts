@@ -1,3 +1,4 @@
+import pytest
 import torch
 import numpy as np
 
@@ -41,7 +42,7 @@ def test_mapo_loss_different_shapes():
     ]
     for shape in shapes:
         loss = torch.rand(*shape)
-        result, metrics = mapo_loss(loss.mean((1, 2, 3)), 0.5)
+        result, metrics = mapo_loss(loss, 0.5)
         # The result should have dimension batch_size//2
         assert result.shape == torch.Size([shape[0] // 2])
         # All metrics should be scalars
@@ -51,15 +52,14 @@ def test_mapo_loss_different_shapes():
 
 def test_mapo_loss_with_zero_weight():
     loss = torch.rand(8, 3, 64, 64)  # Batch size must be even
-    loss_mean = loss.mean((1, 2, 3))
-    result, metrics = mapo_loss(loss_mean, 0.0)
-    
+    result, metrics = mapo_loss(loss, 0.0)
+
     # With zero mapo_weight, ratio_loss should be zero
     assert metrics["loss/mapo_ratio"] == 0.0
-    
+
     # result should be equal to loss_w (first half of the batch)
-    loss_w = loss_mean[:loss_mean.shape[0]//2]
-    assert torch.allclose(result, loss_w)
+    loss_w = loss[: loss.shape[0] // 2]
+    assert torch.allclose(result.mean(), loss_w.mean())
 
 
 def test_mapo_loss_with_different_timesteps():
@@ -114,3 +114,8 @@ def test_mapo_loss_gradient_flow():
 
     # If gradients flow, loss.grad should not be None
     assert loss.grad is not None
+
+
+if __name__ == "__main__":
+    # Run the tests
+    pytest.main([__file__, "-v"])

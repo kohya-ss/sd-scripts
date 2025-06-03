@@ -347,7 +347,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         weight_dtype: torch.dtype,
         train_unet: bool,
         is_train=True,
-        timesteps: torch.FloatTensor | None=None,
+        timesteps: torch.FloatTensor | None = None,
     ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)

@@ -209,19 +209,71 @@ class ImageInfo:
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
         self.resize_interpolation: Optional[str] = None
 
+        self._current = 0
 
-class ImageSetInfo(ImageInfo):
-    def __init__(self, image_key: str, num_repeats: int, caption: str, is_reg: bool, absolute_path: str) -> None:
-        super().__init__(image_key, num_repeats, caption, is_reg, absolute_path)
+    def __iter__(self):
+        return self
 
-        self.absolute_paths = [absolute_path]
-        self.captions = [caption]
-        self.image_sizes = []
+    def __next__(self):
+        if self._current < 1:
+            self._current += 1
+            return self
+        else:
+            self.current = 0
+            raise StopIteration
 
-    def add(self, absolute_path, caption, size):
-        self.absolute_paths.append(absolute_path)
-        self.captions.append(caption)
-        self.image_sizes.append(size)
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, item):
+        return self
+
+    @staticmethod
+    def _pin_tensor(tensor):
+        return tensor.pin_memory() if tensor is not None else tensor
+
+    def pin_memory(self):
+        self.latents = self._pin_tensor(self.latents)
+        self.latents_flipped = self._pin_tensor(self.latents_flipped)
+        self.text_encoder_outputs1 = self._pin_tensor(self.text_encoder_outputs1)
+        self.text_encoder_outputs2 = self._pin_tensor(self.text_encoder_outputs2)
+        self.text_encoder_pool2 = self._pin_tensor(self.text_encoder_pool2)
+        self.alpha_mask = self._pin_tensor(self.alpha_mask)
+        return self
+
+
+class ImageSetInfo:
+    def __init__(self, images: list[ImageInfo] = []) -> None:
+        super().__init__()
+
+        self.images = images
+        self.current = 0
+
+    @property
+    def image_key(self):
+        return self.images[0].image_key
+
+    @property
+    def bucket_reso(self):
+        return self.images[0].bucket_reso
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.current < len(self.images):
+            result = self.images[self.current]
+            self.current += 1
+            return result
+        else:
+            self.current = 0
+            raise StopIteration
+
+    def __getitem__(self, item):
+        return self.images[item]
+
+    def __len__(self):
+        return len(self.images)
 
 
 class BucketManager:
@@ -727,7 +779,7 @@ class BaseDataset(torch.utils.data.Dataset):
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
-        resize_interpolation: Optional[str] = None
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -763,10 +815,12 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_transforms = IMAGE_TRANSFORMS
 
         if resize_interpolation is not None:
-            assert validate_interpolation_fn(resize_interpolation), f"Resize interpolation \"{resize_interpolation}\" is not a valid interpolation"
+            assert validate_interpolation_fn(
+                resize_interpolation
+            ), f'Resize interpolation "{resize_interpolation}" is not a valid interpolation'
         self.resize_interpolation = resize_interpolation
 
-        self.image_data: Dict[str, ImageInfo] = {}
+        self.image_data: Dict[str, ImageInfo | ImageSetInfo] = {}
         self.image_to_subset: Dict[str, Union[DreamBoothSubset, FineTuningSubset]] = {}
 
         self.replacements = {}
@@ -1019,7 +1073,7 @@ class BaseDataset(torch.utils.data.Dataset):
             input_ids = torch.stack(iids_list)  # 3,77
         return input_ids
 
-    def register_image(self, info: ImageInfo, subset: BaseSubset):
+    def register_image(self, info: ImageInfo | ImageSetInfo, subset: BaseSubset):
         self.image_data[info.image_key] = info
         self.image_to_subset[info.image_key] = subset
 
@@ -1029,9 +1083,10 @@ class BaseDataset(torch.utils.data.Dataset):
         min_size and max_size are ignored when enable_bucket is False
         """
         logger.info("loading image sizes.")
-        for info in tqdm(self.image_data.values()):
-            if info.image_size is None:
-                info.image_size = self.get_image_size(info.absolute_path)
+        for infos in tqdm(self.image_data.values()):
+            for info in infos:
+                if info.image_size is None:
+                    info.image_size = self.get_image_size(info.absolute_path)
 
         # # run in parallel
         # max_workers = min(os.cpu_count(), len(self.image_data))  # TODO consider multi-gpu (processes)
@@ -1073,26 +1128,37 @@ class BaseDataset(torch.utils.data.Dataset):
                     )
 
             img_ar_errors = []
-            for image_info in self.image_data.values():
-                image_width, image_height = image_info.image_size
-                image_info.bucket_reso, image_info.resized_size, ar_error = self.bucket_manager.select_bucket(
-                    image_width, image_height
-                )
+            for image_infos in self.image_data.values():
+                for image_info in image_infos:
+                    image_width, image_height = image_info.image_size
+                    image_info.bucket_reso, image_info.resized_size, ar_error = self.bucket_manager.select_bucket(
+                        image_width, image_height
+                    )
 
-                # logger.info(image_info.image_key, image_info.bucket_reso)
-                img_ar_errors.append(abs(ar_error))
+                    # logger.info(image_info.image_key, image_info.bucket_reso)
+                    img_ar_errors.append(abs(ar_error))
 
             self.bucket_manager.sort()
         else:
             self.bucket_manager = BucketManager(False, (self.width, self.height), None, None, None)
             self.bucket_manager.set_predefined_resos([(self.width, self.height)])  # ひとつの固定サイズbucketのみ
-            for image_info in self.image_data.values():
-                image_width, image_height = image_info.image_size
-                image_info.bucket_reso, image_info.resized_size, _ = self.bucket_manager.select_bucket(image_width, image_height)
+            for image_infos in self.image_data.values():
+                for info in image_infos:
+                    image_width, image_height = info.image_size
+                    info.bucket_reso, info.resized_size, _ = self.bucket_manager.select_bucket(image_width, image_height)
 
-        for image_info in self.image_data.values():
-            for _ in range(image_info.num_repeats):
-                self.bucket_manager.add_image(image_info.bucket_reso, image_info.image_key)
+        for infos in self.image_data.values():
+            bucket_reso = None
+            for info in infos:
+                if bucket_reso is None:
+                    bucket_reso = info.bucket_reso
+                else:
+                    assert (
+                        bucket_reso == info.bucket_reso
+                    ), f"Image pair not found in same bucket. {info.image_key} {bucket_reso} {info.bucket_reso}"
+
+            for _ in range(infos[0].num_repeats):
+                self.bucket_manager.add_image(infos.bucket_reso, infos.image_key)
 
         # bucket情報を表示、格納する
         if self.enable_bucket:
@@ -1176,7 +1242,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     and self.random_crop == other.random_crop
                 )
 
-        batch: List[ImageInfo] = []
+        batch: list[ImageInfo] = []
         current_condition = None
 
         # support multiple-gpus
@@ -1184,7 +1250,7 @@ class BaseDataset(torch.utils.data.Dataset):
         process_index = accelerator.process_index
 
         # define a function to submit a batch to cache
-        def submit_batch(batch, cond):
+        def submit_batch(batch: list[ImageInfo], cond):
             for info in batch:
                 if info.image is not None and isinstance(info.image, Future):
                     info.image = info.image.result()  # future to image
@@ -1203,52 +1269,52 @@ class BaseDataset(torch.utils.data.Dataset):
         try:
             # iterate images
             logger.info("caching latents...")
-            for i, info in enumerate(tqdm(image_infos)):
-                subset = self.image_to_subset[info.image_key]
+            for i, infos in enumerate(tqdm(image_infos)):
+                subset = self.image_to_subset[infos[0].image_key]
 
-                if info.latents_npz is not None:  # fine tuning dataset
-                    continue
-
-                # check disk cache exists and size of latents
-                if caching_strategy.cache_to_disk:
-                    # info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
-                    info.latents_npz = caching_strategy.get_latents_npz_path(info.absolute_path, info.image_size)
-
-                    # if the modulo of num_processes is not equal to process_index, skip caching
-                    # this makes each process cache different latents
-                    if i % num_processes != process_index:
+                for info in infos:
+                    if info.latents_npz is not None:  # fine tuning dataset
                         continue
 
-                    # print(f"{process_index}/{num_processes} {i}/{len(image_infos)} {info.latents_npz}")
+                    # check disk cache exists and size of latents
+                    if caching_strategy.cache_to_disk:
+                        # info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
+                        info.latents_npz = caching_strategy.get_latents_npz_path(info.absolute_path, info.image_size)
 
-                    cache_available = caching_strategy.is_disk_cached_latents_expected(
-                        info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
-                    )
-                    if cache_available:  # do not add to batch
-                        continue
+                        # if the modulo of num_processes is not equal to process_index, skip caching
+                        # this makes each process cache different latents
+                        if i % num_processes != process_index:
+                            continue
 
-                # if batch is not empty and condition is changed, flush the batch. Note that current_condition is not None if batch is not empty
-                condition = Condition(info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop)
-                if len(batch) > 0 and current_condition != condition:
-                    submit_batch(batch, current_condition)
-                    batch = []
+                        # print(f"{process_index}/{num_processes} {i}/{len(image_infos)} {info.latents_npz}")
 
-                if info.image is None:
-                    # load image in parallel
-                    info.image = executor.submit(load_image, info.absolute_path, condition.alpha_mask)
+                        cache_available = caching_strategy.is_disk_cached_latents_expected(
+                            info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
+                        )
+                        if cache_available:  # do not add to batch
+                            continue
 
-                batch.append(info)
-                current_condition = condition
+                    # if batch is not empty and condition is changed, flush the batch. Note that current_condition is not None if batch is not empty
+                    condition = Condition(info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop)
+                    if len(batch) > 0 and current_condition != condition:
+                        submit_batch(batch, current_condition)
+                        batch = []
 
-                # if number of data in batch is enough, flush the batch
-                if len(batch) >= caching_strategy.batch_size:
-                    submit_batch(batch, current_condition)
-                    batch = []
-                    current_condition = None
+                    if info.image is None:
+                        # load image in parallel
+                        info.image = executor.submit(load_image, info.absolute_path, condition.alpha_mask)
+
+                    batch.append(info)
+                    current_condition = condition
+
+                    # if number of data in batch is enough, flush the batch
+                    if len(batch) >= caching_strategy.batch_size:
+                        submit_batch(batch, current_condition)
+                        batch = []
+                        current_condition = None
 
             if len(batch) > 0:
                 submit_batch(batch, current_condition)
-
         finally:
             executor.shutdown()
 
@@ -1277,44 +1343,44 @@ class BaseDataset(torch.utils.data.Dataset):
                     and self.random_crop == other.random_crop
                 )
 
-        batches: List[Tuple[Condition, List[ImageInfo]]] = []
-        batch: List[ImageInfo] = []
+        batches: list[tuple[Condition, list[ImageInfo | ImageSetInfo]]] = []
+        batch: list[ImageInfo | ImageSetInfo] = []
         current_condition = None
 
         logger.info("checking cache validity...")
-        for info in tqdm(image_infos):
-            subset = self.image_to_subset[info.image_key]
-
-            if info.latents_npz is not None:  # fine tuning dataset
-                continue
-
-            # check disk cache exists and size of latents
-            if cache_to_disk:
-                info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
-                if not is_main_process:  # store to info only
+        for infos in tqdm(image_infos):
+            subset = self.image_to_subset[infos[0].image_key]
+            for info in infos:
+                if info.latents_npz is not None:  # fine tuning dataset
                     continue
 
-                cache_available = is_disk_cached_latents_is_expected(
-                    info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
-                )
+                # check disk cache exists and size of latents
+                if cache_to_disk:
+                    info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
+                    if not is_main_process:  # store to info only
+                        continue
 
-                if cache_available:  # do not add to batch
-                    continue
+                    cache_available = is_disk_cached_latents_is_expected(
+                        info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
+                    )
 
-            # if batch is not empty and condition is changed, flush the batch. Note that current_condition is not None if batch is not empty
-            condition = Condition(info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop)
-            if len(batch) > 0 and current_condition != condition:
-                batches.append((current_condition, batch))
-                batch = []
+                    if cache_available:  # do not add to batch
+                        continue
 
-            batch.append(info)
-            current_condition = condition
+                # if batch is not empty and condition is changed, flush the batch. Note that current_condition is not None if batch is not empty
+                condition = Condition(info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop)
+                if len(batch) > 0 and current_condition != condition:
+                    batches.append((current_condition, batch))
+                    batch = []
 
-            # if number of data in batch is enough, flush the batch
-            if len(batch) >= vae_batch_size:
-                batches.append((current_condition, batch))
-                batch = []
-                current_condition = None
+                batch.append(info)
+                current_condition = condition
+
+                # if number of data in batch is enough, flush the batch
+                if len(batch) >= vae_batch_size:
+                    batches.append((current_condition, batch))
+                    batch = []
+                    current_condition = None
 
         if len(batch) > 0:
             batches.append((current_condition, batch))
@@ -1348,27 +1414,28 @@ class BaseDataset(torch.utils.data.Dataset):
         process_index = accelerator.process_index
 
         logger.info("checking cache validity...")
-        for i, info in enumerate(tqdm(image_infos)):
-            # check disk cache exists and size of text encoder outputs
-            if caching_strategy.cache_to_disk:
-                te_out_npz = caching_strategy.get_outputs_npz_path(info.absolute_path)
-                info.text_encoder_outputs_npz = te_out_npz  # set npz filename regardless of cache availability
+        for i, infos in enumerate(tqdm(image_infos)):
+            for info in infos:
+                # check disk cache exists and size of text encoder outputs
+                if caching_strategy.cache_to_disk:
+                    te_out_npz = caching_strategy.get_outputs_npz_path(info.absolute_path)
+                    info.text_encoder_outputs_npz = te_out_npz  # set npz filename regardless of cache availability
 
-                # if the modulo of num_processes is not equal to process_index, skip caching
-                # this makes each process cache different text encoder outputs
-                if i % num_processes != process_index:
-                    continue
+                    # if the modulo of num_processes is not equal to process_index, skip caching
+                    # this makes each process cache different text encoder outputs
+                    if i % num_processes != process_index:
+                        continue
 
-                cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz)
-                if cache_available:  # do not add to batch
-                    continue
+                    cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz)
+                    if cache_available:  # do not add to batch
+                        continue
 
-            batch.append(info)
+                batch.append(info)
 
-            # if number of data in batch is enough, flush the batch
-            if len(batch) >= batch_size:
-                batches.append(batch)
-                batch = []
+                # if number of data in batch is enough, flush the batch
+                if len(batch) >= batch_size:
+                    batches.append(batch)
+                    batch = []
 
         if len(batch) > 0:
             batches.append(batch)
@@ -1526,9 +1593,7 @@ class BaseDataset(torch.utils.data.Dataset):
     def load_and_transform_image(self, subset, image_info, absolute_path, flipped):
         # 画像を読み込み、必要ならcropする
 
-        img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(
-            subset, absolute_path, subset.alpha_mask
-        )
+        img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(subset, absolute_path, subset.alpha_mask)
         im_h, im_w = img.shape[0:2]
 
         if self.enable_bucket:
@@ -1550,9 +1615,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     img = img[:, p : p + self.width]
 
             im_h, im_w = img.shape[0:2]
-            assert (
-                im_h == self.height and im_w == self.width
-            ), f"image size is small / 画像サイズが小さいようです: {absolute_path}"
+            assert im_h == self.height and im_w == self.width, f"image size is small / 画像サイズが小さいようです: {absolute_path}"
 
             original_size = [im_w, im_h]
             crop_ltrb = (0, 0, 0, 0)
@@ -1679,87 +1742,69 @@ class BaseDataset(torch.utils.data.Dataset):
         custom_attributes = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
-            image_info = self.image_data[image_key]
+            image_infos = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
+            for image_info in image_infos:
+                custom_attributes.append(subset.custom_attributes)
 
-            custom_attributes.append(subset.custom_attributes)
+                # in case of fine tuning, is_reg is always False
+                loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
 
-            # in case of fine tuning, is_reg is always False
-            loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
+                flipped = subset.flip_aug and random.random() < 0.5  # not flipped or flipped with 50% chance
 
-            flipped = subset.flip_aug and random.random() < 0.5  # not flipped or flipped with 50% chance
+                # image/latentsを処理する
+                if image_info.latents is not None:  # cache_latents=Trueの場合
+                    original_size = image_info.latents_original_size
+                    crop_ltrb = image_info.latents_crop_ltrb  # calc values later if flipped
+                    if not flipped:
+                        latents = image_info.latents
+                        alpha_mask = image_info.alpha_mask
+                    else:
+                        latents = image_info.latents_flipped
+                        alpha_mask = None if image_info.alpha_mask is None else torch.flip(image_info.alpha_mask, [1])
 
-            # image/latentsを処理する
-            if image_info.latents is not None:  # cache_latents=Trueの場合
-                original_size = image_info.latents_original_size
-                crop_ltrb = image_info.latents_crop_ltrb  # calc values later if flipped
-                if not flipped:
-                    latents = image_info.latents
-                    alpha_mask = image_info.alpha_mask
-                else:
-                    latents = image_info.latents_flipped
-                    alpha_mask = None if image_info.alpha_mask is None else torch.flip(image_info.alpha_mask, [1])
+                    target_size = (latents.shape[2] * 8, latents.shape[1] * 8)
+                    image = None
 
-                target_size = (latents.shape[2] * 8, latents.shape[1] * 8)
-                image = None
-
-                images.append(image)
-                latents_list.append(latents)
-                original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
-                crop_top_lefts.append((int(crop_ltrb[1]), int(crop_ltrb[0])))
-                target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
-            elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
-                latents, original_size, crop_ltrb, flipped_latents, alpha_mask = (
-                    self.latents_caching_strategy.load_latents_from_disk(image_info.latents_npz, image_info.bucket_reso)
-                )
-                if flipped:
-                    latents = flipped_latents
-                    alpha_mask = None if alpha_mask is None else alpha_mask[:, ::-1].copy()  # copy to avoid negative stride problem
-                    del flipped_latents
-                latents = torch.FloatTensor(latents)
-                if alpha_mask is not None:
-                    alpha_mask = torch.FloatTensor(alpha_mask)
-                target_size = (latents.shape[2] * 8, latents.shape[1] * 8)
-
-                image = None
-
-                images.append(image)
-                latents_list.append(latents)
-                alpha_mask_list.append(alpha_mask)
-                original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
-                crop_top_lefts.append((int(crop_ltrb[1]), int(crop_ltrb[0])))
-                target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
-            else:
-                if isinstance(image_info, ImageSetInfo):
-                    for absolute_path in image_info.absolute_paths:
-                        image, original_size, crop_ltrb, alpha_mask = self.load_and_transform_image(subset, image_info, absolute_path, flipped)
-                        images.append(image)
-                        latents_list.append(None)
-                        alpha_mask_list.append(alpha_mask)
-
-                        target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
-
-                        if not flipped:
-                            crop_left_top = (crop_ltrb[0], crop_ltrb[1])
-                        else:
-                            # crop_ltrb[2] is right, so target_size[0] - crop_ltrb[2] is left in flipped image
-                            crop_left_top = (target_size[0] - crop_ltrb[2], crop_ltrb[1])
-
-                        original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
-                        crop_top_lefts.append((int(crop_left_top[1]), int(crop_left_top[0])))
-                        target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
-                        flippeds.append(flipped)
-                if self.enable_bucket:
-                    img, original_size, crop_ltrb = trim_and_resize_if_required(
-                        subset.random_crop, img, image_info.bucket_reso, image_info.resized_size, resize_interpolation=image_info.resize_interpolation
+                    images.append(image)
+                    latents_list.append(latents)
+                    original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
+                    crop_top_lefts.append((int(crop_ltrb[1]), int(crop_ltrb[0])))
+                    target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
+                elif image_info.latents_npz is not None:  # FineTuningDatasetまたはcache_latents_to_disk=Trueの場合
+                    latents, original_size, crop_ltrb, flipped_latents, alpha_mask = (
+                        self.latents_caching_strategy.load_latents_from_disk(image_info.latents_npz, image_info.bucket_reso)
                     )
+                    if flipped:
+                        latents = flipped_latents
+                        alpha_mask = (
+                            None if alpha_mask is None else alpha_mask[:, ::-1].copy()
+                        )  # copy to avoid negative stride problem
+                        del flipped_latents
+                    latents = torch.FloatTensor(latents)
+                    if alpha_mask is not None:
+                        alpha_mask = torch.FloatTensor(alpha_mask)
+                    target_size = (latents.shape[2] * 8, latents.shape[1] * 8)
+
+                    image = None
+
+                    images.append(image)
+                    latents_list.append(latents)
+                    alpha_mask_list.append(alpha_mask)
+                    original_sizes_hw.append((int(original_size[1]), int(original_size[0])))
+                    crop_top_lefts.append((int(crop_ltrb[1]), int(crop_ltrb[0])))
+                    target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
                 else:
-                    image, original_size, crop_ltrb, alpha_mask = self.load_and_transform_image(subset, image_info, image_info.absolute_path, flipped)
+                    image, original_size, crop_ltrb, alpha_mask = self.load_and_transform_image(
+                        subset, image_info, image_info.absolute_path, flipped
+                    )
                     images.append(image)
                     latents_list.append(None)
                     alpha_mask_list.append(alpha_mask)
 
-                    target_size = (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
+                    target_size = (
+                        (image.shape[2], image.shape[1]) if image is not None else (latents.shape[2] * 8, latents.shape[1] * 8)
+                    )
 
                     if not flipped:
                         crop_left_top = (crop_ltrb[0], crop_ltrb[1])
@@ -1772,59 +1817,58 @@ class BaseDataset(torch.utils.data.Dataset):
                     target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
                     flippeds.append(flipped)
 
+                # captionとtext encoder outputを処理する
+                caption = image_info.caption  # default
 
-            # captionとtext encoder outputを処理する
-            caption = image_info.caption  # default
-
-            tokenization_required = (
-                self.text_encoder_output_caching_strategy is None or self.text_encoder_output_caching_strategy.is_partial
-            )
-            text_encoder_outputs = None
-            input_ids = None
-
-            if image_info.text_encoder_outputs is not None:
-                # cached
-                text_encoder_outputs = image_info.text_encoder_outputs
-            elif image_info.text_encoder_outputs_npz is not None:
-                # on disk
-                text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
-                    image_info.text_encoder_outputs_npz
+                tokenization_required = (
+                    self.text_encoder_output_caching_strategy is None or self.text_encoder_output_caching_strategy.is_partial
                 )
-            else:
-                tokenization_required = True
-            text_encoder_outputs_list.append(text_encoder_outputs)
+                text_encoder_outputs = None
+                input_ids = None
 
-            if tokenization_required:
-                caption = self.process_caption(subset, image_info.caption)
-                input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
-                # if self.XTI_layers:
-                #     caption_layer = []
-                #     for layer in self.XTI_layers:
-                #         token_strings_from = " ".join(self.token_strings)
-                #         token_strings_to = " ".join([f"{x}_{layer}" for x in self.token_strings])
-                #         caption_ = caption.replace(token_strings_from, token_strings_to)
-                #         caption_layer.append(caption_)
-                #     captions.append(caption_layer)
-                # else:
-                #     captions.append(caption)
+                if image_info.text_encoder_outputs is not None:
+                    # cached
+                    text_encoder_outputs = image_info.text_encoder_outputs
+                elif image_info.text_encoder_outputs_npz is not None:
+                    # on disk
+                    text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
+                        image_info.text_encoder_outputs_npz
+                    )
+                else:
+                    tokenization_required = True
+                text_encoder_outputs_list.append(text_encoder_outputs)
 
-                # if not self.token_padding_disabled:  # this option might be omitted in future
-                #     # TODO get_input_ids must support SD3
-                #     if self.XTI_layers:
-                #         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
-                #     else:
-                #         token_caption = self.get_input_ids(caption, self.tokenizers[0])
-                #     input_ids_list.append(token_caption)
+                if tokenization_required:
+                    caption = self.process_caption(subset, image_info.caption)
+                    input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
+                    # if self.XTI_layers:
+                    #     caption_layer = []
+                    #     for layer in self.XTI_layers:
+                    #         token_strings_from = " ".join(self.token_strings)
+                    #         token_strings_to = " ".join([f"{x}_{layer}" for x in self.token_strings])
+                    #         caption_ = caption.replace(token_strings_from, token_strings_to)
+                    #         caption_layer.append(caption_)
+                    #     captions.append(caption_layer)
+                    # else:
+                    #     captions.append(caption)
 
-                #     if len(self.tokenizers) > 1:
-                #         if self.XTI_layers:
-                #             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
-                #         else:
-                #             token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
-                #         input_ids2_list.append(token_caption2)
+                    # if not self.token_padding_disabled:  # this option might be omitted in future
+                    #     # TODO get_input_ids must support SD3
+                    #     if self.XTI_layers:
+                    #         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
+                    #     else:
+                    #         token_caption = self.get_input_ids(caption, self.tokenizers[0])
+                    #     input_ids_list.append(token_caption)
 
-            input_ids_list.append(input_ids)
-            captions.append(caption)
+                    #     if len(self.tokenizers) > 1:
+                    #         if self.XTI_layers:
+                    #             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
+                    #         else:
+                    #             token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
+                    #         input_ids2_list.append(token_caption2)
+
+                input_ids_list.append(input_ids)
+                captions.append(caption)
 
         def none_or_stack_elements(tensors_list, converter):
             # [[clip_l, clip_g, t5xxl], [clip_l, clip_g, t5xxl], ...] -> [torch.stack(clip_l), torch.stack(clip_g), torch.stack(t5xxl)]
@@ -1864,6 +1908,7 @@ class BaseDataset(torch.utils.data.Dataset):
         example["images"] = images
 
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
+
         example["captions"] = captions
 
         example["original_sizes_hw"] = torch.stack([torch.LongTensor(x) for x in original_sizes_hw])
@@ -1890,41 +1935,42 @@ class BaseDataset(torch.utils.data.Dataset):
         random_crop = None
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
-            image_info = self.image_data[image_key]
+            image_infos = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
 
-            if flip_aug is None:
-                flip_aug = subset.flip_aug
-                alpha_mask = subset.alpha_mask
-                random_crop = subset.random_crop
-                bucket_reso = image_info.bucket_reso
-            else:
-                # TODO そもそも混在してても動くようにしたほうがいい
-                assert flip_aug == subset.flip_aug, "flip_aug must be same in a batch"
-                assert alpha_mask == subset.alpha_mask, "alpha_mask must be same in a batch"
-                assert random_crop == subset.random_crop, "random_crop must be same in a batch"
-                assert bucket_reso == image_info.bucket_reso, "bucket_reso must be same in a batch"
+            for image_info in image_infos:
+                if flip_aug is None:
+                    flip_aug = subset.flip_aug
+                    alpha_mask = subset.alpha_mask
+                    random_crop = subset.random_crop
+                    bucket_reso = image_info.bucket_reso
+                else:
+                    # TODO そもそも混在してても動くようにしたほうがいい
+                    assert flip_aug == subset.flip_aug, "flip_aug must be same in a batch"
+                    assert alpha_mask == subset.alpha_mask, "alpha_mask must be same in a batch"
+                    assert random_crop == subset.random_crop, "random_crop must be same in a batch"
+                    assert bucket_reso == image_info.bucket_reso, "bucket_reso must be same in a batch"
 
-            caption = image_info.caption  # TODO cache some patterns of dropping, shuffling, etc.
+                caption = image_info.caption  # TODO cache some patterns of dropping, shuffling, etc.
 
-            if self.caching_mode == "latents":
-                image = load_image(image_info.absolute_path)
-            else:
-                image = None
+                if self.caching_mode == "latents":
+                    image = load_image(image_info.absolute_path)
+                else:
+                    image = None
 
-            if self.caching_mode == "text":
-                input_ids1 = self.get_input_ids(caption, self.tokenizers[0])
-                input_ids2 = self.get_input_ids(caption, self.tokenizers[1])
-            else:
-                input_ids1 = None
-                input_ids2 = None
+                if self.caching_mode == "text":
+                    input_ids1 = self.get_input_ids(caption, self.tokenizers[0])
+                    input_ids2 = self.get_input_ids(caption, self.tokenizers[1])
+                else:
+                    input_ids1 = None
+                    input_ids2 = None
 
-            captions.append(caption)
-            images.append(image)
-            input_ids1_list.append(input_ids1)
-            input_ids2_list.append(input_ids2)
-            absolute_paths.append(image_info.absolute_path)
-            resized_sizes.append(image_info.resized_size)
+                captions.append(caption)
+                images.append(image)
+                input_ids1_list.append(input_ids1)
+                input_ids2_list.append(input_ids2)
+                absolute_paths.append(image_info.absolute_path)
+                resized_sizes.append(image_info.resized_size)
 
         example = {}
 
@@ -2198,11 +2244,26 @@ class DreamBoothDataset(BaseDataset):
 
             for img_path, caption, size in zip(img_paths, captions, sizes):
                 if subset.preference:
+
                     def get_non_preferred_pair_info(img_path, subset):
                         head, file = os.path.split(img_path)
                         head, tail = os.path.split(head)
-                        new_tail = tail.replace('w', 'l')
+                        new_tail = tail.replace("w", "l")
                         loser_img_path = os.path.join(head, new_tail, file)
+
+                        def check_extension(path: str):
+                            from pathlib import Path
+
+                            test_path = Path(path)
+                            if not test_path.exists():
+                                for ext in [".webp", ".png", ".jpg", ".jpeg", ".png"]:
+                                    test_path = test_path.with_suffix(ext)
+                                    if test_path.exists():
+                                        return str(test_path)
+
+                            return str(test_path)
+
+                        loser_img_path = check_extension(loser_img_path)
 
                         caption = read_caption(img_path, subset.caption_extension, subset.enable_wildcard)
 
@@ -2220,17 +2281,25 @@ class DreamBoothDataset(BaseDataset):
                     if subset.preference_caption_suffix:
                         caption = caption + " " + subset.preference_caption_suffix
 
-                    info = ImageSetInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
-                    info.resize_interpolation = subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
-                    if size is not None:
-                        info.image_size = size
-                        info.image_sizes = [size]
-                    else:
-                        info.image_sizes = [None]
-                    info.add(*get_non_preferred_pair_info(img_path, subset))
+                    resize_interpolation = (
+                        subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
+                    )
+
+                    chosen_image_info = ImageInfo(img_path, subset.num_repeats, caption, subset.is_reg, img_path)
+                    chosen_image_info.resize_interpolation = resize_interpolation
+                    rejected_img_path, rejected_caption, rejected_image_size = get_non_preferred_pair_info(img_path, subset)
+                    rejected_image_info = ImageInfo(
+                        rejected_img_path, subset.num_repeats, caption, subset.is_reg, rejected_img_path
+                    )
+                    rejected_image_info.resize_interpolation = resize_interpolation
+
+                    info = ImageSetInfo([chosen_image_info, rejected_image_info])
+                    print(chosen_image_info.image_size, rejected_image_info.image_size)
                 else:
                     info = ImageInfo(img_path, num_repeats, caption, subset.is_reg, img_path)
-                    info.resize_interpolation = subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
+                    info.resize_interpolation = (
+                        subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
+                    )
                     if size is not None:
                         info.image_size = size
 
@@ -2515,7 +2584,7 @@ class ControlNetDataset(BaseDataset):
         bucket_no_upscale: bool,
         debug_dataset: bool,
         validation_split: float,
-        validation_seed: Optional[int],        
+        validation_seed: Optional[int],
         resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
@@ -2583,7 +2652,7 @@ class ControlNetDataset(BaseDataset):
         self.num_train_images = self.dreambooth_dataset_delegate.num_train_images
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images
         self.validation_split = validation_split
-        self.validation_seed = validation_seed 
+        self.validation_seed = validation_seed
         self.resize_interpolation = resize_interpolation
 
         # assert all conditioning data exists
@@ -2673,7 +2742,14 @@ class ControlNetDataset(BaseDataset):
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
 
-                cond_img = resize_image(cond_img, original_size_hw[1], original_size_hw[0], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
+                cond_img = resize_image(
+                    cond_img,
+                    original_size_hw[1],
+                    original_size_hw[0],
+                    target_size_hw[1],
+                    target_size_hw[0],
+                    self.resize_interpolation,
+                )
 
                 # TODO support random crop
                 # 現在サポートしているcropはrandomではなく中央のみ
@@ -2687,7 +2763,14 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img = resize_image(cond_img, cond_img.shape[0], cond_img.shape[1], target_size_hw[1], target_size_hw[0], self.resize_interpolation)
+                    cond_img = resize_image(
+                        cond_img,
+                        cond_img.shape[0],
+                        cond_img.shape[1],
+                        target_size_hw[1],
+                        target_size_hw[0],
+                        self.resize_interpolation,
+                    )
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -3117,7 +3200,7 @@ def trim_and_resize_if_required(
 # for new_cache_latents
 def load_images_and_masks_for_caching(
     image_infos: List[ImageInfo], use_alpha_mask: bool, random_crop: bool
-) -> Tuple[torch.Tensor, List[np.ndarray], List[Tuple[int, int]], List[Tuple[int, int, int, int]]]:
+) -> Tuple[torch.Tensor, list[torch.Tensor | None], List[Tuple[int, int]], List[Tuple[int, int, int, int]]]:
     r"""
     requires image_infos to have: [absolute_path or image], bucket_reso, resized_size
 
@@ -3129,38 +3212,47 @@ def load_images_and_masks_for_caching(
     crop_ltrbs: List[Tuple[int, int, int, int]] = [(L, T, R, B), ...]
     """
     images: List[torch.Tensor] = []
-    alpha_masks: List[np.ndarray] = []
+    alpha_masks: list[torch.Tensor | None] = []
     original_sizes: List[Tuple[int, int]] = []
     crop_ltrbs: List[Tuple[int, int, int, int]] = []
-    for info in image_infos:
-        image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
-        # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
+    for infos in image_infos:
+        for info in infos:
+            image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
+            # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
+            image, original_size, crop_ltrb = trim_and_resize_if_required(
+                random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation
+            )
 
-        original_sizes.append(original_size)
-        crop_ltrbs.append(crop_ltrb)
+            original_sizes.append(original_size)
+            crop_ltrbs.append(crop_ltrb)
 
-        if use_alpha_mask:
-            if image.shape[2] == 4:
-                alpha_mask = image[:, :, 3]  # [H,W]
-                alpha_mask = alpha_mask.astype(np.float32) / 255.0
-                alpha_mask = torch.FloatTensor(alpha_mask)  # [H,W]
+            if use_alpha_mask:
+                if image.shape[2] == 4:
+                    alpha_mask = image[:, :, 3]  # [H,W]
+                    alpha_mask = alpha_mask.astype(np.float32) / 255.0
+                    alpha_mask = torch.FloatTensor(alpha_mask)  # [H,W]
+                else:
+                    alpha_mask = torch.ones_like(torch.from_numpy(image[:, :, 0]), dtype=torch.float32)  # [H,W]
             else:
-                alpha_mask = torch.ones_like(image[:, :, 0], dtype=torch.float32)  # [H,W]
-        else:
-            alpha_mask = None
-        alpha_masks.append(alpha_mask)
+                alpha_mask = None
+            alpha_masks.append(alpha_mask)
 
-        image = image[:, :, :3]  # remove alpha channel if exists
-        image = IMAGE_TRANSFORMS(image)
-        images.append(image)
+            image = image[:, :, :3]  # remove alpha channel if exists
+            image = IMAGE_TRANSFORMS(image)
+            assert isinstance(image, torch.Tensor)
+            images.append(image)
 
     img_tensor = torch.stack(images, dim=0)
     return img_tensor, alpha_masks, original_sizes, crop_ltrbs
 
 
 def cache_batch_latents(
-    vae: AutoencoderKL, cache_to_disk: bool, image_infos: List[ImageInfo], flip_aug: bool, use_alpha_mask: bool, random_crop: bool
+    vae: AutoencoderKL,
+    cache_to_disk: bool,
+    image_infos: list[ImageInfo | ImageSetInfo],
+    flip_aug: bool,
+    use_alpha_mask: bool,
+    random_crop: bool,
 ) -> None:
     r"""
     requires image_infos to have: absolute_path, bucket_reso, resized_size, latents_npz
@@ -3172,29 +3264,32 @@ def cache_batch_latents(
     latents_original_size and latents_crop_ltrb are also set
     """
     images = []
-    alpha_masks: List[np.ndarray] = []
-    for info in image_infos:
-        image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
-        # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation)
+    alpha_masks: List[torch.Tensor | None] = []
+    for infos in image_infos:
+        for info in infos:
+            image = load_image(info.absolute_path, use_alpha_mask) if info.image is None else np.array(info.image, np.uint8)
+            # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
+            image, original_size, crop_ltrb = trim_and_resize_if_required(
+                random_crop, image, info.bucket_reso, info.resized_size, resize_interpolation=info.resize_interpolation
+            )
 
-        info.latents_original_size = original_size
-        info.latents_crop_ltrb = crop_ltrb
+            info.latents_original_size = original_size
+            info.latents_crop_ltrb = crop_ltrb
 
-        if use_alpha_mask:
-            if image.shape[2] == 4:
-                alpha_mask = image[:, :, 3]  # [H,W]
-                alpha_mask = alpha_mask.astype(np.float32) / 255.0
-                alpha_mask = torch.FloatTensor(alpha_mask)  # [H,W]
+            if use_alpha_mask:
+                if image.shape[2] == 4:
+                    alpha_mask = image[:, :, 3]  # [H,W]
+                    alpha_mask = alpha_mask.astype(np.float32) / 255.0
+                    alpha_mask = torch.FloatTensor(alpha_mask)  # [H,W]
+                else:
+                    alpha_mask = torch.ones_like(torch.from_numpy(image[:, :, 0]), dtype=torch.float32)  # [H,W]
             else:
-                alpha_mask = torch.ones_like(image[:, :, 0], dtype=torch.float32)  # [H,W]
-        else:
-            alpha_mask = None
-        alpha_masks.append(alpha_mask)
+                alpha_mask = None
+            alpha_masks.append(alpha_mask)
 
-        image = image[:, :, :3]  # remove alpha channel if exists
-        image = IMAGE_TRANSFORMS(image)
-        images.append(image)
+            image = image[:, :, :3]  # remove alpha channel if exists
+            image = IMAGE_TRANSFORMS(image)
+            images.append(image)
 
     img_tensors = torch.stack(images, dim=0)
     img_tensors = img_tensors.to(device=vae.device, dtype=vae.dtype)
@@ -6176,7 +6271,8 @@ def get_huber_threshold_if_needed(args, timesteps: torch.Tensor, noise_scheduler
     elif args.huber_schedule == "snr":
         if not hasattr(noise_scheduler, "alphas_cumprod"):
             raise NotImplementedError("Huber schedule 'snr' is not supported with the current model.")
-        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.cpu())
+        device = noise_scheduler.alphas_cumprod.device
+        alphas_cumprod = torch.index_select(noise_scheduler.alphas_cumprod, 0, timesteps.to(device))
         sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
         result = (1 - args.huber_c) / (1 + sigmas) ** 2 + args.huber_c
         result = result.to(timesteps.device)
@@ -6727,4 +6823,3 @@ class LossRecorder:
         if losses == 0:
             return 0
         return self.loss_total / losses
-

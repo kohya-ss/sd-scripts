@@ -5,6 +5,7 @@ from library.flux_train_utils import (
     get_noisy_model_input_and_timestep,
 )
 
+
 # Mock classes and functions
 class MockNoiseScheduler:
     def __init__(self, num_train_timesteps=1000):
@@ -114,22 +115,22 @@ def test_flux_shift_sampling(args, noise_scheduler, latents, noise, device):
 
 def test_weighting_scheme(args, noise_scheduler, latents, noise, device):
     # Mock the necessary functions for this specific test
-    with patch("library.flux_train_utils.compute_density_for_timestep_sampling", 
-               return_value=torch.tensor([0.3, 0.7], device=device)), \
-         patch("library.flux_train_utils.get_sigmas", 
-               return_value=torch.tensor([[0.3], [0.7]], device=device).view(-1, 1, 1, 1)):
-               
+    with (
+        patch(
+            "library.flux_train_utils.compute_density_for_timestep_sampling", return_value=torch.tensor([0.3, 0.7], device=device)
+        ),
+        patch("library.flux_train_utils.get_sigmas", return_value=torch.tensor([[0.3], [0.7]], device=device).view(-1, 1, 1, 1)),
+    ):
+
         args.timestep_sampling = "other"  # Will trigger the weighting scheme path
         args.weighting_scheme = "uniform"
         args.logit_mean = 0.0
         args.logit_std = 1.0
         args.mode_scale = 1.0
         dtype = torch.float32
-        
-        noisy_input, timestep, sigma = get_noisy_model_input_and_timestep(
-            args, noise_scheduler, latents, noise, device, dtype
-        )
-        
+
+        noisy_input, timestep, sigma = get_noisy_model_input_and_timestep(args, noise_scheduler, latents, noise, device, dtype)
+
         assert noisy_input.shape == latents.shape
         assert timestep.shape == (latents.shape[0],)
         assert sigma.shape == (latents.shape[0], 1, 1, 1)
