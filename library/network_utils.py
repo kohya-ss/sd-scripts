@@ -12,7 +12,7 @@ class InitializeParams:
     """Parameters for initialization methods (PiSSA, URAE)"""
 
     use_lowrank: bool = False
-    lowrank_q: Optional[int] = None
+    # lowrank_q: Optional[int] = None
     lowrank_niter: int = 4
 
 
@@ -24,8 +24,6 @@ def initialize_parse_opts(key: str) -> InitializeParams:
     - "pissa" -> Default PiSSA with lowrank=True, niter=4
     - "pissa_niter_4" -> PiSSA with niter=4
     - "pissa_lowrank_false" -> PiSSA without lowrank
-    - "pissa_q_16" -> PiSSA with lowrank_q=16
-    - "pissa_seed_42" -> PiSSA with seed=42
     - "urae_..." -> Same options but for URAE
 
     Args:
@@ -57,12 +55,7 @@ def initialize_parse_opts(key: str) -> InitializeParams:
         elif parts[i] == "niter":
             if i + 1 < len(parts) and parts[i + 1].isdigit():
                 params.lowrank_niter = int(parts[i + 1])
-                i += 2
-            else:
-                i += 1
-        elif parts[i] == "q":
-            if i + 1 < len(parts) and parts[i + 1].isdigit():
-                params.lowrank_q = int(parts[i + 1])
+                params.use_lowrank = True
                 i += 2
             else:
                 i += 1
@@ -173,7 +166,7 @@ def initialize_pissa(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
     use_lowrank: bool = False,
-    lowrank_q: Optional[int] = None,
+    # lowrank_q: Optional[int] = None,
     lowrank_niter: int = 4,
 ):
     org_module_device = org_module.weight.device
@@ -188,17 +181,17 @@ def initialize_pissa(
 
     with torch.no_grad():
         if use_lowrank:
-            q_value = lowrank_q if lowrank_q is not None else 2 * rank
-            Vr, Sr, Ur = torch.svd_lowrank(weight.data, q=q_value, niter=lowrank_niter)
+            # q_value = lowrank_q if lowrank_q is not None else 2 * rank
+            Vr, Sr, Ur = torch.svd_lowrank(weight.data, q=rank, niter=lowrank_niter)
             Sr /= rank
             Uhr = Ur.t()
         else:
             # USV^T = W <-> VSU^T = W^T, where W^T = weight.data in R^{out_channel, in_channel},
             V, S, Uh = torch.linalg.svd(weight.data, full_matrices=False)
-            Vr = V[:, : rank]
-            Sr = S[: rank]
+            Vr = V[:, :rank]
+            Sr = S[:rank]
             Sr /= rank
-            Uhr = Uh[: rank]
+            Uhr = Uh[:rank]
 
         down = torch.diag(torch.sqrt(Sr)) @ Uhr
         up = Vr @ torch.diag(torch.sqrt(Sr))
@@ -222,13 +215,15 @@ def initialize_pissa(
         org_module.weight.requires_grad = org_module_requires_grad
 
 
-def convert_pissa_to_standard_lora(trained_up: Tensor, trained_down: Tensor, orig_up: Tensor, orig_down: Tensor, rank: int):
+def convert_pissa_to_standard_lora(
+    trained_up: Tensor, trained_down: Tensor, orig_up: Tensor, orig_down: Tensor, rank: int
+):
     with torch.no_grad():
         # Calculate ΔW = A'B' - AB
         delta_w = (trained_up @ trained_down) - (orig_up @ orig_down)
 
         # We need to create new low-rank matrices that represent this delta
-        U, S, V = torch.linalg.svd(delta_w.to(device="cuda", dtype=torch.float32), full_matrices=False)
+        U, S, V = torch.linalg.svd(delta_w.to(trained_up.device, dtype=torch.float32), full_matrices=False)
 
         # Take the top 2*r singular values (as suggested in the paper)
         rank = rank * 2
