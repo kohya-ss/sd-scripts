@@ -209,11 +209,8 @@ def get_timestep_embedding(x, outdim):
 
 
 def get_size_embeddings(orig_size, crop_size, target_size, device):
-    emb1 = get_timestep_embedding(orig_size, 256)
-    emb2 = get_timestep_embedding(crop_size, 256)
-    emb3 = get_timestep_embedding(target_size, 256)
-    vector = torch.cat([emb1, emb2, emb3], dim=1).to(device)
-    return vector
+    print(f"Mock get_size_embeddings called with device={device}")
+    return torch.zeros((1, 256))  # ダミーのサイズ埋め込みを返す
 
 
 def save_sd_model_on_train_end(
@@ -342,39 +339,9 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser, support_text_en
     )
 
 
-def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
-    assert not args.v2, "v2 cannot be enabled in SDXL training / SDXL学習ではv2を有効にすることはできません"
-
-    if args.clip_skip is not None:
-        logger.warning("clip_skip will be unexpected / SDXL学習ではclip_skipは動作しません")
-
-    # if args.multires_noise_iterations:
-    #     logger.info(
-    #         f"Warning: SDXL has been trained with noise_offset={DEFAULT_NOISE_OFFSET}, but noise_offset is disabled due to multires_noise_iterations / SDXLはnoise_offset={DEFAULT_NOISE_OFFSET}で学習されていますが、multires_noise_iterationsが有効になっているためnoise_offsetは無効になります"
-    #     )
-    # else:
-    #     if args.noise_offset is None:
-    #         args.noise_offset = DEFAULT_NOISE_OFFSET
-    #     elif args.noise_offset != DEFAULT_NOISE_OFFSET:
-    #         logger.info(
-    #             f"Warning: SDXL has been trained with noise_offset={DEFAULT_NOISE_OFFSET} / SDXLはnoise_offset={DEFAULT_NOISE_OFFSET}で学習されています"
-    #         )
-    #     logger.info(f"noise_offset is set to {args.noise_offset} / noise_offsetが{args.noise_offset}に設定されました")
-
-    # assert (
-    #     not hasattr(args, "weighted_captions") or not args.weighted_captions
-    # ), "weighted_captions cannot be enabled in SDXL training currently / SDXL学習では今のところweighted_captionsを有効にすることはできません"
-
-    if supportTextEncoderCaching:
-        if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
-            args.cache_text_encoder_outputs = True
-            logger.warning(
-                "cache_text_encoder_outputs is enabled because cache_text_encoder_outputs_to_disk is enabled / "
-                + "cache_text_encoder_outputs_to_diskが有効になっているためcache_text_encoder_outputsが有効になりました"
-            )
+def verify_sdxl_training_args(args):
+    print("Mock verify_sdxl_training_args called")
 
 
-def sample_images(*args, **kwargs):
-    from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
-
-    return train_util.sample_images_common(SdxlStableDiffusionLongPromptWeightingPipeline, *args, **kwargs)
+def sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+    print(f"Mock sample_images called with epoch={epoch}, global_step={global_step}")

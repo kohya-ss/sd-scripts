@@ -2905,19 +2905,16 @@ class MinimalDataset(BaseDataset):
                 input_ids = self.get_input_ids(caption)
                 input_ids_list.append(input_ids)
 
-                captions.append(caption)
-
-            images = torch.stack(images, dim=0)
-            input_ids_list = torch.stack(input_ids_list, dim=0)
-            example = {
-                "images": images,
-                "input_ids": input_ids_list,
-                "captions": captions,   # for debug_dataset
-                "latents": None,
-                "image_keys": image_keys,   # for debug_dataset
-                "loss_weights": torch.ones(batch_size, dtype=torch.float32),
-            }
-            return example
+                captions.append(caption)   # for debug_dataset
+                example = {
+                    "images": images,
+                    "input_ids": input_ids_list,
+                    "captions": captions,   # for debug_dataset
+                    "latents": None,
+                    "image_keys": image_keys,   # for debug_dataset
+                    "loss_weights": torch.ones(batch_size, dtype=torch.float32),
+                }
+                return example
         """
         raise NotImplementedError
 
@@ -3335,7 +3332,7 @@ def get_git_revision_hash() -> str:
 #         v = v.contiguous()
 #         out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)  # 最適なのを選んでくれる
 
-#         out = rearrange(out, "b n h d -> b n (h d)", h=h)
+#         out = rearrange(out, "b n h d -> b n (h d)")
 
 #         # diffusers 0.7.0~
 #         out = self.to_out[0](out)

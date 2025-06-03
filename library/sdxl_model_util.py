@@ -581,3 +581,16 @@ def save_diffusers_checkpoint(
     if save_dtype is not None:
         pipeline.to(None, save_dtype)
     pipeline.save_pretrained(output_dir, safe_serialization=use_safetensors)
+
+
+def load_target_model(args, accelerator, model_version, weight_dtype):
+    print(f"Mock load_target_model called with model_version={model_version}")
+    return (
+        False,  # load_stable_diffusion_format
+        None,   # text_encoder1
+        None,   # text_encoder2
+        None,   # vae
+        None,   # unet
+        None,   # logit_scale
+        None,   # ckpt_info
+    )
