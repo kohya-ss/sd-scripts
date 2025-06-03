@@ -12,9 +12,6 @@ from multiprocessing import Value
 import numpy as np
 import toml
 
-# Add custom_metrics to Python path
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_metrics"))
-
 from tqdm import tqdm
 
 import torch
@@ -53,6 +50,9 @@ setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Add custom_metrics to Python path
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_metrics"))
 
 # import custom logger
 from custom_metrics.custom_logger import CustomLogger
