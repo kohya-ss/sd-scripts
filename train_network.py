@@ -12,6 +12,9 @@ from multiprocessing import Value
 import numpy as np
 import toml
 
+# Add custom_metrics to Python path
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_metrics"))
+
 from tqdm import tqdm
 
 import torch
