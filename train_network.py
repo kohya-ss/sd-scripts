@@ -855,6 +855,7 @@ class NetworkTrainer:
         log_grad_norm = getattr(args, "grad_norm_log", False)
         scaler_for_log = accelerator.scaler if hasattr(accelerator, "scaler") else None
         log_grad_scale = log_grad_norm and scaler_for_log is not None
+        log_grad_cosine = log_grad_norm and getattr(args, "grad_cosine_log", False)
         skip_grad_norm_max = getattr(args, "skip_grad_norm_max", None)
         nan_to_window = getattr(args, "nan_to_window", False)
         inf_to_window = getattr(args, "inf_to_window", False)
@@ -887,15 +888,20 @@ class NetworkTrainer:
                     header = "Epoch,Step,Gradient Norm,Threshold,Loss"
                     if log_grad_scale:
                         header += ",Scale"
+                    if log_grad_cosine:
+                        header += ",CosineSim"
                     f.write(header + "\n")
 
             trigger_count = 0
             cap_release_counter = 0
+            prev_grad_vector = None
 
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 nonlocal trigger_count, cap_release_counter
+                nonlocal prev_grad_vector
                 device = next(model.parameters()).device
                 gradient_norm = torch.tensor(0.0, device=device)
+                grad_vector = [] if log_grad_cosine else None
 
                 # 各パラメータの勾配ノルムの二乗を加算
                 with torch.no_grad():
@@ -903,7 +909,20 @@ class NetworkTrainer:
                         if param.grad is not None:
                             grad = param.grad
                             gradient_norm += grad.norm() ** 2
+                            if log_grad_cosine:
+                                grad_vector.append(grad.detach().view(-1))
                 gradient_norm = gradient_norm.sqrt().item()
+
+                cosine_sim = None
+                if log_grad_cosine:
+                    current_grad = torch.cat(grad_vector) if len(grad_vector) > 0 else None
+                    if prev_grad_vector is not None and current_grad is not None:
+                        cosine_sim = torch.nn.functional.cosine_similarity(
+                            current_grad, prev_grad_vector, dim=0, eps=1e-8
+                        ).item()
+                    else:
+                        cosine_sim = float("nan")
+                    prev_grad_vector = current_grad
 
                 # 勾配ノルムが NaN / Inf かどうかを判定
                 is_nan = math.isnan(gradient_norm)
@@ -960,6 +979,8 @@ class NetworkTrainer:
                     log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val}"
                     if log_grad_scale:
                         log_line += f",{scale_val}"
+                    if log_grad_cosine:
+                        log_line += f",{cosine_sim}"
                     log_buffer.append(log_line + "\n")
                     if step % 100 == 0:
                         with open(log_file_path, "a") as f:

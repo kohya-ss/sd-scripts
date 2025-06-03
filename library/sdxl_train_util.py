@@ -358,6 +358,11 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         help="output gradient norm logs to gradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txt; without --skip_grad_norm only logging is performed / 勾配ノルムとlossのログをgradient_logs+LoRA\u30d5\u30a1\u30a4\u30eb\u540d.txtに出力します。--skip_grad_normを付けない場合はスキップせずログのみ記録されます",
     )
     parser.add_argument(
+        "--grad_cosine_log",
+        action="store_true",
+        help="log gradient cosine similarity when used with --grad_norm_log / --grad_norm_log と同時に指定した場合に勾配のコサイン類似度を記録する",
+    )
+    parser.add_argument(
         "--nan_to_window",
         action="store_true",
         help="add NaN gradient norm to moving average window / NaN を移動平均窓に追加する",

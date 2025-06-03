@@ -8,6 +8,7 @@
 | `--skip_grad_norm` | 直近 **200 step のnormの移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。`--skip_grad_norm_max` で動的閾値の上限を指定可能。 | ― | 勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。デフォルトではNaNとInfもskipするのでfp16のscaleが上がり続ける状態になる。 |
 | `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ あまり意味がない |
 | `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。 |
+| `--grad_cosine_log` | `--grad_norm_log` 使用時、前ステップとのコサイン類似度をログに追加します。単独では機能しません。 | ― | 勾配方向の変化を確認するための補助情報。 |
 | `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 現行互換が既定 |
 | `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
 | `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | “安全が既定” |
