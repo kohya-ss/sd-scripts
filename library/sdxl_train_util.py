@@ -385,6 +385,12 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         help="skip step immediately if gradient norm is Inf / Inf が出た step を閾値に関係なくスキップする",
     )
     parser.add_argument(
+        "--nan_inf_until_step",
+        type=int,
+        default=None,
+        help="use nan/inf related options only until the specified step, then revert to default / 指定stepまでNaN/Inf処理を適用し、その後デフォルトに戻す",
+    )
+    parser.add_argument(
         "--auto_cap_release",
         action="store_true",
         help="temporarily relax skip_grad_norm_max when stagnation detected / 停滞時に一時的にキャップを緩和する",

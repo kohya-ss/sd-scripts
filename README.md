@@ -13,12 +13,15 @@
 | `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
 | `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | “安全が既定” |
 | `--skip_inf_immediate` / `--no-skip_inf_immediate` | Inf が出た step を同上 | **True** ↔ False | Inf は破壊力大なので既定で True を維持 |
+| `--nan_inf_until_step` | 上記4項目の設定を指定stepまで適用し、その後はデフォルトに戻す | None ↔ N | fp16で前半はscalerを安定、後半はscale上昇を狙う時に便利 |
 | `--auto_cap_release` | 停滞と判断したら一時的にキャップを開放する(skip_grad_norm_max関連機能) | False ↔ **True** |実験してみたが微妙だった |
 | `--cap_release_trigger_ratio` | `dynamic_threshold ≥ ratio × skip_grad_norm_max` が連続 `trigger_steps` 回続いたら発動 | 0.66 | |
 | `--cap_release_trigger_steps` | 〃 | 200 | |
 | `--cap_release_length` | 発動後、何 step キャップを開放するか | 200 | |
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
+
+`--nan_inf_until_step` を使うと、`--nan_to_window` `--inf_to_window` `--skip_nan_immediate` `--skip_inf_immediate` の4項目を指定ステップまで有効にし、その後は `nan_to_window=False` `inf_to_window=False` `skip_nan_immediate=True` `skip_inf_immediate=True` に戻します。fp16 学習で前半はGradScalerの挙動を安定させつつ、後半でデフォルト動作に切り替えて scale を上げ続けたい場合に便利です。
 
 追加したオプションは、batch_size=1 で、fp16で、小さめのdimで、小数の画像を少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。  
 bf16にしたらどうなるのかやったことがない…  

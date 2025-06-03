@@ -861,16 +861,18 @@ class NetworkTrainer:
         inf_to_window = getattr(args, "inf_to_window", False)
         skip_nan_immediate = getattr(args, "skip_nan_immediate", True)
         skip_inf_immediate = getattr(args, "skip_inf_immediate", True)
+        nan_inf_until_step = getattr(args, "nan_inf_until_step", None)
         auto_cap_release = getattr(args, "auto_cap_release", False)
         cap_release_trigger_ratio = getattr(args, "cap_release_trigger_ratio", 0.66)
         cap_release_trigger_steps = getattr(args, "cap_release_trigger_steps", 200)
         cap_release_length = getattr(args, "cap_release_length", 200)
         cap_release_scale = getattr(args, "cap_release_scale", 3.0)
+        nan_inf_switched = False
         logger.info(
             f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, "
             f"skip_grad_norm_max: {skip_grad_norm_max}, nan_to_window: {nan_to_window}, "
             f"inf_to_window: {inf_to_window}, skip_nan_immediate: {skip_nan_immediate}, "
-            f"skip_inf_immediate: {skip_inf_immediate}, auto_cap_release: {auto_cap_release}, "
+            f"skip_inf_immediate: {skip_inf_immediate}, nan_inf_until_step: {nan_inf_until_step}, auto_cap_release: {auto_cap_release}, "
             f"cap_release_trigger_ratio: {cap_release_trigger_ratio}, cap_release_trigger_steps: {cap_release_trigger_steps}, "
             f"cap_release_length: {cap_release_length}, cap_release_scale: {cap_release_scale}"
         )
@@ -1194,6 +1196,20 @@ class NetworkTrainer:
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
+                    if (
+                        not nan_inf_switched
+                        and nan_inf_until_step is not None
+                        and global_step >= nan_inf_until_step
+                    ):
+                        nan_to_window = False
+                        inf_to_window = False
+                        skip_nan_immediate = True
+                        skip_inf_immediate = True
+                        nan_inf_switched = True
+                        accelerator.print(
+                            f"nan_inf switched at step {global_step}: nan_to_window={nan_to_window}, inf_to_window={inf_to_window}, "
+                            f"skip_nan_immediate={skip_nan_immediate}, skip_inf_immediate={skip_inf_immediate}"
+                        )
 
                     self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
