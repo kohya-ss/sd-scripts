@@ -966,8 +966,6 @@ def sdpo_loss(loss: Tensor, ref_loss: Tensor, beta=0.02, epsilon=0.1) -> tuple[T
     log_ratio_l = -loss_l + ref_loss_l
     psi_l = beta * log_ratio_l  # [batch_size]
 
-    print((w_theta_max * psi_w - w_theta_max * psi_l).mean())
-
     # Final SDPO loss computation
     logits = w_theta_max * psi_w - w_theta_max * psi_l  # [batch_size]
     sigmoid_loss = -torch.log(torch.sigmoid(logits))  # [batch_size]

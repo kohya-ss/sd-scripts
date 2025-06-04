@@ -13,6 +13,9 @@ class MockNoiseScheduler:
         self.config.num_train_timesteps = num_train_timesteps
         self.timesteps = torch.arange(num_train_timesteps, dtype=torch.long)
 
+    def _sigma_to_t(self, sigma):
+        return sigma * self.config.num_train_timesteps
+
 
 # Create fixtures for commonly used objects
 @pytest.fixture

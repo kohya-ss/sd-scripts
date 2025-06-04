@@ -2297,7 +2297,6 @@ class DreamBoothDataset(BaseDataset):
                     rejected_image_info.resize_interpolation = resize_interpolation
 
                     info = ImageSetInfo([chosen_image_info, rejected_image_info])
-                    print(chosen_image_info.image_size, rejected_image_info.image_size)
                 else:
                     info = ImageInfo(img_path, num_repeats, caption, subset.is_reg, img_path)
                     info.resize_interpolation = (
