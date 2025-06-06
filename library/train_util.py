@@ -212,6 +212,7 @@ class ImageInfo:
         self._current = 0
 
     def __iter__(self):
+        self._current = 0
         return self
 
     def __next__(self):
@@ -226,7 +227,10 @@ class ImageInfo:
         return 1
 
     def __getitem__(self, item):
-        return self
+        if item == 0:
+            return self
+        else:
+            raise IndexError("Index out of range")
 
     @staticmethod
     def _pin_tensor(tensor):
@@ -1157,8 +1161,10 @@ class BaseDataset(torch.utils.data.Dataset):
                         bucket_reso == info.bucket_reso
                     ), f"Image pair not found in same bucket. {info.image_key} {bucket_reso} {info.bucket_reso}"
 
+            assert bucket_reso is not None
+
             for _ in range(infos[0].num_repeats):
-                self.bucket_manager.add_image(infos.bucket_reso, infos.image_key)
+                self.bucket_manager.add_image(bucket_reso, infos[0].image_key)
 
         # bucket情報を表示、格納する
         if self.enable_bucket:
