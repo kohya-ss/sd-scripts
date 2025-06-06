@@ -163,7 +163,7 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
         help="Wavelet loss level 1 (main) or 2 (details). Higher levels are available for DWT for higher resolution training. Default: 1",
     )
     parser.add_argument(
-        "--wavelet_loss_rectified_flow", default=True, help="Use rectified flow to estimate clean latents before wavelet loss"
+        "--wavelet_loss_rectified_flow", type=bool, default=True, help="Use rectified flow to estimate clean latents before wavelet loss"
     )
     import ast
     import json
@@ -1128,14 +1128,13 @@ class WaveletLoss(nn.Module):
 
     def forward(
         self, pred_latent: Tensor, target_latent: Tensor, timestep: torch.Tensor | None = None
-    ) -> tuple[Tensor, Mapping[str, int | float | None]]:
+    ) -> tuple[list[Tensor], Mapping[str, int | float | None]]:
         """
         Calculate wavelet loss between prediction and target.
 
         Returns:
             loss: Total wavelet loss
             metrics: Wavelet metrics if requested in WaveletLoss(metrics=True)
-
         """
         if isinstance(self.transform, QuaternionWaveletTransform):
             return self.quaternion_forward(pred_latent, target_latent)
@@ -1148,7 +1147,7 @@ class WaveletLoss(nn.Module):
         target_coeffs = self.transform.decompose(target_latent, self.level)
 
         # Calculate weighted loss
-        pattern_loss = torch.zeros(batch_size, device=pred_latent.device)
+        pattern_losses = []
         combined_hf_pred = []
         combined_hf_target = []
         metrics = {}
@@ -1165,58 +1164,51 @@ class WaveletLoss(nn.Module):
         #         timestep, self.max_timestep, intensity=intensity
         #     )
 
-        # 1. Pattern Loss (using normalization)
-        for i in range(1, self.level + 1):
-            # Skip LL bands except for ones at or beyond the threshold
-            if self.ll_level_threshold is not None:
-                # If negative it's from the end of the levels else it's the level.
-                ll_threshold = self.ll_level_threshold if self.ll_level_threshold > 0 else self.level + self.ll_level_threshold
-                if ll_threshold >= i:
-                    band = "ll"
-                    weight_key = f"ll{i}"
-                    pred_stack = torch.stack(self._pad_tensors(pred_coeffs[band]))
-                    target_stack = torch.stack(self._pad_tensors(target_coeffs[band]))
+        # If negative it's from the end of the levels else it's the level.
+        ll_threshold = None
+        if self.ll_level_threshold is not None:
+            ll_threshold = self.ll_level_threshold if self.ll_level_threshold > 0 else self.level + self.ll_level_threshold
 
-                    if self.normalize_bands:
-                        # Normalize wavelet components
-                        pred_stack = (pred_stack - pred_stack.mean()) / (pred_stack.std() + 1e-8)
-                        target_stack = (target_stack - target_stack.mean()) / (target_stack.std() + 1e-8)
-                    weight = band_level_weights.get(weight_key, band_weights["ll"])
-                    band_loss = weight * self.loss_fn(pred_stack, target_stack)
-                    pattern_loss += band_loss
+        # 1. Pattern Loss (using normalization)
+        for i in range(self.level):
+            pattern_level_losses = torch.zeros_like(pred_coeffs["lh"][i])
 
             # High frequency bands
-            for band in ["lh", "hl", "hh"]:
-                weight_key = f"{band}{i}"
+            for band in ["ll", "lh", "hl", "hh"]:
+                # Skip LL bands except for ones at or beyond the threshold
+                if ll_threshold is not None and band == "ll" and i + 1 <= ll_threshold:
+                    continue
+
+                weight_key = f"{band}{i+1}"
 
                 if band in pred_coeffs and band in target_coeffs:
-                    pred_stack = torch.stack(self._pad_tensors(pred_coeffs[band]))
-                    target_stack = torch.stack(self._pad_tensors(target_coeffs[band]))
-
                     if self.normalize_bands:
                         # Normalize wavelet components
-                        pred_stack = (pred_stack - pred_stack.mean()) / (pred_stack.std() + 1e-8)
-                        target_stack = (target_stack - target_stack.mean()) / (target_stack.std() + 1e-8)
+                        pred_coeffs[band][i] = (pred_coeffs[band][i] - pred_coeffs[band][i].mean()) / (pred_coeffs[band][i].std() + 1e-8)
+                        target_coeffs[band][i] = (target_coeffs[band][i] - target_coeffs[band][i].mean()) / (target_coeffs[band][i].std() + 1e-8)
 
                     weight = band_level_weights.get(weight_key, band_weights[band])
-                    band_loss = weight * self.loss_fn(pred_stack, target_stack)
-                    pattern_loss += band_loss
+                    band_loss = weight * self.loss_fn(pred_coeffs[band][i], target_coeffs[band][i])
+                    pattern_level_losses += band_loss.mean(dim=0)  # mean stack dim
 
                     # Collect high frequency bands for visualization
-                    combined_hf_pred.append(pred_coeffs[band][i - 1])
-                    combined_hf_target.append(target_coeffs[band][i - 1])
+                    combined_hf_pred.append(pred_coeffs[band][i])
+                    combined_hf_target.append(target_coeffs[band][i])
 
+            pattern_losses.append(pattern_level_losses)
+
+        # TODO: need to update this to work with a list of losses
         # If we are balancing the energy loss with the pattern loss
-        if self.energy_ratio > 0.0:
-            energy_loss = self.energy_matching_loss(batch_size, pred_coeffs, target_coeffs, device)
-
-            loss = (
-                (1 - self.energy_ratio) * pattern_loss  # Core spatial patterns
-                + self.energy_ratio * (self.energy_scale_factor * energy_loss)  # Fixes energy disparity
-            )
-        else:
-            energy_loss = None
-            loss = pattern_loss
+        # if self.energy_ratio > 0.0:
+        #     energy_loss = self.energy_matching_loss(batch_size, pred_coeffs, target_coeffs, device)
+        #
+        #     loss = (
+        #         (1 - self.energy_ratio) * pattern_loss  # Core spatial patterns
+        #         + self.energy_ratio * (self.energy_scale_factor * energy_loss)  # Fixes energy disparity
+        #     )
+        # else:
+        energy_loss = None
+        losses = pattern_losses
 
         # METRICS: Calculate all additional metrics (no gradients needed)
         if self.metrics:
@@ -1240,8 +1232,11 @@ class WaveletLoss(nn.Module):
                 metrics.update(self.calculate_latent_regularity_metrics(pred_latent))
 
                 # Add loss components to metrics
-                metrics["pattern_loss"] = pattern_loss.detach().mean().item()
-                metrics["total_loss"] = loss.detach().mean().item()
+                for i, pattern_loss in enumerate(pattern_losses):
+                    metrics[f"pattern_loss-{i+1}"] = pattern_loss.detach().mean().item()
+
+                for i, total_loss in enumerate(losses):
+                    metrics[f"total_loss-{i+1}"] = total_loss.detach().mean().item()
 
                 if energy_loss is not None:
                     metrics["energy_loss"] = energy_loss.detach().mean().item()
@@ -1260,9 +1255,9 @@ class WaveletLoss(nn.Module):
             combined_hf_pred = None
             combined_hf_target = None
 
-        return loss, metrics
+        return losses, metrics
 
-    def quaternion_forward(self, pred: Tensor, target: Tensor) -> tuple[Tensor, Mapping[str, int | float | None]]:
+    def quaternion_forward(self, pred: Tensor, target: Tensor) -> tuple[list[Tensor], Mapping[str, int | float | None]]:
         """
         Calculate QWT loss between prediction and target.
 
@@ -1279,21 +1274,22 @@ class WaveletLoss(nn.Module):
         target_qwt = self.transform.decompose(target, self.level)
 
         # Initialize total loss and component losses
-        total_loss = torch.tensor(0.0, device=pred.device)
+        total_losses = []
         component_losses = {
-            f"{component}_{band}": torch.tensor(0.0, device=pred.device)
+            f"{component}_{band}_{level+1}": torch.zeros_like(pred_qwt[component][band][level], device=pred.device)
+            for level in range(self.level)
             for component in ["r", "i", "j", "k"]
             for band in ["ll", "lh", "hl", "hh"]
         }
 
         # Calculate loss for each quaternion component, band and level
-        for component in ["r", "i", "j", "k"]:
-            component_weight = self.component_weights[component]
-
+        for level_idx in range(self.level):
+            pattern_level_losses = torch.zeros_like(pred_qwt["r"]["lh"][level_idx])
             for band in ["ll", "lh", "hl", "hh"]:
                 band_weight = self.band_weights[band]
+                for component in ["r", "i", "j", "k"]:
+                    component_weight = self.component_weights[component]
 
-                for level_idx in range(self.level):
                     band_level_key = f"{band}{level_idx + 1}"
                     # band_level_weights take priority over band_weight if exists
                     if band_level_key in self.band_level_weights:
@@ -1312,13 +1308,16 @@ class WaveletLoss(nn.Module):
                     weighted_loss = component_weight * level_weight * level_loss
 
                     # Add to total loss
-                    total_loss += weighted_loss
+                    pattern_level_losses += weighted_loss
 
                     # Add to component loss
-                    component_losses[f"{component}_{band}"] += weighted_loss
+                    component_losses[f"{component}_{band}_{level_idx+1}"] += weighted_loss
+
+
+            total_losses.append(pattern_level_losses)
 
         metrics = {k: v.detach().mean().item() for k, v in component_losses.items()}
-        return total_loss, metrics
+        return total_losses, metrics
 
     def _pad_tensors(self, tensors: list[Tensor]) -> list[Tensor]:
         """Pad tensors to match the largest size."""
@@ -1785,7 +1784,6 @@ def visualize_qwt_results(qwt_transform, lr_image, pred_latent, target_latent, f
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
-
 
 
 """
