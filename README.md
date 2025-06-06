@@ -9,10 +9,10 @@
 | `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ あまり意味がない |
 | `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。 |
 | `--grad_cosine_log` | `--grad_norm_log` 使用時、前ステップとのコサイン類似度をログに追加します。単独では機能しません。 | ― | 勾配方向の変化を確認するための補助情報。 |
-| `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 現行互換が既定 |
+| `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 移動平均窓へ入れると移動平均がNaNになりskip判定がFalseになる |
 | `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
-| `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | “安全が既定” |
-| `--skip_inf_immediate` / `--no-skip_inf_immediate` | Inf が出た step を同上 | **True** ↔ False | Inf は破壊力大なので既定で True を維持 |
+| `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | skipするとfp16の場合scalerにNaNが渡らずscaleが上がり続けるモードになる skipしなくてもNaNは捨てられるらしい |
+| `--skip_inf_immediate` / `--no-skip_inf_immediate` | Inf が出た step を同上 | **True** ↔ False | skipするとfp16の場合scalerにInfが渡らずscaleが上がり続けるモードになる skipしなくてもInfは捨てられるらしい |
 | `--nan_inf_until_step` | 上記4項目の設定を指定stepまで適用し、その後はデフォルトに戻す | None ↔ N | fp16で前半はscalerを安定、後半はscale上昇を狙う時に便利 |
 | `--auto_cap_release` | 停滞と判断したら一時的にキャップを開放する(skip_grad_norm_max関連機能) | False ↔ **True** |実験してみたが微妙だった |
 | `--cap_release_trigger_ratio` | `dynamic_threshold ≥ ratio × skip_grad_norm_max` が連続 `trigger_steps` 回続いたら発動 | 0.66 | |
@@ -30,7 +30,7 @@ bf16にしたらどうなるのかやったことがない…
 
 ・**設定1（デフォルト動作のskip_grad_norm案 → いちかばちかの当たりあり）**  
 
---downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only
+--downscale_freq_shift --skip_grad_norm --grad_norm_log --grad_cosine_log --te_mlp_fc_only
 
 ※fp16でNaNとInfをskipさせていくとscaleが下がる機会がなくなりscaleとnormがどんどん大きくなっていく  
 ※norm を scale で割ったものが反映される仕組みなので、fp16の有効範囲でscaleを大きくすると微小勾配を拾いやすくなるが  
@@ -45,7 +45,7 @@ bf16にしたらどうなるのかやったことがない…
   
 ・**設定2（NaNとInfをskipしないskip_grad_norm案　→　安定、無難、運要素もあり おすすめ）**  
 
---downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
+--downscale_freq_shift --skip_grad_norm --grad_norm_log --grad_cosine_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
 
 ※NaNでもskipせずに処理することで、GradScaler がscaleの自動調整が普通に動き、後半でもskipの頻発を防げる(fp16のときの話)
 　設定1と比べると、scaleが常識的な範囲になるので設定1よりは細かく学習しすぎない傾向  
