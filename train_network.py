@@ -389,7 +389,18 @@ class NetworkTrainer:
                 latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
             else:
                 # latentに変換
-                latents = self.encode_images_to_latents(args, vae, batch["images"].to(accelerator.device, dtype=vae_dtype))
+                if args.vae_batch_size is None or len(batch["images"]) <= args.vae_batch_size:
+                    latents = self.encode_images_to_latents(args, vae, batch["images"].to(accelerator.device, dtype=vae_dtype))
+                else:
+                    chunks = [
+                        batch["images"][i : i + args.vae_batch_size] for i in range(0, len(batch["images"]), args.vae_batch_size)
+                    ]
+                    list_latents = []
+                    for chunk in chunks:
+                        with torch.no_grad():
+                            chunk = self.encode_images_to_latents(args, vae, chunk.to(accelerator.device, dtype=vae_dtype))
+                            list_latents.append(chunk)
+                    latents = torch.cat(list_latents, dim=0)
 
                 # NaNが含まれていれば警告を表示し0に置き換える
                 if torch.any(torch.isnan(latents)):
@@ -1433,11 +1444,13 @@ class NetworkTrainer:
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
                     if hasattr(network, "weight_norms"):
-                        mean_norm = network.weight_norms().mean().item()
-                        mean_grad_norm = network.grad_norms().mean().item()
-                        mean_combined_norm = network.combined_weight_norms().mean().item()
                         weight_norms = network.weight_norms()
-                        maximum_norm = weight_norms.max().item() if weight_norms.numel() > 0 else None
+                        mean_norm = weight_norms.mean().item() if weight_norms is not None else None
+                        grad_norms = network.grad_norms()
+                        mean_grad_norm = grad_norms.mean().item() if grad_norms is not None else None
+                        combined_weight_norms = network.combined_weight_norms()
+                        mean_combined_norm = combined_weight_norms.mean().item() if combined_weight_norms is not None else None
+                        maximum_norm = weight_norms.max().item() if weight_norms is not None else None
                         keys_scaled = None
                         max_mean_logs = {}
                     else:
