@@ -173,62 +173,61 @@ def pack_latents(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-DIFFUSERS_TO_ALPHA_VLLM_MAP = {
+
+DIFFUSERS_TO_ALPHA_VLLM_MAP: dict[str, str] = {
     # Embedding layers
-    "cap_embedder.0.weight": ["time_caption_embed.caption_embedder.0.weight"],
-    "cap_embedder.1.weight": "time_caption_embed.caption_embedder.1.weight",
-    "cap_embedder.1.bias": "text_embedder.1.bias",
-    "x_embedder.weight": "patch_embedder.proj.weight",
-    "x_embedder.bias": "patch_embedder.proj.bias",
+    "time_caption_embed.caption_embedder.0.weight": "cap_embedder.0.weight",
+    "time_caption_embed.caption_embedder.1.weight": "cap_embedder.1.weight",
+    "text_embedder.1.bias": "cap_embedder.1.bias",
+    "patch_embedder.proj.weight": "x_embedder.weight",
+    "patch_embedder.proj.bias": "x_embedder.bias",
     # Attention modulation
-    "layers.().adaLN_modulation.1.weight": "transformer_blocks.().adaln_modulation.1.weight",
-    "layers.().adaLN_modulation.1.bias": "transformer_blocks.().adaln_modulation.1.bias",
+    "transformer_blocks.().adaln_modulation.1.weight": "layers.().adaLN_modulation.1.weight",
+    "transformer_blocks.().adaln_modulation.1.bias": "layers.().adaLN_modulation.1.bias",
     # Final layers
-    "final_layer.adaLN_modulation.1.weight": "final_adaln_modulation.1.weight",
-    "final_layer.adaLN_modulation.1.bias": "final_adaln_modulation.1.bias",
-    "final_layer.linear.weight": "final_linear.weight",
-    "final_layer.linear.bias": "final_linear.bias",
+    "final_adaln_modulation.1.weight": "final_layer.adaLN_modulation.1.weight",
+    "final_adaln_modulation.1.bias": "final_layer.adaLN_modulation.1.bias",
+    "final_linear.weight": "final_layer.linear.weight",
+    "final_linear.bias": "final_layer.linear.bias",
     # Noise refiner
-    "noise_refiner.().adaLN_modulation.1.weight": "single_transformer_blocks.().adaln_modulation.1.weight",
-    "noise_refiner.().adaLN_modulation.1.bias": "single_transformer_blocks.().adaln_modulation.1.bias",
-    "noise_refiner.().attention.qkv.weight": "single_transformer_blocks.().attn.to_qkv.weight",
-    "noise_refiner.().attention.out.weight": "single_transformer_blocks.().attn.to_out.0.weight",
-    # Time embedding
-    "t_embedder.mlp.0.weight": "time_embedder.0.weight",
-    "t_embedder.mlp.0.bias": "time_embedder.0.bias",
-    "t_embedder.mlp.2.weight": "time_embedder.2.weight",
-    "t_embedder.mlp.2.bias": "time_embedder.2.bias",
-    # Context attention
-    "context_refiner.().attention.qkv.weight": "transformer_blocks.().attn2.to_qkv.weight",
-    "context_refiner.().attention.out.weight": "transformer_blocks.().attn2.to_out.0.weight",
+    "single_transformer_blocks.().adaln_modulation.1.weight": "noise_refiner.().adaLN_modulation.1.weight",
+    "single_transformer_blocks.().adaln_modulation.1.bias": "noise_refiner.().adaLN_modulation.1.bias",
+    "single_transformer_blocks.().attn.to_qkv.weight": "noise_refiner.().attention.qkv.weight",
+    "single_transformer_blocks.().attn.to_out.0.weight": "noise_refiner.().attention.out.weight",
     # Normalization
-    "layers.().attention_norm1.weight": "transformer_blocks.().norm1.weight",
-    "layers.().attention_norm2.weight": "transformer_blocks.().norm2.weight",
+    "transformer_blocks.().norm1.weight": "layers.().attention_norm1.weight",
+    "transformer_blocks.().norm2.weight": "layers.().attention_norm2.weight",
     # FFN
-    "layers.().feed_forward.w1.weight": "transformer_blocks.().ff.net.0.proj.weight",
-    "layers.().feed_forward.w2.weight": "transformer_blocks.().ff.net.2.weight",
-    "layers.().feed_forward.w3.weight": "transformer_blocks.().ff.net.4.weight",
+    "transformer_blocks.().ff.net.0.proj.weight": "layers.().feed_forward.w1.weight",
+    "transformer_blocks.().ff.net.2.weight": "layers.().feed_forward.w2.weight",
+    "transformer_blocks.().ff.net.4.weight": "layers.().feed_forward.w3.weight",
 }
 
 
 def convert_diffusers_sd_to_alpha_vllm(sd: dict, num_double_blocks: int) -> dict:
     """Convert Diffusers checkpoint to Alpha-VLLM format"""
     logger.info("Converting Diffusers checkpoint to Alpha-VLLM format")
-    new_sd = {}
+    new_sd = sd.copy()  # Preserve original keys
 
-    for key, value in sd.items():
-        new_key = key
-        for pattern, replacement in DIFFUSERS_TO_ALPHA_VLLM_MAP.items():
-            if "()." in pattern:
-                for block_idx in range(num_double_blocks):
-                    if str(block_idx) in key:
-                        converted = pattern.replace("()", str(block_idx))
-                        new_key = key.replace(converted, replacement.replace("()", str(block_idx)))
-                        break
+    for diff_key, alpha_key in DIFFUSERS_TO_ALPHA_VLLM_MAP.items():
+        # Handle block-specific patterns
+        if '().' in diff_key:
+            for block_idx in range(num_double_blocks):
+                block_alpha_key = alpha_key.replace('().', f'{block_idx}.')
+                block_diff_key = diff_key.replace('().', f'{block_idx}.')
+                
+                # Search for and convert block-specific keys
+                for input_key, value in list(sd.items()):
+                    if input_key == block_diff_key:
+                        new_sd[block_alpha_key] = value
+        else:
+            # Handle static keys
+            if diff_key in sd:
+                print(f"Replacing {diff_key} with {alpha_key}")
+                new_sd[alpha_key] = sd[diff_key]
+            else:
+                print(f"Not found: {diff_key}")
 
-        if new_key == key:
-            logger.debug(f"Unmatched key in conversion: {key}")
-        new_sd[new_key] = value
 
     logger.info(f"Converted {len(new_sd)} keys to Alpha-VLLM format")
     return new_sd

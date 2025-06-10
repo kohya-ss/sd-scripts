@@ -868,6 +868,8 @@ class NextDiT(nn.Module):
             cap_feat_dim (int): Dimension of the caption features.
             axes_dims (List[int]): List of dimensions for the axes.
             axes_lens (List[int]): List of lengths for the axes.
+            use_flash_attn (bool): Whether to use Flash Attention.
+            use_sage_attn (bool): Whether to use Sage Attention. Sage Attention only supports inference.
 
         Returns:
             None
@@ -1110,7 +1112,11 @@ class NextDiT(nn.Module):
             cap_feats = layer(cap_feats, cap_mask, cap_freqs_cis)
 
         x = x.view(bsz, channels, height // pH, pH, width // pW, pW).permute(0, 2, 4, 3, 5, 1).flatten(3).flatten(1, 2)
+
         x_mask = torch.zeros(bsz, image_seq_len, dtype=torch.bool, device=device)
+        for i in range(bsz):
+            x[i, :image_seq_len] = x[i]
+            x_mask[i, :image_seq_len] = True
 
         x = self.x_embedder(x)
 
