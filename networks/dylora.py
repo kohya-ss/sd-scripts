@@ -17,6 +17,7 @@ from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
 import torch
 from torch import nn
+import library.maruo_global_config as maruoCfg
 from library.utils import setup_logging
 
 setup_logging()
@@ -268,7 +269,11 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
 class DyLoRANetwork(torch.nn.Module):
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
+    if maruoCfg.te_mlp_fc_only:
+        # use same modules as the previous versions (MLP only)
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    else:
+        TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
