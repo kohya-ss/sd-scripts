@@ -5,6 +5,7 @@
 | オプション | 機能概要 | 既定値 ↔ 指定時 | 備考・出典 |
 | --- | --- | --- | --- |
 | `--downscale_freq_shift` | `library/sdxl_original_unet.py` 内の `get_timestep_embedding()` に渡す **`downscale_freq_shift`** を切り替えます。 | 0.0 → **1.0** | 過去に 1.0 だったものが 0.0 に変更になった経緯あり（本家 PR [#1187](https://github.com/kohya-ss/sd-scripts/pull/1187)）。キャラクター性を学習させるタスクでは 1.0 の方が定着しやすい印象。 |
+| `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
 | `--skip_grad_norm` | 直近 **200 step のnormの移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。`--skip_grad_norm_max` で動的閾値の上限を指定可能。 | ― | 勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。デフォルトではNaNとInfもskipするのでfp16のscaleが上がり続ける状態になる。 |
 | `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ あまり意味がない |
 | `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。`ThreshOff` は閾値有効=0/閾値NaNでの無効=1/idle_free_phaseでの閾値無効=2 |
@@ -22,7 +23,7 @@
 | `--idle_free_phase` | 閾値撤廃フェーズを有効化 | False ↔ **True** | 移動平均窓に `idle_max_steps` 連続でNaN/Infが入らなければ `idle_free_len` step 閾値を撤廃 |
 | `--idle_max_steps` | 閾値撤廃フェーズ突入までの無トリガ step 数 | 4000 | |
 | `--idle_free_len` | 強制 free‑phase の長さ | 200 | |
-| `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
+
 
 `--nan_inf_until_step` を使うと、`--nan_to_window` `--inf_to_window` `--skip_nan_immediate` `--skip_inf_immediate` の4項目を指定ステップまで有効にし、その後は `nan_to_window=False` `inf_to_window=False` `skip_nan_immediate=True` `skip_inf_immediate=True` に戻します。fp16 学習で前半はGradScalerの挙動を安定させつつ、後半でデフォルト動作に切り替えて scale を上げ続けたい場合に便利です。
 
