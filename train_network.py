@@ -867,6 +867,9 @@ class NetworkTrainer:
         cap_release_trigger_steps = getattr(args, "cap_release_trigger_steps", 200)
         cap_release_length = getattr(args, "cap_release_length", 200)
         cap_release_scale = getattr(args, "cap_release_scale", 3.0)
+        idle_free_phase = getattr(args, "idle_free_phase", False)
+        idle_max_steps = getattr(args, "idle_max_steps", 4000)
+        idle_free_len = getattr(args, "idle_free_len", 200)
         nan_inf_switched = False
         logger.info(
             f"skip_grad_norm: {skip_grad_norm}, grad_norm_log: {log_grad_norm}, "
@@ -874,7 +877,8 @@ class NetworkTrainer:
             f"inf_to_window: {inf_to_window}, skip_nan_immediate: {skip_nan_immediate}, "
             f"skip_inf_immediate: {skip_inf_immediate}, nan_inf_until_step: {nan_inf_until_step}, auto_cap_release: {auto_cap_release}, "
             f"cap_release_trigger_ratio: {cap_release_trigger_ratio}, cap_release_trigger_steps: {cap_release_trigger_steps}, "
-            f"cap_release_length: {cap_release_length}, cap_release_scale: {cap_release_scale}"
+            f"cap_release_length: {cap_release_length}, cap_release_scale: {cap_release_scale}, "
+            f"idle_free_phase: {idle_free_phase}, idle_max_steps: {idle_max_steps}, idle_free_len: {idle_free_len}"
         )
         use_grad_norm = skip_grad_norm or log_grad_norm
         if use_grad_norm:
@@ -887,7 +891,7 @@ class NetworkTrainer:
             # ログ用のヘッダーを書き出す
             if log_grad_norm:
                 with open(log_file_path, "w") as f:
-                    header = "Epoch,Step,Gradient Norm,Threshold,Loss"
+                    header = "Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff"
                     if log_grad_scale:
                         header += ",Scale"
                     if log_grad_cosine:
@@ -897,10 +901,13 @@ class NetworkTrainer:
             trigger_count = 0
             cap_release_counter = 0
             prev_grad_vector = None
+            idle_counter = 0
+            idle_free_counter = 0
+            in_idle_free = False
 
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 nonlocal trigger_count, cap_release_counter
-                nonlocal prev_grad_vector
+                nonlocal prev_grad_vector, idle_counter, idle_free_counter, in_idle_free
                 device = next(model.parameters()).device
                 gradient_norm = torch.tensor(0.0, device=device)
                 grad_vector = [] if log_grad_cosine else None
@@ -930,14 +937,32 @@ class NetworkTrainer:
                 is_nan = math.isnan(gradient_norm)
                 is_inf = math.isinf(gradient_norm)
 
+                appended = False
                 if not is_nan and not is_inf:
                     moving_avg_window.append(gradient_norm)
                 else:
                     # 設定に応じて NaN / Inf も移動平均窓へ入れる
                     if is_nan and nan_to_window:
                         moving_avg_window.append(gradient_norm)
+                        appended = True
                     if is_inf and inf_to_window:
                         moving_avg_window.append(gradient_norm)
+                        appended = True
+
+                if in_idle_free:
+                    idle_free_counter += 1
+                    if idle_free_counter >= idle_free_len:
+                        in_idle_free = False
+                        idle_free_counter = 0
+                else:
+                    if appended:
+                        idle_counter = 0
+                    else:
+                        idle_counter += 1
+                        if idle_free_phase and idle_counter >= idle_max_steps:
+                            in_idle_free = True
+                            idle_counter = 0
+                            idle_free_counter = 0
 
                 # 窓がいっぱいになったら平均+2.5σを計算
                 if len(moving_avg_window) == moving_avg_window.maxlen:
@@ -978,7 +1003,8 @@ class NetworkTrainer:
                 # ログをファイルに出力
                 if log_grad_norm:
                     scale_val = scaler_for_log.get_scale() if log_grad_scale else None
-                    log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val}"
+                    flag = 2 if in_idle_free else (1 if math.isnan(dynamic_threshold) else 0)
+                    log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val},{flag}"
                     if log_grad_scale:
                         log_line += f",{scale_val}"
                     if log_grad_cosine:
@@ -994,6 +1020,9 @@ class NetworkTrainer:
 
                 if (is_nan and skip_nan_immediate) or (is_inf and skip_inf_immediate):
                     return True
+
+                if in_idle_free:
+                    return False
 
                 return gradient_norm > dynamic_threshold
         else:

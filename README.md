@@ -19,6 +19,9 @@
 | `--cap_release_trigger_steps` | 〃 | 200 | |
 | `--cap_release_length` | 発動後、何 step キャップを開放するか | 200 | |
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
+| `--idle_free_phase` | 閾値撤廃フェーズを有効化 | False ↔ **True** | `idle_max_steps` 連続でNaN/Infが入らなければ `idle_free_len` step 閾値を撤廃 |
+| `--idle_max_steps` | 閾値撤廃フェーズ突入までの無トリガ step 数 | 4000 | |
+| `--idle_free_len` | 強制 free‑phase の長さ | 200 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
 
 `--nan_inf_until_step` を使うと、`--nan_to_window` `--inf_to_window` `--skip_nan_immediate` `--skip_inf_immediate` の4項目を指定ステップまで有効にし、その後は `nan_to_window=False` `inf_to_window=False` `skip_nan_immediate=True` `skip_inf_immediate=True` に戻します。fp16 学習で前半はGradScalerの挙動を安定させつつ、後半でデフォルト動作に切り替えて scale を上げ続けたい場合に便利です。

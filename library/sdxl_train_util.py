@@ -419,6 +419,23 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="multiplier for skip_grad_norm_max during release / 開放中の skip_grad_norm_max の倍率",
     )
+    parser.add_argument(
+        "--idle_free_phase",
+        action="store_true",
+        help="enable forced threshold-free phase when idle / 閾値撤廃フェーズを有効にする",
+    )
+    parser.add_argument(
+        "--idle_max_steps",
+        type=int,
+        default=4000,
+        help="max idle steps before free phase / 閾値撤廃フェーズに入るまでの無トリガstep数",
+    )
+    parser.add_argument(
+        "--idle_free_len",
+        type=int,
+        default=200,
+        help="length of forced free phase / 閾値撤廃フェーズの長さ",
+    )
 
 
 def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
