@@ -7,7 +7,7 @@
 | `--downscale_freq_shift` | `library/sdxl_original_unet.py` 内の `get_timestep_embedding()` に渡す **`downscale_freq_shift`** を切り替えます。 | 0.0 → **1.0** | 過去に 1.0 だったものが 0.0 に変更になった経緯あり（本家 PR [#1187](https://github.com/kohya-ss/sd-scripts/pull/1187)）。キャラクター性を学習させるタスクでは 1.0 の方が定着しやすい印象。 |
 | `--skip_grad_norm` | 直近 **200 step のnormの移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。`--skip_grad_norm_max` で動的閾値の上限を指定可能。 | ― | 勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。デフォルトではNaNとInfもskipするのでfp16のscaleが上がり続ける状態になる。 |
 | `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ あまり意味がない |
-| `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。 |
+| `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。`ThreshOff` は閾値有効=0/閾値NaNでの無効=1/idle_free_phaseでの閾値無効=2 |
 | `--grad_cosine_log` | `--grad_norm_log` 使用時、前ステップとのコサイン類似度をログに追加します。単独では機能しません。 | ― | 勾配方向の変化を確認するための補助情報。 |
 | `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 移動平均窓へ入れると移動平均がNaNになりskip判定がFalseになる |
 | `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
@@ -19,7 +19,7 @@
 | `--cap_release_trigger_steps` | 〃 | 200 | |
 | `--cap_release_length` | 発動後、何 step キャップを開放するか | 200 | |
 | `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
-| `--idle_free_phase` | 閾値撤廃フェーズを有効化 | False ↔ **True** | `idle_max_steps` 連続でNaN/Infが入らなければ `idle_free_len` step 閾値を撤廃 |
+| `--idle_free_phase` | 閾値撤廃フェーズを有効化 | False ↔ **True** | 移動平均窓に `idle_max_steps` 連続でNaN/Infが入らなければ `idle_free_len` step 閾値を撤廃 |
 | `--idle_max_steps` | 閾値撤廃フェーズ突入までの無トリガ step 数 | 4000 | |
 | `--idle_free_len` | 強制 free‑phase の長さ | 200 | |
 | `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
@@ -33,7 +33,7 @@ bf16にしたらどうなるのかやったことがない…
 
 ・**設定1（デフォルト動作のskip_grad_norm案 → いちかばちかの当たりあり）**  
 
---downscale_freq_shift --skip_grad_norm --grad_norm_log --grad_cosine_log --te_mlp_fc_only
+--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log  
 
 ※fp16でNaNとInfをskipさせていくとscaleが下がる機会がなくなりscaleとnormがどんどん大きくなっていく  
 ※norm を scale で割ったものが反映される仕組みなので、fp16の有効範囲でscaleを大きくすると微小勾配を拾いやすくなるが  
@@ -48,7 +48,7 @@ bf16にしたらどうなるのかやったことがない…
   
 ・**設定2（NaNとInfをskipしないskip_grad_norm案　→　安定、無難、運要素もあり おすすめ）**  
 
---downscale_freq_shift --skip_grad_norm --grad_norm_log --grad_cosine_log --te_mlp_fc_only --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
+--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
 
 ※NaNでもskipせずに処理することで、GradScaler がscaleの自動調整が普通に動き、後半でもskipの頻発を防げる(fp16のときの話)
 　設定1と比べると、scaleが常識的な範囲になるので設定1よりは細かく学習しすぎない傾向  
@@ -56,6 +56,27 @@ bf16にしたらどうなるのかやったことがない…
  これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素）  
 ※scaleの自動調整が効いていれば --skip_grad_norm_max 200000 はつけなくてもいいくらい dim4,5くらいならNormはそこまで上がらない  
   
+・**設定2改（--nan_to_window --inf_to_window を除外、安定性向上）**  
+
+--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --no-skip_nan_immediate --no-skip_inf_immediate  
+
+・--nan_to_window --inf_to_window を指定しないことで、skipの解放期間をなくす  
+・nanの即skipをnoにすることで、scalerにnanを伝えてscaleをコントロール  
+・あまり試していないが、想定と違い薄味になってしまった
+
+・**設定2+（--idle_free_phase を使い定期的にskipなし期間を設ける）**  
+
+--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate --idle_free_phase --idle_max_steps 4000 --idle_free_len 200  
+
+・NanとInf が窓に入らないまま4000step立つと、200stepの間skipなし状態に入る  
+・（NanとInf を窓に入れない設定っをしていた場合は、定期的に200stepのskipなし期間ができる）  
+・定期的に変化を取り込む狙い
+
+・**設定2＋設定1**  
+--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate --nan_inf_until_step 14000  
+設定１と2の折衷案：前半設定2、後半設定1  
+　前半scaleをおさえ、後半scaleを上げる  
+（設定１にいいシンプルデータ向け、ギャンブル度を若干下げるが品質も下がりそう？）   
   
 ・**設定3（設定2のブレーキを外す効果を意図的に起こす実験　→　いまひとつ）**  
 
