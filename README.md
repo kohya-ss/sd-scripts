@@ -1,156 +1,52 @@
 <!--- ここから自分の追記 -->
 
-## 非公式：追加オプション（**`sdxl_train_network.py` 専用**）
+## 非公式拡張オプション — `sdxl_train_network.py` 専用
 
-| オプション | 機能概要 | 既定値 ↔ 指定時 | 備考・出典 |
-| --- | --- | --- | --- |
-| `--downscale_freq_shift` | `library/sdxl_original_unet.py` 内の `get_timestep_embedding()` に渡す **`downscale_freq_shift`** を切り替えます。 | 0.0 → **1.0** | 過去に 1.0 だったものが 0.0 に変更になった経緯あり（本家 PR [#1187](https://github.com/kohya-ss/sd-scripts/pull/1187)）。キャラクター性を学習させるタスクでは 1.0 の方が定着しやすい印象。 |
-| `--te_mlp_fc_only` | Text Encoder（TE）の学習対象を **MLP (FC) 層のみに限定**します。 | TE 全層 ↔ **MLP のみ** | 本家 PR [#1964](https://github.com/kohya-ss/sd-scripts/pull/1964) 以前の挙動を再現。単純キーワードでキャラを学習する場合、MLP だけの方が安定しやすい印象。 |
-| `--skip_grad_norm` | 直近 **200 step のnormの移動平均 + 2.5 σ** を閾値にし、それを超えた **step をスキップ**（パラメータ更新を無視）します。`--skip_grad_norm_max` で動的閾値の上限を指定可能。 | ― | 勾配爆発の瞬間を丸ごと飛ばすことで安定化を狙う実験的機能。デフォルトではNaNとInfもskipするのでfp16のscaleが上がり続ける状態になる。 |
-| `--skip_grad_norm_max` | `--skip_grad_norm` 使用時の dynamic_threshold の上限値を指定します。省略時は無制限。 | ― | 参考：dim4で200000くらいがいい？ あまり意味がない |
-| `--grad_norm_log` | **100 step ごと**に `(epoch, step, norm, threshold, loss)` を `gradient_logs+LoRAファイル名.txt` に追記します。`--skip_grad_norm` を付けない場合はスキップせずログのみ記録されます。既存ファイルがあれば上書き。 | ― | 閾値設定の妥当性チェックや勾配爆発の確認に利用。`ThreshOff` は閾値有効=0/閾値NaNでの無効=1/idle_free_phaseでの閾値無効=2 |
-| `--grad_cosine_log` | `--grad_norm_log` 使用時、前ステップとのコサイン類似度をログに追加します。単独では機能しません。 | ― | 勾配方向の変化を確認するための補助情報。 |
-| `--nan_to_window` | NaN を移動平均窓へ入れる | False ↔ **True** | 移動平均窓へ入れると移動平均がNaNになりskip判定がFalseになる |
-| `--inf_to_window` | Inf を移動平均窓へ入れる | False ↔ **True** | 同上 |
-| `--skip_nan_immediate` / `--no-skip_nan_immediate` | NaN が出た step を閾値に関係なく skip | **True** ↔ False | skipするとfp16の場合scalerにNaNが渡らずscaleが上がり続けるモードになる skipしなくてもNaNは捨てられるらしい |
-| `--skip_inf_immediate` / `--no-skip_inf_immediate` | Inf が出た step を同上 | **True** ↔ False | skipするとfp16の場合scalerにInfが渡らずscaleが上がり続けるモードになる skipしなくてもInfは捨てられるらしい |
-| `--nan_inf_until_step` | 上記4項目の設定を指定stepまで適用し、その後はデフォルトに戻す | None ↔ N | fp16で前半はscalerを安定、後半はscale上昇を狙う時に便利 |
-| `--auto_cap_release` | 停滞と判断したら一時的にキャップを開放する(skip_grad_norm_max関連機能) | False ↔ **True** |実験してみたが微妙だった |
-| `--cap_release_trigger_ratio` | `dynamic_threshold ≥ ratio × skip_grad_norm_max` が連続 `trigger_steps` 回続いたら発動 | 0.66 | |
-| `--cap_release_trigger_steps` | 〃 | 200 | |
-| `--cap_release_length` | 発動後、何 step キャップを開放するか | 200 | |
-| `--cap_release_scale` | 開放中に `skip_grad_norm_max` を何倍にするか | 3.0 | |
-| `--idle_free_phase` | 閾値撤廃フェーズを有効化 | False ↔ **True** | 移動平均窓に `idle_max_steps` 連続でNaN/Infが入らなければ `idle_free_len` step 閾値を撤廃 |
-| `--idle_max_steps` | 閾値撤廃フェーズ突入までの無トリガ step 数 | 4000 | |
-| `--idle_free_len` | 強制 free‑phase の長さ | 200 | |
+> **注意**  
+> 本フォークで追加した機能は upstream（kohya-ss/sd-scripts）には存在しません。  
+> 動作は *best-effort* で提供しており、今後の本家アップデートと衝突する可能性があります。  
+> ご利用は自己責任でお願いいたします。
+
+| オプション | 既定値 | 主な効果 | 実装箇所／備考 |
+|------------|:------:|----------|----------------|
+| `--downscale_freq_shift` | `0.0` | **時間埋め込みの周波数ダウンスケール**を 1.0 (従来値) に戻す。キャラクター LoRA で *identity* が定着しやすい傾向。 | `library/sdxl_original_unet.py`<br>本家 PR #1187 で 1.0→0.0 に変更された挙動を選択式に復活。|
+| `--te_mlp_fc_only` | 全層 | Text Encoder の学習対象を **MLP (全結合) 層だけ**に限定。キーワードベースのキャラ LoRA で“語彙を固めつつ柔軟性を保つ”目的。 | 本家 PR #1964 以前の挙動を再現。|
+| `--skip_grad_norm` | ― | 直近 *N = 200* step の **勾配 L2 ノルムの移動平均 + 2.5σ** を動的しきい値とし、超過 step の更新をスキップ。NaN/Inf も既定でスキップ。 | 破綻防止・fp16 の安定化補助。しきい値は `--skip_grad_norm_max` で上限可。|
+| `--skip_grad_norm_max` | 無制限 | `--skip_grad_norm` が計算する動的しきい値の**上限キャップ**。 | 例: `--skip_grad_norm_max 200000` |
+| `--grad_norm_log` | 無効 | 100 step ごとに **(epoch, step, norm, threshold, loss, ThreshOff)** を `gradient_logs+<LoRA名>.txt` へ追記。<br>ThreshOffは、0=閾値有効, 1=閾値がNaNで無効, 2=閾値が`--idle_free_phase`で無効 | スキップを *OFF* にすれば純ログモード。 |
+| `--grad_cosine_log` | 無効 | 直前 step との **勾配コサイン類似度** を `grad_norm_log` に追加。 | 経路探索の可視化用。 |
+| `--nan_to_window`, `--inf_to_window` | `False` | NaN / Inf を移動平均窓に**含める／含めない**を切替。含めると *threshold* が NaN となり、窓サイズ分だけスキップ判定が無効化＝“ブレーキ解除”。 | fp16 で意図的にスパイクを許容したい実験用。 |
+| `--skip_nan_immediate`, `--skip_inf_immediate`<br>`--no-skip_nan_immediate`, `--no-skip_inf_immediate` | `True` | NaN / Inf が出た step を **無条件でスキップするかどうか**。スキップしない場合は GradScaler に値が渡るため、fp16 で scale 自動調整が効く。 | |
+| `--nan_inf_until_step N` | `None` | 上記 4 項目の設定を **グローバル step ≤ N** の間だけ有効化し、その後は既定動作に戻す。 | 学習前半だけ GradScaler を安定させ、後半は scale 上昇を狙う用途。|
+| `--auto_cap_release` | `False` | **停滞検知 → 一時的に上限キャップ緩和**。<br>閾値が `ratio × skip_grad_norm_max` を `trigger_steps` 連続で超えたら、以後 `cap_release_length` step だけ `skip_grad_norm_max × cap_release_scale` に拡大。 | デフォルトの各パラメータ:<br>`ratio=0.66`, `trigger_steps=200`, `length=200`, `scale=3.0` |
+| `--idle_free_phase` | `False` | **指定間隔で上限キャップ撤廃**。<br>移動平均窓にNan/Infが `idle_max_steps` 連続で入らなければ発動、 `idle_free_len` step だけスキップ判定が無効化＝“ブレーキ解除” | デフォルトの各パラメータ:<br>`idle_max_steps=4000`, `idle_free_len=200` |
 
 
-`--nan_inf_until_step` を使うと、`--nan_to_window` `--inf_to_window` `--skip_nan_immediate` `--skip_inf_immediate` の4項目を指定ステップまで有効にし、その後は `nan_to_window=False` `inf_to_window=False` `skip_nan_immediate=True` `skip_inf_immediate=True` に戻します。fp16 学習で前半はGradScalerの挙動を安定させつつ、後半でデフォルト動作に切り替えて scale を上げ続けたい場合に便利です。
 
-追加したオプションは、batch_size=1 で、fp16で、小さめのdimで、小数の画像を少ないタグで１万step以上学習させるとき安定させる学習で使うことを想定したもの。  
-bf16にしたらどうなるのかやったことがない…  
+### 推奨プリセット
 
-## ■おすすめ設定
+| 名称 | 目的 / 特徴 | 推奨コマンド例 |
+|------|-------------|----------------|
+| **Preset A — “当たり狙い”** | *NaN/Inf もスキップ*。スケールが際限なく上がるため破綻リスクはあるものの、少量高品質データで“化ける”ことがある。 | `--downscale_freq_shift  --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log` |
+| **Preset B — “安定重視”** | *NaN/Inf をスキップしない*ことで GradScaler の自動調整を生かしつつ、動的しきい値で大スパイクのみ遮断。窓にNaN/Infを入れることで“ブレーキ解除”。最も汎用的。 | `--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate` |
+| **Preset C — “停滞打破実験”** | Preset B + `--auto_cap_release`。谷底で停滞したら一時的にキャップを緩めて脱出を試みる。効果はケース依存。(あまり効果なし) | `Preset B` に `--auto_cap_release` を追加 |
+| **Preset D' — “停滞打破実験”** | Preset B + `--idle_free_phase`。窓にNaNが長期間入らない場合も定期的に“ブレーキ解除”。 | `Preset B` に `--idle_free_phase` を追加 |
 
-・**設定1（デフォルト動作のskip_grad_norm案 → いちかばちかの当たりあり）**  
+**ターゲット想定**  
+- `batch_size=1`、`fp16`、`rank≤6` など *メモリ制約の大きい環境*  
+- *少量画像を 10k step 以上* 回すキャラクター LoRA の長時間学習
 
---downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log  
+bf16 環境での挙動は未検証です。GradScaler が不要になるため `nan/inf` 系オプションは無効化して構いません。
 
-※fp16でNaNとInfをskipさせていくとscaleが下がる機会がなくなりscaleとnormがどんどん大きくなっていく  
-※norm を scale で割ったものが反映される仕組みなので、fp16の有効範囲でscaleを大きくすると微小勾配を拾いやすくなるが  
-　限界に達すると破綻しやすくなる  
-※上限を設けない場合１万step以上学習していくとscaleが限界に達してほとんどskipになるり学習できなくなる  
- scale が下がらないので、--skip_grad_norm_max 200000 など上限を設けても抑えは効かない  
-※この学習法で“当たり”を引きやすい条件  
-・データが少量・高品質・テーマ集中  そういう素材を細部まで再現したいとき、設定2よりいい結果になる場合あり  
-・LoRA の rank が小さい (4,5くらい？)  
-・データに強いノイズやラベル揺れがあると増幅されるのでNG  
+---
 
-  
-・**設定2（NaNとInfをskipしないskip_grad_norm案　→　安定、無難、運要素もあり おすすめ）**  
+### 使い方のヒント
 
---downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate  
+1. **まずは Preset B** で学習曲線とログを観察し、`norm` が *skip* されずに推移していることを確認。  
+2. キャラクターの再現度が足りなければ **Preset A** に切り替え、当たり／破綻のリスクをトレードオフ。  
+3. 長時間止まったように見える箇所があれば **`--auto_cap_release`** を追加して挙動を比較。  
 
-※NaNでもskipせずに処理することで、GradScaler がscaleの自動調整が普通に動き、後半でもskipの頻発を防げる(fp16のときの話)
-　設定1と比べると、scaleが常識的な範囲になるので設定1よりは細かく学習しすぎない傾向  
-※窓にNaNを入れると、窓にNaNがある間は dynamic_threshold が NaN → skip 判定が全て False → 窓のサイズ(200 step)の間ブレーキが外れる。(たまたまそうなっていた)  
- これにより ランダムな大勾配を取り込み、新しい局所解へジャンプすることもある（運要素）  
-※scaleの自動調整が効いていれば --skip_grad_norm_max 200000 はつけなくてもいいくらい dim4,5くらいならNormはそこまで上がらない  
-  
-・**設定2改（--nan_to_window --inf_to_window を除外、安定性向上）**  
-
---downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --no-skip_nan_immediate --no-skip_inf_immediate  
-
-・--nan_to_window --inf_to_window を指定しないことで、skipの解放期間をなくす  
-・nanの即skipをnoにすることで、scalerにnanを伝えてscaleをコントロール  
-・あまり試していないが、想定と違い薄味になってしまった
-
-・**設定2+（--idle_free_phase を使い定期的にskipなし期間を設ける）**  
-
---downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate --idle_free_phase --idle_max_steps 4000 --idle_free_len 200  
-
-・NanとInf が窓に入らないまま4000step立つと、200stepの間skipなし状態に入る  
-・（NanとInf を窓に入れない設定っをしていた場合は、定期的に200stepのskipなし期間ができる）  
-・定期的に変化を取り込む狙い
-
-・**設定2＋設定1**  
---downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate --nan_inf_until_step 14000  
-設定１と2の折衷案：前半設定2、後半設定1  
-　前半scaleをおさえ、後半scaleを上げる  
-（設定１にいいシンプルデータ向け、ギャンブル度を若干下げるが品質も下がりそう？）   
-  
-・**設定3（設定2のブレーキを外す効果を意図的に起こす実験　→　いまひとつ）**  
-
---downscale_freq_shift --skip_grad_norm --grad_norm_log --te_mlp_fc_only --skip_grad_norm_max 200000 --auto_cap_release  
-  
-※--cap_release_trigger_ratio, --cap_release_trigger_steps, --cap_release_length, --cap_release_scale は適当に決めたデフォルト値で試した  
-  
-auto_cap_release オプション狙い効果：高止まり＝谷底停滞 とみなし、一時的にキャップを緩くして 探索的スパイクを許容 → 別の谷へ滑り込むことを期待  
-検知フェーズ：窓平均＋2.5σ が max × 0.66 を 200 step 連続で上回る ⇒ 停滞と判断  
-開放フェーズ： 次の 200 step は skip_grad_norm_max × 3 へ上限を緩和  
-※設定1の派生のようなものだが、scale がどんどん大きくなっていくモードでは skip_grad_norm_max での抑えはきかないのであまり意味がなかった
- 
-
-## ■`--downscale_freq_shift` と `--te_mlp_fc_only` の効果確認 （`--skip_grad_norm`はNaNとInfを窓に入れる＆skipする設定）
-
-![20250525_cond1-4_norm_graph](https://github.com/user-attachments/assets/fe5abbb7-7cf4-4ee5-bfc6-2368d386b5f9)
-
-生成された画像の印象
-
-条件1：無難　ほどよくキャラクターを学習できる
-
-条件2：条件１より固い感じになる気がする（多分）
-
-条件3：元画像の覚えさせたくないポーズも覚えてしまったり柔軟性が低い
-
-条件4：再現性が低い気がする
-
-## ① 4 条件の整理
-
-| 条件 | \--downscale\_freq\_shift | \--te\_mlp\_fc\_only | \--skip\_grad\_norm |
-| --- | --- | --- | --- |
-| 条件 1 | ✅ | ✅ | ✅ |
-| 条件 2 | ❌ | ✅ | ✅ |
-| 条件 3 | ✅ | ❌ | ✅ |
-| 条件 4 | ✅ | ✅ | ❌ |
-
-* * *
-
-## ② グラフで見える主な傾向
-
-1.  **条件 2 が最も荒れやすい**
-    Down-scale が無いぶん高周波成分がそのまま残り、学習後半で _norm_ が 80-90 万まで跳ね上がっています。
-    → 勾配暴発（スパイク）が頻発。
-    
-2.  **downscale\_freq\_shift だけでもある程度は抑制できる**（条件 3）
-    条件 2 と比べればピークは低いものの、20 万超の山が持続しているので完全には安定していません。
-    
-3.  **MLP 限定学習（--te\_mlp\_fc\_only）単体では暴発を抑え切れない**（条件 2）。
-    パラメータ数が減るため平均 _norm_ は下がりますが、スパイク自体は残ります。
-    
-4.  **条件 1 は 1,2,3 の弱点を全部相殺した“バランス型”**
-    ・downscale で周波数成分を抑制
-    ・MLP 限定で勾配量自体をダウンサイジング
-    ・skip\_grad\_norm で異常値をスキップ
-    グラフは 30 万付近で安定し、閾値ライン（移動平均＋2.5 σ）に沿って上限が制御されています。
-    
-5.  **条件 4 だけ _norm_ が極端に小さい理由**
-    ・fp16で学習したので、NanやInfが出た時にGradScaler がscaleを自動調整して勾配を小さくするため。
-            
-
-* * *
-
-## ③ 何が分かるか ― まとめ
-
-| 観点 | 条件 1 | 条件 2 | 条件 3 | 条件 4 |
-| --- | --- | --- | --- | --- |
-| 勾配の安定 | ◎ | × | △ | ○\*¹ |
-| スパイク抑制 | ◎ | × | △ | ×（抑制せず適用） |
-| 学習効率 | ○ | △（skip 多発で無駄が多い） | ○ | ◎（step を無駄にしない） |
-
-\*¹ 見かけの数値は小さいですが、スパイクそのものは存在しており重みへ直接反映されます。
-過学習や破綻のリスクが隠れている点に注意が必要です。
-
+---
 
 ## 以下、公式のまま
 <!--- ここまで自分の追記 --->
