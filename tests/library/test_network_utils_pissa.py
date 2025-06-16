@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch import Tensor
-from typing import Tuple
+from typing import Tuple, Optional, Dict, Any
 
 from library.network_utils import convert_pissa_to_standard_lora, initialize_pissa
 
@@ -562,6 +562,123 @@ class TestPissa:
         expected_rank = min(2, min(d_model, d_model))
         assert new_up.shape[1] <= expected_rank
         assert new_down.shape[0] <= expected_rank
+
+
+def test_pissa_with_varying_device_configurations():
+    """Test PiSSA initialization with different device and configuration scenarios."""
+    import torch
+
+    # Create test scenarios
+    test_configs = [
+        {"name": "CPU Standard", "device": torch.device("cpu")},
+        {"name": "CUDA if Available", "device": torch.device("cuda" if torch.cuda.is_available() else "cpu")},
+        {"name": "Low Precision", "dtype": torch.float16},
+        {"name": "Mixed Precision", "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"), "dtype": torch.float16}
+    ]
+
+    for config in test_configs:
+        org_module = torch.nn.Linear(100, 50)
+        lora_down = torch.nn.Linear(100, 10)
+        lora_up = torch.nn.Linear(10, 50)
+
+        # Apply device and dtype settings
+        if "device" in config:
+            org_module = org_module.to(config["device"])
+            lora_down = lora_down.to(config["device"])
+            lora_up = lora_up.to(config["device"])
+
+        if "dtype" in config:
+            org_module = org_module.to(dtype=config["dtype"])
+            lora_down = lora_down.to(dtype=config["dtype"])
+            lora_up = lora_up.to(dtype=config["dtype"])
+
+        # Test initialization
+        try:
+            initialize_pissa(org_module, lora_down, lora_up, scale=0.1, rank=10)
+        except Exception as e:
+            pytest.fail(f"PiSSA initialization failed for config {config['name']}: {e}")
+
+
+def create_mock_nitter_environment(level: Optional[str] = None) -> Dict[str, Any]:
+    """Create a mock environment simulating different nitter levels."""
+    base_config = {
+        "precision": torch.float32,
+        "rank_multiplier": 1.0,
+        "scale_factor": 0.1,
+        "low_memory": False
+    }
+
+    nitter_levels = {
+        "low": {
+            "precision": torch.float16,
+            "rank_multiplier": 0.5,
+            "scale_factor": 0.05,
+            "low_memory": True
+        },
+        "medium": {
+            "precision": torch.float32,
+            "rank_multiplier": 1.0,
+            "scale_factor": 0.1,
+            "low_memory": False
+        },
+        "high": {
+            "precision": torch.float64,
+            "rank_multiplier": 2.0,
+            "scale_factor": 0.2,
+            "low_memory": False
+        }
+    }
+
+    if level and level in nitter_levels:
+        base_config.update(nitter_levels[level])
+
+    return base_config
+
+
+def test_pissa_with_nitter_level_variations():
+    """Test PiSSA initialization with different nitter levels and configurations."""
+    import torch
+
+    # Test nitter levels
+    nitter_levels = [None, "low", "medium", "high"]
+
+    for level in nitter_levels:
+        # Get nitter-specific configuration
+        nitter_config = create_mock_nitter_environment(level)
+
+        # Adjust input sizes based on rank multiplier
+        input_dim = int(100 * nitter_config["rank_multiplier"])
+        output_dim = int(50 * nitter_config["rank_multiplier"])
+        rank = int(10 * nitter_config["rank_multiplier"])
+
+        # Create modules
+        org_module = torch.nn.Linear(input_dim, output_dim)
+        lora_down = torch.nn.Linear(input_dim, rank)
+        lora_up = torch.nn.Linear(rank, output_dim)
+
+        # Apply precision
+        org_module = org_module.to(dtype=nitter_config["precision"])
+        lora_down = lora_down.to(dtype=nitter_config["precision"])
+        lora_up = lora_up.to(dtype=nitter_config["precision"])
+
+        # Apply device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        org_module = org_module.to(device)
+        lora_down = lora_down.to(device)
+        lora_up = lora_up.to(device)
+
+        # Test initialization
+        try:
+            initialize_pissa(
+                org_module, 
+                lora_down, 
+                lora_up, 
+                scale=nitter_config["scale_factor"], 
+                rank=rank,
+                use_lowrank=nitter_config["low_memory"]
+            )
+        except Exception as e:
+            pytest.fail(f"PiSSA initialization failed for nitter level {level}: {e}")
 
 
 if __name__ == "__main__":
