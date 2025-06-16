@@ -67,7 +67,7 @@ def sample_images(
     # unwrap unet and text_encoder(s)
     flux = accelerator.unwrap_model(flux)
     if text_encoders is not None:
-        text_encoders = [accelerator.unwrap_model(te) for te in text_encoders]
+        text_encoders = [(accelerator.unwrap_model(te) if te is not None else None) for te in text_encoders]
     if controlnet is not None:
         controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
