@@ -36,6 +36,8 @@ Python 3.10.6およびGitが必要です。
 - Python 3.10.6: https://www.python.org/ftp/python/3.10.6/python-3.10.6-amd64.exe
 - git: https://git-scm.com/download/win
 
+Python 3.10.x、3.11.x、3.12.xでも恐らく動作しますが、3.10.6でテストしています。
+
 PowerShellを使う場合、venvを使えるようにするためには以下の手順でセキュリティ設定を変更してください。
 （venvに限らずスクリプトの実行が可能になりますので注意してください。）
 
@@ -45,7 +47,7 @@ PowerShellを使う場合、venvを使えるようにするためには以下の
 
 ## Windows環境でのインストール
 
-スクリプトはPyTorch 2.1.2でテストしています。PyTorch 2.0.1、1.12.1でも動作すると思われます。
+スクリプトはPyTorch 2.1.2でテストしています。PyTorch 2.2以降でも恐らく動作します。
 
 （なお、python -m venv～の行で「python」とだけ表示された場合、py -m venv～のようにpythonをpyに変更してください。）
 
@@ -67,9 +69,11 @@ accelerate config
 
 コマンドプロンプトでも同一です。
 
-注：`bitsandbytes==0.43.0`、`prodigyopt==1.0`、`lion-pytorch==0.0.6` は `requirements.txt` に含まれるようになりました。他のバージョンを使う場合は適宜インストールしてください。
+注：`bitsandbytes==0.44.0`、`prodigyopt==1.0`、`lion-pytorch==0.0.6` は `requirements.txt` に含まれるようになりました。他のバージョンを使う場合は適宜インストールしてください。
 
 この例では PyTorch および xfomers は2.1.2／CUDA 11.8版をインストールします。CUDA 12.1版やPyTorch 1.12.1を使う場合は適宜書き換えください。たとえば CUDA 12.1版の場合は `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` および `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121` としてください。
+
+PyTorch 2.2以降を用いる場合は、`torch==2.1.2` と `torchvision==0.16.2` 、および `xformers==0.0.23.post1` を適宜変更してください。
 
 accelerate configの質問には以下のように答えてください。（bf16で学習する場合、最後の質問にはbf16と答えてください。）
 

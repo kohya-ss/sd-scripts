@@ -11,7 +11,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import library.train_util as train_util
-from library.utils import setup_logging, pil_resize
+from library.utils import setup_logging, resize_image
 
 setup_logging()
 import logging
@@ -42,10 +42,7 @@ def preprocess_image(image):
     pad_t = pad_y // 2
     image = np.pad(image, ((pad_t, pad_y - pad_t), (pad_l, pad_x - pad_l), (0, 0)), mode="constant", constant_values=255)
 
-    if size > IMAGE_SIZE:
-        image = cv2.resize(image, (IMAGE_SIZE, IMAGE_SIZE), cv2.INTER_AREA)
-    else:
-        image = pil_resize(image, (IMAGE_SIZE, IMAGE_SIZE))
+    image = resize_image(image, image.shape[0], image.shape[1], IMAGE_SIZE, IMAGE_SIZE)
 
     image = image.astype(np.float32)
     return image
@@ -100,15 +97,19 @@ def main(args):
         else:
             for file in SUB_DIR_FILES:
                 hf_hub_download(
-                    args.repo_id,
-                    file,
+                    repo_id=args.repo_id,
+                    filename=file,
                     subfolder=SUB_DIR,
-                    cache_dir=os.path.join(model_location, SUB_DIR),
+                    local_dir=os.path.join(model_location, SUB_DIR),
                     force_download=True,
-                    force_filename=file,
                 )
         for file in files:
-            hf_hub_download(args.repo_id, file, cache_dir=model_location, force_download=True, force_filename=file)
+            hf_hub_download(
+                repo_id=args.repo_id,
+                filename=file,
+                local_dir=model_location,
+                force_download=True,
+            )
     else:
         logger.info("using existing wd14 tagger model")
 
@@ -149,7 +150,7 @@ def main(args):
             ort_sess = ort.InferenceSession(
                 onnx_path,
                 providers=(["OpenVINOExecutionProvider"]),
-                provider_options=[{'device_type' : "GPU_FP32"}],
+                provider_options=[{'device_type' : "GPU", "precision": "FP32"}],
             )
         else:
             ort_sess = ort.InferenceSession(
