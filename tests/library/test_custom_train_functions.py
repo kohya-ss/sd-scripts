@@ -223,3 +223,42 @@ def test_different_device_compatibility(loss, timesteps, noise_scheduler):
     noise_scheduler.get_snr_for_timestep.return_value = snr_tensor
 
     result = apply_snr_weight(loss_on_device, timesteps, noise_scheduler, gamma)
+
+# Additional tests for new functionality
+def test_apply_snr_weight_with_image_size(loss, timesteps, noise_scheduler):
+    """Test SNR weight application with image size consideration"""
+    gamma = 5.0
+    image_sizes = [None, 64, (256, 256)]
+
+    for image_size in image_sizes:
+        result = apply_snr_weight(
+            loss, 
+            timesteps, 
+            noise_scheduler, 
+            gamma, 
+            v_prediction=False, 
+            image_size=image_size
+        )
+        
+        # Allow for broadcasting
+        assert result.shape[0] == loss.shape[0]
+        assert result.dtype == loss.dtype
+
+def test_apply_debiased_estimation_variations(loss, timesteps, noise_scheduler):
+    """Test debiased estimation with different image sizes and prediction types"""
+    image_sizes = [None, 64, (256, 256)]
+    prediction_types = [True, False]
+
+    for image_size in image_sizes:
+        for v_prediction in prediction_types:
+            result = apply_debiased_estimation(
+                loss, 
+                timesteps, 
+                noise_scheduler, 
+                v_prediction=v_prediction,
+                image_size=image_size
+            )
+            
+            # Allow for broadcasting
+            assert result.shape[0] == loss.shape[0]
+            assert result.dtype == loss.dtype
