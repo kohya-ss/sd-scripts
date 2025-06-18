@@ -1285,7 +1285,8 @@ class NetworkTrainer:
             sai_metadata = self.get_sai_model_spec(args)
             metadata_to_save.update(sai_metadata)
 
-            with maybe_pruned_save(unwrapped_nw, optimizer.optimizer, enable_pruning=True, pruning_ratio=0.1):
+            pruning_enabled = getattr(args, 'enable_pruning', False)
+            with maybe_pruned_save(unwrapped_nw, optimizer.optimizer, enable_pruning=pruning_enabled, pruning_ratio=0.1):
                 unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
             if args.huggingface_repo_id is not None:
                 huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
@@ -1874,6 +1875,11 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
+    )
+    parser.add_argument(
+        "--enable_pruning",
+        action="store_true",
+        help="Enable parameter pruning during model save / モデル保存時にパラメータの剪定を有効にします",
     )
     return parser
 
