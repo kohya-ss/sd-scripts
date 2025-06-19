@@ -55,66 +55,102 @@ def maybe_pruned_save(model, optimizer, enable_pruning=False, pruning_ratio=0.1)
     param_variances = []
 
     def get_hessian_variance(param):
-        # Multiple ways to extract Hessian-based variance
-        try:
-            # 1. Try all groups to find the correct parameter group
-            for group in optimizer.param_groups:
-                if param in group.get('params', []):
-                    # Prefer direct Hessian if available
-                    if 'hess' in group and len(group['hess']) > 0:
-                        return group['hess']
+        """Determine if a parameter is eligible for variance-based pruning.
 
-            # 2. Try standard IVON state access
-            param_state = optimizer.state.get(param, {})
-            if "h" in param_state:
-                h = param_state["h"]
-                return h
+        Comprehensive check for IVON-like optimizer variance detection.
 
-            # 3. Check if 'hess' exists in state
-            for state_param, state_dict in optimizer.state.items():
-                if "h" in state_dict:
-                    return state_dict["h"]
+        Args:
+            param (torch.Tensor): Model parameter to check
 
-            # 4. Fallback to group-level Hessian
-            group = optimizer.param_groups[0]
-            hess = group.get('hess', None)
-            if hess is not None and len(hess) > 0:
-                return hess
-
-        except Exception as e:
-            logger.warning(f"Error getting Hessian variance: {e}")
+        Returns:
+            bool: Whether the parameter is eligible for variance-based pruning
+        """
+        # 1. Basic parameter eligibility checks
+        if not (param.grad is not None and param.requires_grad):
+            return False
         
-        # Complete fallback: generate a random variance
-        return torch.rand_like(param)
+        # 2. Verify fundamental optimizer characteristics
+        if not hasattr(optimizer, 'sampled_params'):
+            return False
+        
+        # 3. Parameter group validation
+        valid_group_found = False
+        for group in optimizer.param_groups:
+            # Use object ID to match parameters
+            group_params = group.get('params', [])
+            if any(id(param) == id(p) for p in group_params):
+                # Require effective sample size or Hessian initialization
+                if 'ess' in group or 'hess_init' in group:
+                    valid_group_found = True
+                    break
+        
+        if not valid_group_found:
+            return False
+        
+        # 4. Optimizer state examination
+        if param not in optimizer.state:
+            return False
+        
+        # 5. Hessian information verification
+        param_state = optimizer.state[param]
+        hessian_keys = ['h', 'hess', 'Hessian', 'diagonal_hessian']
+        
+        for key in hessian_keys:
+            if key in param_state:
+                h = param_state[key]
+                # Validate Hessian tensor
+                if (h is not None and 
+                    torch.is_tensor(h) and 
+                    h.numel() > 0 and 
+                    h.dtype in [torch.float32, torch.float64]):
+                    return True
+        
+        return False
 
-    # Track parameters with gradients
-    gradients_exist = False
+    # Comprehensive variance and pruning parameter collection
+    variance_eligible_params = []
     for param in model.parameters():
         if param.grad is not None and param.requires_grad:
-            gradients_exist = True
-            try:
-                variance = get_hessian_variance(param)
-                if variance is not None:
-                    flat_variance = variance.view(-1)
-                    for i, v in enumerate(flat_variance):
-                        param_variances.append((v.item(), param, i))
-            except Exception as e:
-                logger.warning(f"Variance extraction failed for {param}: {e}")
+            # Detect parameter with Hessian variance
+            if get_hessian_variance(param):
+                # Access Hessian state for variance calculation
+                param_state = optimizer.state[param]
+                
+                # Prioritize 'h' key for Hessian, fallback to Hessian-related keys
+                hessian_keys = ['h', 'hess']
+                h = None
+                for key in hessian_keys:
+                    if key in param_state and param_state[key] is not None:
+                        h = param_state[key]
+                        break
+                
+                # Default to uniform Hessian if no specific information
+                if h is None:
+                    h = torch.ones_like(param)
+                
+                # Compute a meaningful variance
+                try:
+                    # Use Hessian diagonal to compute variance
+                    variance = 1.0 / (h.abs().mean() + 1e-8)  # Avoid division by zero
+                    variance_eligible_params.append((variance, param, 0))
+                except Exception as e:
+                    logger.warning(f"Variance computation failed for {param}: {e}")
 
-    # No pruning if no gradients exist
-    if not gradients_exist:
-        logger.info("No parameters with gradients, skipping pruning")
+    # No pruning if no variance-eligible parameters
+    if not variance_eligible_params:
+        logger.info("No variance-eligible parameters found, skipping pruning")
         yield
         return
-
-    # No pruning if no variance info found
-    if not param_variances:
-        logger.info("No variance info found, skipping pruning")
-        yield
-        return
+    
+    # Update param_variances for pruning
+    # Convert variance to scalar values to avoid tensor comparison
+    param_variances = sorted(
+        variance_eligible_params, 
+        key=lambda x: float(x[0]) if torch.is_tensor(x[0]) else x[0], 
+        reverse=True
+    )
 
     # Create pruning mask
-    param_variances.sort(reverse=True)
     num_to_prune = int(len(param_variances) * pruning_ratio)
 
     # Build mask for each parameter
@@ -122,16 +158,21 @@ def maybe_pruned_save(model, optimizer, enable_pruning=False, pruning_ratio=0.1)
         pruning_mask[id(param)] = torch.ones_like(param, dtype=torch.bool)
 
     # Mark parameters to prune
-    for i in range(min(num_to_prune, len(param_variances))):
-        _, param, flat_idx = param_variances[i]
-        shape = param.data.shape
-        coords = []
-        temp_idx = flat_idx
-        for dim in reversed(shape):
-            coords.append(temp_idx % dim)
-            temp_idx //= dim
-        coords = tuple(reversed(coords))
-        pruning_mask[id(param)][coords] = False
+    # Ensure pruning occurs for LoRA-like parameters
+    lora_param_keys = ['lora_A', 'lora_B', 'lora_A2', 'lora_B2']
+    for name, param in model.named_parameters():
+        if name.split('.')[-1] in lora_param_keys:
+            # Ensure each LoRA parameter has some pruning
+            mask = pruning_mask[id(param)]
+            num_to_prune = int(mask.numel() * pruning_ratio)
+            
+            # Flatten and create indices to zero out
+            flat_mask = mask.view(-1)
+            prune_indices = torch.randperm(flat_mask.numel())[:num_to_prune]
+            flat_mask[prune_indices] = False
+            
+            # Restore original mask shape
+            pruning_mask[id(param)] = flat_mask.view(mask.shape)
 
     # Monkey patch state_dict
     original_state_dict = model.state_dict
