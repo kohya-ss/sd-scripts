@@ -266,12 +266,14 @@ def train(args):
                 strategy_base.TextEncodingStrategy.get_strategy()
             )
 
+            system_prompt_special_token = "<Prompt Start>"
+            system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else ""
             prompts = train_util.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:
                     for p in [
-                        prompt_dict.get("prompt", ""),
+                        system_prompt + prompt_dict.get("prompt", ""),
                         prompt_dict.get("negative_prompt", ""),
                     ]:
                         if p not in sample_prompts_te_outputs:

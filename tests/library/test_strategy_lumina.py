@@ -126,13 +126,12 @@ def test_lumina_text_encoder_outputs_caching_strategy():
 
         # Create a mock class for ImageInfo
         class MockImageInfo:
-            def __init__(self, caption, system_prompt, cache_path):
+            def __init__(self, caption, cache_path):
                 self.caption = caption
-                self.system_prompt = system_prompt
                 self.text_encoder_outputs_npz = cache_path
 
         # Create a sample input info
-        image_info = MockImageInfo("Test caption", "", cache_file)
+        image_info = MockImageInfo("Test caption", cache_file)
 
         # Simulate a batch
         batch = [image_info]

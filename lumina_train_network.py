@@ -58,7 +58,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
             torch.device("cpu"),
             disable_mmap=args.disable_mmap_load_safetensors,
             use_flash_attn=args.use_flash_attn,
-            use_sage_attn=args.use_sage_attn
+            use_sage_attn=args.use_sage_attn,
         )
 
         if args.fp8_base:
@@ -75,7 +75,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 model.to(torch.float8_e4m3fn)
 
         if args.blocks_to_swap:
-            logger.info(f'Lumina 2: Enabling block swap: {args.blocks_to_swap}')
+            logger.info(f"Lumina 2: Enabling block swap: {args.blocks_to_swap}")
             model.enable_block_swap(args.blocks_to_swap, accelerator.device)
             self.is_swapping_blocks = True
 
@@ -157,13 +157,13 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
                 system_prompt_special_token = "<Prompt Start>"
-                system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else "" 
+                system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else ""
                 sample_prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in sample_prompts:
                         prompts = [
-                            prompt_dict.get("prompt", ""),
+                            system_prompt + prompt_dict.get("prompt", ""),
                             prompt_dict.get("negative_prompt", ""),
                         ]
                         for i, prompt in enumerate(prompts):
@@ -369,7 +369,6 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         if self.is_swapping_blocks:
             # prepare for next forward: because backward pass is not called, we need to prepare it here
             accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
-
 
 
 def setup_parser() -> argparse.ArgumentParser:
