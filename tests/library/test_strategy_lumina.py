@@ -41,7 +41,7 @@ class SimpleMockGemma2Model:
 def test_lumina_tokenize_strategy():
     # Test default initialization
     try:
-        tokenize_strategy = LuminaTokenizeStrategy(max_length=None)
+        tokenize_strategy = LuminaTokenizeStrategy("dummy system prompt", max_length=None)
     except OSError as e:
         # If the tokenizer is not found (due to gated repo), we can skip the test
         print(f"Skipping LuminaTokenizeStrategy test due to OSError: {e}")
@@ -67,7 +67,7 @@ def test_lumina_tokenize_strategy():
 def test_lumina_text_encoding_strategy():
     # Create strategies
     try:
-        tokenize_strategy = LuminaTokenizeStrategy(max_length=None)
+        tokenize_strategy = LuminaTokenizeStrategy("dummy system prompt", max_length=None)
     except OSError as e:
         # If the tokenizer is not found (due to gated repo), we can skip the test
         print(f"Skipping LuminaTokenizeStrategy test due to OSError: {e}")
@@ -148,7 +148,7 @@ def test_lumina_text_encoder_outputs_caching_strategy():
 
         # Create mock strategies and model
         try:
-            tokenize_strategy = LuminaTokenizeStrategy(max_length=None)
+            tokenize_strategy = LuminaTokenizeStrategy("dummy system prompt", max_length=None)
         except OSError as e:
             # If the tokenizer is not found (due to gated repo), we can skip the test
             print(f"Skipping LuminaTokenizeStrategy test due to OSError: {e}")

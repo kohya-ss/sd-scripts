@@ -25,12 +25,18 @@ GEMMA_ID = "google/gemma-2-2b"
 
 class LuminaTokenizeStrategy(TokenizeStrategy):
     def __init__(
-        self, max_length: Optional[int], tokenizer_cache_dir: Optional[str] = None
+        self, system_prompt:str, max_length: Optional[int], tokenizer_cache_dir: Optional[str] = None
     ) -> None:
         self.tokenizer: GemmaTokenizerFast = AutoTokenizer.from_pretrained(
             GEMMA_ID, cache_dir=tokenizer_cache_dir
         )
         self.tokenizer.padding_side = "right"
+
+        if system_prompt is None:
+            system_prompt = ""
+        system_prompt_special_token = "<Prompt Start>"
+        system_prompt = f"{system_prompt} {system_prompt_special_token} " if system_prompt else ""
+        self.system_prompt = system_prompt
 
         if max_length is None:
             self.max_length = 256
@@ -38,7 +44,7 @@ class LuminaTokenizeStrategy(TokenizeStrategy):
             self.max_length = max_length
 
     def tokenize(
-        self, text: Union[str, List[str]]
+        self, text: Union[str, List[str]], is_negative: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -49,6 +55,12 @@ class LuminaTokenizeStrategy(TokenizeStrategy):
                 token input ids, attention_masks
         """
         text = [text] if isinstance(text, str) else text
+        
+        # In training, we always add system prompt (is_negative=False)
+        if not is_negative:
+            # Add system prompt to the beginning of each text
+            text = [self.system_prompt + t for t in text]
+
         encodings = self.tokenizer(
             text,
             max_length=self.max_length,

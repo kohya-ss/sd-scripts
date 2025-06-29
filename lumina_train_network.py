@@ -86,7 +86,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         return lumina_util.MODEL_VERSION_LUMINA_V2, [gemma2], ae, model
 
     def get_tokenize_strategy(self, args):
-        return strategy_lumina.LuminaTokenizeStrategy(args.gemma2_max_token_length, args.tokenizer_cache_dir)
+        return strategy_lumina.LuminaTokenizeStrategy(args.system_prompt, args.gemma2_max_token_length, args.tokenizer_cache_dir)
 
     def get_tokenizers(self, tokenize_strategy: strategy_lumina.LuminaTokenizeStrategy):
         return [tokenize_strategy.tokenizer]
@@ -156,25 +156,20 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
                 assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
-                system_prompt_special_token = "<Prompt Start>"
-                system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else ""
                 sample_prompts = train_util.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in sample_prompts:
                         prompts = [
-                            system_prompt + prompt_dict.get("prompt", ""),
+                            prompt_dict.get("prompt", ""),
                             prompt_dict.get("negative_prompt", ""),
                         ]
                         for i, prompt in enumerate(prompts):
-                            # Add system prompt only to positive prompt
-                            if i == 0:
-                                prompt = system_prompt + prompt
                             if prompt in sample_prompts_te_outputs:
                                 continue
 
                             logger.info(f"cache Text Encoder outputs for prompt: {prompt}")
-                            tokens_and_masks = tokenize_strategy.tokenize(prompt)
+                            tokens_and_masks = tokenize_strategy.tokenize(prompt, i == 1) # i == 1 means negative prompt
                             sample_prompts_te_outputs[prompt] = text_encoding_strategy.encode_tokens(
                                 tokenize_strategy,
                                 text_encoders,

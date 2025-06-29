@@ -166,7 +166,7 @@ def train(args):
                 )
             )
         strategy_base.TokenizeStrategy.set_strategy(
-            strategy_lumina.LuminaTokenizeStrategy()
+            strategy_lumina.LuminaTokenizeStrategy(args.system_prompt)
         )
 
         train_dataset_group.set_current_strategies()
@@ -221,7 +221,7 @@ def train(args):
         gemma2_max_token_length = args.gemma2_max_token_length
 
     lumina_tokenize_strategy = strategy_lumina.LuminaTokenizeStrategy(
-        gemma2_max_token_length
+        args.system_prompt, gemma2_max_token_length
     )
     strategy_base.TokenizeStrategy.set_strategy(lumina_tokenize_strategy)
 
@@ -266,19 +266,17 @@ def train(args):
                 strategy_base.TextEncodingStrategy.get_strategy()
             )
 
-            system_prompt_special_token = "<Prompt Start>"
-            system_prompt = f"{args.system_prompt} {system_prompt_special_token} " if args.system_prompt else ""
             prompts = train_util.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:
-                    for p in [
-                        system_prompt + prompt_dict.get("prompt", ""),
+                    for i, p in enumerate([
+                        prompt_dict.get("prompt", ""),
                         prompt_dict.get("negative_prompt", ""),
-                    ]:
+                    ]):
                         if p not in sample_prompts_te_outputs:
                             logger.info(f"cache Text Encoder outputs for prompt: {p}")
-                            tokens_and_masks = lumina_tokenize_strategy.tokenize(p)
+                            tokens_and_masks = lumina_tokenize_strategy.tokenize(p, i == 1)  # i == 1 means negative prompt
                             sample_prompts_te_outputs[p] = (
                                 text_encoding_strategy.encode_tokens(
                                     lumina_tokenize_strategy,
