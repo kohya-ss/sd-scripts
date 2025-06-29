@@ -264,8 +264,8 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
             else:
                 info.text_encoder_outputs = [
                     hidden_state_i,
-                    attention_mask_i,
                     input_ids_i,
+                    attention_mask_i,
                 ]
 
 
