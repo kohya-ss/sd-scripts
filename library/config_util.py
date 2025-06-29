@@ -75,6 +75,7 @@ class BaseSubsetParams:
     custom_attributes: Optional[Dict[str, Any]] = None
     validation_seed: int = 0
     validation_split: float = 0.0
+    system_prompt: Optional[str] = None
     resize_interpolation: Optional[str] = None
 
 
@@ -107,6 +108,7 @@ class BaseDatasetParams:
     debug_dataset: bool = False
     validation_seed: Optional[int] = None
     validation_split: float = 0.0
+    system_prompt: Optional[str] = None
     resize_interpolation: Optional[str] = None
 
 @dataclass
@@ -197,6 +199,7 @@ class ConfigSanitizer:
         "caption_prefix": str,
         "caption_suffix": str,
         "custom_attributes": dict,
+        "system_prompt": str,
         "resize_interpolation": str,
     }
     # DO means DropOut
@@ -243,6 +246,7 @@ class ConfigSanitizer:
         "validation_split": float,
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
+        "system_prompt": str,
         "resize_interpolation": str,
     }
 
@@ -530,6 +534,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                   resolution: {(dataset.width, dataset.height)}
                   resize_interpolation: {dataset.resize_interpolation}
                   enable_bucket: {dataset.enable_bucket}
+                  system_prompt: {dataset.system_prompt}
             """)
 
             if dataset.enable_bucket:
@@ -564,6 +569,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                     alpha_mask: {subset.alpha_mask}
                     resize_interpolation: {subset.resize_interpolation}
                     custom_attributes: {subset.custom_attributes}
+                    system_prompt: {subset.system_prompt}
                 """), "  ")
 
                 if is_dreambooth:
