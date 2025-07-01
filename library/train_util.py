@@ -1060,6 +1060,21 @@ class BaseDataset(torch.utils.data.Dataset):
                     self.bucket_info["buckets"][i] = {"resolution": reso, "count": len(bucket)}
                     logger.info(f"bucket {i}: resolution {reso}, count: {len(bucket)}")
 
+            # Warn of any particularly small buckets compared to the current batch size
+            already_warned_underfilled_bucket = False
+            for i, bucket in enumerate(self.bucket_manager.buckets):
+                if len(bucket) < (self.batch_size / 2):
+
+                    if not already_warned_underfilled_bucket:
+                        logger.warning(f"These buckets have too few entries to even half fill the batch_size:")
+                        already_warned_underfilled_bucket = True
+
+                    img_filename = bucket[0]
+                    display_filename_len = 55
+                    if len(img_filename) > display_filename_len:
+                        img_filename = f"...{img_filename[-(display_filename_len - 3):]}"
+                    logger.warning(f"  Bucket {self.bucket_manager.resos[i]} e.g. '{img_filename}'")
+
             if len(img_ar_errors) == 0:
                 mean_img_ar_error = 0  # avoid NaN
             else:
