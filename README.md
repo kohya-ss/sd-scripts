@@ -20,6 +20,7 @@
 | `--nan_inf_until_step N` | `None` | 上記 4 項目の設定を **グローバル step ≤ N** の間だけ有効化し、その後は既定動作に戻す。 | 学習前半だけ GradScaler を安定させ、後半は scale 上昇を狙う用途。|
 | `--auto_cap_release` | `False` | **停滞検知 → 一時的に上限キャップ緩和**。<br>閾値が `ratio × skip_grad_norm_max` を `trigger_steps` 連続で超えたら、以後 `cap_release_length` step だけ `skip_grad_norm_max × cap_release_scale` に拡大。 | デフォルトの各パラメータ:<br>`ratio=0.66`, `trigger_steps=200`, `length=200`, `scale=3.0` |
 | `--idle_free_phase` | `False` | **指定間隔で上限キャップ撤廃**。<br>移動平均窓にNan/Infが `idle_max_steps` 連続で入らなければ発動、 `idle_free_len` step だけスキップ判定が無効化＝“ブレーキ解除” | デフォルトの各パラメータ:<br>`idle_max_steps=4000`, `idle_free_len=200` |
+| `--avg_cp` | `False` | Inter-epoch checkpoint averaging (like SWA) can improve stability. Recommended: `--avg_cp --avg_window 5 --avg_begin 0.6` | use with `--avg_window`, `--avg_begin`, `--avg_mode` |
 
 
 

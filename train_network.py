@@ -40,6 +40,12 @@ from library.custom_train_functions import (
     apply_debiased_estimation,
     apply_masked_loss,
 )
+from library.avg_ckpt_util import (
+    average_state_dicts,
+    filter_lora_state_dict,
+    collect_last_checkpoints,
+    load_lora_state_dict,
+)
 from library.utils import setup_logging, add_logging_arguments
 
 setup_logging()
@@ -545,6 +551,13 @@ class NetworkTrainer:
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
+
+        cp_window = deque(maxlen=args.avg_window) if args.avg_cp else None
+        if args.avg_cp and args.resume:
+            ext = "." + args.save_model_as
+            model_name = train_util.default_if_none(args.output_name, train_util.DEFAULT_EPOCH_NAME)
+            for p in collect_last_checkpoints(args.output_dir, model_name, ext, args.avg_window):
+                cp_window.append(load_lora_state_dict(p))
 
         # 学習する
         # TODO: find a way to handle total batch size when there are multiple datasets
@@ -1302,6 +1315,15 @@ class NetworkTrainer:
 
             self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
+            if args.avg_cp and (epoch + 1) / num_train_epochs >= args.avg_begin:
+                sd = filter_lora_state_dict(accelerator.unwrap_model(network).state_dict())
+                cp_window.append(sd)
+                if len(cp_window) == args.avg_window:
+                    avg_sd = average_state_dicts(list(cp_window), args.avg_mode)
+                    accelerator.unwrap_model(network).load_state_dict(avg_sd, strict=False)
+                    optimizer.state.clear()
+                    accelerator.wait_for_everyone()
+
             # end of epoch
 
         # metadata["ss_epoch"] = str(num_train_epochs)
@@ -1447,6 +1469,16 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="initial step number including all epochs, 0 means first step (same as not specifying). overwrites initial_epoch."
         + " / 初期ステップ数、全エポックを含むステップ数、0で最初のステップ（未指定時と同じ）。initial_epochを上書きする",
+    )
+    parser.add_argument("--avg_cp", action="store_true", help="enable inter-epoch checkpoint averaging / エポック間のチェックポイント平均を有効化")
+    parser.add_argument("--avg_window", type=int, default=5, help="number of checkpoints to average / 平均するチェックポイント数")
+    parser.add_argument("--avg_begin", type=float, default=0.6, help="fraction of total epochs to start averaging / 学習の何割から平均を開始するか")
+    parser.add_argument(
+        "--avg_mode",
+        type=str,
+        default="uniform",
+        choices=["uniform", "ema", "metric"],
+        help="averaging mode: uniform, ema or metric / 平均化モード",
     )
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")
