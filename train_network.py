@@ -18,7 +18,7 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, DistributedType
 from diffusers import DDPMScheduler
 from library import deepspeed_utils, model_util
 
@@ -47,6 +47,7 @@ from library.avg_ckpt_util import (
     load_lora_state_dict,
 )
 from library.utils import setup_logging, add_logging_arguments
+from accelerate.utils import broadcast
 
 setup_logging()
 import logging
@@ -1321,8 +1322,18 @@ class NetworkTrainer:
                 if len(cp_window) == args.avg_window:
                     avg_sd = average_state_dicts(list(cp_window), args.avg_mode)
                     accelerator.unwrap_model(network).load_state_dict(avg_sd, strict=False)
-                    optimizer.state.clear()
-                    accelerator.wait_for_everyone()
+                    if args.avg_reset_stats:
+                        for p_state in optimizer.state.values():
+                            p_state["step"] = p_state.get("step", 0)  # keep real count
+                            for buf in ("exp_avg", "exp_avg_sq", "exp_avg_max"):
+                                if buf in p_state and isinstance(p_state[buf], torch.Tensor):
+                                    p_state[buf].zero_()
+                    if accelerator.distributed_type != DistributedType.NO:
+                        sd = broadcast(accelerator.unwrap_model(network).state_dict())
+                        accelerator.unwrap_model(network).load_state_dict(sd, strict=False)
+                        accelerator.wait_for_everyone()
+                    else:
+                        accelerator.wait_for_everyone()
 
             # end of epoch
 
@@ -1479,6 +1490,12 @@ def setup_parser() -> argparse.ArgumentParser:
         default="uniform",
         choices=["uniform", "ema", "metric"],
         help="averaging mode: uniform, ema or metric / 平均化モード",
+    )
+    parser.add_argument(
+        "--avg_reset_stats",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="reset optimizer stats after averaging / 平均化後にOptimizer統計をリセットする",
     )
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")

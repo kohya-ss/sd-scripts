@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional
 import os
 import re
+import logging
 import torch
 from safetensors.torch import load_file as load_safetensors
 
@@ -12,11 +13,19 @@ def filter_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, tor
 
 def average_state_dicts(states: List[Dict[str, torch.Tensor]], mode: str = "uniform", metrics: Optional[List[float]] = None) -> Dict[str, torch.Tensor]:
     assert len(states) > 0
-    keys = states[0].keys()
+    reference_keys = list(states[0].keys())
+    keys = set(reference_keys)
+    for sd in states[1:]:
+        keys &= set(sd.keys())
+    for sd in states:
+        missing = [k for k in reference_keys if k not in sd]
+        unexpected = [k for k in sd.keys() if k not in reference_keys]
+        if missing or unexpected:
+            logging.warning(f"[AVG] missing={missing} unexpected={unexpected}")
     if mode == "metric" and metrics is None:
         metrics = [1.0] * len(states)
     if mode == "uniform":
-        avg = {k: torch.stack([sd[k] for sd in states], dim=0).mean(dim=0) for k in keys}
+        avg = {k: torch.stack([sd[k] for sd in states if k in sd], dim=0).mean(dim=0) for k in keys}
     elif mode == "ema":
         alpha = 2 / (len(states) + 1)
         avg = {k: states[0][k].clone() for k in keys}
@@ -26,7 +35,7 @@ def average_state_dicts(states: List[Dict[str, torch.Tensor]], mode: str = "unif
     else:  # metric
         total = sum(metrics)
         weights = [m / total for m in metrics]
-        avg = {k: sum(w * sd[k] for sd, w in zip(states, weights)) for k in keys}
+        avg = {k: sum(w * sd[k] for sd, w in zip(states, weights) if k in sd) for k in keys}
     return avg
 
 
