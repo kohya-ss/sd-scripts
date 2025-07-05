@@ -150,6 +150,10 @@ class NetworkTrainer:
         train_util.prepare_dataset_args(args, True)
         deepspeed_utils.prepare_deepspeed_args(args)
         setup_logging(args, reset=True)
+        logger.info(
+            f"avg_cp: {args.avg_cp}, avg_window: {args.avg_window}, avg_begin: {args.avg_begin}, "
+            f"avg_mode: {args.avg_mode}, avg_reset_stats: {args.avg_reset_stats}"
+        )
 
         cache_latents = args.cache_latents
         use_dreambooth_method = args.in_json is None
@@ -1320,6 +1324,10 @@ class NetworkTrainer:
                 sd = filter_lora_state_dict(accelerator.unwrap_model(network).state_dict())
                 cp_window.append(sd)
                 if len(cp_window) == args.avg_window:
+                    start_ep = epoch - args.avg_window + 2
+                    if start_ep < 1:
+                        start_ep = 1
+                    logger.info(f"averaging checkpoints from epoch {start_ep} to {epoch + 1}")
                     avg_sd = average_state_dicts(list(cp_window), args.avg_mode)
                     accelerator.unwrap_model(network).load_state_dict(avg_sd, strict=False)
                     if args.avg_reset_stats:
