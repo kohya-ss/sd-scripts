@@ -20,7 +20,7 @@
 | `--nan_inf_until_step N` | `None` | 上記 4 項目の設定を **グローバル step ≤ N** の間だけ有効化し、その後は既定動作に戻す。 | 学習前半だけ GradScaler を安定させ、後半は scale 上昇を狙う用途。|
 | `--auto_cap_release` | `False` | **停滞検知 → 一時的に上限キャップ緩和**。<br>閾値が `ratio × skip_grad_norm_max` を `trigger_steps` 連続で超えたら、以後 `cap_release_length` step だけ `skip_grad_norm_max × cap_release_scale` に拡大。 | デフォルトの各パラメータ:<br>`ratio=0.66`, `trigger_steps=200`, `length=200`, `scale=3.0` |
 | `--idle_free_phase` | `False` | **指定間隔で上限キャップ撤廃**。<br>移動平均窓にNan/Infが `idle_max_steps` 連続で入らなければ発動、 `idle_free_len` step だけスキップ判定が無効化＝“ブレーキ解除” | デフォルトの各パラメータ:<br>`idle_max_steps=4000`, `idle_free_len=200` |
-| `--avg_cp` | `False` | Inter-epoch checkpoint averaging (like SWA) can improve stability. Recommended: `--avg_cp --avg_window 5 --avg_begin 0.6` | use with `--avg_window`, `--avg_begin`, `--avg_mode` |
+| `--avg_cp` | `False` | Inter-epoch checkpoint averaging (like SWA) can improve stability./ エポック間のチェックポイント平均を有効化 Recommended: `--avg_cp --avg_window 5 --avg_begin 0.6 --avg_mode uniform --avg_reset_stats` | use with `--avg_window` 平均するチェックポイント数, `--avg_begin` 学習の何割から平均を開始するか, `--avg_mode` 平均化モード uniform 等重み平均, ema 指数移動平均, metric 指標重み付き平均, `--avg_reset_stats/--no_avg_reset_stats` 平均を実行した直後に Optimizer のモーメンタム統計だけを安全にリセットする |
 
 
 
@@ -32,6 +32,7 @@
 | **Preset B — “安定重視”** | *NaN/Inf をスキップしない*ことで GradScaler の自動調整を生かしつつ、動的しきい値で大スパイクのみ遮断。窓にNaN/Infを入れることで“ブレーキ解除”。最も汎用的。 | `--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate` |
 | **Preset C — “停滞打破実験”** | Preset B + `--auto_cap_release`。谷底で停滞したら一時的にキャップを緩めて脱出を試みる。効果はケース依存。(あまり効果なし) | `Preset B` に `--auto_cap_release` を追加 |
 | **Preset D' — “停滞打破実験”** | Preset B + `--idle_free_phase`。窓にNaNが長期間入らない場合も定期的に“ブレーキ解除”。 | `Preset B` に `--idle_free_phase` を追加 |
+| **Preset E' — “実験”** | Preset B + `--idle_free_phase`。途中のエポックから直近数個のエポックとの平均をとりながら学習を進める。 | `Preset B` に `--avg_cp --avg_window 5 --avg_begin 0.6 --avg_mode uniform --avg_reset_stats` を追加 |
 
 **ターゲット想定**  
 - `batch_size=1`、`fp16`、`rank≤6` など *メモリ制約の大きい環境*  
