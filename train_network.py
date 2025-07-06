@@ -1490,12 +1490,12 @@ def setup_parser() -> argparse.ArgumentParser:
         + " / 初期ステップ数、全エポックを含むステップ数、0で最初のステップ（未指定時と同じ）。initial_epochを上書きする",
     )
     parser.add_argument("--avg_cp", action="store_true", help="enable inter-epoch checkpoint averaging / エポック間のチェックポイント平均を有効化")
-    parser.add_argument("--avg_window", type=int, default=5, help="number of checkpoints to average / 平均するチェックポイント数")
+    parser.add_argument("--avg_window", type=int, default=4, help="number of checkpoints to average / 平均するチェックポイント数")
     parser.add_argument("--avg_begin", type=float, default=0.6, help="fraction of total epochs to start averaging / 学習の何割から平均を開始するか")
     parser.add_argument(
         "--avg_mode",
         type=str,
-        default="uniform",
+        default="ema",
         choices=["uniform", "ema", "metric"],
         help="averaging mode: uniform, ema or metric / 平均化モード",
     )
