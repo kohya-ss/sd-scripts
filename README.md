@@ -20,8 +20,7 @@
 | `--nan_inf_until_step N` | `None` | 上記 4 項目の設定を **グローバル step ≤ N** の間だけ有効化し、その後は既定動作に戻す。 | 学習前半だけ GradScaler を安定させ、後半は scale 上昇を狙う用途。|
 | `--auto_cap_release` | `False` | **停滞検知 → 一時的に上限キャップ緩和**。<br>閾値が `ratio × skip_grad_norm_max` を `trigger_steps` 連続で超えたら、以後 `cap_release_length` step だけ `skip_grad_norm_max × cap_release_scale` に拡大。 | デフォルトの各パラメータ:<br>`ratio=0.66`, `trigger_steps=200`, `length=200`, `scale=3.0` |
 | `--idle_free_phase` | `False` | **指定間隔で上限キャップ撤廃**。<br>移動平均窓にNan/Infが `idle_max_steps` 連続で入らなければ発動、 `idle_free_len` step だけスキップ判定が無効化＝“ブレーキ解除” | デフォルトの各パラメータ:<br>`idle_max_steps=4000`, `idle_free_len=200` |
-| `--avg_cp` | `False` | Inter-epoch checkpoint averaging (like SWA) can improve stability./ エポック間のチェックポイント平均を有効化 Recommended: `--avg_cp --avg_window 4 --avg_begin 0.6 --avg_mode ema --avg_reset_stats` | use with `--avg_window` 平均するチェックポイント数, `--avg_begin` 学習の何割から平均を開始するか, `--avg_mode` 平均化モード uniform 等重み平均, ema 指数移動平均, metric 指標重み付き平均, `--avg_reset_stats/--no_avg_reset_stats` 平均を実行した直後に Optimizer のモーメンタム統計だけを安全にリセットする |
-
+| `--avg_cp` | **False** | 有効化するとエポック間の LoRA 重みを平均して安定化（SWA/EMA 相当）。<br>  推奨プリセット：`--avg_cp --avg_window 4 --avg_begin 0.6 --avg_mode ema --avg_reset_stats`<br>  併用オプション:<br>  • `--avg_window <int>` 平均に使うチェックポイント数。<br>  • `--avg_begin <0-1>` 学習の進行率。ここを過ぎてから窓に溜め始め、<br>    窓が満杯になったエポック以降で平均が発動。<br>    流れ：①エポック末に raw ckpt を保存 → ②窓が満杯なら平均 → ③平均後の<br>    重みで次エポックを開始。<br>  • `--avg_mode {uniform,ema,metric}` 平均方法。`uniform`=等重み, `ema`=指数移動平均,<br>    `metric`=指標重み付き（準備中）。<br>  • `--avg_reset_stats / --no_avg_reset_stats` 平均直後に Optimizer のモーメンタム統計を<br>    安全にリセットして発散を防ぐかどうか。 | LoRAを学習後に最後の数エポックを平均するといい結果になるという話があるので、学習後半から平均しながら学習を進められるるようにする検証用 |
 
 
 ### 推奨プリセット
