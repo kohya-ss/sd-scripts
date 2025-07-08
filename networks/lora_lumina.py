@@ -344,7 +344,7 @@ def create_network(
         if embedder_dims.startswith("[") and embedder_dims.endswith("]"):
             embedder_dims = embedder_dims[1:-1]
         embedder_dims = [int(d) for d in embedder_dims.split(",")]
-        assert len(embedder_dims) == 3, f"invalid embedder_dims: {embedder_dims}, must be 4 dimensions (x_embedder, t_embedder, cap_embedder)"
+        assert len(embedder_dims) == 3, f"invalid embedder_dims: {embedder_dims}, must be 3 dimensions (x_embedder, t_embedder, cap_embedder)"
 
     # rank/module dropout
     rank_dropout = kwargs.get("rank_dropout", None)
