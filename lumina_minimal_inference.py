@@ -205,8 +205,8 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--negative_prompt", type=str, default="", help="Negative prompt for image generation, default is empty")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Output directory for generated images")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
-    parser.add_argument("--steps", type=int, default=30, help="Number of inference steps")
-    parser.add_argument("--guidance_scale", type=float, default=4.0, help="Guidance scale for classifier-free guidance")
+    parser.add_argument("--steps", type=int, default=36, help="Number of inference steps")
+    parser.add_argument("--guidance_scale", type=float, default=3.5, help="Guidance scale for classifier-free guidance")
     parser.add_argument("--image_width", type=int, default=1024, help="Image width")
     parser.add_argument("--image_height", type=int, default=1024, help="Image height")
     parser.add_argument("--dtype", type=str, default="bf16", help="Data type for model (bf16, fp16, float)")
@@ -224,7 +224,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
-        default=1.0,
+        default=6.0,
         help="Shift value for FlowMatchEulerDiscreteScheduler",
     )
     parser.add_argument(
