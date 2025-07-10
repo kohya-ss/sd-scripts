@@ -8,3 +8,5 @@ build
 wandb
 CLAUDE.md
 GEMINI.md
+.claude
+.gemini
