@@ -6,3 +6,7 @@ venv
 build
 .vscode
 wandb
+CLAUDE.md
+GEMINI.md
+.claude
+.gemini
