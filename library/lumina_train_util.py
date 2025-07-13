@@ -1049,9 +1049,9 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--timestep_sampling",
         choices=["sigma", "uniform", "sigmoid", "shift", "nextdit_shift"],
-        default="sigma",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and NextDIT.1 shifting."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、NextDIT.1のシフト。",
+        default="shift",
+        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and NextDIT.1 shifting. Default is 'shift'."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、NextDIT.1のシフト。デフォルトは'shift'です。",
     )
     parser.add_argument(
         "--sigmoid_scale",
@@ -1062,7 +1062,7 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--model_prediction_type",
         choices=["raw", "additive", "sigma_scaled"],
-        default="sigma_scaled",
+        default="raw",
         help="How to interpret and process the model prediction: "
         "raw (use as is), additive (add to noisy input), sigma_scaled (apply sigma scaling)."
         " / モデル予測の解釈と処理方法："

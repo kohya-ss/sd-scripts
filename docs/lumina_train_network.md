@@ -167,9 +167,9 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Lumina Image 2.0 Training Parameters / Lumina Image 2.0 学習パラメータ
 
 * `--gemma2_max_token_length=<integer>` – Max token length for Gemma2. Default is 256.
-* `--timestep_sampling=<choice>` – Timestep sampling method. Options: `sigma`, `uniform`, `sigmoid`, `shift`, `nextdit_shift`. Default `sigma`. **Recommended: `nextdit_shift`**
+* `--timestep_sampling=<choice>` – Timestep sampling method. Options: `sigma`, `uniform`, `sigmoid`, `shift`, `nextdit_shift`. Default `shift`. **Recommended: `nextdit_shift`**
 * `--discrete_flow_shift=<float>` – Discrete flow shift for the Euler Discrete Scheduler. Default `6.0`.
-* `--model_prediction_type=<choice>` – Model prediction processing method. Options: `raw`, `additive`, `sigma_scaled`. Default `sigma_scaled`. **Recommended: `raw`**
+* `--model_prediction_type=<choice>` – Model prediction processing method. Options: `raw`, `additive`, `sigma_scaled`. Default `raw`. **Recommended: `raw`**
 * `--system_prompt=<string>` – System prompt to prepend to all prompts. Recommended: `"You are an assistant designed to generate high-quality images based on user prompts."` or `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 * `--use_flash_attn` – Use Flash Attention. Requires `pip install flash-attn` (may not be supported in all environments). If installed correctly, it speeds up training. 
 * `--sigmoid_scale=<float>` – Scale factor for sigmoid timestep sampling. Default `1.0`.
@@ -212,9 +212,9 @@ For Lumina Image 2.0, you can specify different dimensions for various component
 #### Lumina Image 2.0 学習パラメータ
 
 *   `--gemma2_max_token_length=<integer>` – Gemma2で使用するトークンの最大長を指定します。デフォルトは256です。
-*   `--timestep_sampling=<choice>` – タイムステップのサンプリング方法を指定します。`sigma`, `uniform`, `sigmoid`, `shift`, `nextdit_shift`から選択します。デフォルトは`sigma`です。**推奨: `nextdit_shift`**
+*   `--timestep_sampling=<choice>` – タイムステップのサンプリング方法を指定します。`sigma`, `uniform`, `sigmoid`, `shift`, `nextdit_shift`から選択します。デフォルトは`shift`です。**推奨: `nextdit_shift`**
 *   `--discrete_flow_shift=<float>` – Euler Discrete Schedulerの離散フローシフトを指定します。デフォルトは`6.0`です。
-*   `--model_prediction_type=<choice>` – モデル予測の処理方法を指定します。`raw`, `additive`, `sigma_scaled`から選択します。デフォルトは`sigma_scaled`です。**推奨: `raw`**
+*   `--model_prediction_type=<choice>` – モデル予測の処理方法を指定します。`raw`, `additive`, `sigma_scaled`から選択します。デフォルトは`raw`です。**推奨: `raw`**
 *   `--system_prompt=<string>` – 全てのプロンプトに前置するシステムプロンプトを指定します。推奨: `"You are an assistant designed to generate high-quality images based on user prompts."` または `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 *   `--use_flash_attn` – Flash Attentionを使用します。`pip install flash-attn`でインストールが必要です（環境によってはサポートされていません）。正しくインストールされている場合は、指定すると学習が高速化されます。
 *   `--sigmoid_scale=<float>` – sigmoidタイムステップサンプリングのスケール係数を指定します。デフォルトは`1.0`です。
