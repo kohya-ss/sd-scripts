@@ -1042,8 +1042,8 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
         "--gemma2_max_token_length",
         type=int,
         default=None,
-        help="maximum token length for Gemma2. if omitted, 256 for schnell and 512 for dev"
-        " / Gemma2の最大トークン長。省略された場合、schnellの場合は256、devの場合は512",
+        help="maximum token length for Gemma2. if omitted, 256"
+        " / Gemma2の最大トークン長。省略された場合、256になります",
     )
 
     parser.add_argument(
