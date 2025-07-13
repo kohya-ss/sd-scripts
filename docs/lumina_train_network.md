@@ -269,11 +269,12 @@ Based on the contributor's recommendations, here are the suggested settings for 
 * High image-text alignment: `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 
 **Sample Prompts:**
-Sample prompts can include CFG truncate (`-ct`) and Renorm CFG (`-rc`) parameters:
-* `-ct 0.25 -rc 1.0` (default values)
+Sample prompts can include CFG truncate (`--ctr`) and Renorm CFG (`-rcfg`) parameters:
+* `--ctr 0.25 --rcfg 1.0` (default values)
 
 <details>
 <summary>日本語</summary>
+
 必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
 
 学習が完了すると、指定した`output_dir`にLoRAモデルファイル（例: `my_lumina_lora.safetensors`）が保存されます。このファイルは、Lumina Image 2.0モデルに対応した推論環境（例: ComfyUI + 適切なノード）で使用できます。
@@ -295,6 +296,7 @@ Sample prompts can include CFG truncate (`-ct`) and Renorm CFG (`-rc`) parameter
 * 高い画像-テキスト整合性: `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 
 **サンプルプロンプト:**
-サンプルプロンプトには CFG truncate (`-ct`) と Renorm CFG (`-rc`) パラメータを含めることができます：
-* `-ct 0.25 -rc 1.0` (デフォルト値)
+サンプルプロンプトには CFG truncate (`--ctr`) と Renorm CFG (`--rcfg`) パラメータを含めることができます：
+* `--ctr 0.25 --rcfg 1.0` (デフォルト値)
+
 </details>
