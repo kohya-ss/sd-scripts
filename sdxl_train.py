@@ -15,7 +15,7 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, DummyOptim, DummyScheduler
 from diffusers import DDPMScheduler
 from library import deepspeed_utils, sdxl_model_util, strategy_base, strategy_sd, strategy_sdxl
 
@@ -416,7 +416,11 @@ def train(args):
         logger.info(f"using {len(optimizers)} optimizers for fused optimizer groups")
 
     else:
-        _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+
+    if (args.deepspeed or "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config):
+        optimizer_cls = (DummyOptim)
+        optimizer = optimizer_cls(params_to_optimize, lr=args.learning_rate)
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -452,7 +456,12 @@ def train(args):
         lr_schedulers = [train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) for optimizer in optimizers]
         lr_scheduler = lr_schedulers[0]  # avoid error in the following code
     else:
-        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+        # In the case of DeepSpeed, the scheduler is handled by the DeepSpeed engine, so we use a dummy scheduler.
+        # The real scheduler is defined in the DeepSpeed config.
+        if isinstance(optimizer, DummyOptim):
+            lr_scheduler = DummyScheduler(optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.lr_warmup_steps)
+        else:
+            lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
     if args.full_fp16:
@@ -484,10 +493,14 @@ def train(args):
             text_encoder1=text_encoder1 if train_text_encoder1 else None,
             text_encoder2=text_encoder2 if train_text_encoder2 else None,
         )
-        # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             ds_model, optimizer, train_dataloader, lr_scheduler
         )
+        if type(optimizer) is not DummyOptim:
+            # After `accelerator.prepare`, the optimizer is a DeepSpeed wrapper.
+            # We need to expose the `param_groups` attribute for other parts of the script to work.
+            optimizer.param_groups = optimizer.optimizer.param_groups
+            # The scheduler is already prepared by accelerator, no need to re-create or re-prepare it.
         training_models = [ds_model]
 
     else:

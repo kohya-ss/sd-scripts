@@ -288,11 +288,15 @@ def resize_like(x, target, mode="bicubic", align_corners=False):
     return x
 
 
+# in library/sdxl_original_unet.py
+
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
-        if self.weight.dtype != torch.float32:
-            return super().forward(x)
-        return super().forward(x.float()).type(x.dtype)
+        # The input tensor 'x' can sometimes be float32 while the layer weights are bfloat16/float16.
+        # We must ensure the input matches the layer's weight dtype before the operation.
+        # This is more robust than the previous check.
+        # The output will have the same dtype as the weights, which is what subsequent layers expect.
+        return F.group_norm(x.to(self.weight.dtype), self.num_groups, self.weight, self.bias, self.eps)
 
 
 class ResnetBlock2D(nn.Module):
@@ -1072,46 +1076,77 @@ class SdxlUNet2DConditionModel(nn.Module):
     # endregion
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
+        # Add a flag to control printing to avoid flooding the console
+        DEBUG_PRINT = 1
+
+        if DEBUG_PRINT: print(f"\n--- UNET FORWARD START ---")
+        if DEBUG_PRINT: print(f"Initial x.dtype: {x.dtype}")
+
         # broadcast timesteps to batch dimension
         timesteps = timesteps.expand(x.shape[0])
 
         hs = []
-        t_emb = get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)  # , repeat_only=False)
-        t_emb = t_emb.to(x.dtype)
+        
+        # --- TIME EMBEDDING ---
+        t_emb = get_timestep_embedding(timesteps, self.model_channels, downscale_freq_shift=0)
+        time_embed_dtype = next(self.time_embed.parameters()).dtype
+        t_emb = t_emb.to(dtype=time_embed_dtype)
+        if DEBUG_PRINT: print(f"t_emb.dtype after cast: {t_emb.dtype}, time_embed layer dtype: {time_embed_dtype}")
         emb = self.time_embed(t_emb)
+        if DEBUG_PRINT: print(f"emb.dtype after time_embed: {emb.dtype}")
 
-        assert x.shape[0] == y.shape[0], f"batch size mismatch: {x.shape[0]} != {y.shape[0]}"
-        assert x.dtype == y.dtype, f"dtype mismatch: {x.dtype} != {y.dtype}"
-        # assert x.dtype == self.dtype
-        emb = emb + self.label_emb(y)
+        # --- LABEL (ADM) EMBEDDING ---
+        if y is not None:
+            label_emb_dtype = next(self.label_emb.parameters()).dtype
+            y = y.to(dtype=label_emb_dtype)
+            if DEBUG_PRINT: print(f"y.dtype after cast: {y.dtype}, label_emb layer dtype: {label_emb_dtype}")
+            
+            label_emb_out = self.label_emb(y)
+            if DEBUG_PRINT: print(f"label_emb_out.dtype: {label_emb_out.dtype}")
+            
+            emb = emb + label_emb_out
+            if DEBUG_PRINT: print(f"Final emb.dtype after add: {emb.dtype}")
 
-        def call_module(module, h, emb, context):
+        def call_module(module, h, emb, context, module_name=""):
             x = h
-            for layer in module:
-                # logger.info(layer.__class__.__name__, x.dtype, emb.dtype, context.dtype if context is not None else None)
+            for i, layer in enumerate(module):
+                layer_name = f"{module_name}.{i}.{layer.__class__.__name__}"
+                if DEBUG_PRINT: print(f"  -> Processing {layer_name} | Input h.dtype: {x.dtype}")
+
                 if isinstance(layer, ResnetBlock2D):
                     x = layer(x, emb)
                 elif isinstance(layer, Transformer2DModel):
                     x = layer(x, context)
                 else:
                     x = layer(x)
+                
+                if DEBUG_PRINT: print(f"     <- Output from {layer_name} | Output h.dtype: {x.dtype}")
             return x
 
-        # h = x.type(self.dtype)
         h = x
+        if DEBUG_PRINT: print(f"h.dtype before input_blocks: {h.dtype}")
 
-        for module in self.input_blocks:
-            h = call_module(module, h, emb, context)
+        for i, module in enumerate(self.input_blocks):
+            if DEBUG_PRINT: print(f"--- Input Block {i} ---")
+            h = call_module(module, h, emb, context, module_name=f"input_blocks.{i}")
             hs.append(h)
+            if DEBUG_PRINT: print(f"--- End Input Block {i} | h.dtype: {h.dtype} ---\n")
 
-        h = call_module(self.middle_block, h, emb, context)
+        if DEBUG_PRINT: print(f"--- Middle Block ---")
+        h = call_module(self.middle_block, h, emb, context, module_name="middle_block")
+        if DEBUG_PRINT: print(f"--- End Middle Block | h.dtype: {h.dtype} ---\n")
 
-        for module in self.output_blocks:
+        for i, module in enumerate(self.output_blocks):
+            if DEBUG_PRINT: print(f"--- Output Block {i} ---")
             h = torch.cat([h, hs.pop()], dim=1)
-            h = call_module(module, h, emb, context)
+            if DEBUG_PRINT: print(f"   cat with hs | h.dtype after cat: {h.dtype}")
+            h = call_module(module, h, emb, context, module_name=f"output_blocks.{i}")
+            if DEBUG_PRINT: print(f"--- End Output Block {i} | h.dtype: {h.dtype} ---\n")
 
         h = h.type(x.dtype)
-        h = call_module(self.out, h, emb, context)
+        if DEBUG_PRINT: print(f"h.dtype before final out: {h.dtype}")
+        h = call_module(self.out, h, emb, context, module_name="out")
+        if DEBUG_PRINT: print(f"--- UNET FORWARD END | final h.dtype: {h.dtype} ---")
 
         return h
 

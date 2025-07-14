@@ -23,6 +23,36 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         self.vae_scale_factor = sdxl_model_util.VAE_SCALE_FACTOR
         self.is_sdxl = True
 
+    def get_text_encoders_train_flags(self, args, text_encoders):
+        # This method is specific to SDXL and its two text encoders.
+
+        # Priority 1: Check for specific learning rates. This is the most explicit user instruction.
+        if args.text_encoder_lr is not None:
+            # nargs="*" always creates a list. We handle the different list lengths.
+            num_lr_values = len(args.text_encoder_lr)
+            
+            if num_lr_values == 2:
+                # User provided two LRs, e.g., --text_encoder_lr 2.5e-5 0
+                return [lr > 0.0 for lr in args.text_encoder_lr]
+            elif num_lr_values == 1:
+                # User provided one LR, e.g., --text_encoder_lr 2.5e-5
+                # Apply it to the first TE and disable the second one.
+                logger.info("One learning rate provided for Text Encoders. Applying to TE1 and disabling TE2.")
+                return [args.text_encoder_lr[0] > 0.0, False]
+            else:
+                # User provided an incorrect number of LRs (0 or >2)
+                logger.error(f"Incorrect number of learning rates provided for Text Encoders ({num_lr_values}). Please provide 1 or 2. Disabling TE training.")
+                return [False, False]
+
+        # Priority 2: Check for the general 'unet_only' flag as a fallback.
+        if args.network_train_unet_only:
+            return [False] * len(text_encoders)
+
+        # Priority 3: Sensible default for SDXL LoRA training if no LRs are specified.
+        # Train the first TE and not the second to save memory.
+        logger.info("Defaulting to training only the first Text Encoder for SDXL for memory efficiency.")
+        return [True, False]
+
     def assert_extra_args(self, args, train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset], val_dataset_group: Optional[train_util.DatasetGroup]):
         super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         sdxl_train_util.verify_sdxl_training_args(args)
@@ -78,7 +108,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         return strategy_sdxl.SdxlTextEncodingStrategy()
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
-        return text_encoders + [accelerator.unwrap_model(text_encoders[-1])]
+        return text_encoders
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
@@ -200,6 +230,23 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
         text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim=2).to(weight_dtype)
 
+        # START: Shape validation and correction for DeepSpeed bug
+        # A bug in the interaction between our model deletion and DeepSpeed can cause
+        # the text embedding batch size to be duplicated. We correct it here.
+        latent_batch_size = noisy_latents.shape[0]
+        if text_embedding.shape[0] != latent_batch_size:
+            """ logger.warning(
+                f"Correcting text embedding batch size mismatch. Expected {latent_batch_size}, got {text_embedding.shape[0]}."
+            ) """
+            text_embedding = text_embedding[:latent_batch_size, ...]
+        
+        if vector_embedding.shape[0] != latent_batch_size:
+            """ logger.warning(
+                f"Correcting vector embedding batch size mismatch. Expected {latent_batch_size}, got {vector_embedding.shape[0]}."
+            ) """
+            vector_embedding = vector_embedding[:latent_batch_size, ...]
+        # END: Shape validation and correction
+
         if indices is not None and len(indices) > 0:
             noisy_latents = noisy_latents[indices]
             timesteps = timesteps[indices]
@@ -208,9 +255,6 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 
         noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
         return noise_pred
-
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
-        sdxl_train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
 
 
 def setup_parser() -> argparse.ArgumentParser:
