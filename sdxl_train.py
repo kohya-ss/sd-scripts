@@ -416,11 +416,17 @@ def train(args):
         logger.info(f"using {len(optimizers)} optimizers for fused optimizer groups")
 
     else:
+<<<<<<< HEAD
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
 
     if (args.deepspeed or "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config):
         optimizer_cls = (DummyOptim)
         optimizer = optimizer_cls(params_to_optimize, lr=args.learning_rate)
+=======
+        if args.optimizer_type == "prodigyplus.ProdigyPlusScheduleFree" and args.fused_backward_pass:
+            args.optimizer_args.append("fused_back_pass=True")
+        _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
+>>>>>>> d0eba379467be1e5d0eec86b81e8cd0718dd5d6f
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -534,21 +540,27 @@ def train(args):
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     if args.fused_backward_pass:
-        # use fused optimizer for backward pass: other optimizers will be supported in the future
-        import library.adafactor_fused
+        if args.optimizer_type == "AdaFactor":
+            import library.adafactor_fused
+            library.adafactor_fused.patch_adafactor_fused(optimizer)
+            for param_group in optimizer.param_groups:
+                for parameter in param_group["params"]:
+                    if parameter.requires_grad:
 
-        library.adafactor_fused.patch_adafactor_fused(optimizer)
-        for param_group in optimizer.param_groups:
-            for parameter in param_group["params"]:
-                if parameter.requires_grad:
+                        def __grad_hook(tensor: torch.Tensor, param_group=param_group):
+                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                            optimizer.step_param(tensor, param_group)
+                            tensor.grad = None
 
-                    def __grad_hook(tensor: torch.Tensor, param_group=param_group):
-                        if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                            accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                        optimizer.step_param(tensor, param_group)
-                        tensor.grad = None
-
-                    parameter.register_post_accumulate_grad_hook(__grad_hook)
+                        parameter.register_post_accumulate_grad_hook(__grad_hook)
+        elif args.optimizer_type == "prodigyplus.ProdigyPlusScheduleFree":
+            # ProdigyPlus uses its internal fused_back_pass mechanism, pass for now
+            pass
+        else:
+            logger.warning(
+                f"Fused backward pass is not supported for optimizer type: {args.optimizer_type}. Ignoring."
+            )
 
     elif args.fused_optimizer_groups:
         # prepare for additional optimizers and lr schedulers
