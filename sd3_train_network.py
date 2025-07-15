@@ -25,6 +25,7 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
         super().__init__()
         self.sample_prompts_te_outputs = None
+        self.is_flow_matching = True
 
     def assert_extra_args(
         self,

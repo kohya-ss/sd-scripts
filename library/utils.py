@@ -513,7 +513,8 @@ def validate_interpolation_fn(interpolation_str: str) -> bool:
 # Debugging tool for saving latent as image
 def save_latent_as_img(vae, latent_to: torch.Tensor, output_name: str):
     with torch.no_grad():
-        image = vae.decode(latent_to.to(vae.dtype)).float()
+        (image,) = vae.decode(latent_to.to(vae.dtype), return_dict=False)
+        image = image.float()
         # VAE outputs are typically in the range [-1, 1], so rescale to [0, 255]
         image = (image / 2 + 0.5).clamp(0, 1)
         
