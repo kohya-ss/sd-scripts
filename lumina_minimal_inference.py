@@ -231,13 +231,13 @@ def setup_parser() -> argparse.ArgumentParser:
         "--cfg_trunc_ratio",
         type=float,
         default=0.25,
-        help="TBD",
+        help="The ratio of the timestep interval to apply normalization-based guidance scale. For example, 0.25 means the last 25% of timesteps will be guided.",
     )
     parser.add_argument(
         "--renorm_cfg",
         type=float,
         default=1.0,
-        help="TBD",
+        help="The factor to limit the maximum norm after guidance. Default: 1.0, 0.0 means no renormalization.",
     )
     parser.add_argument(
         "--use_flash_attn",
