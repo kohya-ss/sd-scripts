@@ -45,11 +45,7 @@ from library.custom_train_functions import (
     apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
-
-try:
-    from wavelet_loss import WaveletLoss
-except:
-    raise ImportError("WaveletLoss is not installed. Please install it with `pip install git+https://github.com/rockerBOO/wavelet-loss`")
+from wavelet_loss import WaveletLoss
 
 setup_logging()
 import logging
