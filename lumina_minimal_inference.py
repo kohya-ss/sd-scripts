@@ -231,7 +231,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--cfg_trunc_ratio",
         type=float,
         default=0.25,
-        help="The ratio of the timestep interval to apply normalization-based guidance scale. For example, 0.25 means the last 25% of timesteps will be guided.",
+        help="The ratio of the timestep interval to apply normalization-based guidance scale. For example, 0.25 means the first 25% of timesteps will be guided.",
     )
     parser.add_argument(
         "--renorm_cfg",
