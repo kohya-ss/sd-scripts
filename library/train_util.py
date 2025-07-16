@@ -6008,6 +6008,7 @@ def get_noise_noisy_latents_and_timesteps(
     else:
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
+    # This moves the alphas_cumprod back to the CPU after it is moved in noise_scheduler.add_noise
     noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.cpu()
 
     return noise, noisy_latents, timesteps
