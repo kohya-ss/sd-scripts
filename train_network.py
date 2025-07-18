@@ -11,6 +11,12 @@ import json
 from multiprocessing import Value
 import numpy as np
 import toml
+from accelerate.utils import DummyOptim, DummyScheduler
+import deepspeed
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+from safetensors.torch import save_file
+from torch.nn import Conv2d, GroupNorm, LayerNorm
+from torch.nn import functional as F
 
 from tqdm import tqdm
 
@@ -50,6 +56,214 @@ setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+# In train_network.py, after imports. Use this version.
+
+def calculate_and_show_nfn_scores(args, unet, text_encoders, train_dataloader, noise_scheduler, text_encoding_strategy, accelerator):
+    """
+    Performs NFN score calculation based on the PLoP paper.
+    This function is designed to be called after models and data are loaded.
+    It now handles on-the-fly text encoding if outputs are not cached.
+    """
+    try:
+        from library.metrics import calculate_nfn_scores, average_metrics
+        from library.train_util import get_noise_noisy_latents_and_timesteps
+        from library import strategy_base
+    except ImportError as e:
+        accelerator.print(f"ERROR: Could not import required libraries for NFN calculation: {e}")
+        return
+
+    accelerator.print("\n" + "="*60)
+    accelerator.print("Starting NFN Score Calculation (PLoP Analysis)")
+    accelerator.print("="*60)
+
+    unet.eval()
+    for te in text_encoders:
+        te.eval()
+
+    all_metrics = []
+    
+    num_batches_to_process = len(train_dataloader) * getattr(args, 'nfn_dataset_repeats', 1)
+    accelerator.print(f"Analyzing up to {num_batches_to_process} batches from your dataset...")
+    
+    progress_bar = tqdm(
+        range(num_batches_to_process),
+        smoothing=0,
+        disable=not accelerator.is_local_main_process,
+        desc="NFN Analysis",
+    )
+    
+    data_iter = iter(train_dataloader)
+    
+    for i in range(num_batches_to_process):
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            accelerator.print(f"Dataset exhausted after {i} batches. Proceeding with calculated metrics.")
+            break
+            
+        with torch.no_grad():
+            if "latents" not in batch or batch["latents"] is None:
+                accelerator.print("NFN calculation requires pre-cached latents. Please enable --cache_latents.")
+                return
+
+            latents = batch["latents"].to(accelerator.device)
+            _, noisy_latents, timesteps = get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+
+            # --- DYNAMIC TEXT ENCODING ---
+            text_encoder_outputs_list = batch.get("text_encoder_outputs_list")
+            
+            if text_encoder_outputs_list is None:
+                # Outputs are not cached. We must generate them.
+                # This ensures we support all training scenarios (TE training on/off, caching on/off)
+                input_ids_list = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
+                
+                # Get unwrapped TE models, as strategies expect the raw model
+                unwrapped_text_encoders = [accelerator.unwrap_model(te) for te in text_encoders]
+                
+                # Use the existing strategy to encode tokens
+                text_encoder_outputs_list = text_encoding_strategy.encode_tokens(
+                    strategy_base.TokenizeStrategy.get_strategy(),
+                    unwrapped_text_encoders,
+                    input_ids_list,
+                    cached_outputs=None, # Explicitly pass None as we are generating them now
+                )
+            else:
+                # Outputs were cached. Just move them to the correct device.
+                text_encoder_outputs_list = [out.to(accelerator.device) for out in text_encoder_outputs_list]
+            # --- END OF DYNAMIC ENCODING ---
+
+            # Now, `text_encoder_outputs_list` is guaranteed to be a list of tensors.
+            # --- KEY MAPPING CORRECTION ---
+            # Create the batch dictionary for the UNet forward pass
+            # The keys MUST match the arguments of SdxlUNet2DConditionModel.forward()
+            unet_batch = {}
+            unet_batch['x'] = noisy_latents
+            unet_batch['timesteps'] = timesteps
+            
+            is_sdxl_batch = len(text_encoders) > 1
+
+            if is_sdxl_batch:
+                prompt_embeds = text_encoder_outputs_list[0]
+                hidden_states2 = text_encoder_outputs_list[1]
+                pool2 = text_encoder_outputs_list[2]
+                
+                unet_batch['context'] = torch.cat([prompt_embeds, hidden_states2], dim=-1)
+
+                # --- CORRECTLY GENERATE 'y' (ADM) TENSOR ---
+                # Get size/crop info from the batch, which is provided by the dataloader
+                original_sizes = batch.get("original_sizes_hw")
+                crop_coords = batch.get("crop_top_lefts")
+                target_sizes = batch.get("target_sizes_hw")
+                
+                if original_sizes is None or crop_coords is None or target_sizes is None:
+                    accelerator.print("ERROR: For SDXL, the dataset must provide original_sizes_hw, crop_top_lefts, and target_sizes_hw.")
+                    return
+                
+                # Manually create add_time_ids, replicating the logic from the trainer
+                add_time_ids = torch.cat(
+                    [original_sizes, crop_coords, target_sizes], dim=1
+                ).to(accelerator.device, dtype=pool2.dtype)
+
+                # 'y' is the concatenation of pooled text embeds and time ids
+                y_cond = torch.cat([pool2, add_time_ids], dim=1)
+                unet_batch['y'] = y_cond
+                # --- END OF 'y' TENSOR GENERATION ---
+
+            else: # SD 1.5/2.x
+                unet_batch['context'] = text_encoder_outputs_list[0]
+                unet_batch['y'] = None # Explicitly pass None
+
+            # Now we need to update the model call in metrics.py to handle the None case
+            metrics = calculate_nfn_scores(unet, unet_batch)
+            all_metrics.append(metrics)
+        
+        progress_bar.update(1)
+
+    # ... (rest of the aggregation and printing logic remains the same) ...
+    # The logic for `get_block_name` and `print_nfn_results` is fine.
+
+    if not all_metrics:
+        accelerator.print("No metrics were calculated. Please check your dataset and configuration.")
+        return
+        
+    avg_metrics = average_metrics(all_metrics)
+
+    # --- Custom Aggregation for SD U-Net Blocks ---
+    def get_block_name(module_name: str, is_sdxl: bool):
+        # Simplified and more robust block name detection
+        if is_sdxl:
+            if "time_embed" in module_name: return "time_embed"
+            if "input_blocks." in module_name: return f"down_{module_name.split('.')[2]}" # input_blocks.X.
+            if "middle_block." in module_name: return "mid"
+            if "output_blocks." in module_name: return f"up_{module_name.split('.')[2]}" # output_blocks.X.
+            if "out." in module_name: return "out"
+        else: # SD 1.5/2.x
+            if "time_embed" in module_name: return "time_embed"
+            m = re.search(r"(up|down)_blocks\.(\d+)\.", module_name)
+            if m:
+                return f"{m.group(1)}_{m.group(2)}"
+            if "mid_block" in module_name:
+                return "mid"
+            if "conv_in" in module_name: return "conv_in"
+            if "conv_out" in module_name: return "conv_out"
+        return "other"
+        
+    is_sdxl = len(text_encoders) > 1
+
+    block_scores = defaultdict(lambda: {'nfn_sum': 0.0, 'count': 0})
+    for name, values in avg_metrics.items():
+        if not name.startswith("lora_unet_"): continue # Only process UNet modules
+        unet_module_name = name[len("lora_unet_"):]
+        
+        block_name = get_block_name(unet_module_name, is_sdxl)
+        block_scores[block_name]['nfn_sum'] += values.get('nfn', 0.0)
+        block_scores[block_name]['count'] += 1
+
+    final_results = {}
+    for block, data in block_scores.items():
+        if data['count'] > 0:
+            final_results[block] = {
+                'nfn': data['nfn_sum'] / data['count'],
+                'module_count': data['count']
+            }
+
+    def sort_key(item):
+        name = item[0]
+        if name.startswith("conv_in"): return -2
+        if name.startswith("time_embed"): return -1
+        if name.startswith("down"): return int(name.split('_')[1])
+        if name.startswith("mid"): return 100
+        if name.startswith("up"): return 200 + int(name.split('_')[1])
+        if name.startswith("out"): return 300
+        return 400
+
+    sorted_results = dict(sorted(final_results.items(), key=sort_key))
+
+    def print_nfn_results(results, title="Results"):
+        max_key_len = max(len(k) for k in results.keys()) if results else 20
+        header_width = max_key_len + 35
+        
+        accelerator.print("\n" + "=" * header_width)
+        accelerator.print(f"{title:^{header_width}}")
+        accelerator.print("=" * header_width)
+        accelerator.print(f"{'U-Net Block':<{max_key_len}} | {'Avg NFN Score':>15} | {'Module Count':>12}")
+        accelerator.print("-" * header_width)
+        
+        for k, v in results.items():
+            nfn_str = f"{v.get('nfn', 0.0):.4f}"
+            count_str = str(v.get('module_count', 'N/A'))
+            accelerator.print(f"{k:<{max_key_len}} | {nfn_str:>15} | {count_str:>12}")
+            
+        accelerator.print("=" * header_width)
+        accelerator.print("\nInterpretation:")
+        accelerator.print("  - Lower NFN scores (closer to 1.0) indicate layers that are 'misaligned' with the dataset.")
+        accelerator.print("  - These layers have the highest potential for improvement via finetuning.")
+        accelerator.print("  - Recommendation: Assign higher learning rates or ranks to blocks with lower NFN scores.")
+        accelerator.print("  - Use these values to inform `down_lr_weights`, `mid_lr_weight`, and `up_lr_weights`.")
+        accelerator.print("-" * header_width + "\n")
+
+    print_nfn_results(sorted_results, title="PLoP NFN Analysis Results")
 
 
 class NetworkTrainer:
@@ -425,6 +639,8 @@ class NetworkTrainer:
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
                         input_ids_list,
                         weights_list,
+                        # Make sure to add this argument:
+                        cached_outputs=batch.get("text_encoder_outputs_list"),
                     )
                 else:
                     input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
@@ -432,6 +648,8 @@ class NetworkTrainer:
                         tokenize_strategy,
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
                         input_ids,
+                        # Make sure to add this argument:
+                        cached_outputs=batch.get("text_encoder_outputs_list"),
                     )
                 if args.full_fp16:
                     encoded_text_encoder_conds = [c.to(weight_dtype) for c in encoded_text_encoder_conds]
@@ -476,6 +694,7 @@ class NetworkTrainer:
         return loss.mean()
 
     def train(self, args):
+        self.args = args
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         train_util.verify_training_args(args)
@@ -579,6 +798,8 @@ class NetworkTrainer:
         # acceleratorを準備する
         logger.info("preparing accelerator")
         accelerator = train_util.prepare_accelerator(args)
+
+
         is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
@@ -663,6 +884,7 @@ class NetworkTrainer:
                 text_encoder,
                 unet,
                 neuron_dropout=args.network_dropout,
+                trainer=self,
                 **net_kwargs,
             )
         if network is None:
@@ -688,6 +910,29 @@ class NetworkTrainer:
         train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
+        # region: DeepSpeed ZeRO-3 Memory Optimization
+        # For ZeRO-3, we must physically remove any models we are not training from the
+        # model graph before passing them to `deepspeed.initialize`. Otherwise,
+        # DeepSpeed will still try to manage and move the entire model, causing OOM.
+        flags = self.get_text_encoders_train_flags(args, text_encoders)
+        if args.deepspeed and any(not flag for flag in flags):
+            accelerator.print("Optimizing for DeepSpeed ZeRO-3: Removing non-trained text encoders from memory.")
+            kept_text_encoders = []
+            for i, (t_enc, flag) in enumerate(zip(text_encoders, flags)):
+                if flag:
+                    kept_text_encoders.append(t_enc)
+                else:
+                    accelerator.print(f"  - Deleting text_encoder {i+1}.")
+                    # This model was initialized with CPU offload, so we can just delete it.
+                    del t_enc
+
+            text_encoders = kept_text_encoders
+            # Re-assign the single `text_encoder` variable used by other parts of the script
+            text_encoder = text_encoders if len(text_encoders) > 1 else (text_encoders[0] if len(text_encoders) > 0 else None)
+            clean_memory_on_device(accelerator.device)
+            accelerator.wait_for_everyone() # Ensure all processes sync up after deletion
+        # endregion
+
         if args.network_weights is not None:
             # FIXME consider alpha of weights: this assumes that the alpha is not changed
             info = network.load_weights(args.network_weights)
@@ -695,7 +940,7 @@ class NetworkTrainer:
 
         if args.gradient_checkpointing:
             if args.cpu_offload_checkpointing:
-                unet.enable_gradient_checkpointing(cpu_offload=True)
+                unet.enable_gradient_checkpointing(cpu_offload_checkpointing=True)
             else:
                 unet.enable_gradient_checkpointing()
 
@@ -747,6 +992,13 @@ class NetworkTrainer:
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
 
+        if (
+            args.deepspeed or "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config
+        ):
+            optimizer_cls = (DummyOptim)
+            optimizer = optimizer_cls(trainable_params, lr=args.learning_rate)
+        
+    
         # prepare dataloader
         # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
         # some strategies can be None
@@ -776,6 +1028,7 @@ class NetworkTrainer:
         )
 
         # 学習ステップ数を計算する
+        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
         if args.max_train_epochs is not None:
             args.max_train_steps = args.max_train_epochs * math.ceil(
                 len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
@@ -788,7 +1041,16 @@ class NetworkTrainer:
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
         # lr schedulerを用意する
-        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+        #lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+
+        """ if (
+            "scheduler" not in accelerator.state.deepspeed_plugin.deepspeed_config
+        ):
+            lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) 
+        else:
+            lr_scheduler = DummyScheduler(
+                optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.lr_warmup_steps
+            ) """
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.full_fp16:
@@ -841,40 +1103,83 @@ class NetworkTrainer:
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
         if args.deepspeed:
-            flags = self.get_text_encoders_train_flags(args, text_encoders)
+            # DeepSpeed's Zero-3 requires models to be handled differently.
+            # We wrap all trainable models into a single module.
             ds_model = deepspeed_utils.prepare_deepspeed_model(
                 args,
                 unet=unet if train_unet else None,
-                text_encoder1=text_encoders[0] if flags[0] else None,
-                text_encoder2=(text_encoders[1] if flags[1] else None) if len(text_encoders) > 1 else None,
+                text_encoder1=text_encoders[0] if len(text_encoders) > 0 and flags[0] else None,
+                text_encoder2=(text_encoders[1] if len(text_encoders) > 1 and flags[1] else None) if len(text_encoders) > 1 else None,
                 network=network,
             )
-            ds_model, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
-                ds_model, optimizer, train_dataloader, val_dataloader, lr_scheduler
+            
+            # Step 1: Prepare model, optimizer, and dataloaders with DeepSpeed.
+            # The scheduler is omitted here to get the real optimizer back from DeepSpeed.
+            accelerator.print("Preparing model, optimizer, and dataloaders with DeepSpeed...")
+            ds_model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+                ds_model, optimizer, train_dataloader, val_dataloader
             )
+            
+            # Step 2: Now that `optimizer` is the real DeepSpeed optimizer, create our learning rate scheduler.
+            accelerator.print("Creating new scheduler with the real DeepSpeed optimizer.")
+            lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+            
+            # Step 3: Prepare the scheduler separately. Accelerator will now wrap it correctly.
+            accelerator.print("Preparing scheduler...")
+            lr_scheduler = accelerator.prepare(lr_scheduler) 
+
             training_model = ds_model
         else:
+            # This is the original, correct path for non-DeepSpeed training.
+            # We create the real scheduler first, then prepare everything at once.
+            lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+
             if train_unet:
-                # default implementation is:  unet = accelerator.prepare(unet)
-                unet = self.prepare_unet_with_accelerator(args, accelerator, unet)  # accelerator does some magic here
+                unet = self.prepare_unet_with_accelerator(args, accelerator, unet)
             else:
-                unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+                unet.to(accelerator.device, dtype=unet_weight_dtype)
+                
             if train_text_encoder:
+                # Prepare text encoders only if they are being trained
                 text_encoders = [
-                    (accelerator.prepare(t_enc) if flag else t_enc)
+                    (accelerator.prepare(t_enc) if flag else t_enc.to(accelerator.device, dtype=te_weight_dtype))
                     for t_enc, flag in zip(text_encoders, self.get_text_encoders_train_flags(args, text_encoders))
                 ]
-                if len(text_encoders) > 1:
-                    text_encoder = text_encoders
-                else:
-                    text_encoder = text_encoders[0]
-            else:
-                pass  # if text_encoder is not trained, no need to prepare. and device and dtype are already set
+                text_encoder = text_encoders if len(text_encoders) > 1 else text_encoders[0]
 
             network, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
                 network, optimizer, train_dataloader, val_dataloader, lr_scheduler
             )
             training_model = network
+        
+        global_step = 0
+
+        noise_scheduler = self.get_noise_scheduler(args, accelerator.device)
+
+        # --- NFN Calculation Trigger ---
+        if args.calculate_nfn:
+            accelerator.wait_for_everyone() # Ensure all processes are ready
+            
+            if accelerator.is_main_process:
+                # For DeepSpeed, unet is part of the wrapped model. We need to access it correctly.
+                if args.deepspeed:
+                    # Access the unet through the 'models' ModuleDict in our wrapper
+                    unwrapped_model = accelerator.unwrap_model(training_model)
+                    if hasattr(unwrapped_model, 'models') and 'unet' in unwrapped_model.models:
+                        unet_for_nfn = unwrapped_model.models.unet
+                    else:
+                        accelerator.print("ERROR: Could not find 'unet' in the DeepSpeed wrapped model.")
+                        return # Exit gracefully
+                else:
+                    unet_for_nfn = unet
+                
+                # The function `calculate_and_show_nfn_scores` is at the top of this file
+                calculate_and_show_nfn_scores(args, unet_for_nfn, text_encoders, train_dataloader, noise_scheduler, text_encoding_strategy, accelerator)
+                
+                accelerator.print("NFN score calculation finished. Exiting.")
+            
+            accelerator.wait_for_everyone() # Wait for main process to finish before exiting all
+            return # Exit the training script
 
         if args.gradient_checkpointing:
             # according to TI example in Diffusers, train is required
@@ -888,10 +1193,11 @@ class NetworkTrainer:
 
         else:
             unet.eval()
-            for t_enc in text_encoders:
-                t_enc.eval()
-
-        del t_enc
+            # If text_encoders list is not empty, loop and then clean up the loop variable
+            if text_encoders:
+                for t_enc in text_encoders:
+                    t_enc.eval()
+                del t_enc
 
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
@@ -953,7 +1259,7 @@ class NetworkTrainer:
         train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
         # epoch数を計算する
-        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+        #num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
@@ -1250,9 +1556,9 @@ class NetworkTrainer:
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
                 initial_step = 0  # do not skip
 
-        global_step = 0
+        """ global_step = 0
 
-        noise_scheduler = self.get_noise_scheduler(args, accelerator.device)
+        noise_scheduler = self.get_noise_scheduler(args, accelerator.device) """
 
         train_util.init_trackers(accelerator, args, "network_train")
 
@@ -1271,6 +1577,28 @@ class NetworkTrainer:
             on_step_start_for_network = lambda *args, **kwargs: None
 
         # function for saving/removing
+        def gather_save_zero3(model, save_path, metadata):
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            state_dict = {}
+            for name, param in model.named_parameters():
+                if "lora" not in name:
+                    continue
+                # Gather sharded parameters
+                if hasattr(param, 'ds_id') and param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
+                    with deepspeed.zero.GatheredParameters(param, enabled=True):
+                        param_cpu = param.detach().cpu()
+                else:
+                    param_cpu = param.detach().cpu()
+                state_dict[name] = param_cpu
+            if save_dtype is not None:
+                for key in list(state_dict.keys()):
+                    v = state_dict[key]
+                    v = v.detach().clone().to("cpu").to(save_dtype)
+                    state_dict[key] = v
+            print(f"Saving LoRA weights to {save_path}")
+            save_file(state_dict, save_path, metadata=metadata)
+
+        # function for saving/removing
         def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
             os.makedirs(args.output_dir, exist_ok=True)
             ckpt_file = os.path.join(args.output_dir, ckpt_name)
@@ -1281,10 +1609,19 @@ class NetworkTrainer:
             metadata["ss_epoch"] = str(epoch_no)
 
             metadata_to_save = minimum_metadata if args.no_metadata else metadata
-            sai_metadata = self.get_sai_model_spec(args)
+            sai_metadata = train_util.get_sai_model_spec(None, args, self.is_sdxl, True, False)
             metadata_to_save.update(sai_metadata)
 
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            if args.zero_stage == 3:
+                accelerator.print("saving for Zero Stage 3")
+                gather_save_zero3(
+                    unwrapped_nw,
+                    ckpt_file,
+                    metadata_to_save,
+                )
+            else:
+                unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+
             if args.huggingface_repo_id is not None:
                 huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 
@@ -1683,6 +2020,8 @@ class NetworkTrainer:
             optimizer_train_fn()
 
             # end of epoch
+            if global_step >= args.max_train_steps:
+                break
 
         # metadata["ss_epoch"] = str(num_train_epochs)
         metadata["ss_training_finished_at"] = str(time.time())
@@ -1871,6 +2210,17 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
+    )
+    parser.add_argument(
+        "--calculate_nfn",
+        action="store_true",
+        help="Calculate and print Normalized Feature Norm (NFN) scores for the model and dataset, then exit.",
+    )
+    parser.add_argument(
+        "--nfn_dataset_repeats",
+        type=int,
+        default=1,
+        help="Number of times to repeat the dataset for NFN calculation. Use a small number like 1-5.",
     )
     return parser
 

@@ -9,6 +9,9 @@ from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionMode
 from library import model_util
 from library import sdxl_original_unet
 from library.utils import setup_logging
+import contextlib
+import deepspeed
+#from deepspeed.runtime.zero.partition_parameters import zero_init_context
 
 setup_logging()
 import logging
@@ -166,7 +169,9 @@ def _load_state_dict_on_device(model, state_dict, device, dtype=None):
     raise RuntimeError("Error(s) in loading state_dict for {}:\n\t{}".format(model.__class__.__name__, "\n\t".join(error_msgs)))
 
 
-def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dtype=None, disable_mmap=False):
+def load_models_from_sdxl_checkpoint(
+    model_version, ckpt_path, map_location, dtype=None, disable_mmap=False, accelerator=None
+):
     # model_version is reserved for future use
     # dtype is used for full_fp16/bf16 integration. Text Encoder will remain fp32, because it runs on CPU when caching
 
@@ -194,10 +199,18 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
             global_step = 0
         checkpoint = None
 
+    # if zero.Init context is enabled, we should not use init_empty_weights
+    use_ds_init = False
+    if accelerator and hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin:
+        use_ds_init = accelerator.state.deepspeed_plugin.zero3_init_flag
+    context_manager_class = contextlib.nullcontext if use_ds_init else init_empty_weights
+
     # U-Net
     logger.info("building U-Net")
-    with init_empty_weights():
-        unet = sdxl_original_unet.SdxlUNet2DConditionModel()
+    #with init_empty_weights():
+
+    with context_manager_class():
+         unet = sdxl_original_unet.SdxlUNet2DConditionModel()
 
     logger.info("loading U-Net from checkpoint")
     unet_sd = {}
@@ -232,8 +245,10 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
         # torch_dtype="float32",
         # transformers_version="4.25.0.dev0",
     )
-    with init_empty_weights():
-        text_model1 = CLIPTextModel._from_config(text_model1_cfg)
+    #with init_empty_weights():
+    with context_manager_class():
+         text_model1 = CLIPTextModel._from_config(text_model1_cfg)
+        #text_model1 = CLIPTextModel._from_config(text_model1_cfg)
 
     # Text Encoder 2 is different from Stability AI's SDXL. SDXL uses open clip, but we use the model from HuggingFace.
     # Note: Tokenizer from HuggingFace is different from SDXL. We must use open clip's tokenizer.
@@ -258,7 +273,8 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
         # torch_dtype="float32",
         # transformers_version="4.25.0.dev0",
     )
-    with init_empty_weights():
+    #with init_empty_weights():
+    with context_manager_class():
         text_model2 = CLIPTextModelWithProjection(text_model2_cfg)
 
     logger.info("loading text encoders from checkpoint")
@@ -274,22 +290,37 @@ def load_models_from_sdxl_checkpoint(model_version, ckpt_path, map_location, dty
     if "text_model.embeddings.position_ids" in te1_sd:
         te1_sd.pop("text_model.embeddings.position_ids")
 
-    info1 = _load_state_dict_on_device(text_model1, te1_sd, device=map_location)  # remain fp32
+    if use_ds_init and deepspeed is not None:
+        with deepspeed.zero.GatheredParameters(text_model1.parameters(), modifier_rank=0):
+            info1 = _load_state_dict_on_device(text_model1, te1_sd, device=map_location)  # remain fp32
+    else:
+        info1 = _load_state_dict_on_device(text_model1, te1_sd, device=map_location)
     logger.info(f"text encoder 1: {info1}")
-
+ 
     converted_sd, logit_scale = convert_sdxl_text_encoder_2_checkpoint(te2_sd, max_length=77)
-    info2 = _load_state_dict_on_device(text_model2, converted_sd, device=map_location)  # remain fp32
+
+    if use_ds_init and deepspeed is not None:
+        with deepspeed.zero.GatheredParameters(text_model2.parameters(), modifier_rank=0):
+            info2 = _load_state_dict_on_device(text_model2, converted_sd, device=map_location)
+    else:
+        info2 = _load_state_dict_on_device(text_model2, converted_sd, device=map_location)  # remain fp32
     logger.info(f"text encoder 2: {info2}")
 
     # prepare vae
     logger.info("building VAE")
     vae_config = model_util.create_vae_diffusers_config()
-    with init_empty_weights():
+    #with init_empty_weights():
+    with context_manager_class():
         vae = AutoencoderKL(**vae_config)
 
     logger.info("loading VAE from checkpoint")
     converted_vae_checkpoint = model_util.convert_ldm_vae_checkpoint(state_dict, vae_config)
-    info = _load_state_dict_on_device(vae, converted_vae_checkpoint, device=map_location, dtype=dtype)
+
+    if use_ds_init and deepspeed is not None:
+        with deepspeed.zero.GatheredParameters(vae.parameters(), modifier_rank=0):
+            info = _load_state_dict_on_device(vae, converted_vae_checkpoint, device=map_location, dtype=dtype)
+    else:
+        info = _load_state_dict_on_device(vae, converted_vae_checkpoint, device=map_location, dtype=dtype)
     logger.info(f"VAE: {info}")
 
     ckpt_info = (epoch, global_step) if epoch is not None else None

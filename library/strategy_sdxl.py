@@ -76,30 +76,14 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
             input_ids.to(dtype=torch.int, device=last_hidden_state.device).argmax(dim=-1),
         ]
         """
-
-        # input_ids: b*n,77
-        # find index for EOS token
-
-        # Following code is not working if one of the input_ids has multiple EOS tokens (very odd case)
-        # eos_token_index = torch.where(input_ids == eos_token_id)[1]
-        # eos_token_index = eos_token_index.to(device=last_hidden_state.device)
-
-        # Create a mask where the EOS tokens are
         eos_token_mask = (input_ids == eos_token_id).int()
-
-        # Use argmax to find the last index of the EOS token for each element in the batch
-        eos_token_index = torch.argmax(eos_token_mask, dim=1)  # this will be 0 if there is no EOS token, it's fine
+        eos_token_index = torch.argmax(eos_token_mask, dim=1)
         eos_token_index = eos_token_index.to(device=last_hidden_state.device)
-
-        # get hidden states for EOS token
         pooled_output = last_hidden_state[
             torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device), eos_token_index
         ]
-
-        # apply projection: projection may be of different dtype than last_hidden_state
         pooled_output = text_encoder.text_projection(pooled_output.to(text_encoder.text_projection.weight.dtype))
         pooled_output = pooled_output.to(last_hidden_state.dtype)
-
         return pooled_output
 
     def _get_hidden_states_sdxl(
@@ -108,87 +92,112 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
         input_ids2: torch.Tensor,
         tokenizer1: CLIPTokenizer,
         tokenizer2: CLIPTokenizer,
-        text_encoder1: Union[CLIPTextModel, torch.nn.Module],
-        text_encoder2: Union[CLIPTextModelWithProjection, torch.nn.Module],
+        text_encoder1: Optional[Union[CLIPTextModel, torch.nn.Module]],
+        text_encoder2: Optional[Union[CLIPTextModelWithProjection, torch.nn.Module]],
         unwrapped_text_encoder2: Optional[CLIPTextModelWithProjection] = None,
+        cached_outputs: Optional[list] = None,
     ):
-        # input_ids: b,n,77 -> b*n, 77
         b_size = input_ids1.size()[0]
-        if input_ids1.size()[1] == 1:
-            max_token_length = None
-        else:
+        if input_ids1.dim() == 3 and input_ids1.size()[1] > 1:
             max_token_length = input_ids1.size()[1] * input_ids1.size()[2]
-        input_ids1 = input_ids1.reshape((-1, tokenizer1.model_max_length))  # batch_size*n, 77
-        input_ids2 = input_ids2.reshape((-1, tokenizer2.model_max_length))  # batch_size*n, 77
-        input_ids1 = input_ids1.to(text_encoder1.device)
-        input_ids2 = input_ids2.to(text_encoder2.device)
+            _input_ids1 = input_ids1.reshape((-1, tokenizer1.model_max_length))
+            _input_ids2 = input_ids2.reshape((-1, tokenizer2.model_max_length))
+        else:
+            max_token_length = None
+            _input_ids1 = input_ids1.reshape((-1, tokenizer1.model_max_length))
+            _input_ids2 = input_ids2.reshape((-1, tokenizer2.model_max_length))
+        
+        # --- text_encoder1 ---
+        if text_encoder1 is not None:
+            _input_ids1_device = _input_ids1.to(text_encoder1.device)
+            enc_out1 = text_encoder1(_input_ids1_device, output_hidden_states=True, return_dict=True)
+            hidden_states1 = enc_out1["hidden_states"][11]
+        else:
+            if cached_outputs is None or cached_outputs[0] is None:
+                raise ValueError("Text Encoder 1 not available for computation and not found in cache.")
+            hidden_states1 = cached_outputs[0].to(_input_ids1.device)
 
-        # text_encoder1
-        enc_out = text_encoder1(input_ids1, output_hidden_states=True, return_dict=True)
-        hidden_states1 = enc_out["hidden_states"][11]
+        # --- text_encoder2 ---
+        if text_encoder2 is not None:
+            _input_ids2_device = _input_ids2.to(text_encoder2.device)
+            enc_out2 = text_encoder2(_input_ids2_device, output_hidden_states=True, return_dict=True)
 
-        # text_encoder2
-        enc_out = text_encoder2(input_ids2, output_hidden_states=True, return_dict=True)
-        hidden_states2 = enc_out["hidden_states"][-2]  # penuultimate layer
-
-        # pool2 = enc_out["text_embeds"]
-        unwrapped_text_encoder2 = unwrapped_text_encoder2 or text_encoder2
-        pool2 = self._pool_workaround(unwrapped_text_encoder2, enc_out["last_hidden_state"], input_ids2, tokenizer2.eos_token_id)
-
-        # b*n, 77, 768 or 1280 -> b, n*77, 768 or 1280
-        n_size = 1 if max_token_length is None else max_token_length // 75
+            _unwrapped_te2 = unwrapped_text_encoder2
+            if _unwrapped_te2 is None:
+                _unwrapped_te2 = text_encoder2.module if hasattr(text_encoder2, "module") else text_encoder2
+            pool2 = self._pool_workaround(_unwrapped_te2, enc_out2["last_hidden_state"], _input_ids2_device, tokenizer2.eos_token_id)
+            hidden_states2 = enc_out2["hidden_states"][-2]
+        else:
+            if cached_outputs is None or cached_outputs[1] is None:
+                # If TE2 is not available and not cached, create zero tensors as placeholders.
+                # This is the expected behavior when training only TE1 on a low-VRAM setup.
+                #logger.info("Text Encoder 2 not available. Creating zero-filled tensors for U-Net conditioning.")
+                b_size = hidden_states1.shape[0]
+                seq_len = hidden_states1.shape[1]
+                device = hidden_states1.device
+                dtype = hidden_states1.dtype
+                
+                # Use the known hidden size for SDXL's second text encoder (OpenCLIP-G)
+                te2_hidden_size = 1280
+                
+                hidden_states2 = torch.zeros((b_size, seq_len, te2_hidden_size), device=device, dtype=dtype)
+                pool2 = torch.zeros((b_size, te2_hidden_size), device=device, dtype=dtype)
+            else:
+                # Load from cache if available
+                cached_hs2, cached_pool2 = cached_outputs[1]
+                hidden_states2 = cached_hs2.to(_input_ids2.device)
+                pool2 = cached_pool2.to(_input_ids2.device)
+            
+        n_size = 1 if max_token_length is None else input_ids1.size()[1]
         hidden_states1 = hidden_states1.reshape((b_size, -1, hidden_states1.shape[-1]))
         hidden_states2 = hidden_states2.reshape((b_size, -1, hidden_states2.shape[-1]))
 
         if max_token_length is not None:
-            # bs*3, 77, 768 or 1024
-            # encoder1: <BOS>...<EOS> の三連を <BOS>...<EOS> へ戻す
-            states_list = [hidden_states1[:, 0].unsqueeze(1)]  # <BOS>
+            states_list = [hidden_states1[:, 0].unsqueeze(1)]
             for i in range(1, max_token_length, tokenizer1.model_max_length):
-                states_list.append(hidden_states1[:, i : i + tokenizer1.model_max_length - 2])  # <BOS> の後から <EOS> の前まで
-            states_list.append(hidden_states1[:, -1].unsqueeze(1))  # <EOS>
+                states_list.append(hidden_states1[:, i : i + tokenizer1.model_max_length - 2])
+            states_list.append(hidden_states1[:, -1].unsqueeze(1))
             hidden_states1 = torch.cat(states_list, dim=1)
 
-            # v2: <BOS>...<EOS> <PAD> ... の三連を <BOS>...<EOS> <PAD> ... へ戻す　正直この実装でいいのかわからん
-            states_list = [hidden_states2[:, 0].unsqueeze(1)]  # <BOS>
+            states_list = [hidden_states2[:, 0].unsqueeze(1)]
             for i in range(1, max_token_length, tokenizer2.model_max_length):
-                chunk = hidden_states2[:, i : i + tokenizer2.model_max_length - 2]  # <BOS> の後から 最後の前まで
-                # this causes an error:
-                # RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation
-                # if i > 1:
-                #     for j in range(len(chunk)):  # batch_size
-                #         if input_ids2[n_index + j * n_size, 1] == tokenizer2.eos_token_id:  # 空、つまり <BOS> <EOS> <PAD> ...のパターン
-                #             chunk[j, 0] = chunk[j, 1]  # 次の <PAD> の値をコピーする
-                states_list.append(chunk)  # <BOS> の後から <EOS> の前まで
-            states_list.append(hidden_states2[:, -1].unsqueeze(1))  # <EOS> か <PAD> のどちらか
+                chunk = hidden_states2[:, i : i + tokenizer2.model_max_length - 2]
+                states_list.append(chunk)
+            states_list.append(hidden_states2[:, -1].unsqueeze(1))
             hidden_states2 = torch.cat(states_list, dim=1)
 
-            # pool はnの最初のものを使う
             pool2 = pool2[::n_size]
 
         return hidden_states1, hidden_states2, pool2
 
     def encode_tokens(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], tokens: List[torch.Tensor]
+        self, tokenize_strategy: TokenizeStrategy, models: List[Any], tokens: List[torch.Tensor], cached_outputs=None
     ) -> List[torch.Tensor]:
-        """
-        Args:
-            tokenize_strategy: TokenizeStrategy
-            models: List of models, [text_encoder1, text_encoder2, unwrapped text_encoder2 (optional)].
-                If text_encoder2 is wrapped by accelerate, unwrapped_text_encoder2 is required
-            tokens: List of tokens, for text_encoder1 and text_encoder2
-        """
-        if len(models) == 2:
-            text_encoder1, text_encoder2 = models
-            unwrapped_text_encoder2 = None
-        else:
-            text_encoder1, text_encoder2, unwrapped_text_encoder2 = models
+        text_encoder1 = None
+        text_encoder2 = None
+        unwrapped_text_encoder2 = None
+
+        for model in models:
+            unwrapped_model = model.module if hasattr(model, 'module') else model
+            if isinstance(unwrapped_model, CLIPTextModelWithProjection):
+                text_encoder2 = model
+            elif isinstance(unwrapped_model, CLIPTextModel):
+                text_encoder1 = model
+        
+        if len(models) == 3 and text_encoder2 is not None:
+            for model in models:
+                if model is not text_encoder1 and model is not text_encoder2:
+                    unwrapped_text_encoder2 = model
+                    break
+        elif text_encoder2 is not None:
+             unwrapped_text_encoder2 = text_encoder2.module if hasattr(text_encoder2, 'module') else text_encoder2
+
         tokens1, tokens2 = tokens
-        sdxl_tokenize_strategy = tokenize_strategy  # type: SdxlTokenizeStrategy
+        sdxl_tokenize_strategy = tokenize_strategy
         tokenizer1, tokenizer2 = sdxl_tokenize_strategy.tokenizer1, sdxl_tokenize_strategy.tokenizer2
 
         hidden_states1, hidden_states2, pool2 = self._get_hidden_states_sdxl(
-            tokens1, tokens2, tokenizer1, tokenizer2, text_encoder1, text_encoder2, unwrapped_text_encoder2
+            tokens1, tokens2, tokenizer1, tokenizer2, text_encoder1, text_encoder2, unwrapped_text_encoder2, cached_outputs
         )
         return [hidden_states1, hidden_states2, pool2]
 
@@ -198,18 +207,16 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
         models: List[Any],
         tokens_list: List[torch.Tensor],
         weights_list: List[torch.Tensor],
+        cached_outputs=None,
     ) -> List[torch.Tensor]:
-        hidden_states1, hidden_states2, pool2 = self.encode_tokens(tokenize_strategy, models, tokens_list)
+        hidden_states1, hidden_states2, pool2 = self.encode_tokens(tokenize_strategy, models, tokens_list, cached_outputs)
 
         weights_list = [weights.to(hidden_states1.device) for weights in weights_list]
 
-        # apply weights
-        if weights_list[0].shape[1] == 1:  # no max_token_length
-            # weights: ((b, 1, 77), (b, 1, 77)), hidden_states: (b, 77, 768), (b, 77, 768)
+        if weights_list[0].shape[1] == 1:
             hidden_states1 = hidden_states1 * weights_list[0].squeeze(1).unsqueeze(2)
             hidden_states2 = hidden_states2 * weights_list[1].squeeze(1).unsqueeze(2)
         else:
-            # weights: ((b, n, 77), (b, n, 77)), hidden_states: (b, n*75+2, 768), (b, n*75+2, 768)
             for weight, hidden_states in zip(weights_list, [hidden_states1, hidden_states2]):
                 for i in range(weight.shape[1]):
                     hidden_states[:, i * 75 + 1 : i * 75 + 76] = hidden_states[:, i * 75 + 1 : i * 75 + 76] * weight[
@@ -258,25 +265,28 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         hidden_state1 = data["hidden_state1"]
         hidden_state2 = data["hidden_state2"]
         pool2 = data["pool2"]
-        return [hidden_state1, hidden_state2, pool2]
+        # The cached outputs are structured as [hs1, [hs2, pool2]]
+        return [hidden_state1, [hidden_state2, pool2]]
 
     def cache_batch_outputs(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
     ):
-        sdxl_text_encoding_strategy = text_encoding_strategy  # type: SdxlTextEncodingStrategy
+        sdxl_text_encoding_strategy = text_encoding_strategy
         captions = [info.caption for info in infos]
 
         if self.is_weighted:
             tokens_list, weights_list = tokenize_strategy.tokenize_with_weights(captions)
             with torch.no_grad():
+                # We need to pass cached_outputs=None here because we are generating the cache
                 hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens_with_weights(
-                    tokenize_strategy, models, tokens_list, weights_list
+                    tokenize_strategy, models, tokens_list, weights_list, cached_outputs=None
                 )
         else:
             tokens1, tokens2 = tokenize_strategy.tokenize(captions)
             with torch.no_grad():
+                # We need to pass cached_outputs=None here because we are generating the cache
                 hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens(
-                    tokenize_strategy, models, [tokens1, tokens2]
+                    tokenize_strategy, models, [tokens1, tokens2], cached_outputs=None
                 )
 
         if hidden_state1.dtype == torch.bfloat16:
@@ -303,4 +313,5 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     pool2=pool2_i,
                 )
             else:
-                info.text_encoder_outputs = [hidden_state1_i, hidden_state2_i, pool2_i]
+                # The cached outputs are structured as [hs1, [hs2, pool2]]
+                info.text_encoder_outputs = [hidden_state1_i, [hidden_state2_i, pool2_i]]

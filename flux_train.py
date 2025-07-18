@@ -33,6 +33,8 @@ from accelerate.utils import set_seed
 from library import deepspeed_utils, flux_train_utils, flux_utils, strategy_base, strategy_flux
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
+from accelerate.utils import DummyOptim, DummyScheduler
+
 import library.train_util as train_util
 
 from library.utils import setup_logging, add_logging_arguments
@@ -382,8 +384,16 @@ def train(args):
         optimizer_train_fn = lambda: None  # dummy function
         optimizer_eval_fn = lambda: None  # dummy function
     else:
+        if args.optimizer_type == "prodigyplus.ProdigyPlusScheduleFree" and args.fused_backward_pass:
+            args.optimizer_args.append("fused_back_pass=True")
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
+
+    if (
+        args.deepspeed or "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config
+    ):
+        optimizer_cls = (DummyOptim)
+        optimizer = optimizer_cls(trainable_params=params_to_optimize, lr=args.learning_rate)
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -414,12 +424,12 @@ def train(args):
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
     # lr schedulerを用意する
-    if args.blockwise_fused_optimizers:
+    """ if args.blockwise_fused_optimizers:
         # prepare lr schedulers for each optimizer
         lr_schedulers = [train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) for optimizer in optimizers]
         lr_scheduler = lr_schedulers[0]  # avoid error in the following code
     else:
-        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes) """
 
     # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
     if args.full_fp16:
@@ -449,11 +459,27 @@ def train(args):
     clean_memory_on_device(accelerator.device)
 
     if args.deepspeed:
+        deepspeed_utils.finalize_deepspeed_config(accelerator.state.deepspeed_plugin, args, num_update_steps_per_epoch)
         ds_model = deepspeed_utils.prepare_deepspeed_model(args, mmdit=flux)
         # most of ZeRO stage uses optimizer partitioning, so we have to prepare optimizer and ds_model at the same time. # pull/1139#issuecomment-1986790007
-        ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        """ ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             ds_model, optimizer, train_dataloader, lr_scheduler
+        ) """
+
+        # Step 1: Prepare everything EXCEPT the scheduler. This is how we get the REAL optimizer from DeepSpeed.
+        accelerator.print("Preparing model, optimizer, and dataloaders with DeepSpeed...")
+        ds_model, optimizer, train_dataloader = accelerator.prepare(
+            ds_model, optimizer, train_dataloader
         )
+        
+        # Step 2: Now that `optimizer` is the real DeepSpeed optimizer, create our real scheduler.
+        accelerator.print("Creating new scheduler with the real DeepSpeed optimizer.")
+        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+        
+        # Step 3: Prepare the scheduler separately. Accelerator will now wrap it and manage it correctly.
+        accelerator.print("Preparing scheduler...")
+        lr_scheduler = accelerator.prepare(lr_scheduler) 
+
         training_models = [ds_model]
 
     else:
@@ -474,25 +500,29 @@ def train(args):
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     if args.fused_backward_pass:
-        # use fused optimizer for backward pass: other optimizers will be supported in the future
-        import library.adafactor_fused
+        if args.optimizer_type == "AdaFactor":
+            import library.adafactor_fused
+            library.adafactor_fused.patch_adafactor_fused(optimizer)
+            for param_group, param_name_group in zip(optimizer.param_groups, param_names):
+                for parameter, param_name in zip(param_group["params"], param_name_group):
+                    if parameter.requires_grad:
 
-        library.adafactor_fused.patch_adafactor_fused(optimizer)
+                        def create_grad_hook(p_name, p_group):
+                            def grad_hook(tensor: torch.Tensor):
+                                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                    accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                                optimizer.step_param(tensor, p_group)
+                                tensor.grad = None
 
-        for param_group, param_name_group in zip(optimizer.param_groups, param_names):
-            for parameter, param_name in zip(param_group["params"], param_name_group):
-                if parameter.requires_grad:
-
-                    def create_grad_hook(p_name, p_group):
-                        def grad_hook(tensor: torch.Tensor):
-                            if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                                accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                            optimizer.step_param(tensor, p_group)
-                            tensor.grad = None
-
-                        return grad_hook
-
-                    parameter.register_post_accumulate_grad_hook(create_grad_hook(param_name, param_group))
+                            return grad_hook
+                        parameter.register_post_accumulate_grad_hook(create_grad_hook(param_name, param_group))
+        elif args.optimizer_type == "prodigyplus.ProdigyPlusScheduleFree":
+            # ProdigyPlus uses its internal fused_back_pass mechanism, pass for now
+            pass
+        else:
+            logger.warning(
+                f"Fused backward pass is not supported for optimizer type: {args.optimizer_type}. Ignoring."
+            )
 
     elif args.blockwise_fused_optimizers:
         # prepare for additional optimizers and lr schedulers

@@ -421,6 +421,7 @@ def create_network(
     text_encoder: Union[CLIPTextModel, List[CLIPTextModel]],
     unet,
     neuron_dropout: Optional[float] = None,
+    trainer=None,
     **kwargs,
 ):
     # if unet is an instance of SdxlUNet2DConditionModel or subclass, set is_sdxl to True
@@ -491,6 +492,7 @@ def create_network(
         conv_block_alphas=conv_block_alphas,
         varbose=True,
         is_sdxl=is_sdxl,
+        trainer=trainer,
     )
 
     loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
@@ -895,6 +897,7 @@ class LoRANetwork(torch.nn.Module):
         module_class: Type[object] = LoRAModule,
         varbose: Optional[bool] = False,
         is_sdxl: Optional[bool] = False,
+        trainer=None,  # for LoRAPlus
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -914,6 +917,8 @@ class LoRANetwork(torch.nn.Module):
         self.dropout = dropout
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
+
+        self.trainer=trainer
 
         self.loraplus_lr_ratio = None
         self.loraplus_unet_lr_ratio = None
@@ -1018,10 +1023,22 @@ class LoRANetwork(torch.nn.Module):
         text_encoders = text_encoder if type(text_encoder) == list else [text_encoder]
 
         # create LoRA for text encoder
-        # 毎回すべてのモジュールを作るのは無駄なので要検討
+        # create LoRA for text encoder
         self.text_encoder_loras = []
         skipped_te = []
+
+        # Get training flags to decide which TEs to create LoRA modules for.
+        train_flags = [True] * len(text_encoders)  # Default for non-SDXL
+        if self.trainer is not None and hasattr(self.trainer, "get_text_encoders_train_flags"):
+            # The trainer instance now has the args stored, so we can call the method.
+            train_flags = self.trainer.get_text_encoders_train_flags(self.trainer.args, text_encoders)
+
         for i, text_encoder in enumerate(text_encoders):
+            # If this text encoder is not being trained, skip creating modules for it.
+            if not train_flags[i]:
+                logger.info(f"Skipping LoRA creation for Text Encoder {i+1} as it is not set to be trained.")
+                continue
+
             if len(text_encoders) > 1:
                 index = i + 1
                 logger.info(f"create LoRA for Text Encoder {index}:")
@@ -1029,10 +1046,18 @@ class LoRANetwork(torch.nn.Module):
                 index = None
                 logger.info(f"create LoRA for Text Encoder:")
 
+            # ...
             text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            
+            # Log the count for the current encoder immediately
+            if len(text_encoders) > 1:
+                logger.info(f"create LoRA for Text Encoder {index}: {len(text_encoder_loras)} modules.")
+
             self.text_encoder_loras.extend(text_encoder_loras)
             skipped_te += skipped
-        logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
+        
+        # Now log the total
+        logger.info(f"Total LoRA modules for all Text Encoders: {len(self.text_encoder_loras)} modules.")
 
         # extend U-Net target modules if conv2d 3x3 is enabled, or load from weights
         target_modules = LoRANetwork.UNET_TARGET_REPLACE_MODULE

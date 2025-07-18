@@ -23,6 +23,7 @@ import hashlib
 import subprocess
 from io import BytesIO
 import toml
+from accelerate.utils import DummyScheduler
 
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -4753,9 +4754,9 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     optimizer_type = optimizer_type.lower()
 
     if args.fused_backward_pass:
-        assert (
+        """ assert (
             optimizer_type == "Adafactor".lower()
-        ), "fused_backward_pass currently only works with optimizer_type Adafactor / fused_backward_passは現在optimizer_type Adafactorでのみ機能します"
+        ), "fused_backward_pass currently only works with optimizer_type Adafactor / fused_backward_passは現在optimizer_type Adafactorでのみ機能します" """
         assert (
             args.gradient_accumulation_steps == 1
         ), "fused_backward_pass does not work with gradient_accumulation_steps > 1 / fused_backward_passはgradient_accumulation_steps>1では機能しません"
@@ -5155,12 +5156,19 @@ def get_dummy_scheduler(optimizer: Optimizer) -> Any:
     class DummyScheduler:
         def __init__(self, optimizer: Optimizer):
             self.optimizer = optimizer
+            # Add param_groups attribute for DummyOptim
+            if not hasattr(self.optimizer, 'param_groups'):
+                self.optimizer.param_groups = [{'lr': self.optimizer.lr}]
 
         def step(self):
             pass
 
         def get_last_lr(self):
-            return [group["lr"] for group in self.optimizer.param_groups]
+            # Handle both regular optimizers and DummyOptim
+            if hasattr(self.optimizer, 'param_groups'):
+                return [group["lr"] for group in self.optimizer.param_groups]
+            # Fallback for DummyOptim
+            return [self.optimizer.lr]
 
     return DummyScheduler(optimizer)
 
@@ -5928,7 +5936,7 @@ def save_sd_model_on_train_end(
         )
 
     save_sd_model_on_train_end_common(
-        args, save_stable_diffusion_format, use_safetensors, epoch, global_step, sd_saver, diffusers_saver
+        args, save_stable_diffusion_format, use_safetensors, epoch, global_step, sd_saver, diffusers_saver, unet, text_encoder, vae
     )
 
 
@@ -5940,6 +5948,9 @@ def save_sd_model_on_train_end_common(
     global_step: int,
     sd_saver,
     diffusers_saver,
+    unet,
+    text_encoder,
+    vae
 ):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
 
@@ -5949,10 +5960,15 @@ def save_sd_model_on_train_end_common(
         ckpt_name = model_name + (".safetensors" if use_safetensors else ".ckpt")
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
-        logger.info(f"save trained model as StableDiffusion checkpoint to {ckpt_file}")
-        sd_saver(ckpt_file, epoch, global_step)
+        if args.deepspeed:
+            logger.info(f"Saving consolidated Stable Diffusion checkpoint to {ckpt_file}")
+            # Note: sd_saver is already wrapped with the correct parameters from the caller
+            sd_saver(ckpt_file, epoch, global_step)
+        else:  # original save path for Stable Diffusion checkpoint
+            logger.info(f"save trained model as StableDiffusion checkpoint to {ckpt_file}")
+            sd_saver(ckpt_file, epoch, global_step)
 
-        if args.huggingface_repo_id is not None:
+        if args.huggingface_repo_id is not None and save_stable_diffusion_format:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=True)
     else:
         out_dir = os.path.join(args.output_dir, model_name)
@@ -5961,9 +5977,18 @@ def save_sd_model_on_train_end_common(
         logger.info(f"save trained model as Diffusers to {out_dir}")
         diffusers_saver(out_dir)
 
-        if args.huggingface_repo_id is not None:
-            huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
+        if args.deepspeed:  # DeepSpeed save path is different
+            output_base_dir = args.output_dir
+            output_dir = os.path.join(output_base_dir, model_name)
 
+            logger.info(f"saving trained model as Diffusers (DeepSpeed) to {output_dir}")
+        else:
+            os.makedirs(out_dir, exist_ok=True)
+            logger.info(f"saving trained model as Diffusers to {out_dir}")
+            diffusers_saver(out_dir)
+
+        if args.huggingface_repo_id is not None and not save_stable_diffusion_format:
+            huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
 def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device) -> torch.Tensor:
     if min_timestep < max_timestep:
@@ -6071,6 +6096,10 @@ def conditional_loss(
 
 
 def append_lr_to_logs(logs, lr_scheduler, optimizer_type, including_unet=True):
+    if isinstance(lr_scheduler, DummyScheduler):
+        # Skip LR logging for DummyScheduler (used in DeepSpeed)
+        return
+
     names = []
     if including_unet:
         names.append("unet")

@@ -14,10 +14,9 @@ import torch
 from library import deepspeed_utils, strategy_base
 from library.device_utils import init_ipex, clean_memory_on_device
 
-
 init_ipex()
 
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, DummyOptim, DummyScheduler
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
@@ -45,7 +44,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# perlin_noise,
+def patch_cuda_pin_memory():
+    """Patch CUDA pin memory allocation to handle errors gracefully"""
+    
+    def pin_memory_wrap(tensor, device=None, **kwargs):
+        try:
+            return tensor._original_pin_memory()
+        except RuntimeError:
+            return tensor
+
+    if not hasattr(torch.Tensor, '_original_pin_memory'):
+        torch.Tensor._original_pin_memory = torch.Tensor.pin_memory
+        torch.Tensor.pin_memory = pin_memory_wrap
 
 
 def train(args):
@@ -198,6 +208,13 @@ def train(args):
         trainable_params = unet.parameters()
 
     _, _, optimizer = train_util.get_optimizer(args, trainable_params)
+    lr_scheduler = train_util.get_dummy_scheduler(optimizer)
+
+
+    if args.deepspeed:
+        optimizer_cls = (DummyOptim)
+        optimizer = optimizer_cls(trainable_params, lr=args.learning_rate)
+        #lr_scheduler = train_util.get_dummy_scheduler(optimizer)
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -215,6 +232,7 @@ def train(args):
     )
 
     # 学習ステップ数を計算する
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_epochs is not None:
         args.max_train_steps = args.max_train_epochs * math.ceil(
             len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
@@ -230,7 +248,7 @@ def train(args):
         args.stop_text_encoder_training = args.max_train_steps + 1  # do not stop until end
 
     # lr schedulerを用意する TODO gradient_accumulation_stepsの扱いが何かおかしいかもしれない。後で確認する
-    lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+    #lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # 実験的機能：勾配も含めたfp16学習を行う　モデル全体をfp16にする
     if args.full_fp16:
@@ -243,10 +261,17 @@ def train(args):
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.deepspeed:
-        if args.train_text_encoder:
+        #unet.to(accelerator.device, dtype=weight_dtype)
+        #text_encoder.to(accelerator.device, dtype=weight_dtype)
+        #patch_cuda_pin_memory()
+
+        deepspeed_utils.finalize_deepspeed_config(accelerator.state.deepspeed_plugin, args, num_update_steps_per_epoch)
+        
+        # Prepare deepspeed model
+        if train_text_encoder:
             ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet, text_encoder=text_encoder)
         else:
-            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)
+            ds_model = deepspeed_utils.prepare_deepspeed_model(args, unet=unet)     
         ds_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             ds_model, optimizer, train_dataloader, lr_scheduler
         )
@@ -273,7 +298,7 @@ def train(args):
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     # epoch数を計算する
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    #num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
     if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
         args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
