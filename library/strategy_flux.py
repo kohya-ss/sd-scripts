@@ -1,9 +1,12 @@
 import os
-import glob
+from math import sqrt
 from typing import Any, List, Optional, Tuple, Union
+
+import safetensors
 import torch
 import numpy as np
-from transformers import CLIPTokenizer, T5TokenizerFast
+import PIL.Image
+from transformers import CLIPTokenizer, T5TokenizerFast, SiglipVisionModel, AutoProcessor
 
 from library import flux_utils, train_util
 from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
@@ -18,6 +21,38 @@ logger = logging.getLogger(__name__)
 
 CLIP_L_TOKENIZER_ID = "openai/clip-vit-large-patch14"
 T5_XXL_TOKENIZER_ID = "google/t5-v1_1-xxl"
+
+
+# FIXME: this is a very hacky way of handling the encoder model
+siglip_model = None
+siglip_processor = None
+redux_encoder = None
+
+def move_vision_encoder_to_device(device):
+    if siglip_model is not None:
+        siglip_model.to(device)
+    if redux_encoder is not None:
+        redux_encoder.to(device)
+
+
+class ReduxImageEncoder(torch.nn.Module):
+    def __init__(
+        self,
+        redux_dim: int = 1152,
+        txt_in_features: int = 4096,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.redux_dim = redux_dim
+        self.device = device
+        self.dtype = dtype
+        self.redux_up = torch.nn.Linear(redux_dim, txt_in_features * 3, dtype=dtype)
+        self.redux_down = torch.nn.Linear(txt_in_features * 3, txt_in_features, dtype=dtype)
+
+    def forward(self, sigclip_embeds) -> torch.Tensor:
+        projected_x = self.redux_down(torch.nn.functional.silu(self.redux_up(sigclip_embeds)))
+        return projected_x
 
 
 class FluxTokenizeStrategy(TokenizeStrategy):
@@ -95,10 +130,13 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         skip_disk_cache_validity_check: bool,
         is_partial: bool = False,
         apply_t5_attn_mask: bool = False,
+        vision_cond_size: int = 0,
+        redux_path: str = None,
     ) -> None:
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial)
         self.apply_t5_attn_mask = apply_t5_attn_mask
-
+        self.vision_cond_size = vision_cond_size
+        self.redux_path = redux_path
         self.warn_fp8_weights = False
 
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
@@ -142,6 +180,49 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         # apply_t5_attn_mask should be same as self.apply_t5_attn_mask
         return [l_pooled, t5_out, txt_ids, t5_attn_mask]
 
+    def encode_vision(self, infos, grid_size, t5_out, txt_ids):
+        global siglip_model
+        global siglip_processor
+        global redux_encoder
+
+        if siglip_model is None:
+            model_id = "google/siglip-so400m-patch14-384"
+            siglip_model = SiglipVisionModel.from_pretrained(
+                model_id, attn_implementation="sdpa", device_map="cuda")
+            siglip_processor = AutoProcessor.from_pretrained(model_id)
+
+        if redux_encoder is None:
+            if self.redux_path is None:
+                raise Exception("Vision encoding requires Redux model, but no file was provided.")
+            model_data = safetensors.torch.load_file(self.redux_path, device=torch.device("cpu").type)
+            redux_encoder = ReduxImageEncoder()
+            redux_encoder.load_state_dict(model_data)
+            redux_encoder = redux_encoder.to(device="cuda")
+
+        bsz = txt_ids.shape[0]
+        imgs = [PIL.Image.open(nfo.absolute_path) for nfo in infos]
+        siglip_in = siglip_processor(images=imgs, padding="max_length", return_tensors="pt")
+        siglip_in = siglip_in.to(device="cuda")
+
+        with torch.no_grad(), torch.autocast("cuda"):
+            siglip_out = siglip_model(**siglip_in)
+            new_embed = redux_encoder(siglip_out.last_hidden_state).float()
+            (b, t, h) = new_embed.shape
+            s = int(sqrt(t))
+            new_embed = torch.nn.functional.interpolate(new_embed.view(b, s, s, h).transpose(1, -1),
+                                                        size=(grid_size, grid_size),
+                                                        mode="bicubic")
+            new_embed = new_embed.transpose(1, -1).reshape(b, -1, h).cpu().numpy()
+            new_ids = np.zeros(shape=(bsz, new_embed.shape[1], txt_ids.shape[2]))
+            attn_mask = np.ones((bsz, new_embed.shape[1]))
+
+        for i, info in enumerate(infos):
+            new_embed_i = new_embed[i]
+            new_ids_i = new_ids[i]
+            attn_mask_i = attn_mask[i]
+            info.vision_encoder_outputs = (new_embed_i, new_ids_i, attn_mask_i)
+
+
     def cache_batch_outputs(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
     ):
@@ -172,6 +253,10 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         t5_out = t5_out.cpu().numpy()
         txt_ids = txt_ids.cpu().numpy()
         t5_attn_mask = tokens_and_masks[2].cpu().numpy()
+
+        if self.vision_cond_size > 0:
+            assert self.vision_cond_size <= 27, "Downsample ratio must not be greater than 27."
+            self.encode_vision(infos, self.vision_cond_size, t5_out, txt_ids)
 
         for i, info in enumerate(infos):
             l_pooled_i = l_pooled[i]
