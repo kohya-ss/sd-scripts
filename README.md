@@ -32,6 +32,7 @@
 | **Preset C — “停滞打破実験”** | Preset B + `--auto_cap_release`。谷底で停滞したら一時的にキャップを緩めて脱出を試みる。効果はケース依存。(あまり効果なし) | `Preset B` に `--auto_cap_release` を追加 |
 | **Preset D' — “停滞打破実験”** | Preset B + `--idle_free_phase`。窓にNaNが長期間入らない場合も定期的に“ブレーキ解除”。(安定しない) | `Preset B` に `--idle_free_phase` を追加 |
 | **Preset E' — “実験”** | Preset B + `--idle_free_phase`。途中のエポックから直近数個のエポックとの平均をとりながら学習を進める。(いいかも) | `Preset B` に `--avg_cp --avg_window 4 --avg_begin 0.6 --avg_mode ema --avg_reset_stats` を追加 |
+| **Preset F — “Optimizer Args Playground”** | 標準機能でoptimizerの wd & β₂ を微調整してLLMの論文（arXiv:2507.07101）の内容を検証。標準は wd = 0.01, β = (0.9, 0.999) で本家同等。<br>— wd↓0.0‑0.005: 過収縮抑制・多様性↑／過学習注意。<br>— wd↑0.02‑0.05: 線細・沈みがち。<br>— β₂↓0.995‑0.998: 刻み↑だが荒れ／発散リスク。<br>— β₂↑0.9994‑0.9999: 平滑・多様化↑、LoRAではキャラ薄傾向。<br>論文は wd = 0 & β₂≈0.99986 を推奨、小バッチで安定。(SDXLのLorAの学習には逆効果かも)|`--optimizer_type AdamW8bit --optimizer_args "weight_decay=0.01" "betas=0.9,0.999"` ←ここを例: wd=0 / betas=0.9,0.9998 などに書き換えて試行|
 
 **ターゲット想定**  
 - `batch_size=1`、`fp16`、`rank≤6` など *メモリ制約の大きい環境*  
