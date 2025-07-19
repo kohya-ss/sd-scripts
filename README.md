@@ -30,8 +30,8 @@
 | **Preset A — “当たり狙い”** | *NaN/Inf もスキップ*。スケールが際限なく上がるため破綻リスクはあるものの、少量高品質データで“化ける”ことがある。 | `--downscale_freq_shift  --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log` |
 | **Preset B — “安定重視”** | *NaN/Inf をスキップしない*ことで GradScaler の自動調整を生かしつつ、動的しきい値で大スパイクのみ遮断。窓にNaN/Infを入れることで“ブレーキ解除”。最も汎用的。 | `--downscale_freq_shift --te_mlp_fc_only --skip_grad_norm --grad_norm_log --grad_cosine_log --skip_grad_norm_max 200000 --nan_to_window --inf_to_window --no-skip_nan_immediate --no-skip_inf_immediate` |
 | **Preset C — “停滞打破実験”** | Preset B + `--auto_cap_release`。谷底で停滞したら一時的にキャップを緩めて脱出を試みる。効果はケース依存。(あまり効果なし) | `Preset B` に `--auto_cap_release` を追加 |
-| **Preset D' — “停滞打破実験”** | Preset B + `--idle_free_phase`。窓にNaNが長期間入らない場合も定期的に“ブレーキ解除”。 | `Preset B` に `--idle_free_phase` を追加 |
-| **Preset E' — “実験”** | Preset B + `--idle_free_phase`。途中のエポックから直近数個のエポックとの平均をとりながら学習を進める。 | `Preset B` に `--avg_cp --avg_window 4 --avg_begin 0.6 --avg_mode ema --avg_reset_stats` を追加 |
+| **Preset D' — “停滞打破実験”** | Preset B + `--idle_free_phase`。窓にNaNが長期間入らない場合も定期的に“ブレーキ解除”。(安定しない) | `Preset B` に `--idle_free_phase` を追加 |
+| **Preset E' — “実験”** | Preset B + `--idle_free_phase`。途中のエポックから直近数個のエポックとの平均をとりながら学習を進める。(いいかも) | `Preset B` に `--avg_cp --avg_window 4 --avg_begin 0.6 --avg_mode ema --avg_reset_stats` を追加 |
 
 **ターゲット想定**  
 - `batch_size=1`、`fp16`、`rank≤6` など *メモリ制約の大きい環境*  
