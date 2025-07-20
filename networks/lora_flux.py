@@ -892,6 +892,9 @@ class LoRANetwork(torch.nn.Module):
         skipped_te = []
         for i, text_encoder in enumerate(text_encoders):
             index = i
+            if text_encoder is None:
+                logger.info(f"Text Encoder {index+1} is None, skipping LoRA creation for this encoder.")
+                continue
             if not train_t5xxl and index > 0:  # 0: CLIP, 1: T5XXL, so we skip T5XXL if train_t5xxl is False
                 break
 
