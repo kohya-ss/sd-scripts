@@ -266,6 +266,8 @@ def sample_image_inference(
             controlnet=controlnet,
             controlnet_img=controlnet_image,
             neg_cond=neg_cond,
+            proportional_attention=args.proportional_attention, 
+            ntk_factor=args.ntk_factor,
         )
 
     x = flux_utils.unpack_latents(x, packed_latent_height, packed_latent_width)
@@ -345,6 +347,8 @@ def denoise(
     controlnet: Optional[flux_models.ControlNetFlux] = None,
     controlnet_img: Optional[torch.Tensor] = None,
     neg_cond: Optional[Tuple[float, torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    proportional_attention: Optional[bool] = None,
+    ntk_factor = 1.0,
 ):
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
@@ -365,6 +369,8 @@ def denoise(
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 txt_attention_mask=t5_attn_mask,
+                proportional_attention=proportional_attention,
+                ntk_factor=ntk_factor,
             )
         else:
             block_samples = None
@@ -382,6 +388,8 @@ def denoise(
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 txt_attention_mask=t5_attn_mask,
+                proportional_attention=proportional_attention,
+                ntk_factor=ntk_factor,
             )
 
             img = img + (t_prev - t_curr) * pred
@@ -406,6 +414,8 @@ def denoise(
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 txt_attention_mask=nc_c_t5_attn_mask,
+                proportional_attention=proportional_attention,
+                ntk_factor=ntk_factor,
             )
             neg_pred, pred = torch.chunk(nc_c_pred, 2, dim=0)
             pred = neg_pred + (pred - neg_pred) * cfg_scale
@@ -680,3 +690,5 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
+    parser.add_argument("--proportional_attention", action="store_true", help="Dynamic attention scale with respect to the resolution. Proportional attention to the image sequence length. From URAE paper")
+    parser.add_argument("--ntk_factor", type=float, default=1.0, help="NTK Factor for increasing the embedding space for RoPE. Defaults to 1.0. 10.0 for 2k/4k images. From URAE paper.")
