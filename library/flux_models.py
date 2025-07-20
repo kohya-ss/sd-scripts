@@ -1009,6 +1009,9 @@ class Flux(nn.Module):
         self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
         self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
 
+    def get_input_vec(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
+        return None  # FLUX.1 does not use input_vec, but Chroma does.
+
     def forward(
         self,
         img: Tensor,

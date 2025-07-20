@@ -341,9 +341,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         guidance_vec = torch.full((bsz,), float(args.guidance_scale), device=accelerator.device)
 
         # get modulation vectors for Chroma
-        input_vec = None
-        if self.model_type == "chroma":
-            input_vec = unet.get_input_vec(timesteps=timesteps, guidance=guidance_vec, batch_size=bsz)
+        input_vec = unet.get_input_vec(timesteps=timesteps / 1000, guidance=guidance_vec, batch_size=bsz)
 
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
