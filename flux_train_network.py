@@ -95,8 +95,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         loading_dtype = None if args.fp8_base else weight_dtype
 
         # if we load to cpu, flux.to(fp8) takes a long time, so we should load to gpu in future
-        self.is_schnell, model = flux_utils.load_flow_model(
-            args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors
+        self.model_type, self.is_schnell, model = flux_utils.load_flow_model(
+            args.pretrained_model_name_or_path, loading_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors, model_type="flux"
         )
         if args.fp8_base:
             # check dtype of model

@@ -270,8 +270,8 @@ def train(args):
         clean_memory_on_device(accelerator.device)
 
     # load FLUX
-    _, flux = flux_utils.load_flow_model(
-        args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors
+    model_type, _, flux = flux_utils.load_flow_model(
+        args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors, model_type="flux"
     )
 
     if args.gradient_checkpointing:

@@ -258,8 +258,8 @@ def train(args):
         clean_memory_on_device(accelerator.device)
 
     # load FLUX
-    is_schnell, flux = flux_utils.load_flow_model(
-        args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors
+    model_type, is_schnell, flux = flux_utils.load_flow_model(
+        args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors, model_type="flux"
     )
     flux.requires_grad_(False)
 
