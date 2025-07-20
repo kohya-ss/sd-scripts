@@ -78,16 +78,19 @@ def denoise(
     neg_t5_attn_mask: Optional[torch.Tensor] = None,
     cfg_scale: Optional[float] = None,
 ):
-    # this is ignored for schnell
-    logger.info(f"guidance: {guidance}, cfg_scale: {cfg_scale}")
-    guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
-
     # prepare classifier free guidance
-    if neg_txt is not None and neg_vec is not None:
+    logger.info(f"guidance: {guidance}, cfg_scale: {cfg_scale}")
+    do_cfg = neg_txt is not None and (cfg_scale is not None and cfg_scale != 1.0)
+
+    # this is ignored for schnell
+    guidance_vec = torch.full((img.shape[0] * (2 if do_cfg else 1),), guidance, device=img.device, dtype=img.dtype)
+
+    if do_cfg:
+        print("Using classifier free guidance")
         b_img_ids = torch.cat([img_ids, img_ids], dim=0)
         b_txt_ids = torch.cat([txt_ids, txt_ids], dim=0)
         b_txt = torch.cat([neg_txt, txt], dim=0)
-        b_vec = torch.cat([neg_vec, vec], dim=0)
+        b_vec = torch.cat([neg_vec, vec], dim=0) if neg_vec is not None else None
         if t5_attn_mask is not None and neg_t5_attn_mask is not None:
             b_t5_attn_mask = torch.cat([neg_t5_attn_mask, t5_attn_mask], dim=0)
         else:
@@ -103,17 +106,13 @@ def denoise(
         t_vec = torch.full((b_img_ids.shape[0],), t_curr, dtype=img.dtype, device=img.device)
 
         # classifier free guidance
-        if neg_txt is not None and neg_vec is not None:
+        if do_cfg:
             b_img = torch.cat([img, img], dim=0)
         else:
             b_img = img
 
-        # For Chroma model, y might be None, so create dummy tensor
-        if b_vec is None:
-            y_input = torch.zeros_like(b_txt[:, :1, :])  # dummy tensor
-        else:
-            y_input = b_vec
-            
+        y_input = b_vec
+
         pred = model(
             img=b_img,
             img_ids=b_img_ids,
@@ -126,7 +125,7 @@ def denoise(
         )
 
         # classifier free guidance
-        if neg_txt is not None and neg_vec is not None:
+        if do_cfg:
             pred_uncond, pred = torch.chunk(pred, 2, dim=0)
             pred = pred_uncond + cfg_scale * (pred - pred_uncond)
 
@@ -309,7 +308,7 @@ def generate_image(
         neg_l_pooled, neg_t5_out, neg_t5_attn_mask = None, None, None
 
     # NaN check
-    if torch.isnan(l_pooled).any():
+    if l_pooled is not None and torch.isnan(l_pooled).any():
         raise ValueError("NaN in l_pooled")
     if torch.isnan(t5_out).any():
         raise ValueError("NaN in t5_out")
@@ -329,6 +328,7 @@ def generate_image(
 
     img_ids = img_ids.to(device)
     t5_attn_mask = t5_attn_mask.to(device) if args.apply_t5_attn_mask else None
+    neg_t5_attn_mask = neg_t5_attn_mask.to(device) if neg_t5_attn_mask is not None and args.apply_t5_attn_mask else None
 
     x = do_sample(
         accelerator,

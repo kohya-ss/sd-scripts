@@ -146,7 +146,7 @@ def load_flow_model(
         from . import chroma_models
 
         # build model
-        logger.info("Building Chroma model from BFL checkpoint")
+        logger.info("Building Chroma model")
         with torch.device("meta"):
             model = chroma_models.Chroma(chroma_models.chroma_params)
             if dtype is not None:
