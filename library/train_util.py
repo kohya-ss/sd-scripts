@@ -3482,7 +3482,7 @@ def get_sai_model_spec(
     textual_inversion: bool,
     is_stable_diffusion_ckpt: Optional[bool] = None,  # None for TI and LoRA
     sd3: str = None,
-    flux: str = None,
+    flux: str = None, # "dev", "schnell" or "chroma"
 ):
     timestamp = time.time()
 

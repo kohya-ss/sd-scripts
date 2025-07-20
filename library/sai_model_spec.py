@@ -60,6 +60,8 @@ ARCH_SD_XL_V1_BASE = "stable-diffusion-xl-v1-base"
 ARCH_SD3_M = "stable-diffusion-3"  # may be followed by "-m" or "-5-large" etc.
 # ARCH_SD3_UNKNOWN = "stable-diffusion-3"
 ARCH_FLUX_1_DEV = "flux-1-dev"
+ARCH_FLUX_1_SCHNELL = "flux-1-schnell"
+ARCH_FLUX_1_CHROMA = "chroma"  # for Flux Chroma
 ARCH_FLUX_1_UNKNOWN = "flux-1"
 
 ADAPTER_LORA = "lora"
@@ -69,6 +71,7 @@ IMPL_STABILITY_AI = "https://github.com/Stability-AI/generative-models"
 IMPL_COMFY_UI = "https://github.com/comfyanonymous/ComfyUI"
 IMPL_DIFFUSERS = "diffusers"
 IMPL_FLUX = "https://github.com/black-forest-labs/flux"
+IMPL_CHROMA = "https://huggingface.co/lodestones/Chroma"
 
 PRED_TYPE_EPSILON = "epsilon"
 PRED_TYPE_V = "v"
@@ -125,7 +128,7 @@ def build_metadata(
     flux: Optional[str] = None,
 ):
     """
-    sd3: only supports "m", flux: only supports "dev"
+    sd3: only supports "m", flux: supports "dev", "schnell" or "chroma"
     """
     # if state_dict is None, hash is not calculated
 
@@ -144,6 +147,10 @@ def build_metadata(
     elif flux is not None:
         if flux == "dev":
             arch = ARCH_FLUX_1_DEV
+        elif flux == "schnell":
+            arch = ARCH_FLUX_1_SCHNELL
+        elif flux == "chroma":
+            arch = ARCH_FLUX_1_CHROMA
         else:
             arch = ARCH_FLUX_1_UNKNOWN
     elif v2:
@@ -166,7 +173,10 @@ def build_metadata(
 
     if flux is not None:
         # Flux
-        impl = IMPL_FLUX
+        if flux == "chroma":
+            impl = IMPL_CHROMA
+        else:
+            impl = IMPL_FLUX
     elif (lora and sdxl) or textual_inversion or is_stable_diffusion_ckpt:
         # Stable Diffusion ckpt, TI, SDXL LoRA
         impl = IMPL_STABILITY_AI

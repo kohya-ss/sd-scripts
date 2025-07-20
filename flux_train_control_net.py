@@ -68,6 +68,11 @@ def train(args):
     if not args.skip_cache_check:
         args.skip_cache_check = args.skip_latents_validity_check
 
+    if args.model_type != "flux":
+        raise ValueError(
+            f"FLUX.1 ControlNet training requires model_type='flux'. / FLUX.1 ControlNetの学習にはmodel_type='flux'を指定してください。"
+        )
+
     # assert (
     #     not args.weighted_captions
     # ), "weighted_captions is not supported currently / weighted_captionsは現在サポートされていません"
@@ -258,7 +263,7 @@ def train(args):
         clean_memory_on_device(accelerator.device)
 
     # load FLUX
-    model_type, is_schnell, flux = flux_utils.load_flow_model(
+    is_schnell, flux = flux_utils.load_flow_model(
         args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors, model_type="flux"
     )
     flux.requires_grad_(False)

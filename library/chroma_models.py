@@ -601,13 +601,30 @@ class Chroma(Flux):
         self.gradient_checkpointing = False
         self.cpu_offload_checkpointing = False
 
-    def get_mod_vectors(
-        self,
-        timesteps: Tensor,
-        guidance: Tensor | None = None,
-        batch_size: int | None = None,
-        requires_grad: bool = False,
-    ) -> Tensor:
+    def get_model_type(self) -> str:
+        return "chroma"
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+        self.cpu_offload_checkpointing = cpu_offload
+
+        self.distilled_guidance_layer.enable_gradient_checkpointing()
+        for block in self.double_blocks + self.single_blocks:
+            block.enable_gradient_checkpointing()
+
+        print(f"Chroma: Gradient checkpointing enabled.")
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+        self.distilled_guidance_layer.disable_gradient_checkpointing()
+        for block in self.double_blocks + self.single_blocks:
+            block.disable_gradient_checkpointing()
+
+        print("Chroma: Gradient checkpointing disabled.")
+
+    def get_input_vec(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
         distill_timestep = timestep_embedding(timesteps, self.approximator_in_dim // 4)
         # TODO: need to add toggle to omit this from schnell but that's not a priority
         distil_guidance = timestep_embedding(guidance, self.approximator_in_dim // 4)
@@ -619,10 +636,7 @@ class Chroma(Flux):
         timestep_guidance = torch.cat([distill_timestep, distil_guidance], dim=1).unsqueeze(1).repeat(1, self.mod_index_length, 1)
         # then and only then we could concatenate it together
         input_vec = torch.cat([timestep_guidance, modulation_index], dim=-1)
-        if requires_grad:
-            input_vec = input_vec.requires_grad_(True)
-        mod_vectors = self.distilled_guidance_layer(input_vec)
-        return mod_vectors
+        return input_vec
 
     def forward(
         self,
@@ -637,7 +651,7 @@ class Chroma(Flux):
         guidance: Tensor | None = None,
         txt_attention_mask: Tensor | None = None,
         attn_padding: int = 1,
-        mod_vectors: Tensor | None = None,
+        input_vec: Tensor | None = None,
     ) -> Tensor:
         # print(
         #     f"Chroma forward: img shape {img.shape}, txt shape {txt.shape}, img_ids shape {img_ids.shape}, txt_ids shape {txt_ids.shape}"
@@ -651,7 +665,7 @@ class Chroma(Flux):
         img = self.img_in(img)
         txt = self.txt_in(txt)
 
-        if mod_vectors is None:
+        if input_vec is None:
             # TODO:
             # need to fix grad accumulation issue here for now it's in no grad mode
             # besides, i don't want to wash out the PFP that's trained on this model weights anyway
@@ -659,14 +673,18 @@ class Chroma(Flux):
             # alternatively doing forward pass for every block manually is doable but slow
             # custom backward probably be better
             with torch.no_grad():
-                # kohya-ss: I'm not sure why requires_grad is set to True here
-                mod_vectors = self.get_mod_vectors(timesteps, guidance, img.shape[0], requires_grad=True)
+                input_vec = self.get_input_vec(timesteps, guidance, img.shape[0])
 
+                # kohya-ss: I'm not sure why requires_grad is set to True here
+                input_vec.requires_grad = True
+                mod_vectors = self.distilled_guidance_layer(input_vec)
+        else:
+            mod_vectors = self.distilled_guidance_layer(input_vec)
         mod_vectors_dict = distribute_modulations(mod_vectors, self.depth_single_blocks, self.depth_double_blocks)
 
         # calculate text length for each batch instead of masking
         txt_emb_len = txt.shape[1]
-        txt_seq_len = txt_attention_mask[:, :txt_emb_len].sum(dim=-1)  # (batch_size, )
+        txt_seq_len = txt_attention_mask[:, :txt_emb_len].sum(dim=-1).to(torch.int64)  # (batch_size, )
         txt_seq_len = torch.clip(txt_seq_len + attn_padding, 0, txt_emb_len)
         max_txt_len = torch.max(txt_seq_len).item()  # max text length in the batch
 

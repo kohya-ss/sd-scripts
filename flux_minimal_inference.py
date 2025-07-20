@@ -468,7 +468,7 @@ if __name__ == "__main__":
     #     t5xxl = accelerator.prepare(t5xxl)
 
     # DiT
-    model_type, is_schnell, model = flux_utils.load_flow_model(args.ckpt_path, None, loading_device, model_type=args.model_type)
+    is_schnell, model = flux_utils.load_flow_model(args.ckpt_path, None, loading_device, model_type=args.model_type)
     model.eval()
     logger.info(f"Casting model to {flux_dtype}")
     model.to(flux_dtype)  # make sure model is dtype
