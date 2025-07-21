@@ -3483,6 +3483,7 @@ def get_sai_model_spec(
     is_stable_diffusion_ckpt: Optional[bool] = None,  # None for TI and LoRA
     sd3: str = None,
     flux: str = None,
+    lumina: str = None,
 ):
     timestamp = time.time()
 
@@ -3518,6 +3519,7 @@ def get_sai_model_spec(
         clip_skip=args.clip_skip,  # None or int
         sd3=sd3,
         flux=flux,
+        lumina=lumina,
     )
     return metadata
 
@@ -6208,6 +6210,17 @@ def line_to_prompt_dict(line: str) -> dict:
             if m:
                 prompt_dict["controlnet_image"] = m.group(1)
                 continue
+
+            m = re.match(r"ctr (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["cfg_trunc_ratio"] = float(m.group(1))
+                continue
+
+            m = re.match(r"rcfg (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["renorm_cfg"] = float(m.group(1))
+                continue
+
 
         except ValueError as ex:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
