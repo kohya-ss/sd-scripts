@@ -645,8 +645,22 @@ class NetworkTrainer:
         net_kwargs = {}
         if args.network_args is not None:
             for net_arg in args.network_args:
-                key, value = net_arg.split("=")
-                net_kwargs[key] = value
+                key, value = net_arg.split("=", 1)
+                if key == "lr_if_contains":
+                    # Special handling for lr_if_contains to build a dictionary
+                    if "lr_if_contains" not in net_kwargs:
+                        net_kwargs["lr_if_contains"] = {}
+                    
+                    try:
+                        pattern, multiplier_str = value.split(":", 1)
+                        multiplier = float(multiplier_str)
+                        net_kwargs["lr_if_contains"][pattern] = multiplier
+                    except ValueError:
+                        logger.error(f"Could not parse lr_if_contains argument: {value}. Expected format 'PATTERN:MULTIPLIER'.")
+
+                else:
+                    # Handle other arguments normally by overwriting
+                    net_kwargs[key] = value
 
         # if a new network is added in future, add if ~ then blocks for each network (;'∀')
         if args.dim_from_weights:
