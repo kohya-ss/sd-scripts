@@ -54,6 +54,8 @@ class AutoEncoderParams:
     z_channels: int
     scale_factor: float
     shift_factor: float
+    stride: int
+    partitioned: bool
 
 
 def swish(x: Tensor) -> Tensor:
@@ -228,6 +230,8 @@ class Decoder(nn.Module):
         in_channels: int,
         resolution: int,
         z_channels: int,
+        partitioned=False,
+        stride=1,
     ):
         super().__init__()
         self.ch = ch
@@ -236,6 +240,8 @@ class Decoder(nn.Module):
         self.resolution = resolution
         self.in_channels = in_channels
         self.ffactor = 2 ** (self.num_resolutions - 1)
+        self.stride = stride
+        self.partitioned = partitioned
 
         # compute in_ch_mult, block_in and curr_res at lowest res
         block_in = ch * ch_mult[self.num_resolutions - 1]
@@ -272,7 +278,7 @@ class Decoder(nn.Module):
         self.norm_out = nn.GroupNorm(num_groups=32, num_channels=block_in, eps=1e-6, affine=True)
         self.conv_out = nn.Conv2d(block_in, out_ch, kernel_size=3, stride=1, padding=1)
 
-    def forward(self, z: Tensor) -> Tensor:
+    def forward(self, z: Tensor, partitioned=None) -> Tensor:
         # z to block_in
         h = self.conv_in(z)
 
@@ -291,9 +297,56 @@ class Decoder(nn.Module):
                 h = self.up[i_level].upsample(h)
 
         # end
-        h = self.norm_out(h)
-        h = swish(h)
-        h = self.conv_out(h)
+
+        # Diffusion4k
+        partitioned = partitioned if not None else self.partitioned
+        if self.stride > 1 and partitioned:
+            h = self.norm_out(h)
+            h = swish(h)
+
+            overlap_size = 1 # because last conv kernel_size = 3
+            res = []
+            partitioned_height = h.shape[2] // self.stride
+            partitioned_width = h.shape[3] // self.stride
+
+            assert self.stride == 2 # only support stride = 2 for now
+            rows = []
+            for i in range(0, h.shape[2], partitioned_height):
+                row = []
+                for j in range(0, h.shape[3], partitioned_width):
+                    partition = h[:,:, max(i - overlap_size, 0) : min(i + partitioned_height + overlap_size, h.shape[2]), max(j - overlap_size, 0) : min(j + partitioned_width + overlap_size, h.shape[3])]
+                    
+                    # for strih 
+                    if i==0 and j==0:
+                        partition = torch.nn.functional.pad(partition, (1, 0, 1, 0), "constant", 0) 
+                    elif i==0:
+                        partition = torch.nn.functional.pad(partition, (0, 1, 1, 0), "constant", 0) 
+                    elif i>0 and j==0:
+                        partition = torch.nn.functional.pad(partition, (1, 0, 0, 1), "constant", 0) 
+                    elif i>0 and j>0:
+                        partition = torch.nn.functional.pad(partition, (0, 1, 0, 1), "constant", 0) 
+
+                    partition = torch.nn.functional.interpolate(partition, scale_factor=self.stride, mode='nearest')
+                    partition = self.conv_out(partition)
+                    partition = partition[:,:,overlap_size:partitioned_height*2+overlap_size,overlap_size:partitioned_width*2+overlap_size]
+
+                    row.append(partition)
+                rows.append(row)
+
+            for row in rows:
+                res.append(torch.cat(row, dim=3))
+            
+            h = torch.cat(res, dim=2)
+        # Diffusion4k
+        elif self.stride > 1:
+            h = self.norm_out(h)
+            h = torch.nn.functional.interpolate(h, scale_factor=self.stride, mode='nearest')
+            h = swish(h)
+            h = self.conv_out(h)
+        else:
+            h = self.norm_out(h)
+            h = swish(h)
+            h = self.conv_out(h)
         return h
 
 
@@ -404,6 +457,9 @@ configs = {
             z_channels=16,
             scale_factor=0.3611,
             shift_factor=0.1159,
+            # Diffusion4k
+            stride=1,
+            partitioned=False,
         ),
     ),
     "schnell": ModelSpec(
@@ -436,6 +492,9 @@ configs = {
             z_channels=16,
             scale_factor=0.3611,
             shift_factor=0.1159,
+            # Diffusion4k
+            stride=1,
+            partitioned=False,
         ),
     ),
 }

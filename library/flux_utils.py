@@ -346,21 +346,66 @@ def prepare_img_ids(batch_size: int, packed_latent_height: int, packed_latent_wi
     img_ids = einops.repeat(img_ids, "h w c -> b (h w) c", b=batch_size)
     return img_ids
 
+def prepare_partitioned_img_ids(batch_size: int, height: int, width: int):
+    latent_image_ids = torch.zeros(height // 2, width // 2, 3)
+    latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height // 2)[:, None]
+    latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width // 2)[None, :]
 
-def unpack_latents(x: torch.Tensor, packed_latent_height: int, packed_latent_width: int) -> torch.Tensor:
+    latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
+
+    latent_image_ids = latent_image_ids[None, :].repeat(batch_size, 1, 1, 1)
+    latent_image_ids = latent_image_ids.reshape(
+        batch_size, latent_image_id_height * latent_image_id_width, latent_image_id_channels
+    )
+
+    return latent_image_ids
+
+def unpack_latents(x: torch.FloatTensor, height: int, width: int) -> torch.FloatTensor:
     """
     x: [b (h w) (c ph pw)] -> [b c (h ph) (w pw)], ph=2, pw=2
     """
-    x = einops.rearrange(x, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=packed_latent_height, w=packed_latent_width, ph=2, pw=2)
+    x = einops.rearrange(x, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=height, w=width, ph=2, pw=2)
+    return x
+
+# def unpack_latents(latents, height, width):
+#     batch_size, num_patches, channels = latents.shape
+#
+#     # height = height // vae_scale_factor
+#     # width = width // vae_scale_factor
+#
+#     latents = latents.view(batch_size, height, width, channels // 4, 2, 2)
+#     latents = latents.permute(0, 3, 1, 4, 2, 5)
+#
+#     latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2)
+#
+#     return latents
+
+def unpack_partitioned_latents(x, height, width):
+    x = einops.rearrange(
+        x, 
+        "b (h w) (c ph pw) -> b c (h ph) (w pw)", 
+        h=height//2,  # Divide by 2 because each patch is 2x2
+        w=width//2,   # Divide by 2 because each patch is 2x2
+        ph=2, 
+        pw=2
+    )
     return x
 
 
-def pack_latents(x: torch.Tensor) -> torch.Tensor:
-    """
-    x: [b c (h ph) (w pw)] -> [b (h w) (c ph pw)], ph=2, pw=2
-    """
-    x = einops.rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-    return x
+# def pack_latents(x: torch.Tensor) -> torch.Tensor:
+#     """
+#     x: [b c (h ph) (w pw)] -> [b (h w) (c ph pw)], ph=2, pw=2
+#     """
+#     x = einops.rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+#     return x
+def pack_latents(latents):
+    batch_size, channels, height, width = latents.shape
+    latents = latents.view(batch_size, channels, height // 2, 2, width // 2, 2)
+    latents = latents.permute(0, 2, 4, 1, 3, 5)
+    latents = latents.reshape(batch_size, (height // 2) * (width // 2), channels * 4)
+
+    return latents
+
 
 
 # region Diffusers

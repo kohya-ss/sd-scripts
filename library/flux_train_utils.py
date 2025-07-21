@@ -232,18 +232,49 @@ def sample_image_inference(
 
     # sample image
     weight_dtype = ae.dtype  # TOFO give dtype as argument
-    packed_latent_height = height // 16
-    packed_latent_width = width // 16
-    noise = torch.randn(
-        1,
-        packed_latent_height * packed_latent_width,
-        16 * 2 * 2,
-        device=accelerator.device,
-        dtype=weight_dtype,
-        generator=torch.Generator(device=accelerator.device).manual_seed(seed) if seed is not None else None,
-    )
-    timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)  # FLUX.1 dev -> shift=True
-    img_ids = flux_utils.prepare_img_ids(1, packed_latent_height, packed_latent_width).to(accelerator.device, weight_dtype)
+
+    if args.partitioned_vae:
+        vae_scale_factor = 32
+        latent_height = 2 * (int(height) // vae_scale_factor)
+        latent_width = 2 * (int(width) // vae_scale_factor)
+
+        print("latent height", latent_height)
+        print("latent width", latent_width)
+
+        noisy_model_input = torch.randn(
+            1, # Batch size
+            16, # VAE channels
+            latent_height, 
+            latent_width,
+            device=accelerator.device,
+            dtype=weight_dtype,
+            generator=torch.Generator(device=accelerator.device).manual_seed(seed) if seed is not None else None,
+        )
+
+        packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
+        img_ids = flux_utils.prepare_partitioned_img_ids(1, latent_height, latent_width).to(device=accelerator.device)
+
+        print("img_ids: ", img_ids.shape)
+    else:
+        # VAE 8x compression
+        latent_height = height // 8
+        latent_width = width // 8
+        noisy_model_input = torch.randn(
+            1, # Batch size
+            16, # VAE channels
+            latent_height, 
+            latent_width,
+            device=accelerator.device,
+            dtype=weight_dtype,
+            generator=torch.Generator(device=accelerator.device).manual_seed(seed) if seed is not None else None,
+        )
+        packed_noisy_model_input = flux_utils.pack_latents(noisy_model_input)  # b, c, h*2, w*2 -> b, h*w, c*4
+        latent_height, latent_width = noisy_model_input.shape[2], noisy_model_input.shape[3]
+        img_ids = flux_utils.prepare_img_ids(1, latent_height // 2, latent_width // 2).to(device=accelerator.device)
+
+    assert packed_noisy_model_input.shape[1] == img_ids.shape[1], "Packed latent dimensions are not aligned with img ids"
+
+    timesteps = get_schedule(sample_steps, noisy_model_input.shape[1], shift=True)  # FLUX.1 dev -> shift=True
     t5_attn_mask = t5_attn_mask.to(accelerator.device) if args.apply_t5_attn_mask else None
 
     if controlnet_image is not None:
@@ -255,7 +286,7 @@ def sample_image_inference(
     with accelerator.autocast(), torch.no_grad():
         x = denoise(
             flux,
-            noise,
+            packed_noisy_model_input,
             img_ids,
             t5_out,
             txt_ids,
@@ -268,7 +299,11 @@ def sample_image_inference(
             neg_cond=neg_cond,
         )
 
-    x = flux_utils.unpack_latents(x, packed_latent_height, packed_latent_width)
+    # unpack latents
+    if args.partitioned_vae:
+        x = flux_utils.unpack_latents(x, height // 32, width // 32)
+    else:
+        x = flux_utils.unpack_latents(x, latent_height // 2, latent_width // 2)
 
     # latent to image
     clean_memory_on_device(accelerator.device)
@@ -680,3 +715,4 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
     )
+    parser.add_argument("--partitioned_vae", action="store_true", help="Partitioned VAE from Diffusion4k paper")
