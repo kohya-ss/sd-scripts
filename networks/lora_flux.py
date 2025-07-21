@@ -575,6 +575,8 @@ def create_network(
     if verbose is not None:
         verbose = True if verbose == "True" else False
 
+    lr_if_contains = kwargs.get("lr_if_contains", None)
+
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
         text_encoders,
@@ -597,8 +599,9 @@ def create_network(
         ggpo_beta=ggpo_beta,
         ggpo_sigma=ggpo_sigma,
         verbose=verbose,
+        lr_if_contains=lr_if_contains,
     )
-
+ 
     loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
     loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
     loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
@@ -711,11 +714,13 @@ class LoRANetwork(torch.nn.Module):
         ggpo_beta: Optional[float] = None,
         ggpo_sigma: Optional[float] = None,
         verbose: Optional[bool] = False,
+        lr_if_contains: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
         self.multiplier = multiplier
 
         self.lora_dim = lora_dim
+        self.lr_if_contains = lr_if_contains
         self.alpha = alpha
         self.conv_lora_dim = conv_lora_dim
         self.conv_alpha = conv_alpha
@@ -1166,35 +1171,77 @@ class LoRANetwork(torch.nn.Module):
         all_params = []
         lr_descriptions = []
 
+        def get_lr_multiplier_for_lora(self, lora_name):
+            """Calculate learning rate multiplier based on lr_if_contains patterns."""
+            if not hasattr(self, 'lr_if_contains') or not self.lr_if_contains:
+                return 1.0
+            
+            # Check each pattern in order of specificity
+            for pattern, multiplier in self.lr_if_contains.items():
+                # Handle wildcard patterns
+                if '$$*$$' in pattern:
+                    base_pattern = pattern.replace('$$*$$', '')
+                    if base_pattern in lora_name:
+                        return multiplier
+                # Handle specific block patterns
+                elif '$$' in pattern:
+                    # Extract block type and index
+                    parts = pattern.split('$$')
+                    if len(parts) >= 3:
+                        block_type = parts[0]
+                        block_index = parts[1]
+                        
+                        # Check if this lora matches the pattern
+                        if block_type in lora_name:
+                            try:
+                                # Extract block index from lora name
+                                # Format: lora_unet_double_blocks_0_... or lora_unet_single_blocks_0_...
+                                if 'double_blocks' in lora_name and 'double' in block_type:
+                                    lora_index = int(lora_name.split('_')[4])
+                                    if block_index == '*' or str(lora_index) == block_index:
+                                        return multiplier
+                                elif 'single_blocks' in lora_name and 'single' in block_type:
+                                    lora_index = int(lora_name.split('_')[4])
+                                    if block_index == '*' or str(lora_index) == block_index:
+                                        return multiplier
+                            except (IndexError, ValueError):
+                                continue
+                # Handle direct substring matching
+                elif pattern in lora_name:
+                    return multiplier
+            
+            return 1.0
+
         def assemble_params(loras, lr, loraplus_ratio):
-            param_groups = {"lora": {}, "plus": {}}
+            param_groups = {}
+            
             for lora in loras:
                 for name, param in lora.named_parameters():
+                    # Determine base learning rate based on lr_if_contains patterns
+                    base_lr = lr
+                    if lr is not None:
+                        multiplier = get_lr_multiplier_for_lora(self, lora.lora_name)
+                        if multiplier != 1.0:
+                            logger.info(f"lr_if_contains: Matched {lora.lora_name}. Multiplier: {multiplier:.4f}, Base LR: {lr}, New LR: {lr * multiplier:.6f}")
+                        base_lr = lr * multiplier
+                    
+                    # Apply LoRA+ ratio if specified
+                    final_lr = base_lr
                     if loraplus_ratio is not None and "lora_up" in name:
-                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
-                    else:
-                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+                        final_lr = base_lr * loraplus_ratio
+                    
+                    # Group parameters by their final learning rate
+                    lr_key = f"lr_{final_lr:.6f}"  # Use formatted string as key
+                    if lr_key not in param_groups:
+                        param_groups[lr_key] = {"params": [], "lr": final_lr}
+                    param_groups[lr_key]["params"].append(param)
 
             params = []
             descriptions = []
-            for key in param_groups.keys():
-                param_data = {"params": param_groups[key].values()}
-
-                if len(param_data["params"]) == 0:
-                    continue
-
-                if lr is not None:
-                    if key == "plus":
-                        param_data["lr"] = lr * loraplus_ratio
-                    else:
-                        param_data["lr"] = lr
-
-                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
-                    logger.info("NO LR skipping!")
-                    continue
-
-                params.append(param_data)
-                descriptions.append("plus" if key == "plus" else "")
+            for group_data in param_groups.values():
+                if len(group_data["params"]) > 0:
+                    params.append(group_data)
+                    descriptions.append(f"lr_{group_data['lr']}")
 
             return params, descriptions
 
