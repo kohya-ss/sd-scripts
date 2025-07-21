@@ -16,6 +16,13 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 
 ### Recent Updates
 
+Jul XX, 2025:
+- **Breaking Change**: For FLUX.1 and Chroma training, the CFG scale option for sample image generation during training has been changed from `--g` to `--l`. The `--g` option is now used for the embedded guidance scale. Please update your prompts accordingly. See [Sample Image Generation During Training](#sample-image-generation-during-training) for details.
+
+- Support for [Chroma](https://huggingface.co/lodestones/Chroma) has been added in PR [#2157](https://github.com/kohya-ss/sd-scripts/pull/2157). Thank you to lodestones for the high-quality model.
+    - Chroma is a new model based on FLUX.1 schnell. In this repository, `flux_train_network.py` is used for training LoRAs for Chroma with `--model_type chroma`.
+    - Please refer to the [FLUX.1 LoRA training documentation](./docs/flux_train_network.md) for more details.
+
 Jul 21, 2025:
 - Support for [Lumina-Image 2.0](https://github.com/Alpha-VLLM/Lumina-Image-2.0) has been added in PR [#1927](https://github.com/kohya-ss/sd-scripts/pull/1927) and [#2138](https://github.com/kohya-ss/sd-scripts/pull/2138). Special thanks to sdbds and RockerBOO for their contributions.
     - Please refer to the [Lumina-Image 2.0 documentation](./docs/lumina_train_network.md) for more details.
@@ -1367,9 +1374,8 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
   * `--w` Specifies the width of the generated image.
   * `--h` Specifies the height of the generated image.
   * `--d` Specifies the seed of the generated image.
-  * `--l` Specifies the CFG scale of the generated image.
-    * In guidance distillation models like FLUX.1, this value is used as the embedded guidance scale for backward compatibility.
-  * `--g` Specifies the CFG scale for the models with embedded guidance scale. The default is `1.0`, `1.0` means no CFG. In general, should not be changed unless you train the un-distilled FLUX.1 models.
+  * `--l` Specifies the CFG scale of the generated image. For FLUX.1 models, the default is `1.0`, which means no CFG. For Chroma models, set to around `4.0` to enable CFG.
+  * `--g` Specifies the embedded guidance scale for the models with embedded guidance (FLUX.1), the default is `3.5`. Set to `0.0` for Chroma models.
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
