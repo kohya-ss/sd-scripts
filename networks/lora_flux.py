@@ -576,6 +576,8 @@ def create_network(
         verbose = True if verbose == "True" else False
 
     lr_if_contains = kwargs.get("lr_if_contains", None)
+    if lr_if_contains is not None:
+        print(f"DEBUG: Processing lr_if_contains parameter: {lr_if_contains}")
 
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
