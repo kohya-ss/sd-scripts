@@ -1,5 +1,3 @@
-Status: reviewed
-
 # LoRA Training Guide for Lumina Image 2.0 using `lumina_train_network.py` / `lumina_train_network.py` を用いたLumina Image 2.0モデルのLoRA学習ガイド
 
 This document explains how to train LoRA (Low-Rank Adaptation) models for Lumina Image 2.0 using `lumina_train_network.py` in the `sd-scripts` repository.
@@ -198,6 +196,7 @@ For Lumina Image 2.0, you can specify different dimensions for various component
 
 <details>
 <summary>日本語</summary>
+
 [`train_network.py`のガイド](train_network.md)で説明されている引数に加え、以下のLumina Image 2.0特有の引数を指定します。共通の引数については、上記ガイドを参照してください。
 
 #### モデル関連
@@ -250,6 +249,18 @@ After setting the required arguments, run the command to begin training. The ove
 
 When training finishes, a LoRA model file (e.g. `my_lumina_lora.safetensors`) is saved in the directory specified by `output_dir`. Use this file with inference environments that support Lumina Image 2.0, such as ComfyUI with appropriate nodes.
 
+### Inference with scripts in this repository / このリポジトリのスクリプトを使用した推論
+
+The inference script is also available. The script is `lumina_minimal_inference.py`. See `--help` for options. 
+
+```
+python lumina_minimal_inference.py --pretrained_model_name_or_path path/to/lumina.safetensors  --gemma2_path path/to/gemma.safetensors" --ae_path  path/to/flux_ae.safetensors  --output_dir path/to/output_dir --offload --seed 1234 --prompt "Positive prompt" --system_prompt "You are an assistant designed to generate high-quality images based on user prompts."  --negative_prompt "negative prompt"  
+```
+
+`--add_system_prompt_to_negative_prompt` option can be used to add the system prompt to the negative prompt.
+
+`--lora_weights` option can be used to specify the LoRA weights file, and optional multiplier (like `path;1.0`).
+
 ## 6. Others / その他
 
 `lumina_train_network.py` shares many features with `train_network.py`, such as sample image generation (`--sample_prompts`, etc.) and detailed optimizer settings. For these, see the [train_network.py guide](train_network.md#5-other-features--その他の機能) or run `python lumina_train_network.py --help`.
@@ -278,6 +289,8 @@ Sample prompts can include CFG truncate (`--ctr`) and Renorm CFG (`-rcfg`) param
 必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
 
 学習が完了すると、指定した`output_dir`にLoRAモデルファイル（例: `my_lumina_lora.safetensors`）が保存されます。このファイルは、Lumina Image 2.0モデルに対応した推論環境（例: ComfyUI + 適切なノード）で使用できます。
+
+当リポジトリ内の推論スクリプトを用いて推論することも可能です。スクリプトは`lumina_minimal_inference.py`です。オプションは`--help`で確認できます。記述例は英語版のドキュメントをご確認ください。
 
 `lumina_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python lumina_train_network.py --help`) を参照してください。
 
