@@ -977,10 +977,10 @@ class Flux(nn.Module):
         )
 
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, self.num_double_blocks, double_blocks_to_swap, device  # , debug=True
+            self.double_blocks, double_blocks_to_swap, device  # , debug=True
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, self.num_single_blocks, single_blocks_to_swap, device  # , debug=True
+            self.single_blocks, single_blocks_to_swap, device  # , debug=True
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
@@ -1219,10 +1219,10 @@ class ControlNetFlux(nn.Module):
         )
 
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, self.num_double_blocks, double_blocks_to_swap, device  # , debug=True
+            self.double_blocks, double_blocks_to_swap, device  # , debug=True
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, self.num_single_blocks, single_blocks_to_swap, device  # , debug=True
+            self.single_blocks,  single_blocks_to_swap, device  # , debug=True
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
@@ -1233,8 +1233,8 @@ class ControlNetFlux(nn.Module):
         if self.blocks_to_swap:
             save_double_blocks = self.double_blocks
             save_single_blocks = self.single_blocks
-            self.double_blocks = None
-            self.single_blocks = None
+            self.double_blocks = nn.ModuleList()
+            self.single_blocks = nn.ModuleList()
 
         self.to(device)
 
