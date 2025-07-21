@@ -19,7 +19,16 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 Jul 21, 2025:
 - Support for [Lumina-Image 2.0](https://github.com/Alpha-VLLM/Lumina-Image-2.0) has been added in PR [#1927](https://github.com/kohya-ss/sd-scripts/pull/1927) and [#2138](https://github.com/kohya-ss/sd-scripts/pull/2138). Special thanks to sdbds and RockerBOO for their contributions.
     - Please refer to the [Lumina-Image 2.0 documentation](./docs/lumina_train_network.md) for more details.
+- We have started adding comprehensive training-related documentation to [docs](./docs). These documents are being created with the help of generative AI and will be updated over time. While there are still many gaps at this stage, we plan to improve them gradually.
 
+    Currently, the following documents are available:
+    - train_network.md
+    - sdxl_train_network.md
+    - sdxl_train_network_advanced.md
+    - flux_train_network.md
+    - sd3_train_network.md
+    - lumina_train_network.md
+    
 Jul 10, 2025:
 - [AI Coding Agents](#for-developers-using-ai-coding-agents) section is added to the README. This section provides instructions for developers using AI coding agents like Claude and Gemini to understand the project context and coding standards.
 
