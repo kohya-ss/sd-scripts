@@ -578,6 +578,18 @@ def create_network(
     lr_if_contains = kwargs.get("lr_if_contains", None)
     if lr_if_contains is not None:
         print(f"DEBUG: Processing lr_if_contains parameter: {lr_if_contains}")
+        
+        # Parse lr_if_contains into dict
+        if isinstance(lr_if_contains, str):
+            lr_if_contains = [lr_if_contains]
+        lr_dict = {}
+        for item in lr_if_contains:
+            try:
+                pattern, multiplier_str = item.split(':')
+                lr_dict[pattern.strip()] = float(multiplier_str.strip())
+            except ValueError:
+                logger.warning(f"Invalid lr_if_contains format: {item}. Expected 'pattern:multiplier'")
+        lr_if_contains = lr_dict
 
     # すごく引数が多いな ( ^ω^)･･･
     network = LoRANetwork(
