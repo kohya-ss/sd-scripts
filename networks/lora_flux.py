@@ -1239,7 +1239,7 @@ class LoRANetwork(torch.nn.Module):
                     if lr is not None:
                         multiplier = get_lr_multiplier_for_lora(self, lora.lora_name)
                         if multiplier != 1.0:
-                            logger.info(f"lr_if_contains: Matched {lora.lora_name}. Multiplier: {multiplier:.4f}, Base LR: {lr}, New LR: {lr * multiplier:.6f}")
+                            logger.info(f"lr_if_contains: Matched {lora.lora_name}. Multiplier: {multiplier:.5f}, Base LR: {lr}, New LR: {lr * multiplier:.9f}")
                         base_lr = lr * multiplier
                     
                     # Apply LoRA+ ratio if specified
