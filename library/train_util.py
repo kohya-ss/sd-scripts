@@ -4135,6 +4135,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
     )
+    parser.add_argument("--gradient_noise_scale", action="store_true", default=False, help="Calculate the gradient noise scale")
 
     if support_dreambooth:
         # DreamBooth training

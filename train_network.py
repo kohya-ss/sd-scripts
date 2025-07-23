@@ -1389,7 +1389,10 @@ class NetworkTrainer:
                 skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
                 initial_step = 1
 
+            batch_size = 0
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
+                current_batch_size = len(batch['network_multipliers'])
+                batch_size += current_batch_size
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
@@ -1430,6 +1433,8 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+                        if args.gradient_noise_scale and hasattr(network, "accumulate_grad"):
+                            network.accumulate_grad()
 
                     optimizer.step()
                     lr_scheduler.step()
@@ -1506,6 +1511,10 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
+                    if args.gradient_noise_scale and hasattr(network, "gradient_noise_scale"):
+                        gns, variance = network.gradient_noise_scale()
+                        if gns is not None and variance is not None:
+                            logs = {**logs, "gns/gradient_noise_scale": gns, "gns/noise_variance": variance, "gns/critcal_batch_size": gns / batch_size}
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
@@ -1578,6 +1587,9 @@ class NetworkTrainer:
                     optimizer_train_fn()
                     accelerator.unwrap_model(network).train()
                     progress_bar.unpause()
+
+                if accelerator.sync_gradients:
+                    batch_size = 0 # reset batch size
 
                 if global_step >= args.max_train_steps:
                     break
