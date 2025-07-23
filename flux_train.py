@@ -383,7 +383,7 @@ def train(args):
         optimizer_eval_fn = lambda: None  # dummy function
 
         if args.optimizer_type == "adafactor" and args.full_bf16:
-            logger.warning("Use of --blockwise_fused_optimizers with Adafactor optimizer prevents stochastic/kahan weight updates.")
+            logger.warning("Use of --blockwise_fused_optimizer with Adafactor optimizer prevents stochastic/kahan weight updates.")
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
@@ -831,7 +831,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="enable blockwise optimizers for fused backward pass and optimizer step / fused backward passとoptimizer step のためブロック単位のoptimizerを有効にする",
     )
     parser.add_argument(
-        "--kahan-summation",
+        "--kahan_summation",
         action="store_true",
         help="Offloads to CPU the float parts lost during bf16 quantization, and re-adds them to the next step / "\
             "bf16 量子化中に失われた浮動小数点部分を CPU にオフロードし、次のステップに再度追加します",
