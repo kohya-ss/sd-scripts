@@ -28,6 +28,58 @@ def copy_stochastic_(target: torch.Tensor, source: torch.Tensor):
     del result
 
 
+# Kahan summation for bfloat16
+# The implementation was provided by araleza.
+# Base on paper "Revisiting BFloat16 Training": https://arxiv.org/pdf/2010.06192
+
+kahan_residuals = []
+tensor_index = 0
+prev_step = 0
+
+def copy_kahan_(target: torch.Tensor, source: torch.Tensor, step):
+    """
+    Copies source into target using Kahan summations.
+
+    The part of the float32 weight that is lost on conversion to bfloat16 is sent
+    to the CPU until the next step, where it is re-added onto that step's updated
+    weight.  This produces near float32-like weight behavior, although the copies
+    back and forth to main memory result in slower training steps.
+
+    Args:
+        target: the target tensor with dtype=bfloat16
+        source: the target tensor with dtype=float32
+    """
+    global kahan_residuals, tensor_index, prev_step
+
+    # Calculate the group index of the current residual Tensor. Tensors
+    # pass through this copy function in the same order at each step.
+    tensor_index += 1
+    if prev_step != step:  # Starting new step?
+        prev_step = step
+        tensor_index = 0
+
+    # Initialize residuals to 0.0 for first step
+    if len(kahan_residuals) <= tensor_index:
+        kahan_residuals += [torch.zeros_like(source)]
+
+    # Bring the residual from the previous step back from the cpu device, and add it to the
+    # float32 weights of the current step
+    summed = kahan_residuals[tensor_index].detach().to(source.device)  # Residual is float32 type
+    summed.add_(source)
+
+    # Mask off the lower 16 bits of the mantissa, adding 32768 in order to
+    # round-to-nearest when the lower bits are clipped off
+    summed_i32 = summed.view(dtype=torch.int32).detach().clone()
+    summed_quantized_i32 = summed_i32.add_(32768).bitwise_and_(-65536)  # -65536 = FFFF0000 as a signed int32
+    summed_quantized = summed_quantized_i32.view(dtype=torch.float32)
+
+    # The next residual is the difference between the quantized and unquantized weights
+    kahan_residuals[tensor_index] = summed.sub(summed_quantized).detach().to("cpu")
+
+    # Copy the quantized floats into the target tensor
+    target.copy_(summed_quantized)
+
+
 @torch.no_grad()
 def adafactor_step_param(self, p, group):
     if p.grad is None:
@@ -108,7 +160,10 @@ def adafactor_step_param(self, p, group):
     #    p.copy_(p_data_fp32)
 
     if p.dtype == torch.bfloat16:
-        copy_stochastic_(p, p_data_fp32)
+        if self.optimizer.use_kahan_summation:
+            copy_kahan_(p, p_data_fp32, state["step"])
+        else:
+            copy_stochastic_(p, p_data_fp32)
     elif p.dtype == torch.float16:
         p.copy_(p_data_fp32)
 
