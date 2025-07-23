@@ -1,157 +1,119 @@
+import os
 import torch
-import intel_extension_for_pytorch as ipex # pylint: disable=import-error, unused-import
+from functools import cache, wraps
 
 # pylint: disable=protected-access, missing-function-docstring, line-too-long
 
-original_torch_bmm = torch.bmm
-def torch_bmm(input, mat2, *, out=None):
-    if input.dtype != mat2.dtype:
-        mat2 = mat2.to(input.dtype)
+# ARC GPUs can't allocate more than 4GB to a single block so we slice the attention layers
 
-    #ARC GPUs can't allocate more than 4GB to a single block, Slice it:
-    batch_size_attention, input_tokens, mat2_shape = input.shape[0], input.shape[1], mat2.shape[2]
-    block_multiply = input.element_size()
-    slice_block_size = input_tokens * mat2_shape / 1024 / 1024 * block_multiply
-    block_size = batch_size_attention * slice_block_size
+sdpa_slice_trigger_rate = float(os.environ.get('IPEX_SDPA_SLICE_TRIGGER_RATE', 1))
+attention_slice_rate = float(os.environ.get('IPEX_ATTENTION_SLICE_RATE', 0.5))
 
-    split_slice_size = batch_size_attention
-    if block_size > 4:
-        do_split = True
-        #Find something divisible with the input_tokens
-        while (split_slice_size * slice_block_size) > 4:
-            split_slice_size = split_slice_size // 2
-            if split_slice_size <= 1:
-                split_slice_size = 1
-                break
-    else:
-        do_split = False
+# Find something divisible with the input_tokens
+@cache
+def find_split_size(original_size, slice_block_size, slice_rate=2):
+    split_size = original_size
+    while True:
+        if (split_size * slice_block_size) <= slice_rate and original_size % split_size == 0:
+            return split_size
+        split_size = split_size - 1
+        if split_size <= 1:
+            return 1
+    return split_size
 
-    split_2_slice_size = input_tokens
-    if split_slice_size * slice_block_size > 4:
-        slice_block_size2 = split_slice_size * mat2_shape / 1024 / 1024 * block_multiply
-        do_split_2 = True
-        #Find something divisible with the input_tokens
-        while (split_2_slice_size * slice_block_size2) > 4:
-            split_2_slice_size = split_2_slice_size // 2
-            if split_2_slice_size <= 1:
-                split_2_slice_size = 1
-                break
-    else:
-        do_split_2 = False
 
-    if do_split:
-        hidden_states = torch.zeros(input.shape[0], input.shape[1], mat2.shape[2], device=input.device, dtype=input.dtype)
-        for i in range(batch_size_attention // split_slice_size):
-            start_idx = i * split_slice_size
-            end_idx = (i + 1) * split_slice_size
-            if do_split_2:
-                for i2 in range(input_tokens // split_2_slice_size): # pylint: disable=invalid-name
-                    start_idx_2 = i2 * split_2_slice_size
-                    end_idx_2 = (i2 + 1) * split_2_slice_size
-                    hidden_states[start_idx:end_idx, start_idx_2:end_idx_2] = original_torch_bmm(
-                        input[start_idx:end_idx, start_idx_2:end_idx_2],
-                        mat2[start_idx:end_idx, start_idx_2:end_idx_2],
-                        out=out
-                    )
-            else:
-                hidden_states[start_idx:end_idx] = original_torch_bmm(
-                    input[start_idx:end_idx],
-                    mat2[start_idx:end_idx],
-                    out=out
-                )
-    else:
-        return original_torch_bmm(input, mat2, out=out)
-    return hidden_states
+# Find slice sizes for SDPA
+@cache
+def find_sdpa_slice_sizes(query_shape, key_shape, query_element_size, slice_rate=2, trigger_rate=3):
+    batch_size, attn_heads, query_len, _ = query_shape
+    _, _, key_len, _ = key_shape
+
+    slice_batch_size = attn_heads * (query_len * key_len) * query_element_size / 1024 / 1024 / 1024
+
+    split_batch_size = batch_size
+    split_head_size = attn_heads
+    split_query_size = query_len
+
+    do_batch_split = False
+    do_head_split = False
+    do_query_split = False
+
+    if batch_size * slice_batch_size >= trigger_rate:
+        do_batch_split = True
+        split_batch_size = find_split_size(batch_size, slice_batch_size, slice_rate=slice_rate)
+
+        if split_batch_size * slice_batch_size > slice_rate:
+            slice_head_size = split_batch_size * (query_len * key_len) * query_element_size / 1024 / 1024 / 1024
+            do_head_split = True
+            split_head_size = find_split_size(attn_heads, slice_head_size, slice_rate=slice_rate)
+
+            if split_head_size * slice_head_size > slice_rate:
+                slice_query_size = split_batch_size * split_head_size * (key_len) * query_element_size / 1024 / 1024 / 1024
+                do_query_split = True
+                split_query_size = find_split_size(query_len, slice_query_size, slice_rate=slice_rate)
+
+    return do_batch_split, do_head_split, do_query_split, split_batch_size, split_head_size, split_query_size
+
 
 original_scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
-def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False):
-    #ARC GPUs can't allocate more than 4GB to a single block, Slice it:
+@wraps(torch.nn.functional.scaled_dot_product_attention)
+def dynamic_scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, **kwargs):
+    if query.device.type != "xpu":
+        return original_scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, **kwargs)
+    is_unsqueezed = False
     if len(query.shape) == 3:
-        batch_size_attention, query_tokens, shape_four = query.shape
-        shape_one = 1
-        no_shape_one = True
-    else:
-        shape_one, batch_size_attention, query_tokens, shape_four = query.shape
-        no_shape_one = False
+        query = query.unsqueeze(0)
+        is_unsqueezed = True
+    if len(key.shape) == 3:
+        key = key.unsqueeze(0)
+    if len(value.shape) == 3:
+        value = value.unsqueeze(0)
+    do_batch_split, do_head_split, do_query_split, split_batch_size, split_head_size, split_query_size = find_sdpa_slice_sizes(query.shape, key.shape, query.element_size(), slice_rate=attention_slice_rate, trigger_rate=sdpa_slice_trigger_rate)
 
-    block_multiply = query.element_size()
-    slice_block_size = shape_one * query_tokens * shape_four / 1024 / 1024 * block_multiply
-    block_size = batch_size_attention * slice_block_size
-
-    split_slice_size = batch_size_attention
-    if block_size > 4:
-        do_split = True
-        #Find something divisible with the shape_one
-        while (split_slice_size * slice_block_size) > 4:
-            split_slice_size = split_slice_size // 2
-            if split_slice_size <= 1:
-                split_slice_size = 1
-                break
-    else:
-        do_split = False
-
-    split_2_slice_size = query_tokens
-    if split_slice_size * slice_block_size > 4:
-        slice_block_size2 = shape_one * split_slice_size * shape_four / 1024 / 1024 * block_multiply
-        do_split_2 = True
-        #Find something divisible with the batch_size_attention
-        while (split_2_slice_size * slice_block_size2) > 4:
-            split_2_slice_size = split_2_slice_size // 2
-            if split_2_slice_size <= 1:
-                split_2_slice_size = 1
-                break
-    else:
-        do_split_2 = False
-
-    if do_split:
-        hidden_states = torch.zeros(query.shape, device=query.device, dtype=query.dtype)
-        for i in range(batch_size_attention // split_slice_size):
-            start_idx = i * split_slice_size
-            end_idx = (i + 1) * split_slice_size
-            if do_split_2:
-                for i2 in range(query_tokens // split_2_slice_size): # pylint: disable=invalid-name
-                    start_idx_2 = i2 * split_2_slice_size
-                    end_idx_2 = (i2 + 1) * split_2_slice_size
-                    if no_shape_one:
-                        hidden_states[start_idx:end_idx, start_idx_2:end_idx_2] = original_scaled_dot_product_attention(
-                            query[start_idx:end_idx, start_idx_2:end_idx_2],
-                            key[start_idx:end_idx, start_idx_2:end_idx_2],
-                            value[start_idx:end_idx, start_idx_2:end_idx_2],
-                            attn_mask=attn_mask[start_idx:end_idx, start_idx_2:end_idx_2] if attn_mask is not None else attn_mask,
-                            dropout_p=dropout_p, is_causal=is_causal
-                        )
+    # Slice SDPA
+    if do_batch_split:
+        batch_size, attn_heads, query_len, _ = query.shape
+        _, _, _, head_dim = value.shape
+        hidden_states = torch.zeros((batch_size, attn_heads, query_len, head_dim), device=query.device, dtype=query.dtype)
+        if attn_mask is not None:
+            attn_mask = attn_mask.expand((query.shape[0], query.shape[1], query.shape[2], key.shape[-2]))
+        for ib in range(batch_size // split_batch_size):
+            start_idx = ib * split_batch_size
+            end_idx = (ib + 1) * split_batch_size
+            if do_head_split:
+                for ih in range(attn_heads // split_head_size): # pylint: disable=invalid-name
+                    start_idx_h = ih * split_head_size
+                    end_idx_h = (ih + 1) * split_head_size
+                    if do_query_split:
+                        for iq in range(query_len // split_query_size): # pylint: disable=invalid-name
+                            start_idx_q = iq * split_query_size
+                            end_idx_q = (iq + 1) * split_query_size
+                            hidden_states[start_idx:end_idx, start_idx_h:end_idx_h, start_idx_q:end_idx_q, :] = original_scaled_dot_product_attention(
+                                query[start_idx:end_idx, start_idx_h:end_idx_h, start_idx_q:end_idx_q, :],
+                                key[start_idx:end_idx, start_idx_h:end_idx_h, :, :],
+                                value[start_idx:end_idx, start_idx_h:end_idx_h, :, :],
+                                attn_mask=attn_mask[start_idx:end_idx, start_idx_h:end_idx_h, start_idx_q:end_idx_q, :] if attn_mask is not None else attn_mask,
+                                dropout_p=dropout_p, is_causal=is_causal, **kwargs
+                            )
                     else:
-                        hidden_states[:, start_idx:end_idx, start_idx_2:end_idx_2] = original_scaled_dot_product_attention(
-                            query[:, start_idx:end_idx, start_idx_2:end_idx_2],
-                            key[:, start_idx:end_idx, start_idx_2:end_idx_2],
-                            value[:, start_idx:end_idx, start_idx_2:end_idx_2],
-                            attn_mask=attn_mask[:, start_idx:end_idx, start_idx_2:end_idx_2] if attn_mask is not None else attn_mask,
-                            dropout_p=dropout_p, is_causal=is_causal
+                        hidden_states[start_idx:end_idx, start_idx_h:end_idx_h, :, :] = original_scaled_dot_product_attention(
+                            query[start_idx:end_idx, start_idx_h:end_idx_h, :, :],
+                            key[start_idx:end_idx, start_idx_h:end_idx_h, :, :],
+                            value[start_idx:end_idx, start_idx_h:end_idx_h, :, :],
+                            attn_mask=attn_mask[start_idx:end_idx, start_idx_h:end_idx_h, :, :] if attn_mask is not None else attn_mask,
+                            dropout_p=dropout_p, is_causal=is_causal, **kwargs
                         )
             else:
-                if no_shape_one:
-                    hidden_states[start_idx:end_idx] = original_scaled_dot_product_attention(
-                        query[start_idx:end_idx],
-                        key[start_idx:end_idx],
-                        value[start_idx:end_idx],
-                        attn_mask=attn_mask[start_idx:end_idx] if attn_mask is not None else attn_mask,
-                        dropout_p=dropout_p, is_causal=is_causal
-                    )
-                else:
-                    hidden_states[:, start_idx:end_idx] = original_scaled_dot_product_attention(
-                        query[:, start_idx:end_idx],
-                        key[:, start_idx:end_idx],
-                        value[:, start_idx:end_idx],
-                        attn_mask=attn_mask[:, start_idx:end_idx] if attn_mask is not None else attn_mask,
-                        dropout_p=dropout_p, is_causal=is_causal
-                    )
+                hidden_states[start_idx:end_idx, :, :, :] = original_scaled_dot_product_attention(
+                    query[start_idx:end_idx, :, :, :],
+                    key[start_idx:end_idx, :, :, :],
+                    value[start_idx:end_idx, :, :, :],
+                    attn_mask=attn_mask[start_idx:end_idx, :, :, :] if attn_mask is not None else attn_mask,
+                    dropout_p=dropout_p, is_causal=is_causal, **kwargs
+                )
+        torch.xpu.synchronize(query.device)
     else:
-        return original_scaled_dot_product_attention(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal
-        )
+        hidden_states = original_scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, **kwargs)
+    if is_unsqueezed:
+        hidden_states.squeeze(0)
     return hidden_states
-
-def attention_init():
-    #ARC GPUs can't allocate more than 4GB to a single block:
-    torch.bmm = torch_bmm
-    torch.nn.functional.scaled_dot_product_attention = scaled_dot_product_attention

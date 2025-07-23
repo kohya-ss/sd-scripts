@@ -1,23 +1,22 @@
 import argparse
-import gc
 import json
 import math
 import os
 import random
 import time
 from multiprocessing import Value
-from types import SimpleNamespace
+
+# from omegaconf import OmegaConf
 import toml
 
 from tqdm import tqdm
+
 import torch
-try:
-    import intel_extension_for_pytorch as ipex
-    if torch.xpu.is_available():
-        from library.ipex import ipex_init
-        ipex_init()
-except Exception:
-    pass
+from library import deepspeed_utils
+from library.device_utils import init_ipex, clean_memory_on_device
+
+init_ipex()
+
 from torch.nn.parallel import DistributedDataParallel as DDP
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler, ControlNetModel
@@ -37,6 +36,12 @@ from library.custom_train_functions import (
     pyramid_noise_like,
     apply_noise_offset,
 )
+from library.utils import setup_logging, add_logging_arguments
+
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # TODO 他のスクリプトと共通化する
@@ -58,6 +63,7 @@ def train(args):
     # training_started_at = time.time()
     train_util.verify_training_args(args)
     train_util.prepare_dataset_args(args, True)
+    setup_logging(args, reset=True)
 
     cache_latents = args.cache_latents
     use_user_config = args.dataset_config is not None
@@ -71,11 +77,11 @@ def train(args):
     # データセットを準備する
     blueprint_generator = BlueprintGenerator(ConfigSanitizer(False, False, True, True))
     if use_user_config:
-        print(f"Load dataset config from {args.dataset_config}")
+        logger.info(f"Load dataset config from {args.dataset_config}")
         user_config = config_util.load_user_config(args.dataset_config)
         ignored = ["train_data_dir", "conditioning_data_dir"]
         if any(getattr(args, attr) is not None for attr in ignored):
-            print(
+            logger.warning(
                 "ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
                     ", ".join(ignored)
                 )
@@ -101,11 +107,13 @@ def train(args):
     ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
     collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
+    train_dataset_group.verify_bucket_reso_steps(64)
+
     if args.debug_dataset:
         train_util.debug_dataset(train_dataset_group)
         return
     if len(train_dataset_group) == 0:
-        print(
+        logger.error(
             "No data found. Please verify arguments (train_data_dir must be the parent of folders with images) / 画像がありません。引数指定を確認してください（train_data_dirには画像があるフォルダではなく、画像があるフォルダの親フォルダを指定する必要があります）"
         )
         return
@@ -116,7 +124,7 @@ def train(args):
         ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
     # acceleratorを準備する
-    print("prepare accelerator")
+    logger.info("prepare accelerator")
     accelerator = train_util.prepare_accelerator(args)
     is_main_process = accelerator.is_main_process
 
@@ -144,8 +152,10 @@ def train(args):
             "in_channels": 4,
             "layers_per_block": 2,
             "mid_block_scale_factor": 1,
+            "mid_block_type": "UNetMidBlock2DCrossAttn",
             "norm_eps": 1e-05,
             "norm_num_groups": 32,
+            "num_attention_heads": [5, 10, 20, 20],
             "num_class_embeds": None,
             "only_cross_attention": False,
             "out_channels": 4,
@@ -175,8 +185,10 @@ def train(args):
             "in_channels": 4,
             "layers_per_block": 2,
             "mid_block_scale_factor": 1,
+            "mid_block_type": "UNetMidBlock2DCrossAttn",
             "norm_eps": 1e-05,
             "norm_num_groups": 32,
+            "num_attention_heads": 8,
             "out_channels": 4,
             "sample_size": 64,
             "up_block_types": ["UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D"],
@@ -189,7 +201,23 @@ def train(args):
             "resnet_time_scale_shift": "default",
             "projection_class_embeddings_input_dim": None,
         }
-    unet.config = SimpleNamespace(**unet.config)
+    # unet.config = OmegaConf.create(unet.config)
+
+    # make unet.config iterable and accessible by attribute
+    class CustomConfig:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+        def __getattr__(self, name):
+            if name in self.__dict__:
+                return self.__dict__[name]
+            else:
+                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
+        def __contains__(self, name):
+            return name in self.__dict__
+
+    unet.config = CustomConfig(**unet.config)
 
     controlnet = ControlNetModel.from_unet(unet)
 
@@ -221,9 +249,7 @@ def train(args):
                 accelerator.is_main_process,
             )
         vae.to("cpu")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        clean_memory_on_device(accelerator.device)
 
         accelerator.wait_for_everyone()
 
@@ -233,13 +259,13 @@ def train(args):
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
-    trainable_params = controlnet.parameters()
+    trainable_params = list(controlnet.parameters())
 
     _, _, optimizer = train_util.get_optimizer(args, trainable_params)
 
     # dataloaderを準備する
-    # DataLoaderのプロセス数：0はメインプロセスになる
-    n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)  # cpu_count-1 ただし最大で指定された数まで
+    # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
+    n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset_group,
@@ -255,7 +281,9 @@ def train(args):
         args.max_train_steps = args.max_train_epochs * math.ceil(
             len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
         )
-        accelerator.print(f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}")
+        accelerator.print(
+            f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
+        )
 
     # データセット側にも学習ステップを送信
     train_dataset_group.set_max_train_steps(args.max_train_steps)
@@ -311,8 +339,10 @@ def train(args):
     accelerator.print(f"  num reg images / 正則化画像の数: {train_dataset_group.num_reg_images}")
     accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
     accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
-    accelerator.print(f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}")
-    # print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
+    accelerator.print(
+        f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}"
+    )
+    # logger.info(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
     accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
     accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
@@ -333,12 +363,17 @@ def train(args):
     )
     if accelerator.is_main_process:
         init_kwargs = {}
+        if args.wandb_run_name:
+            init_kwargs["wandb"] = {"name": args.wandb_run_name}
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
-        accelerator.init_trackers("controlnet_train" if args.log_tracker_name is None else args.log_tracker_name, init_kwargs=init_kwargs)
+        accelerator.init_trackers(
+            "controlnet_train" if args.log_tracker_name is None else args.log_tracker_name,
+            config=train_util.get_sanitized_config_or_none(args),
+            init_kwargs=init_kwargs,
+        )
 
-    loss_list = []
-    loss_total = 0.0
+    loss_recorder = train_util.LossRecorder()
     del train_dataset_group
 
     # function for saving/removing
@@ -372,6 +407,11 @@ def train(args):
             accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
             os.remove(old_ckpt_file)
 
+    # For --sample_at_first
+    train_util.sample_images(
+        accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, controlnet=controlnet
+    )
+
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
@@ -383,7 +423,7 @@ def train(args):
             with accelerator.accumulate(controlnet):
                 with torch.no_grad():
                     if "latents" in batch and batch["latents"] is not None:
-                        latents = batch["latents"].to(accelerator.device)
+                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
                     else:
                         # latentに変換
                         latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
@@ -406,13 +446,10 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
-                timesteps = torch.randint(
-                    0,
-                    noise_scheduler.config.num_train_timesteps,
-                    (b_size,),
-                    device=latents.device,
+                timesteps, huber_c = train_util.get_timesteps_and_huber_c(
+                    args, 0, noise_scheduler.config.num_train_timesteps, noise_scheduler, b_size, latents.device
                 )
-                timesteps = timesteps.long()
+
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
@@ -443,14 +480,16 @@ def train(args):
                 else:
                     target = noise
 
-                loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                loss = train_util.conditional_loss(
+                    noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
+                )
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                 loss = loss * loss_weights
 
                 if args.min_snr_gamma:
-                    loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
+                    loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
 
                 loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
@@ -500,14 +539,9 @@ def train(args):
                             remove_model(remove_ckpt_name)
 
             current_loss = loss.detach().item()
-            if epoch == 0:
-                loss_list.append(current_loss)
-            else:
-                loss_total -= loss_list[step]
-                loss_list[step] = current_loss
-            loss_total += current_loss
-            avr_loss = loss_total / len(loss_list)
-            logs = {"loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+            loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+            avr_loss: float = loss_recorder.moving_average
+            logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if args.logging_dir is not None:
@@ -518,7 +552,7 @@ def train(args):
                 break
 
         if args.logging_dir is not None:
-            logs = {"loss/epoch": loss_total / len(loss_list)}
+            logs = {"loss/epoch": loss_recorder.moving_average}
             accelerator.log(logs, step=epoch + 1)
 
         accelerator.wait_for_everyone()
@@ -557,7 +591,7 @@ def train(args):
 
     accelerator.end_training()
 
-    if is_main_process and args.save_state:
+    if is_main_process and (args.save_state or args.save_state_on_train_end):
         train_util.save_state_on_train_end(args, accelerator)
 
     # del accelerator  # この後メモリを使うのでこれは消す→printで使うので消さずにおく
@@ -566,15 +600,17 @@ def train(args):
         ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
         save_model(ckpt_name, controlnet, force_sync_upload=True)
 
-        print("model saved.")
+        logger.info("model saved.")
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
+    add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
     train_util.add_dataset_arguments(parser, False, True, True)
     train_util.add_training_arguments(parser, False)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     train_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
@@ -606,6 +642,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
     train(args)

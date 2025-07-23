@@ -16,9 +16,15 @@ from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
 )
+from library.utils import setup_logging, add_logging_arguments
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def cache_to_disk(args: argparse.Namespace) -> None:
+    setup_logging(args, reset=True)
     train_util.prepare_dataset_args(args, True)
 
     # check cache latents arg
@@ -41,18 +47,18 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     if args.dataset_class is None:
         blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
         if args.dataset_config is not None:
-            print(f"Load dataset config from {args.dataset_config}")
+            logger.info(f"Load dataset config from {args.dataset_config}")
             user_config = config_util.load_user_config(args.dataset_config)
             ignored = ["train_data_dir", "in_json"]
             if any(getattr(args, attr) is not None for attr in ignored):
-                print(
+                logger.warning(
                     "ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
                         ", ".join(ignored)
                     )
                 )
         else:
             if use_dreambooth_method:
-                print("Using DreamBooth method.")
+                logger.info("Using DreamBooth method.")
                 user_config = {
                     "datasets": [
                         {
@@ -63,7 +69,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                     ]
                 }
             else:
-                print("Training with captions.")
+                logger.info("Training with captions.")
                 user_config = {
                     "datasets": [
                         {
@@ -90,7 +96,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
 
     # acceleratorを準備する
-    print("prepare accelerator")
+    logger.info("prepare accelerator")
+    args.deepspeed = False
     accelerator = train_util.prepare_accelerator(args)
 
     # mixed precisionに対応した型を用意しておき適宜castする
@@ -98,13 +105,13 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
     # モデルを読み込む
-    print("load model")
+    logger.info("load model")
     if args.sdxl:
         (_, _, _, vae, _, _, _) = sdxl_train_util.load_target_model(args, accelerator, "sdxl", weight_dtype)
     else:
         _, vae, _, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
-    if torch.__version__ >= "2.0.0": # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+    if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
         vae.set_use_memory_efficient_attention_xformers(args.xformers)
     vae.to(accelerator.device, dtype=vae_dtype)
     vae.requires_grad_(False)
@@ -113,8 +120,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     # dataloaderを準備する
     train_dataset_group.set_caching_mode("latents")
 
-    # DataLoaderのプロセス数：0はメインプロセスになる
-    n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)  # cpu_count-1 ただし最大で指定された数まで
+    # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
+    n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset_group,
@@ -133,6 +140,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         b_size = len(batch["images"])
         vae_batch_size = b_size if args.vae_batch_size is None else args.vae_batch_size
         flip_aug = batch["flip_aug"]
+        alpha_mask = batch["alpha_mask"]
         random_crop = batch["random_crop"]
         bucket_reso = batch["bucket_reso"]
 
@@ -151,14 +159,16 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                 image_info.latents_npz = os.path.splitext(absolute_path)[0] + ".npz"
 
                 if args.skip_existing:
-                    if train_util.is_disk_cached_latents_is_expected(image_info.bucket_reso, image_info.latents_npz, flip_aug):
-                        print(f"Skipping {image_info.latents_npz} because it already exists.")
+                    if train_util.is_disk_cached_latents_is_expected(
+                        image_info.bucket_reso, image_info.latents_npz, flip_aug, alpha_mask
+                    ):
+                        logger.warning(f"Skipping {image_info.latents_npz} because it already exists.")
                         continue
 
                 image_infos.append(image_info)
 
             if len(image_infos) > 0:
-                train_util.cache_batch_latents(vae, True, image_infos, flip_aug, random_crop)
+                train_util.cache_batch_latents(vae, True, image_infos, flip_aug, alpha_mask, random_crop)
 
     accelerator.wait_for_everyone()
     accelerator.print(f"Finished caching latents for {len(train_dataset_group)} batches.")
@@ -167,6 +177,7 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
+    add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
     train_util.add_training_arguments(parser, True)
     train_util.add_dataset_arguments(parser, True, True, True)

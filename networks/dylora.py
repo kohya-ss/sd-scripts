@@ -12,9 +12,17 @@
 import math
 import os
 import random
-from typing import List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
+from diffusers import AutoencoderKL
+from transformers import CLIPTextModel
 import torch
 from torch import nn
+from library.utils import setup_logging
+
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DyLoRAModule(torch.nn.Module):
@@ -165,7 +173,15 @@ class DyLoRAModule(torch.nn.Module):
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
 
-def create_network(multiplier, network_dim, network_alpha, vae, text_encoder, unet, **kwargs):
+def create_network(
+    multiplier: float,
+    network_dim: Optional[int],
+    network_alpha: Optional[float],
+    vae: AutoencoderKL,
+    text_encoder: Union[CLIPTextModel, List[CLIPTextModel]],
+    unet,
+    **kwargs,
+):
     if network_dim is None:
         network_dim = 4  # default
     if network_alpha is None:
@@ -182,6 +198,7 @@ def create_network(multiplier, network_dim, network_alpha, vae, text_encoder, un
             conv_alpha = 1.0
         else:
             conv_alpha = float(conv_alpha)
+
     if unit is not None:
         unit = int(unit)
     else:
@@ -197,6 +214,16 @@ def create_network(multiplier, network_dim, network_alpha, vae, text_encoder, un
         unit=unit,
         varbose=True,
     )
+
+    loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
+    loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
+    loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
+    loraplus_lr_ratio = float(loraplus_lr_ratio) if loraplus_lr_ratio is not None else None
+    loraplus_unet_lr_ratio = float(loraplus_unet_lr_ratio) if loraplus_unet_lr_ratio is not None else None
+    loraplus_text_encoder_lr_ratio = float(loraplus_text_encoder_lr_ratio) if loraplus_text_encoder_lr_ratio is not None else None
+    if loraplus_lr_ratio is not None or loraplus_unet_lr_ratio is not None or loraplus_text_encoder_lr_ratio is not None:
+        network.set_loraplus_lr_ratio(loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio)
+
     return network
 
 
@@ -223,7 +250,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         elif "lora_down" in key:
             dim = value.size()[0]
             modules_dim[lora_name] = dim
-            # print(lora_name, value.size(), dim)
+            # logger.info(f"{lora_name} {value.size()} {dim}")
 
     # support old LoRA without alpha
     for key in modules_dim.keys():
@@ -241,7 +268,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
 class DyLoRANetwork(torch.nn.Module):
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
@@ -266,12 +293,16 @@ class DyLoRANetwork(torch.nn.Module):
         self.alpha = alpha
         self.apply_to_conv = apply_to_conv
 
+        self.loraplus_lr_ratio = None
+        self.loraplus_unet_lr_ratio = None
+        self.loraplus_text_encoder_lr_ratio = None
+
         if modules_dim is not None:
-            print(f"create LoRA network from weights")
+            logger.info("create LoRA network from weights")
         else:
-            print(f"create LoRA network. base dim (rank): {lora_dim}, alpha: {alpha}, unit: {unit}")
+            logger.info(f"create LoRA network. base dim (rank): {lora_dim}, alpha: {alpha}, unit: {unit}")
             if self.apply_to_conv:
-                print(f"apply LoRA to Conv2d with kernel size (3,3).")
+                logger.info("apply LoRA to Conv2d with kernel size (3,3).")
 
         # create module instances
         def create_modules(is_unet, root_module: torch.nn.Module, target_replace_modules) -> List[DyLoRAModule]:
@@ -307,8 +338,22 @@ class DyLoRANetwork(torch.nn.Module):
                             loras.append(lora)
             return loras
 
-        self.text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
-        print(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
+        text_encoders = text_encoder if type(text_encoder) == list else [text_encoder]
+
+        self.text_encoder_loras = []
+        for i, text_encoder in enumerate(text_encoders):
+            if len(text_encoders) > 1:
+                index = i + 1
+                logger.info(f"create LoRA for Text Encoder {index}")
+            else:
+                index = None
+                logger.info("create LoRA for Text Encoder")
+
+            text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            self.text_encoder_loras.extend(text_encoder_loras)
+
+        # self.text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+        logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
 
         # extend U-Net target modules if conv2d 3x3 is enabled, or load from weights
         target_modules = DyLoRANetwork.UNET_TARGET_REPLACE_MODULE
@@ -316,7 +361,15 @@ class DyLoRANetwork(torch.nn.Module):
             target_modules += DyLoRANetwork.UNET_TARGET_REPLACE_MODULE_CONV2D_3X3
 
         self.unet_loras = create_modules(True, unet, target_modules)
-        print(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
+        logger.info(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
+
+    def set_loraplus_lr_ratio(self, loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio):
+        self.loraplus_lr_ratio = loraplus_lr_ratio
+        self.loraplus_unet_lr_ratio = loraplus_unet_lr_ratio
+        self.loraplus_text_encoder_lr_ratio = loraplus_text_encoder_lr_ratio
+
+        logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
+        logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
@@ -336,12 +389,12 @@ class DyLoRANetwork(torch.nn.Module):
 
     def apply_to(self, text_encoder, unet, apply_text_encoder=True, apply_unet=True):
         if apply_text_encoder:
-            print("enable LoRA for text encoder")
+            logger.info("enable LoRA for text encoder")
         else:
             self.text_encoder_loras = []
 
         if apply_unet:
-            print("enable LoRA for U-Net")
+            logger.info("enable LoRA for U-Net")
         else:
             self.unet_loras = []
 
@@ -359,12 +412,12 @@ class DyLoRANetwork(torch.nn.Module):
                 apply_unet = True
 
         if apply_text_encoder:
-            print("enable LoRA for text encoder")
+            logger.info("enable LoRA for text encoder")
         else:
             self.text_encoder_loras = []
 
         if apply_unet:
-            print("enable LoRA for U-Net")
+            logger.info("enable LoRA for U-Net")
         else:
             self.unet_loras = []
 
@@ -375,30 +428,56 @@ class DyLoRANetwork(torch.nn.Module):
                     sd_for_lora[key[len(lora.lora_name) + 1 :]] = weights_sd[key]
             lora.merge_to(sd_for_lora, dtype, device)
 
-        print(f"weights are merged")
+        logger.info(f"weights are merged")
     """
 
+    # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
         self.requires_grad_(True)
         all_params = []
 
-        def enumerate_params(loras):
-            params = []
+        def assemble_params(loras, lr, ratio):
+            param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
-                params.extend(lora.parameters())
+                for name, param in lora.named_parameters():
+                    if ratio is not None and "lora_B" in name:
+                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
+                    else:
+                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+
+            params = []
+            for key in param_groups.keys():
+                param_data = {"params": param_groups[key].values()}
+
+                if len(param_data["params"]) == 0:
+                    continue
+
+                if lr is not None:
+                    if key == "plus":
+                        param_data["lr"] = lr * ratio
+                    else:
+                        param_data["lr"] = lr
+
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    continue
+
+                params.append(param_data)
+
             return params
 
         if self.text_encoder_loras:
-            param_data = {"params": enumerate_params(self.text_encoder_loras)}
-            if text_encoder_lr is not None:
-                param_data["lr"] = text_encoder_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.text_encoder_loras,
+                text_encoder_lr if text_encoder_lr is not None else default_lr,
+                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
+            )
+            all_params.extend(params)
 
         if self.unet_loras:
-            param_data = {"params": enumerate_params(self.unet_loras)}
-            if unet_lr is not None:
-                param_data["lr"] = unet_lr
-            all_params.append(param_data)
+            params = assemble_params(
+                self.unet_loras, default_lr if unet_lr is None else unet_lr, self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio
+            )
+            all_params.extend(params)
 
         return all_params
 

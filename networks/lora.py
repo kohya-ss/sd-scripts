@@ -11,7 +11,13 @@ from transformers import CLIPTextModel
 import numpy as np
 import torch
 import re
+from library.utils import setup_logging
+from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
 
 RE_UPDOWN = re.compile(r"(up|down)_blocks_(\d+)_(resnets|upsamplers|downsamplers|attentions)_(\d+)_")
 
@@ -46,7 +52,7 @@ class LoRAModule(torch.nn.Module):
         # if limit_rank:
         #   self.lora_dim = min(lora_dim, in_dim, out_dim)
         #   if self.lora_dim != lora_dim:
-        #     print(f"{lora_name} dim (rank) is changed to: {self.lora_dim}")
+        #     logger.info(f"{lora_name} dim (rank) is changed to: {self.lora_dim}")
         # else:
         self.lora_dim = lora_dim
 
@@ -177,7 +183,7 @@ class LoRAInfModule(LoRAModule):
         else:
             # conv2d 3x3
             conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
-            # print(conved.size(), weight.size(), module.stride, module.padding)
+            # logger.info(conved.size(), weight.size(), module.stride, module.padding)
             weight = weight + self.multiplier * conved * self.scale
 
         # set weight to org_module
@@ -216,7 +222,7 @@ class LoRAInfModule(LoRAModule):
         self.region_mask = None
 
     def default_forward(self, x):
-        # print("default_forward", self.lora_name, x.size())
+        # logger.info(f"default_forward {self.lora_name} {x.size()}")
         return self.org_forward(x) + self.lora_up(self.lora_down(x)) * self.multiplier * self.scale
 
     def forward(self, x):
@@ -242,13 +248,13 @@ class LoRAInfModule(LoRAModule):
             area = x.size()[1]
 
         mask = self.network.mask_dic.get(area, None)
-        if mask is None:
-            # raise ValueError(f"mask is None for resolution {area}")
+        if mask is None or len(x.size()) == 2:
             # emb_layers in SDXL doesn't have mask
-            # print(f"mask is None for resolution {area}, {x.size()}")
+            # if "emb" not in self.lora_name:
+            #     print(f"mask is None for resolution {self.lora_name}, {area}, {x.size()}")
             mask_size = (1, x.size()[1]) if len(x.size()) == 2 else (1, *x.size()[1:-1], 1)
             return torch.ones(mask_size, dtype=x.dtype, device=x.device) / self.network.num_sub_prompts
-        if len(x.size()) != 4:
+        if len(x.size()) == 3:
             mask = torch.reshape(mask, (1, -1, 1))
         return mask
 
@@ -263,6 +269,8 @@ class LoRAInfModule(LoRAModule):
         lx = self.lora_up(self.lora_down(x)) * self.multiplier * self.scale
         mask = self.get_mask_for_x(lx)
         # print("regional", self.lora_name, self.network.sub_prompt_index, lx.size(), mask.size())
+        # if mask.ndim > lx.ndim:  # in some resolution, lx is 2d and mask is 3d (the reason is not checked)
+        #     mask = mask.squeeze(-1)
         lx = lx * mask
 
         x = self.org_forward(x)
@@ -291,7 +299,7 @@ class LoRAInfModule(LoRAModule):
         if has_real_uncond:
             query[-self.network.batch_size :] = x[-self.network.batch_size :]
 
-        # print("postp_to_q", self.lora_name, x.size(), query.size(), self.network.num_sub_prompts)
+        # logger.info(f"postp_to_q {self.lora_name} {x.size()} {query.size()} {self.network.num_sub_prompts}")
         return query
 
     def sub_prompt_forward(self, x):
@@ -306,7 +314,7 @@ class LoRAInfModule(LoRAModule):
         lx = x[emb_idx :: self.network.num_sub_prompts]
         lx = self.lora_up(self.lora_down(lx)) * self.multiplier * self.scale
 
-        # print("sub_prompt_forward", self.lora_name, x.size(), lx.size(), emb_idx)
+        # logger.info(f"sub_prompt_forward {self.lora_name} {x.size()} {lx.size()} {emb_idx}")
 
         x = self.org_forward(x)
         x[emb_idx :: self.network.num_sub_prompts] += lx
@@ -314,7 +322,7 @@ class LoRAInfModule(LoRAModule):
         return x
 
     def to_out_forward(self, x):
-        # print("to_out_forward", self.lora_name, x.size(), self.network.is_last_network)
+        # logger.info(f"to_out_forward {self.lora_name} {x.size()} {self.network.is_last_network}")
 
         if self.network.is_last_network:
             masks = [None] * self.network.num_sub_prompts
@@ -332,7 +340,7 @@ class LoRAInfModule(LoRAModule):
             )
             self.network.shared[self.lora_name] = (lx, masks)
 
-        # print("to_out_forward", lx.size(), lx1.size(), self.network.sub_prompt_index, self.network.num_sub_prompts)
+        # logger.info(f"to_out_forward {lx.size()} {lx1.size()} {self.network.sub_prompt_index} {self.network.num_sub_prompts}")
         lx[self.network.sub_prompt_index :: self.network.num_sub_prompts] += lx1
         masks[self.network.sub_prompt_index] = self.get_mask_for_x(lx1)
 
@@ -351,7 +359,7 @@ class LoRAInfModule(LoRAModule):
         if has_real_uncond:
             out[-self.network.batch_size :] = x[-self.network.batch_size :]  # real_uncond
 
-        # print("to_out_forward", self.lora_name, self.network.sub_prompt_index, self.network.num_sub_prompts)
+        # logger.info(f"to_out_forward {self.lora_name} {self.network.sub_prompt_index} {self.network.num_sub_prompts}")
         # if num_sub_prompts > num of LoRAs, fill with zero
         for i in range(len(masks)):
             if masks[i] is None:
@@ -374,18 +382,18 @@ class LoRAInfModule(LoRAModule):
             x1 = x1 + lx1
             out[self.network.batch_size + i] = x1
 
-        # print("to_out_forward", x.size(), out.size(), has_real_uncond)
+        # logger.info(f"to_out_forward {x.size()} {out.size()} {has_real_uncond}")
         return out
 
 
-def parse_block_lr_kwargs(nw_kwargs):
+def parse_block_lr_kwargs(is_sdxl: bool, nw_kwargs: Dict) -> Optional[List[float]]:
     down_lr_weight = nw_kwargs.get("down_lr_weight", None)
     mid_lr_weight = nw_kwargs.get("mid_lr_weight", None)
     up_lr_weight = nw_kwargs.get("up_lr_weight", None)
 
     # 以上のいずれにも設定がない場合は無効としてNoneを返す
     if down_lr_weight is None and mid_lr_weight is None and up_lr_weight is None:
-        return None, None, None
+        return None
 
     # extract learning rate weight for each block
     if down_lr_weight is not None:
@@ -394,17 +402,15 @@ def parse_block_lr_kwargs(nw_kwargs):
             down_lr_weight = [(float(s) if s else 0.0) for s in down_lr_weight.split(",")]
 
     if mid_lr_weight is not None:
-        mid_lr_weight = float(mid_lr_weight)
+        mid_lr_weight = [(float(s) if s else 0.0) for s in mid_lr_weight.split(",")]
 
     if up_lr_weight is not None:
         if "," in up_lr_weight:
             up_lr_weight = [(float(s) if s else 0.0) for s in up_lr_weight.split(",")]
 
-    down_lr_weight, mid_lr_weight, up_lr_weight = get_block_lr_weight(
-        down_lr_weight, mid_lr_weight, up_lr_weight, float(nw_kwargs.get("block_lr_zero_threshold", 0.0))
+    return get_block_lr_weight(
+        is_sdxl, down_lr_weight, mid_lr_weight, up_lr_weight, float(nw_kwargs.get("block_lr_zero_threshold", 0.0))
     )
-
-    return down_lr_weight, mid_lr_weight, up_lr_weight
 
 
 def create_network(
@@ -417,6 +423,9 @@ def create_network(
     neuron_dropout: Optional[float] = None,
     **kwargs,
 ):
+    # if unet is an instance of SdxlUNet2DConditionModel or subclass, set is_sdxl to True
+    is_sdxl = unet is not None and issubclass(unet.__class__, SdxlUNet2DConditionModel)
+
     if network_dim is None:
         network_dim = 4  # default
     if network_alpha is None:
@@ -434,21 +443,21 @@ def create_network(
 
     # block dim/alpha/lr
     block_dims = kwargs.get("block_dims", None)
-    down_lr_weight, mid_lr_weight, up_lr_weight = parse_block_lr_kwargs(kwargs)
+    block_lr_weight = parse_block_lr_kwargs(is_sdxl, kwargs)
 
     # 以上のいずれかに指定があればblockごとのdim(rank)を有効にする
-    if block_dims is not None or down_lr_weight is not None or mid_lr_weight is not None or up_lr_weight is not None:
+    if block_dims is not None or block_lr_weight is not None:
         block_alphas = kwargs.get("block_alphas", None)
         conv_block_dims = kwargs.get("conv_block_dims", None)
         conv_block_alphas = kwargs.get("conv_block_alphas", None)
 
         block_dims, block_alphas, conv_block_dims, conv_block_alphas = get_block_dims_and_alphas(
-            block_dims, block_alphas, network_dim, network_alpha, conv_block_dims, conv_block_alphas, conv_dim, conv_alpha
+            is_sdxl, block_dims, block_alphas, network_dim, network_alpha, conv_block_dims, conv_block_alphas, conv_dim, conv_alpha
         )
 
         # remove block dim/alpha without learning rate
         block_dims, block_alphas, conv_block_dims, conv_block_alphas = remove_block_dims_and_alphas(
-            block_dims, block_alphas, conv_block_dims, conv_block_alphas, down_lr_weight, mid_lr_weight, up_lr_weight
+            is_sdxl, block_dims, block_alphas, conv_block_dims, conv_block_alphas, block_lr_weight
         )
 
     else:
@@ -481,10 +490,20 @@ def create_network(
         conv_block_dims=conv_block_dims,
         conv_block_alphas=conv_block_alphas,
         varbose=True,
+        is_sdxl=is_sdxl,
     )
 
-    if up_lr_weight is not None or mid_lr_weight is not None or down_lr_weight is not None:
-        network.set_block_lr_weight(up_lr_weight, mid_lr_weight, down_lr_weight)
+    loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
+    loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
+    loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
+    loraplus_lr_ratio = float(loraplus_lr_ratio) if loraplus_lr_ratio is not None else None
+    loraplus_unet_lr_ratio = float(loraplus_unet_lr_ratio) if loraplus_unet_lr_ratio is not None else None
+    loraplus_text_encoder_lr_ratio = float(loraplus_text_encoder_lr_ratio) if loraplus_text_encoder_lr_ratio is not None else None
+    if loraplus_lr_ratio is not None or loraplus_unet_lr_ratio is not None or loraplus_text_encoder_lr_ratio is not None:
+        network.set_loraplus_lr_ratio(loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio)
+
+    if block_lr_weight is not None:
+        network.set_block_lr_weight(block_lr_weight)
 
     return network
 
@@ -494,9 +513,13 @@ def create_network(
 # block_dims, block_alphas は両方ともNoneまたは両方とも値が入っている
 # conv_dim, conv_alpha は両方ともNoneまたは両方とも値が入っている
 def get_block_dims_and_alphas(
-    block_dims, block_alphas, network_dim, network_alpha, conv_block_dims, conv_block_alphas, conv_dim, conv_alpha
+    is_sdxl, block_dims, block_alphas, network_dim, network_alpha, conv_block_dims, conv_block_alphas, conv_dim, conv_alpha
 ):
-    num_total_blocks = LoRANetwork.NUM_OF_BLOCKS * 2 + 1
+    if not is_sdxl:
+        num_total_blocks = LoRANetwork.NUM_OF_BLOCKS * 2 + LoRANetwork.NUM_OF_MID_BLOCKS
+    else:
+        # 1+9+3+9+1=23, no LoRA for emb_layers (0)
+        num_total_blocks = 1 + LoRANetwork.SDXL_NUM_OF_BLOCKS * 2 + LoRANetwork.SDXL_NUM_OF_MID_BLOCKS + 1
 
     def parse_ints(s):
         return [int(i) for i in s.split(",")]
@@ -507,11 +530,14 @@ def get_block_dims_and_alphas(
     # block_dimsとblock_alphasをパースする。必ず値が入る
     if block_dims is not None:
         block_dims = parse_ints(block_dims)
-        assert (
-            len(block_dims) == num_total_blocks
-        ), f"block_dims must have {num_total_blocks} elements / block_dimsは{num_total_blocks}個指定してください"
+        assert len(block_dims) == num_total_blocks, (
+            f"block_dims must have {num_total_blocks} elements but {len(block_dims)} elements are given"
+            + f" / block_dimsは{num_total_blocks}個指定してください（指定された個数: {len(block_dims)}）"
+        )
     else:
-        print(f"block_dims is not specified. all dims are set to {network_dim} / block_dimsが指定されていません。すべてのdimは{network_dim}になります")
+        logger.warning(
+            f"block_dims is not specified. all dims are set to {network_dim} / block_dimsが指定されていません。すべてのdimは{network_dim}になります"
+        )
         block_dims = [network_dim] * num_total_blocks
 
     if block_alphas is not None:
@@ -520,7 +546,7 @@ def get_block_dims_and_alphas(
             len(block_alphas) == num_total_blocks
         ), f"block_alphas must have {num_total_blocks} elements / block_alphasは{num_total_blocks}個指定してください"
     else:
-        print(
+        logger.warning(
             f"block_alphas is not specified. all alphas are set to {network_alpha} / block_alphasが指定されていません。すべてのalphaは{network_alpha}になります"
         )
         block_alphas = [network_alpha] * num_total_blocks
@@ -540,13 +566,13 @@ def get_block_dims_and_alphas(
         else:
             if conv_alpha is None:
                 conv_alpha = 1.0
-            print(
+            logger.warning(
                 f"conv_block_alphas is not specified. all alphas are set to {conv_alpha} / conv_block_alphasが指定されていません。すべてのalphaは{conv_alpha}になります"
             )
             conv_block_alphas = [conv_alpha] * num_total_blocks
     else:
         if conv_dim is not None:
-            print(
+            logger.warning(
                 f"conv_dim/alpha for all blocks are set to {conv_dim} and {conv_alpha} / すべてのブロックのconv_dimとalphaは{conv_dim}および{conv_alpha}になります"
             )
             conv_block_dims = [conv_dim] * num_total_blocks
@@ -558,15 +584,25 @@ def get_block_dims_and_alphas(
     return block_dims, block_alphas, conv_block_dims, conv_block_alphas
 
 
-# 層別学習率用に層ごとの学習率に対する倍率を定義する、外部から呼び出される可能性を考慮しておく
+# 層別学習率用に層ごとの学習率に対する倍率を定義する、外部から呼び出せるようにclass外に出しておく
+# 戻り値は block ごとの倍率のリスト
 def get_block_lr_weight(
-    down_lr_weight, mid_lr_weight, up_lr_weight, zero_threshold
-) -> Tuple[List[float], List[float], List[float]]:
+    is_sdxl,
+    down_lr_weight: Union[str, List[float]],
+    mid_lr_weight: List[float],
+    up_lr_weight: Union[str, List[float]],
+    zero_threshold: float,
+) -> Optional[List[float]]:
     # パラメータ未指定時は何もせず、今までと同じ動作とする
     if up_lr_weight is None and mid_lr_weight is None and down_lr_weight is None:
-        return None, None, None
+        return None
 
-    max_len = LoRANetwork.NUM_OF_BLOCKS  # フルモデル相当でのup,downの層の数
+    if not is_sdxl:
+        max_len_for_down_or_up = LoRANetwork.NUM_OF_BLOCKS
+        max_len_for_mid = LoRANetwork.NUM_OF_MID_BLOCKS
+    else:
+        max_len_for_down_or_up = LoRANetwork.SDXL_NUM_OF_BLOCKS
+        max_len_for_mid = LoRANetwork.SDXL_NUM_OF_MID_BLOCKS
 
     def get_list(name_with_suffix) -> List[float]:
         import math
@@ -576,17 +612,20 @@ def get_block_lr_weight(
         base_lr = float(tokens[1]) if len(tokens) > 1 else 0.0
 
         if name == "cosine":
-            return [math.sin(math.pi * (i / (max_len - 1)) / 2) + base_lr for i in reversed(range(max_len))]
+            return [
+                math.sin(math.pi * (i / (max_len_for_down_or_up - 1)) / 2) + base_lr
+                for i in reversed(range(max_len_for_down_or_up))
+            ]
         elif name == "sine":
-            return [math.sin(math.pi * (i / (max_len - 1)) / 2) + base_lr for i in range(max_len)]
+            return [math.sin(math.pi * (i / (max_len_for_down_or_up - 1)) / 2) + base_lr for i in range(max_len_for_down_or_up)]
         elif name == "linear":
-            return [i / (max_len - 1) + base_lr for i in range(max_len)]
+            return [i / (max_len_for_down_or_up - 1) + base_lr for i in range(max_len_for_down_or_up)]
         elif name == "reverse_linear":
-            return [i / (max_len - 1) + base_lr for i in reversed(range(max_len))]
+            return [i / (max_len_for_down_or_up - 1) + base_lr for i in reversed(range(max_len_for_down_or_up))]
         elif name == "zeros":
-            return [0.0 + base_lr] * max_len
+            return [0.0 + base_lr] * max_len_for_down_or_up
         else:
-            print(
+            logger.error(
                 "Unknown lr_weight argument %s is used. Valid arguments:  / 不明なlr_weightの引数 %s が使われました。有効な引数:\n\tcosine, sine, linear, reverse_linear, zeros"
                 % (name)
             )
@@ -597,99 +636,176 @@ def get_block_lr_weight(
     if type(up_lr_weight) == str:
         up_lr_weight = get_list(up_lr_weight)
 
-    if (up_lr_weight != None and len(up_lr_weight) > max_len) or (down_lr_weight != None and len(down_lr_weight) > max_len):
-        print("down_weight or up_weight is too long. Parameters after %d-th are ignored." % max_len)
-        print("down_weightもしくはup_weightが長すぎます。%d個目以降のパラメータは無視されます。" % max_len)
-        up_lr_weight = up_lr_weight[:max_len]
-        down_lr_weight = down_lr_weight[:max_len]
+    if (up_lr_weight != None and len(up_lr_weight) > max_len_for_down_or_up) or (
+        down_lr_weight != None and len(down_lr_weight) > max_len_for_down_or_up
+    ):
+        logger.warning("down_weight or up_weight is too long. Parameters after %d-th are ignored." % max_len_for_down_or_up)
+        logger.warning("down_weightもしくはup_weightが長すぎます。%d個目以降のパラメータは無視されます。" % max_len_for_down_or_up)
+        up_lr_weight = up_lr_weight[:max_len_for_down_or_up]
+        down_lr_weight = down_lr_weight[:max_len_for_down_or_up]
 
-    if (up_lr_weight != None and len(up_lr_weight) < max_len) or (down_lr_weight != None and len(down_lr_weight) < max_len):
-        print("down_weight or up_weight is too short. Parameters after %d-th are filled with 1." % max_len)
-        print("down_weightもしくはup_weightが短すぎます。%d個目までの不足したパラメータは1で補われます。" % max_len)
+    if mid_lr_weight != None and len(mid_lr_weight) > max_len_for_mid:
+        logger.warning("mid_weight is too long. Parameters after %d-th are ignored." % max_len_for_mid)
+        logger.warning("mid_weightが長すぎます。%d個目以降のパラメータは無視されます。" % max_len_for_mid)
+        mid_lr_weight = mid_lr_weight[:max_len_for_mid]
 
-        if down_lr_weight != None and len(down_lr_weight) < max_len:
-            down_lr_weight = down_lr_weight + [1.0] * (max_len - len(down_lr_weight))
-        if up_lr_weight != None and len(up_lr_weight) < max_len:
-            up_lr_weight = up_lr_weight + [1.0] * (max_len - len(up_lr_weight))
+    if (up_lr_weight != None and len(up_lr_weight) < max_len_for_down_or_up) or (
+        down_lr_weight != None and len(down_lr_weight) < max_len_for_down_or_up
+    ):
+        logger.warning("down_weight or up_weight is too short. Parameters after %d-th are filled with 1." % max_len_for_down_or_up)
+        logger.warning(
+            "down_weightもしくはup_weightが短すぎます。%d個目までの不足したパラメータは1で補われます。" % max_len_for_down_or_up
+        )
+
+        if down_lr_weight != None and len(down_lr_weight) < max_len_for_down_or_up:
+            down_lr_weight = down_lr_weight + [1.0] * (max_len_for_down_or_up - len(down_lr_weight))
+        if up_lr_weight != None and len(up_lr_weight) < max_len_for_down_or_up:
+            up_lr_weight = up_lr_weight + [1.0] * (max_len_for_down_or_up - len(up_lr_weight))
+
+    if mid_lr_weight != None and len(mid_lr_weight) < max_len_for_mid:
+        logger.warning("mid_weight is too short. Parameters after %d-th are filled with 1." % max_len_for_mid)
+        logger.warning("mid_weightが短すぎます。%d個目までの不足したパラメータは1で補われます。" % max_len_for_mid)
+        mid_lr_weight = mid_lr_weight + [1.0] * (max_len_for_mid - len(mid_lr_weight))
 
     if (up_lr_weight != None) or (mid_lr_weight != None) or (down_lr_weight != None):
-        print("apply block learning rate / 階層別学習率を適用します。")
+        logger.info("apply block learning rate / 階層別学習率を適用します。")
         if down_lr_weight != None:
             down_lr_weight = [w if w > zero_threshold else 0 for w in down_lr_weight]
-            print("down_lr_weight (shallower -> deeper, 浅い層->深い層):", down_lr_weight)
+            logger.info(f"down_lr_weight (shallower -> deeper, 浅い層->深い層): {down_lr_weight}")
         else:
-            print("down_lr_weight: all 1.0, すべて1.0")
+            down_lr_weight = [1.0] * max_len_for_down_or_up
+            logger.info("down_lr_weight: all 1.0, すべて1.0")
 
         if mid_lr_weight != None:
-            mid_lr_weight = mid_lr_weight if mid_lr_weight > zero_threshold else 0
-            print("mid_lr_weight:", mid_lr_weight)
+            mid_lr_weight = [w if w > zero_threshold else 0 for w in mid_lr_weight]
+            logger.info(f"mid_lr_weight: {mid_lr_weight}")
         else:
-            print("mid_lr_weight: 1.0")
+            mid_lr_weight = [1.0] * max_len_for_mid
+            logger.info("mid_lr_weight: all 1.0, すべて1.0")
 
         if up_lr_weight != None:
             up_lr_weight = [w if w > zero_threshold else 0 for w in up_lr_weight]
-            print("up_lr_weight (deeper -> shallower, 深い層->浅い層):", up_lr_weight)
+            logger.info(f"up_lr_weight (deeper -> shallower, 深い層->浅い層): {up_lr_weight}")
         else:
-            print("up_lr_weight: all 1.0, すべて1.0")
+            up_lr_weight = [1.0] * max_len_for_down_or_up
+            logger.info("up_lr_weight: all 1.0, すべて1.0")
 
-    return down_lr_weight, mid_lr_weight, up_lr_weight
+    lr_weight = down_lr_weight + mid_lr_weight + up_lr_weight
+
+    if is_sdxl:
+        lr_weight = [1.0] + lr_weight + [1.0]  # add 1.0 for emb_layers and out
+
+    assert (not is_sdxl and len(lr_weight) == LoRANetwork.NUM_OF_BLOCKS * 2 + LoRANetwork.NUM_OF_MID_BLOCKS) or (
+        is_sdxl and len(lr_weight) == 1 + LoRANetwork.SDXL_NUM_OF_BLOCKS * 2 + LoRANetwork.SDXL_NUM_OF_MID_BLOCKS + 1
+    ), f"lr_weight length is invalid: {len(lr_weight)}"
+
+    return lr_weight
 
 
 # lr_weightが0のblockをblock_dimsから除外する、外部から呼び出す可能性を考慮しておく
 def remove_block_dims_and_alphas(
-    block_dims, block_alphas, conv_block_dims, conv_block_alphas, down_lr_weight, mid_lr_weight, up_lr_weight
+    is_sdxl, block_dims, block_alphas, conv_block_dims, conv_block_alphas, block_lr_weight: Optional[List[float]]
 ):
-    # set 0 to block dim without learning rate to remove the block
-    if down_lr_weight != None:
-        for i, lr in enumerate(down_lr_weight):
+    if block_lr_weight is not None:
+        for i, lr in enumerate(block_lr_weight):
             if lr == 0:
                 block_dims[i] = 0
                 if conv_block_dims is not None:
                     conv_block_dims[i] = 0
-    if mid_lr_weight != None:
-        if mid_lr_weight == 0:
-            block_dims[LoRANetwork.NUM_OF_BLOCKS] = 0
-            if conv_block_dims is not None:
-                conv_block_dims[LoRANetwork.NUM_OF_BLOCKS] = 0
-    if up_lr_weight != None:
-        for i, lr in enumerate(up_lr_weight):
-            if lr == 0:
-                block_dims[LoRANetwork.NUM_OF_BLOCKS + 1 + i] = 0
-                if conv_block_dims is not None:
-                    conv_block_dims[LoRANetwork.NUM_OF_BLOCKS + 1 + i] = 0
-
     return block_dims, block_alphas, conv_block_dims, conv_block_alphas
 
 
 # 外部から呼び出す可能性を考慮しておく
-def get_block_index(lora_name: str) -> int:
+def get_block_index(lora_name: str, is_sdxl: bool = False) -> int:
     block_idx = -1  # invalid lora name
+    if not is_sdxl:
+        m = RE_UPDOWN.search(lora_name)
+        if m:
+            g = m.groups()
+            i = int(g[1])
+            j = int(g[3])
+            if g[2] == "resnets":
+                idx = 3 * i + j
+            elif g[2] == "attentions":
+                idx = 3 * i + j
+            elif g[2] == "upsamplers" or g[2] == "downsamplers":
+                idx = 3 * i + 2
 
-    m = RE_UPDOWN.search(lora_name)
-    if m:
-        g = m.groups()
-        i = int(g[1])
-        j = int(g[3])
-        if g[2] == "resnets":
-            idx = 3 * i + j
-        elif g[2] == "attentions":
-            idx = 3 * i + j
-        elif g[2] == "upsamplers" or g[2] == "downsamplers":
-            idx = 3 * i + 2
-
-        if g[0] == "down":
-            block_idx = 1 + idx  # 0に該当するLoRAは存在しない
-        elif g[0] == "up":
-            block_idx = LoRANetwork.NUM_OF_BLOCKS + 1 + idx
-
-    elif "mid_block_" in lora_name:
-        block_idx = LoRANetwork.NUM_OF_BLOCKS  # idx=12
+            if g[0] == "down":
+                block_idx = 1 + idx  # 0に該当するLoRAは存在しない
+            elif g[0] == "up":
+                block_idx = LoRANetwork.NUM_OF_BLOCKS + 1 + idx
+        elif "mid_block_" in lora_name:
+            block_idx = LoRANetwork.NUM_OF_BLOCKS  # idx=12
+    else:
+        # copy from sdxl_train
+        if lora_name.startswith("lora_unet_"):
+            name = lora_name[len("lora_unet_") :]
+            if name.startswith("time_embed_") or name.startswith("label_emb_"):  # No LoRA
+                block_idx = 0  # 0
+            elif name.startswith("input_blocks_"):  # 1-9
+                block_idx = 1 + int(name.split("_")[2])
+            elif name.startswith("middle_block_"):  # 10-12
+                block_idx = 10 + int(name.split("_")[2])
+            elif name.startswith("output_blocks_"):  # 13-21
+                block_idx = 13 + int(name.split("_")[2])
+            elif name.startswith("out_"):  # 22, out, no LoRA
+                block_idx = 22
 
     return block_idx
 
 
+def convert_diffusers_to_sai_if_needed(weights_sd):
+    # only supports U-Net LoRA modules
+
+    found_up_down_blocks = False
+    for k in list(weights_sd.keys()):
+        if "down_blocks" in k:
+            found_up_down_blocks = True
+            break
+        if "up_blocks" in k:
+            found_up_down_blocks = True
+            break
+    if not found_up_down_blocks:
+        return
+
+    from library.sdxl_model_util import make_unet_conversion_map
+
+    unet_conversion_map = make_unet_conversion_map()
+    unet_conversion_map = {hf.replace(".", "_")[:-1]: sd.replace(".", "_")[:-1] for sd, hf in unet_conversion_map}
+
+    # # add extra conversion
+    # unet_conversion_map["up_blocks_1_upsamplers_0"] = "lora_unet_output_blocks_2_2_conv"
+
+    logger.info(f"Converting LoRA keys from Diffusers to SAI")
+    lora_unet_prefix = "lora_unet_"
+    for k in list(weights_sd.keys()):
+        if not k.startswith(lora_unet_prefix):
+            continue
+
+        unet_module_name = k[len(lora_unet_prefix) :].split(".")[0]
+
+        # search for conversion: this is slow because the algorithm is O(n^2), but the number of keys is small
+        for hf_module_name, sd_module_name in unet_conversion_map.items():
+            if hf_module_name in unet_module_name:
+                new_key = (
+                    lora_unet_prefix
+                    + unet_module_name.replace(hf_module_name, sd_module_name)
+                    + k[len(lora_unet_prefix) + len(unet_module_name) :]
+                )
+                weights_sd[new_key] = weights_sd.pop(k)
+                found = True
+                break
+
+        if not found:
+            logger.warning(f"Key {k} is not found in unet_conversion_map")
+
+
 # Create network from weights for inference, weights are not loaded here (because can be merged)
 def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weights_sd=None, for_inference=False, **kwargs):
+    # if unet is an instance of SdxlUNet2DConditionModel or subclass, set is_sdxl to True
+    is_sdxl = unet is not None and issubclass(unet.__class__, SdxlUNet2DConditionModel)
+
     if weights_sd is None:
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file, safe_open
@@ -697,6 +813,10 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
             weights_sd = load_file(file)
         else:
             weights_sd = torch.load(file, map_location="cpu")
+
+    # if keys are Diffusers based, convert to SAI based
+    if is_sdxl:
+        convert_diffusers_to_sai_if_needed(weights_sd)
 
     # get dim/alpha mapping
     modules_dim = {}
@@ -711,7 +831,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         elif "lora_down" in key:
             dim = value.size()[0]
             modules_dim[lora_name] = dim
-            # print(lora_name, value.size(), dim)
+            # logger.info(lora_name, value.size(), dim)
 
     # support old LoRA without alpha
     for key in modules_dim.keys():
@@ -721,23 +841,32 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     module_class = LoRAInfModule if for_inference else LoRAModule
 
     network = LoRANetwork(
-        text_encoder, unet, multiplier=multiplier, modules_dim=modules_dim, modules_alpha=modules_alpha, module_class=module_class
+        text_encoder,
+        unet,
+        multiplier=multiplier,
+        modules_dim=modules_dim,
+        modules_alpha=modules_alpha,
+        module_class=module_class,
+        is_sdxl=is_sdxl,
     )
 
     # block lr
-    down_lr_weight, mid_lr_weight, up_lr_weight = parse_block_lr_kwargs(kwargs)
-    if up_lr_weight is not None or mid_lr_weight is not None or down_lr_weight is not None:
-        network.set_block_lr_weight(up_lr_weight, mid_lr_weight, down_lr_weight)
+    block_lr_weight = parse_block_lr_kwargs(is_sdxl, kwargs)
+    if block_lr_weight is not None:
+        network.set_block_lr_weight(block_lr_weight)
 
     return network, weights_sd
 
 
 class LoRANetwork(torch.nn.Module):
     NUM_OF_BLOCKS = 12  # フルモデル相当でのup,downの層の数
+    NUM_OF_MID_BLOCKS = 1
+    SDXL_NUM_OF_BLOCKS = 9  # SDXLのモデルでのinput/outputの層の数 total=1(base) 9(input) + 3(mid) + 9(output) + 1(out) = 23
+    SDXL_NUM_OF_MID_BLOCKS = 3
 
     UNET_TARGET_REPLACE_MODULE = ["Transformer2DModel"]
     UNET_TARGET_REPLACE_MODULE_CONV2D_3X3 = ["ResnetBlock2D", "Downsample2D", "Upsample2D"]
-    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPMLP"]
+    TEXT_ENCODER_TARGET_REPLACE_MODULE = ["CLIPAttention", "CLIPSdpaAttention", "CLIPMLP"]
     LORA_PREFIX_UNET = "lora_unet"
     LORA_PREFIX_TEXT_ENCODER = "lora_te"
 
@@ -765,6 +894,7 @@ class LoRANetwork(torch.nn.Module):
         modules_alpha: Optional[Dict[str, int]] = None,
         module_class: Type[object] = LoRAModule,
         varbose: Optional[bool] = False,
+        is_sdxl: Optional[bool] = False,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -785,21 +915,31 @@ class LoRANetwork(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
+        self.loraplus_lr_ratio = None
+        self.loraplus_unet_lr_ratio = None
+        self.loraplus_text_encoder_lr_ratio = None
+
         if modules_dim is not None:
-            print(f"create LoRA network from weights")
+            logger.info(f"create LoRA network from weights")
         elif block_dims is not None:
-            print(f"create LoRA network from block_dims")
-            print(f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}")
-            print(f"block_dims: {block_dims}")
-            print(f"block_alphas: {block_alphas}")
+            logger.info(f"create LoRA network from block_dims")
+            logger.info(
+                f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}"
+            )
+            logger.info(f"block_dims: {block_dims}")
+            logger.info(f"block_alphas: {block_alphas}")
             if conv_block_dims is not None:
-                print(f"conv_block_dims: {conv_block_dims}")
-                print(f"conv_block_alphas: {conv_block_alphas}")
+                logger.info(f"conv_block_dims: {conv_block_dims}")
+                logger.info(f"conv_block_alphas: {conv_block_alphas}")
         else:
-            print(f"create LoRA network. base dim (rank): {lora_dim}, alpha: {alpha}")
-            print(f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}")
+            logger.info(f"create LoRA network. base dim (rank): {lora_dim}, alpha: {alpha}")
+            logger.info(
+                f"neuron dropout: p={self.dropout}, rank dropout: p={self.rank_dropout}, module dropout: p={self.module_dropout}"
+            )
             if self.conv_lora_dim is not None:
-                print(f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}")
+                logger.info(
+                    f"apply LoRA to Conv2d with kernel size (3,3). dim (rank): {self.conv_lora_dim}, alpha: {self.conv_alpha}"
+                )
 
         # create module instances
         def create_modules(
@@ -840,7 +980,7 @@ class LoRANetwork(torch.nn.Module):
                                     alpha = modules_alpha[lora_name]
                             elif is_unet and block_dims is not None:
                                 # U-Netでblock_dims指定あり
-                                block_idx = get_block_index(lora_name)
+                                block_idx = get_block_index(lora_name, is_sdxl)
                                 if is_linear or is_conv2d_1x1:
                                     dim = block_dims[block_idx]
                                     alpha = block_alphas[block_idx]
@@ -884,15 +1024,15 @@ class LoRANetwork(torch.nn.Module):
         for i, text_encoder in enumerate(text_encoders):
             if len(text_encoders) > 1:
                 index = i + 1
-                print(f"create LoRA for Text Encoder {index}:")
+                logger.info(f"create LoRA for Text Encoder {index}:")
             else:
                 index = None
-                print(f"create LoRA for Text Encoder:")
+                logger.info(f"create LoRA for Text Encoder:")
 
             text_encoder_loras, skipped = create_modules(False, index, text_encoder, LoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
             self.text_encoder_loras.extend(text_encoder_loras)
             skipped_te += skipped
-        print(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
+        logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
 
         # extend U-Net target modules if conv2d 3x3 is enabled, or load from weights
         target_modules = LoRANetwork.UNET_TARGET_REPLACE_MODULE
@@ -900,19 +1040,17 @@ class LoRANetwork(torch.nn.Module):
             target_modules += LoRANetwork.UNET_TARGET_REPLACE_MODULE_CONV2D_3X3
 
         self.unet_loras, skipped_un = create_modules(True, None, unet, target_modules)
-        print(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
+        logger.info(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
 
         skipped = skipped_te + skipped_un
         if varbose and len(skipped) > 0:
-            print(
+            logger.warning(
                 f"because block_lr_weight is 0 or dim (rank) is 0, {len(skipped)} LoRA modules are skipped / block_lr_weightまたはdim (rank)が0の為、次の{len(skipped)}個のLoRAモジュールはスキップされます:"
             )
             for name in skipped:
-                print(f"\t{name}")
+                logger.info(f"\t{name}")
 
-        self.up_lr_weight: List[float] = None
-        self.down_lr_weight: List[float] = None
-        self.mid_lr_weight: float = None
+        self.block_lr_weight = None
         self.block_lr = False
 
         # assertion
@@ -925,6 +1063,10 @@ class LoRANetwork(torch.nn.Module):
         self.multiplier = multiplier
         for lora in self.text_encoder_loras + self.unet_loras:
             lora.multiplier = self.multiplier
+
+    def set_enabled(self, is_enabled):
+        for lora in self.text_encoder_loras + self.unet_loras:
+            lora.enabled = is_enabled
 
     def load_weights(self, file):
         if os.path.splitext(file)[1] == ".safetensors":
@@ -939,12 +1081,12 @@ class LoRANetwork(torch.nn.Module):
 
     def apply_to(self, text_encoder, unet, apply_text_encoder=True, apply_unet=True):
         if apply_text_encoder:
-            print("enable LoRA for text encoder")
+            logger.info(f"enable LoRA for text encoder: {len(self.text_encoder_loras)} modules")
         else:
             self.text_encoder_loras = []
 
         if apply_unet:
-            print("enable LoRA for U-Net")
+            logger.info(f"enable LoRA for U-Net: {len(self.unet_loras)} modules")
         else:
             self.unet_loras = []
 
@@ -966,12 +1108,12 @@ class LoRANetwork(torch.nn.Module):
                 apply_unet = True
 
         if apply_text_encoder:
-            print("enable LoRA for text encoder")
+            logger.info("enable LoRA for text encoder")
         else:
             self.text_encoder_loras = []
 
         if apply_unet:
-            print("enable LoRA for U-Net")
+            logger.info("enable LoRA for U-Net")
         else:
             self.unet_loras = []
 
@@ -982,84 +1124,120 @@ class LoRANetwork(torch.nn.Module):
                     sd_for_lora[key[len(lora.lora_name) + 1 :]] = weights_sd[key]
             lora.merge_to(sd_for_lora, dtype, device)
 
-        print(f"weights are merged")
+        logger.info(f"weights are merged")
 
     # 層別学習率用に層ごとの学習率に対する倍率を定義する　引数の順番が逆だがとりあえず気にしない
-    def set_block_lr_weight(
-        self,
-        up_lr_weight: List[float] = None,
-        mid_lr_weight: float = None,
-        down_lr_weight: List[float] = None,
-    ):
+    def set_block_lr_weight(self, block_lr_weight: Optional[List[float]]):
         self.block_lr = True
-        self.down_lr_weight = down_lr_weight
-        self.mid_lr_weight = mid_lr_weight
-        self.up_lr_weight = up_lr_weight
+        self.block_lr_weight = block_lr_weight
 
-    def get_lr_weight(self, lora: LoRAModule) -> float:
-        lr_weight = 1.0
-        block_idx = get_block_index(lora.lora_name)
-        if block_idx < 0:
-            return lr_weight
+    def get_lr_weight(self, block_idx: int) -> float:
+        if not self.block_lr or self.block_lr_weight is None:
+            return 1.0
+        return self.block_lr_weight[block_idx]
 
-        if block_idx < LoRANetwork.NUM_OF_BLOCKS:
-            if self.down_lr_weight != None:
-                lr_weight = self.down_lr_weight[block_idx]
-        elif block_idx == LoRANetwork.NUM_OF_BLOCKS:
-            if self.mid_lr_weight != None:
-                lr_weight = self.mid_lr_weight
-        elif block_idx > LoRANetwork.NUM_OF_BLOCKS:
-            if self.up_lr_weight != None:
-                lr_weight = self.up_lr_weight[block_idx - LoRANetwork.NUM_OF_BLOCKS - 1]
+    def set_loraplus_lr_ratio(self, loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio):
+        self.loraplus_lr_ratio = loraplus_lr_ratio
+        self.loraplus_unet_lr_ratio = loraplus_unet_lr_ratio
+        self.loraplus_text_encoder_lr_ratio = loraplus_text_encoder_lr_ratio
 
-        return lr_weight
+        logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
+        logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
     # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
-        self.requires_grad_(True)
-        all_params = []
+        # TODO warn if optimizer is not compatible with LoRA+ (but it will cause error so we don't need to check it here?)
+        # if (
+        #     self.loraplus_lr_ratio is not None
+        #     or self.loraplus_text_encoder_lr_ratio is not None
+        #     or self.loraplus_unet_lr_ratio is not None
+        # ):
+        #     assert (
+        #         optimizer_type.lower() != "prodigy" and "dadapt" not in optimizer_type.lower()
+        #     ), "LoRA+ and Prodigy/DAdaptation is not supported / LoRA+とProdigy/DAdaptationの組み合わせはサポートされていません"
 
-        def enumerate_params(loras):
-            params = []
+        self.requires_grad_(True)
+
+        all_params = []
+        lr_descriptions = []
+
+        def assemble_params(loras, lr, ratio):
+            param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
-                params.extend(lora.parameters())
-            return params
+                for name, param in lora.named_parameters():
+                    if ratio is not None and "lora_up" in name:
+                        param_groups["plus"][f"{lora.lora_name}.{name}"] = param
+                    else:
+                        param_groups["lora"][f"{lora.lora_name}.{name}"] = param
+
+            params = []
+            descriptions = []
+            for key in param_groups.keys():
+                param_data = {"params": param_groups[key].values()}
+
+                if len(param_data["params"]) == 0:
+                    continue
+
+                if lr is not None:
+                    if key == "plus":
+                        param_data["lr"] = lr * ratio
+                    else:
+                        param_data["lr"] = lr
+
+                if param_data.get("lr", None) == 0 or param_data.get("lr", None) is None:
+                    logger.info("NO LR skipping!")
+                    continue
+
+                params.append(param_data)
+                descriptions.append("plus" if key == "plus" else "")
+
+            return params, descriptions
 
         if self.text_encoder_loras:
-            param_data = {"params": enumerate_params(self.text_encoder_loras)}
-            if text_encoder_lr is not None:
-                param_data["lr"] = text_encoder_lr
-            all_params.append(param_data)
+            params, descriptions = assemble_params(
+                self.text_encoder_loras,
+                text_encoder_lr if text_encoder_lr is not None else default_lr,
+                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
+            )
+            all_params.extend(params)
+            lr_descriptions.extend(["textencoder" + (" " + d if d else "") for d in descriptions])
 
         if self.unet_loras:
             if self.block_lr:
+                is_sdxl = False
+                for lora in self.unet_loras:
+                    if "input_blocks" in lora.lora_name or "output_blocks" in lora.lora_name:
+                        is_sdxl = True
+                        break
+
                 # 学習率のグラフをblockごとにしたいので、blockごとにloraを分類
                 block_idx_to_lora = {}
                 for lora in self.unet_loras:
-                    idx = get_block_index(lora.lora_name)
+                    idx = get_block_index(lora.lora_name, is_sdxl)
                     if idx not in block_idx_to_lora:
                         block_idx_to_lora[idx] = []
                     block_idx_to_lora[idx].append(lora)
 
                 # blockごとにパラメータを設定する
                 for idx, block_loras in block_idx_to_lora.items():
-                    param_data = {"params": enumerate_params(block_loras)}
-
-                    if unet_lr is not None:
-                        param_data["lr"] = unet_lr * self.get_lr_weight(block_loras[0])
-                    elif default_lr is not None:
-                        param_data["lr"] = default_lr * self.get_lr_weight(block_loras[0])
-                    if ("lr" in param_data) and (param_data["lr"] == 0):
-                        continue
-                    all_params.append(param_data)
+                    params, descriptions = assemble_params(
+                        block_loras,
+                        (unet_lr if unet_lr is not None else default_lr) * self.get_lr_weight(idx),
+                        self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                    )
+                    all_params.extend(params)
+                    lr_descriptions.extend([f"unet_block{idx}" + (" " + d if d else "") for d in descriptions])
 
             else:
-                param_data = {"params": enumerate_params(self.unet_loras)}
-                if unet_lr is not None:
-                    param_data["lr"] = unet_lr
-                all_params.append(param_data)
+                params, descriptions = assemble_params(
+                    self.unet_loras,
+                    unet_lr if unet_lr is not None else default_lr,
+                    self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+                )
+                all_params.extend(params)
+                lr_descriptions.extend(["unet" + (" " + d if d else "") for d in descriptions])
 
-        return all_params
+        return all_params, lr_descriptions
 
     def enable_gradient_checkpointing(self):
         # not supported
@@ -1113,7 +1291,7 @@ class LoRANetwork(torch.nn.Module):
         for lora in self.text_encoder_loras + self.unet_loras:
             lora.set_network(self)
 
-    def set_current_generation(self, batch_size, num_sub_prompts, width, height, shared):
+    def set_current_generation(self, batch_size, num_sub_prompts, width, height, shared, ds_ratio=None):
         self.batch_size = batch_size
         self.num_sub_prompts = num_sub_prompts
         self.current_size = (height, width)
@@ -1128,7 +1306,7 @@ class LoRANetwork(torch.nn.Module):
         device = ref_weight.device
 
         def resize_add(mh, mw):
-            # print(mh, mw, mh * mw)
+            # logger.info(mh, mw, mh * mw)
             m = torch.nn.functional.interpolate(mask, (mh, mw), mode="bilinear")  # doesn't work in bf16
             m = m.to(device, dtype=dtype)
             mask_dic[mh * mw] = m
@@ -1139,6 +1317,13 @@ class LoRANetwork(torch.nn.Module):
             resize_add(h, w)
             if h % 2 == 1 or w % 2 == 1:  # add extra shape if h/w is not divisible by 2
                 resize_add(h + h % 2, w + w % 2)
+
+            # deep shrink
+            if ds_ratio is not None:
+                hd = int(h * ds_ratio)
+                wd = int(w * ds_ratio)
+                resize_add(hd, wd)
+
             h = (h + 1) // 2
             w = (w + 1) // 2
 

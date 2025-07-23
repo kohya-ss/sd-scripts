@@ -21,6 +21,10 @@ import torch.nn.functional as F
 import os
 from urllib.parse import urlparse
 from timm.models.hub import download_cached_file
+from library.utils import setup_logging
+setup_logging()
+import logging
+logger = logging.getLogger(__name__)
 
 class BLIP_Base(nn.Module):
     def __init__(self,                 
@@ -130,8 +134,9 @@ class BLIP_Decoder(nn.Module):
     def generate(self, image, sample=False, num_beams=3, max_length=30, min_length=10, top_p=0.9, repetition_penalty=1.0):
         image_embeds = self.visual_encoder(image)
 
-        if not sample:
-            image_embeds = image_embeds.repeat_interleave(num_beams,dim=0)
+        # recent version of transformers seems to do repeat_interleave automatically
+        # if not sample:
+        #     image_embeds = image_embeds.repeat_interleave(num_beams,dim=0)
             
         image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(image.device)
         model_kwargs = {"encoder_hidden_states": image_embeds, "encoder_attention_mask":image_atts}
@@ -235,6 +240,6 @@ def load_checkpoint(model,url_or_filename):
                 del state_dict[key]
     
     msg = model.load_state_dict(state_dict,strict=False)
-    print('load checkpoint from %s'%url_or_filename)  
+    logger.info('load checkpoint from %s'%url_or_filename)  
     return model,msg
     

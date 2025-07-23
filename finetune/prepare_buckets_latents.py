@@ -8,13 +8,24 @@ from tqdm import tqdm
 import numpy as np
 from PIL import Image
 import cv2
+
 import torch
+from library.device_utils import init_ipex, get_preferred_device
+
+init_ipex()
+
 from torchvision import transforms
 
 import library.model_util as model_util
 import library.train_util as train_util
+from library.utils import setup_logging
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+setup_logging()
+import logging
+
+logger = logging.getLogger(__name__)
+
+DEVICE = get_preferred_device()
 
 IMAGE_TRANSFORMS = transforms.Compose(
     [
@@ -51,22 +62,22 @@ def get_npz_filename(data_dir, image_key, is_full_path, recursive):
 def main(args):
     # assert args.bucket_reso_steps % 8 == 0, f"bucket_reso_steps must be divisible by 8 / bucket_reso_stepは8で割り切れる必要があります"
     if args.bucket_reso_steps % 8 > 0:
-        print(f"resolution of buckets in training time is a multiple of 8 / 学習時の各bucketの解像度は8単位になります")
+        logger.warning(f"resolution of buckets in training time is a multiple of 8 / 学習時の各bucketの解像度は8単位になります")
     if args.bucket_reso_steps % 32 > 0:
-        print(
+        logger.warning(
             f"WARNING: bucket_reso_steps is not divisible by 32. It is not working with SDXL / bucket_reso_stepsが32で割り切れません。SDXLでは動作しません"
         )
 
     train_data_dir_path = Path(args.train_data_dir)
     image_paths: List[str] = [str(p) for p in train_util.glob_images_pathlib(train_data_dir_path, args.recursive)]
-    print(f"found {len(image_paths)} images.")
+    logger.info(f"found {len(image_paths)} images.")
 
     if os.path.exists(args.in_json):
-        print(f"loading existing metadata: {args.in_json}")
+        logger.info(f"loading existing metadata: {args.in_json}")
         with open(args.in_json, "rt", encoding="utf-8") as f:
             metadata = json.load(f)
     else:
-        print(f"no metadata / メタデータファイルがありません: {args.in_json}")
+        logger.error(f"no metadata / メタデータファイルがありません: {args.in_json}")
         return
 
     weight_dtype = torch.float32
@@ -81,7 +92,9 @@ def main(args):
 
     # bucketのサイズを計算する
     max_reso = tuple([int(t) for t in args.max_resolution.split(",")])
-    assert len(max_reso) == 2, f"illegal resolution (not 'width,height') / 画像サイズに誤りがあります。'幅,高さ'で指定してください: {args.max_resolution}"
+    assert (
+        len(max_reso) == 2
+    ), f"illegal resolution (not 'width,height') / 画像サイズに誤りがあります。'幅,高さ'で指定してください: {args.max_resolution}"
 
     bucket_manager = train_util.BucketManager(
         args.bucket_no_upscale, max_reso, args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps
@@ -89,7 +102,7 @@ def main(args):
     if not args.bucket_no_upscale:
         bucket_manager.make_buckets()
     else:
-        print(
+        logger.warning(
             "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically / bucket_no_upscaleが指定された場合は、bucketの解像度は画像サイズから自動計算されるため、min_bucket_resoとmax_bucket_resoは無視されます"
         )
 
@@ -99,7 +112,7 @@ def main(args):
     def process_batch(is_last):
         for bucket in bucket_manager.buckets:
             if (is_last and len(bucket) > 0) or len(bucket) >= args.batch_size:
-                train_util.cache_batch_latents(vae, True, bucket, args.flip_aug, False)
+                train_util.cache_batch_latents(vae, True, bucket, args.flip_aug, args.alpha_mask, False)
                 bucket.clear()
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
@@ -130,7 +143,7 @@ def main(args):
                 if image.mode != "RGB":
                     image = image.convert("RGB")
             except Exception as e:
-                print(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
+                logger.error(f"Could not load image path / 画像を読み込めません: {image_path}, error: {e}")
                 continue
 
         image_key = image_path if args.full_path else os.path.splitext(os.path.basename(image_path))[0]
@@ -183,15 +196,15 @@ def main(args):
     for i, reso in enumerate(bucket_manager.resos):
         count = bucket_counts.get(reso, 0)
         if count > 0:
-            print(f"bucket {i} {reso}: {count}")
+            logger.info(f"bucket {i} {reso}: {count}")
     img_ar_errors = np.array(img_ar_errors)
-    print(f"mean ar error: {np.mean(img_ar_errors)}")
+    logger.info(f"mean ar error: {np.mean(img_ar_errors)}")
 
     # metadataを書き出して終わり
-    print(f"writing metadata: {args.out_json}")
+    logger.info(f"writing metadata: {args.out_json}")
     with open(args.out_json, "wt", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
-    print("done!")
+    logger.info("done!")
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -200,7 +213,9 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("in_json", type=str, help="metadata file to input / 読み込むメタデータファイル")
     parser.add_argument("out_json", type=str, help="metadata file to output / メタデータファイル書き出し先")
     parser.add_argument("model_name_or_path", type=str, help="model name or path to encode latents / latentを取得するためのモデル")
-    parser.add_argument("--v2", action="store_true", help="not used (for backward compatibility) / 使用されません（互換性のため残してあります）")
+    parser.add_argument(
+        "--v2", action="store_true", help="not used (for backward compatibility) / 使用されません（互換性のため残してあります）"
+    )
     parser.add_argument("--batch_size", type=int, default=1, help="batch size in inference / 推論時のバッチサイズ")
     parser.add_argument(
         "--max_data_loader_n_workers",
@@ -215,7 +230,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="max resolution in fine tuning (width,height) / fine tuning時の最大画像サイズ 「幅,高さ」（使用メモリ量に関係します）",
     )
     parser.add_argument("--min_bucket_reso", type=int, default=256, help="minimum resolution for buckets / bucketの最小解像度")
-    parser.add_argument("--max_bucket_reso", type=int, default=1024, help="maximum resolution for buckets / bucketの最小解像度")
+    parser.add_argument("--max_bucket_reso", type=int, default=1024, help="maximum resolution for buckets / bucketの最大解像度")
     parser.add_argument(
         "--bucket_reso_steps",
         type=int,
@@ -223,10 +238,16 @@ def setup_parser() -> argparse.ArgumentParser:
         help="steps of resolution for buckets, divisible by 8 is recommended / bucketの解像度の単位、8で割り切れる値を推奨します",
     )
     parser.add_argument(
-        "--bucket_no_upscale", action="store_true", help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します"
+        "--bucket_no_upscale",
+        action="store_true",
+        help="make bucket for each image without upscaling / 画像を拡大せずbucketを作成します",
     )
     parser.add_argument(
-        "--mixed_precision", type=str, default="no", choices=["no", "fp16", "bf16"], help="use mixed precision / 混合精度を使う場合、その精度"
+        "--mixed_precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="use mixed precision / 混合精度を使う場合、その精度",
     )
     parser.add_argument(
         "--full_path",
@@ -234,7 +255,15 @@ def setup_parser() -> argparse.ArgumentParser:
         help="use full path as image-key in metadata (supports multiple directories) / メタデータで画像キーをフルパスにする（複数の学習画像ディレクトリに対応）",
     )
     parser.add_argument(
-        "--flip_aug", action="store_true", help="flip augmentation, save latents for flipped images / 左右反転した画像もlatentを取得、保存する"
+        "--flip_aug",
+        action="store_true",
+        help="flip augmentation, save latents for flipped images / 左右反転した画像もlatentを取得、保存する",
+    )
+    parser.add_argument(
+        "--alpha_mask",
+        type=str,
+        default="",
+        help="save alpha mask for images for loss calculation / 損失計算用に画像のアルファマスクを保存する",
     )
     parser.add_argument(
         "--skip_existing",
