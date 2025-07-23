@@ -394,7 +394,7 @@ def train(args):
         if args.optimizer_type != "adafactor":
             logger.warning("Kahan summation has been requested, but currently this is only supported by the supplied Adafactor optimizer.")
         if not args.full_bf16:
-            logger.warning("Kahan summation require --full_bf16")
+            logger.warning("Kahan summation requires --full_bf16")
         if args.blockwise_fused_optimizers:
             logger.warning("Kahan summation has been requested, but it is incompatible with --blockwise_fused_optimizer. "\
                            "Perhaps try --fused_backward_pass instead.")
@@ -859,3 +859,13 @@ def setup_parser() -> argparse.ArgumentParser:
         help="[EXPERIMENTAL] enable offloading of tensors to CPU during checkpointing / チェックポイント時にテンソルをCPUにオフロードする",
     )
     return parser
+
+
+if __name__ == "__main__":
+    parser = setup_parser()
+
+    args = parser.parse_args()
+    train_util.verify_command_line_training_args(args)
+    args = train_util.read_config_from_file(args, parser)
+
+    train(args)
