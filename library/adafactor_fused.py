@@ -30,7 +30,7 @@ def copy_stochastic_(target: torch.Tensor, source: torch.Tensor):
 
 # Kahan summation for bfloat16
 # The implementation was provided by araleza.
-# Base on paper "Revisiting BFloat16 Training": https://arxiv.org/pdf/2010.06192
+# Based on paper "Revisiting BFloat16 Training": https://arxiv.org/pdf/2010.06192
 
 kahan_residuals = []
 tensor_index = 0
