@@ -398,7 +398,50 @@ FLUX.1 LoRA学習では、network_argsの`train_double_block_indices`と`train_s
 
 </details>
 
-### 6.5. Text Encoder LoRA Support / Text Encoder LoRAのサポート
+
+</details>
+
+### 6.4. Regular Expression-based Rank/LR Configuration / 正規表現によるランク・学習率の指定
+
+You can specify ranks (dims) and learning rates for LoRA modules using regular expressions. This allows for more flexible and fine-grained control than specifying by layer.
+
+These settings are specified via the `network_args` argument.
+
+*   `network_reg_dims`: Specify ranks for modules matching a regular expression. The format is a comma-separated string of `pattern=rank`.
+    *   Example: `--network_args "network_reg_dims=single.*_modulation.*=4,img_attn=8"`
+    *   This sets the rank to 4 for modules whose names contain `single` and contain `_modulation`, and to 8 for modules containing `img_attn`.
+*   `network_reg_lrs`: Specify learning rates for modules matching a regular expression. The format is a comma-separated string of `pattern=lr`.
+    *   Example: `--network_args "network_reg_lrs=single_blocks_(\d|10)_=1e-3,double_blocks=2e-3"`
+    *   This sets the learning rate to `1e-3` for modules whose names contain `single_blocks` followed by a digit (`0` to `9`) or `10`, and to `2e-3` for modules whose names contain `double_blocks`.
+
+**Notes:**
+
+*   Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
+*   If a module name matches multiple patterns, the setting from the last matching pattern in the string will be applied.
+*   These settings are applied after the block-specific training settings (`train_double_block_indices`, `train_single_block_indices`).
+
+<details>
+<summary>日本語</summary>
+
+正規表現を用いて、LoRAのモジュールごとにランク（dim）や学習率を指定することができます。これにより、層ごとの指定よりも柔軟できめ細やかな制御が可能になります。
+
+これらの設定は `network_args` 引数で指定します。
+
+*   `network_reg_dims`: 正規表現にマッチするモジュールに対してランクを指定します。`pattern=rank` という形式の文字列をカンマで区切って指定します。
+    *   例: `--network_args "network_reg_dims=single.*_modulation.*=4,img_attn=8"`
+    *   この例では、名前に `single` で始まり `_modulation` を含むモジュールのランクを4に、`img_attn` を含むモジュールのランクを8に設定します。
+*   `network_reg_lrs`: 正規表現にマッチするモジュールに対して学習率を指定します。`pattern=lr` という形式の文字列をカンマで区切って指定します。
+    *   例: `--network_args "network_reg_lrs=single_blocks_(\d|10)_=1e-3,double_blocks=2e-3"`
+    *   この例では、名前が `single_blocks` で始まり、後に数字（`0`から`9`）または`10`が続くモジュールの学習率を `1e-3` に、`double_blocks` を含むモジュールの学習率を `2e-3` に設定します。
+**注意点:**
+
+*   `network_reg_dims` および `network_reg_lrs` での設定は、全体設定である `--network_dim` や `--learning_rate` よりも優先されます。
+*   あるモジュール名が複数のパターンにマッチした場合、文字列の中で後方にあるパターンの設定が適用されます。
+*   これらの設定は、ブロック指定（`train_double_block_indices`, `train_single_block_indices`）が適用された後に行われます。
+
+</details>
+
+### 6.6. Text Encoder LoRA Support / Text Encoder LoRAのサポート
 
 FLUX.1 LoRA training supports training CLIP-L and T5XXL LoRA:
 
@@ -417,7 +460,7 @@ FLUX.1 LoRA学習は、CLIP-LとT5XXL LoRAのトレーニングもサポート�
 
 </details>
 
-### 6.6. Multi-Resolution Training / マルチ解像度トレーニング
+### 6.7. Multi-Resolution Training / マルチ解像度トレーニング
 
 You can define multiple resolutions in the dataset configuration file, with different batch sizes for each resolution.
 
@@ -462,7 +505,7 @@ resolution = [768, 768]
 
 </details>
 
-### 6.7. Validation / 検証
+### 6.8. Validation / 検証
 
 You can calculate validation loss during training using a validation dataset to evaluate model generalization performance.
 
