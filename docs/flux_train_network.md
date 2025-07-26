@@ -401,7 +401,7 @@ FLUX.1 LoRA学習では、network_argsの`train_double_block_indices`と`train_s
 
 </details>
 
-### 6.4. Regular Expression-based Rank/LR Configuration / 正規表現によるランク・学習率の指定
+### 6.5. Regular Expression-based Rank/LR Configuration / 正規表現によるランク・学習率の指定
 
 You can specify ranks (dims) and learning rates for LoRA modules using regular expressions. This allows for more flexible and fine-grained control than specifying by layer.
 
