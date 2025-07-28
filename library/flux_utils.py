@@ -24,6 +24,13 @@ MODEL_VERSION_FLUX_V1 = "flux1"
 MODEL_NAME_DEV = "dev"
 MODEL_NAME_SCHNELL = "schnell"
 
+# bypass guidance
+def bypass_flux_guidance(transformer):
+    transformer.params.guidance_embed = False
+
+# restore the forward function
+def restore_flux_guidance(transformer):
+    transformer.params.guidance_embed = True
 
 def analyze_checkpoint_state(ckpt_path: str) -> Tuple[bool, bool, Tuple[int, int], List[str]]:
     """
