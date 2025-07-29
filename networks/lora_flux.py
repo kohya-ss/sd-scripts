@@ -841,8 +841,8 @@ class LoRANetwork(torch.nn.Module):
                                         logger.info(f"LoRA {lora_name} matched with regex {reg}, using dim: {dim}")
                                         break
 
-                            # 通常、すべて対象とする
-                            if dim is None:
+                            # if modules_dim is None, we use default lora_dim. if modules_dim is not None, we use the specified dim (no default)
+                            if dim is None and modules_dim is None: 
                                 if is_linear or is_conv2d_1x1:
                                     dim = default_dim if default_dim is not None else self.lora_dim
                                     alpha = self.alpha
