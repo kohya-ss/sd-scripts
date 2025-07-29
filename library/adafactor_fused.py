@@ -36,18 +36,20 @@ kahan_residuals = []
 tensor_index = 0
 prev_step = 0
 
-def copy_kahan_(target: torch.Tensor, source: torch.Tensor, step):
+def copy_kahan_(target: torch.Tensor, source: torch.Tensor, step, update):
     """
-    Copies source into target using Kahan summations.
+    Copies source into target using Kahan summation.
 
-    The part of the float32 weight that is lost on conversion to bfloat16 is sent
-    to the CPU until the next step, where it is re-added onto that step's updated
-    weight.  This produces near float32-like weight behavior, although the copies
-    back and forth to main memory result in slower training steps.
+    The lower bits of the float32 weight that are lost on conversion to bfloat16
+    are sent to the CPU until the next step, where they are re-added onto the weights
+    before adding the gradient update.  This produces near float32-like weight behavior,
+    although the copies back and forth to main memory result in slower training steps.
 
     Args:
         target: the target tensor with dtype=bfloat16
         source: the target tensor with dtype=float32
+        step:   the global training step count
+        update: the change in weights due to the gradient
     """
     global kahan_residuals, tensor_index, prev_step
 
@@ -58,26 +60,38 @@ def copy_kahan_(target: torch.Tensor, source: torch.Tensor, step):
         prev_step = step
         tensor_index = 0
 
-    # Initialize residuals to 0.0 for first step
+    # Initialize residuals to 0 for first step
     if len(kahan_residuals) <= tensor_index:
-        kahan_residuals += [torch.zeros_like(source)]
+        kahan_residuals += [torch.zeros_like(source, dtype=torch.int16)]
+    
+    # Need this in 32 bit as PyTorch doesn't support mixed 32-bit and 16-bit math operations
+    kahan_residuals[tensor_index] = kahan_residuals[tensor_index].detach().to(source.device).to(dtype=torch.int32)
+    
+    # Bring the previous step's lower bits of the weights back from the
+    # cpu device, and add them back to the weights of the current step.
+    source_i32 = source.view(dtype=torch.int32)  # Can't do math on uint32
+    source_i32.add_(kahan_residuals[tensor_index])
 
-    # Bring the residual from the previous step back from the cpu device, and add it to the
-    # float32 weights of the current step
-    summed = kahan_residuals[tensor_index].detach().to(source.device)  # Residual is float32 type
-    summed.add_(source)
+    # If the Kahan residual was >=0.5 then the cast to bf16 rounded up
+    rounded_up = kahan_residuals[tensor_index] >= 32768
+    source_i32[rounded_up] -= 65536
 
-    # Mask off the lower 16 bits of the mantissa, adding 32768 in order to
-    # round-to-nearest when the lower bits are clipped off
-    summed_i32 = summed.view(dtype=torch.int32).detach().clone()
-    summed_quantized_i32 = summed_i32.add_(32768).bitwise_and_(-65536)  # -65536 = FFFF0000 as a signed int32
-    summed_quantized = summed_quantized_i32.view(dtype=torch.float32)
+    # Must add the gradient update after the bottom bits are restored in case
+    # the exponent is changed by the update, or the -65536 on the line above
+    # would drop the uint32 value below zero, which is invalid.
+    source.add_(-update)
 
-    # The next residual is the difference between the quantized and unquantized weights
-    kahan_residuals[tensor_index] = summed.sub(summed_quantized).detach().to("cpu")
+    # Get the lower bits into the residual
+    torch.bitwise_and(source_i32, 0x0000FFFF, out=kahan_residuals[tensor_index])
+
+    source_i32.add_(32768)  # Add offset so clipping bits performs round-to-nearest
+    source_i32.bitwise_and_(-65536)  # -65536 = FFFF0000 as a signed int32    # Leave only upper bits in source
+
+    # Move the 16-bit Kahan bits from VRAM to main memory
+    kahan_residuals[tensor_index] = kahan_residuals[tensor_index].detach().to(dtype=torch.uint16).to("cpu")
 
     # Copy the quantized floats into the target tensor
-    target.copy_(summed_quantized)
+    target.copy_(source)
 
 
 @torch.no_grad()
@@ -154,7 +168,10 @@ def adafactor_step_param(self, p, group):
     if group["weight_decay"] != 0:
         p_data_fp32.add_(p_data_fp32, alpha=(-group["weight_decay"] * lr))
 
-    p_data_fp32.add_(-update)
+    # Add on gradient update, but not if using kahan summation as the bottom
+    # bits must be restored first. (This update occurs in copy_kahan_() instead)
+    if not self.optimizer.use_kahan_summation:
+        p_data_fp32.add_(-update)
 
     # if p.dtype in {torch.float16, torch.bfloat16}:
     #    p.copy_(p_data_fp32)
