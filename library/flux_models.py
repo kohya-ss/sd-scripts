@@ -1009,8 +1009,8 @@ class Flux(nn.Module):
         self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
         self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
 
-    def get_input_vec(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
-        return None  # FLUX.1 does not use input_vec, but Chroma does.
+    def get_mod_vectors(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
+        return None  # FLUX.1 does not use mod_vectors, but Chroma does.
 
     def forward(
         self,
@@ -1024,7 +1024,7 @@ class Flux(nn.Module):
         block_controlnet_single_hidden_states=None,
         guidance: Tensor | None = None,
         txt_attention_mask: Tensor | None = None,
-        input_vec: Tensor | None = None,
+        mod_vectors: Tensor | None = None,
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")

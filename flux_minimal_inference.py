@@ -113,6 +113,8 @@ def denoise(
 
         y_input = b_vec
 
+        mod_vectors = model.get_mod_vectors(timesteps=t_vec, guidance=guidance_vec, batch_size=b_img.shape[0])
+
         pred = model(
             img=b_img,
             img_ids=b_img_ids,
@@ -122,6 +124,7 @@ def denoise(
             timesteps=t_vec,
             guidance=guidance_vec,
             txt_attention_mask=b_t5_attn_mask,
+            mod_vectors=mod_vectors,
         )
 
         # classifier free guidance

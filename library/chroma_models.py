@@ -641,7 +641,10 @@ class Chroma(Flux):
 
         print("Chroma: Gradient checkpointing disabled.")
 
-    def get_input_vec(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
+    def get_mod_vectors(self, timesteps: Tensor, guidance: Tensor | None = None, batch_size: int | None = None) -> Tensor:
+        # We extract this logic from forward to clarify the propagation of the gradients
+        # original comment: https://github.com/lodestone-rock/flow/blob/c76f63058980d0488826936025889e256a2e0458/src/models/chroma/model.py#L195
+
         # print(f"Chroma get_input_vec: timesteps {timesteps}, guidance: {guidance}, batch_size: {batch_size}")
         distill_timestep = timestep_embedding(timesteps, self.approximator_in_dim // 4)
         # TODO: need to add toggle to omit this from schnell but that's not a priority
@@ -654,7 +657,9 @@ class Chroma(Flux):
         timestep_guidance = torch.cat([distill_timestep, distil_guidance], dim=1).unsqueeze(1).repeat(1, self.mod_index_length, 1)
         # then and only then we could concatenate it together
         input_vec = torch.cat([timestep_guidance, modulation_index], dim=-1)
-        return input_vec
+
+        mod_vectors = self.distilled_guidance_layer(input_vec)
+        return mod_vectors
 
     def forward(
         self,
@@ -669,7 +674,7 @@ class Chroma(Flux):
         guidance: Tensor | None = None,
         txt_attention_mask: Tensor | None = None,
         attn_padding: int = 1,
-        input_vec: Tensor | None = None,
+        mod_vectors: Tensor | None = None,
     ) -> Tensor:
         # print(
         #     f"Chroma forward: img shape {img.shape}, txt shape {txt.shape}, img_ids shape {img_ids.shape}, txt_ids shape {txt_ids.shape}"
@@ -684,22 +689,9 @@ class Chroma(Flux):
         img = self.img_in(img)
         txt = self.txt_in(txt)
 
-        if input_vec is None:
-            # TODO:
-            # need to fix grad accumulation issue here for now it's in no grad mode
-            # besides, i don't want to wash out the PFP that's trained on this model weights anyway
-            # the fan out operation here is deleting the backward graph
-            # alternatively doing forward pass for every block manually is doable but slow
-            # custom backward probably be better
+        if mod_vectors is None:  # fallback to the original logic
             with torch.no_grad():
-                input_vec = self.get_input_vec(timesteps, guidance, img.shape[0])
-
-                # kohya-ss: I'm not sure why requires_grad is set to True here
-                # original code: https://github.com/lodestone-rock/flow/blob/c76f63058980d0488826936025889e256a2e0458/src/models/chroma/model.py#L217
-                input_vec.requires_grad = True
-                mod_vectors = self.distilled_guidance_layer(input_vec)
-        else:
-            mod_vectors = self.distilled_guidance_layer(input_vec)
+                mod_vectors = self.get_mod_vectors(timesteps, guidance, img.shape[0])
         mod_vectors_dict = distribute_modulations(mod_vectors, self.depth_single_blocks, self.depth_double_blocks)
 
         # calculate text length for each batch instead of masking

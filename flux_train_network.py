@@ -341,7 +341,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         guidance_vec = torch.full((bsz,), float(args.guidance_scale), device=accelerator.device)
 
         # get modulation vectors for Chroma
-        input_vec = unet.get_input_vec(timesteps=timesteps / 1000, guidance=guidance_vec, batch_size=bsz)
+        with accelerator.autocast(), torch.no_grad():
+            mod_vectors = unet.get_mod_vectors(timesteps=timesteps / 1000, guidance=guidance_vec, batch_size=bsz)
 
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
@@ -350,15 +351,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     t.requires_grad_(True)
             img_ids.requires_grad_(True)
             guidance_vec.requires_grad_(True)
-            if input_vec is not None:
-                input_vec.requires_grad_(True)
+            if mod_vectors is not None:
+                mod_vectors.requires_grad_(True)
 
         # Predict the noise residual
         l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
         if not args.apply_t5_attn_mask:
             t5_attn_mask = None
 
-        def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask, input_vec):
+        def call_dit(img, img_ids, t5_out, txt_ids, l_pooled, timesteps, guidance_vec, t5_attn_mask, mod_vectors):
             # grad is enabled even if unet is not in train mode, because Text Encoder is in train mode
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
@@ -371,7 +372,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     timesteps=timesteps / 1000,
                     guidance=guidance_vec,
                     txt_attention_mask=t5_attn_mask,
-                    input_vec=input_vec,
+                    mod_vectors=mod_vectors,
                 )
             return model_pred
 
@@ -384,7 +385,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             timesteps=timesteps,
             guidance_vec=guidance_vec,
             t5_attn_mask=t5_attn_mask,
-            input_vec=input_vec,
+            mod_vectors=mod_vectors,
         )
 
         # unpack latents
@@ -416,7 +417,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                         timesteps=timesteps[diff_output_pr_indices],
                         guidance_vec=guidance_vec[diff_output_pr_indices] if guidance_vec is not None else None,
                         t5_attn_mask=t5_attn_mask[diff_output_pr_indices] if t5_attn_mask is not None else None,
-                        input_vec=input_vec[diff_output_pr_indices] if input_vec is not None else None,
+                        mod_vectors=mod_vectors[diff_output_pr_indices] if mod_vectors is not None else None,
                     )
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
 
