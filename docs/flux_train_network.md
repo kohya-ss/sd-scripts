@@ -4,6 +4,13 @@ Status: reviewed
 
 This document explains how to train LoRA models for the FLUX.1 model using `flux_train_network.py` included in the `sd-scripts` repository.
 
+<details>
+<summary>日本語</summary>
+
+このドキュメントでは、`sd-scripts`リポジトリに含まれる`flux_train_network.py`を使用して、FLUX.1モデルに対するLoRA (Low-Rank Adaptation) モデルを学習する基本的な手順について解説します。
+
+</details>
+
 ## 1. Introduction / はじめに
 
 `flux_train_network.py` trains additional networks such as LoRA on the FLUX.1 model, which uses a transformer-based architecture different from Stable Diffusion. Two text encoders, CLIP-L and T5-XXL, and a dedicated AutoEncoder are used.
@@ -15,21 +22,103 @@ This guide assumes you know the basics of LoRA training. For common options see 
 * The repository is cloned and the Python environment is ready.
 * A training dataset is prepared. See the dataset configuration guide.
 
+<details>
+<summary>日本語</summary>
+
+`flux_train_network.py`は、FLUX.1モデルに対してLoRAなどの追加ネットワークを学習させるためのスクリプトです。FLUX.1はStable Diffusionとは異なるアーキテクチャを持つ画像生成モデルであり、このスクリプトを使用することで、特定のキャラクターや画風を再現するLoRAモデルを作成できます。
+
+このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](train_network.md)を参照してください。また一部のパラメータは [`sdxl_train_network.py`](sdxl_train_network.md) と同様のものがあるため、そちらも参考にしてください。
+
+**前提条件:**
+
+* `sd-scripts`リポジトリのクローンとPython環境のセットアップが完了していること。
+* 学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）
+
+</details>
+
 ## 2. Differences from `train_network.py` / `train_network.py` との違い
 
-`flux_train_network.py` is based on `train_network.py` but adapted for FLUX.1. Main differences include required arguments for the FLUX.1 model, CLIP-L, T5-XXL and AE, different model structure, and some incompatible options from Stable Diffusion.
+`flux_train_network.py` is based on `train_network.py` but adapted for FLUX.1. Main differences include:
+
+* **Target model:** FLUX.1 model (dev or schnell version).
+* **Model structure:** Unlike Stable Diffusion, FLUX.1 uses a Transformer-based architecture with two text encoders (CLIP-L and T5-XXL) and a dedicated AutoEncoder (AE) instead of VAE.
+* **Required arguments:** Additional arguments for FLUX.1 model, CLIP-L, T5-XXL, and AE model files.
+* **Incompatible options:** Some Stable Diffusion-specific arguments (e.g., `--v2`, `--clip_skip`, `--max_token_length`) are not used in FLUX.1 training.
+* **FLUX.1-specific arguments:** Additional arguments for FLUX.1-specific training parameters like timestep sampling and guidance scale.
+
+<details>
+<summary>日本語</summary>
+
+`flux_train_network.py`は`train_network.py`をベースに、FLUX.1モデルに対応するための変更が加えられています。主な違いは以下の通りです。
+
+* **対象モデル:** FLUX.1モデル（dev版またはschnell版）を対象とします。
+* **モデル構造:** Stable Diffusionとは異なり、FLUX.1はTransformerベースのアーキテクチャを持ちます。Text EncoderとしてCLIP-LとT5-XXLの二つを使用し、VAEの代わりに専用のAutoEncoder (AE) を使用します。
+* **必須の引数:** FLUX.1モデル、CLIP-L、T5-XXL、AEの各モデルファイルを指定する引数が追加されています。
+* **一部引数の非互換性:** Stable Diffusion向けの引数の一部（例: `--v2`, `--clip_skip`, `--max_token_length`）はFLUX.1の学習では使用されません。
+* **FLUX.1特有の引数:** タイムステップのサンプリング方法やガイダンススケールなど、FLUX.1特有の学習パラメータを指定する引数が追加されています。
+
+</details>
 
 ## 3. Preparation / 準備
 
 Before starting training you need:
 
 1. **Training script:** `flux_train_network.py`
-2. **FLUX.1 model file** and text encoder files (`clip_l`, `t5xxl`) and AE file.
-3. **Dataset definition file (.toml)** such as `my_flux_dataset_config.toml`.
+2. **FLUX.1 model file:** Base FLUX.1 model `.safetensors` file (e.g., `flux1-dev.safetensors`).
+3. **Text Encoder model files:**
+   - CLIP-L model `.safetensors` file (e.g., `clip_l.safetensors`)
+   - T5-XXL model `.safetensors` file (e.g., `t5xxl.safetensors`)
+4. **AutoEncoder model file:** FLUX.1-compatible AE model `.safetensors` file (e.g., `ae.safetensors`).
+5. **Dataset definition file (.toml):** TOML format file describing training dataset configuration (e.g., `my_flux_dataset_config.toml`).
+
+### Downloading Required Models
+
+To train FLUX.1 models, you need to download the following model files:
+
+- **DiT, AE**: Download from the [black-forest-labs/FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) repository. Use `flux1-dev.safetensors` and `ae.safetensors`. The weights in the subfolder are in Diffusers format and cannot be used.
+- **Text Encoder 1 (T5-XXL), Text Encoder 2 (CLIP-L)**: Download from the [ComfyUI FLUX Text Encoders](https://huggingface.co/comfyanonymous/flux_text_encoders) repository. Please use `t5xxl_fp16.safetensors` for T5-XXL. Thanks to ComfyUI for providing these models.
+
+To train Chroma models, you need to download the Chroma model file from the following repository:
+
+- **Chroma Base**: Download from the [lodestones/Chroma1-Base](https://huggingface.co/lodestones/Chroma1-Base) repository. Use `Chroma.safetensors`.
+
+We have tested Chroma training with the weights from the [lodestones/Chroma](https://huggingface.co/lodestones/Chroma) repository. 
+
+AE and T5-XXL models are same as FLUX.1, so you can use the same files. CLIP-L model is not used for Chroma training, so you can omit the `--clip_l` argument.
+
+<details>
+<summary>日本語</summary>
+
+学習を開始する前に、以下のファイルが必要です。
+
+1. **学習スクリプト:** `flux_train_network.py`
+2. **FLUX.1モデルファイル:** 学習のベースとなるFLUX.1モデルの`.safetensors`ファイル（例: `flux1-dev.safetensors`）。
+3. **Text Encoderモデルファイル:**
+   - CLIP-Lモデルの`.safetensors`ファイル。例として`clip_l.safetensors`を使用します。
+   - T5-XXLモデルの`.safetensors`ファイル。例として`t5xxl.safetensors`を使用します。
+4. **AutoEncoderモデルファイル:** FLUX.1に対応するAEモデルの`.safetensors`ファイル。例として`ae.safetensors`を使用します。
+5. **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）。例として`my_flux_dataset_config.toml`を使用します。
+
+**必要なモデルのダウンロード**
+
+FLUX.1モデルを学習するためには、以下のモデルファイルをダウンロードする必要があります。
+
+- **DiT, AE**: [black-forest-labs/FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) リポジトリからダウンロードします。`flux1-dev.safetensors`と`ae.safetensors`を使用してください。サブフォルダ内の重みはDiffusers形式であり、使用できません。
+- **Text Encoder 1 (T5-XXL), Text Encoder 2 (CLIP-L)**: [ComfyUI FLUX Text Encoders](https://huggingface.co/comfyanonymous/flux_text_encoders) リポジトリからダウンロードします。T5-XXLには`t5xxl_fp16.safetensors`を使用してください。これらのモデルを提供いただいたComfyUIに感謝します。
+
+Chromaモデルを学習する場合は、以下のリポジトリからChromaモデルファイルをダウンロードする必要があります。
+
+- **Chroma Base**: [lodestones/Chroma1-Base](https://huggingface.co/lodestones/Chroma1-Base) リポジトリからダウンロードします。`Chroma.safetensors`を使用してください。
+
+Chromaの学習のテストは [lodestones/Chroma](https://huggingface.co/lodestones/Chroma) リポジトリの重みを使用して行いました。
+
+AEとT5-XXLモデルはFLUX.1と同じものを使用できるため、同じファイルを使用します。CLIP-LモデルはChroma学習では使用されないため、`--clip_l`引数は省略できます。
+
+</details>
 
 ## 4. Running the Training / 学習の実行
 
-Run `flux_train_network.py` from the terminal with FLUX.1 specific arguments. Example:
+Run `flux_train_network.py` from the terminal with FLUX.1 specific arguments. Here's a basic command example:
 
 ```bash
 accelerate launch --num_cpu_threads_per_process 1 flux_train_network.py \
@@ -54,369 +143,369 @@ accelerate launch --num_cpu_threads_per_process 1 flux_train_network.py \
   --gradient_checkpointing \
   --guidance_scale=1.0 \
   --timestep_sampling="flux_shift" \
+  --model_prediction_type="raw" \
   --blocks_to_swap=18 \
   --cache_text_encoder_outputs \
   --cache_latents
 ```
 
+### Training Chroma Models
+
+If you want to train a Chroma model, specify `--model_type=chroma`. Chroma does not use CLIP-L, so the `--clip_l` argument is not needed. T5XXL and AE are same as FLUX.1. The command would look like this:
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 flux_train_network.py \
+  --pretrained_model_name_or_path="<path to Chroma model>" \
+  --model_type=chroma \
+  --t5xxl="<path to T5-XXL model>" \
+  --ae="<path to AE model>" \
+  --dataset_config="my_flux_dataset_config.toml" \
+  --output_dir="<output directory>" \
+  --output_name="my_chroma_lora" \
+  --guidance_scale=0.0 \
+  --timestep_sampling="sigmoid" \
+  --apply_t5_attn_mask \
+  ...
+```
+
+Note that for Chroma models, `--guidance_scale=0.0` is required to disable guidance scale, and `--apply_t5_attn_mask` is needed to apply attention masks for T5XXL Text Encoder.
+
+The sample image generation during training requires specifying a negative prompt. Also, set `--g 0` to disable embedded guidance scale and `--l 4.0` to set the CFG scale. For example:
+
+```
+Japanese shrine in the summer forest. --n low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors --w 512 --h 512 --d 1 --l 4.0 --g 0.0 --s 20
+```
+
+<details>
+<summary>日本語</summary>
+
+学習は、ターミナルから`flux_train_network.py`を実行することで開始します。基本的なコマンドラインの構造は`train_network.py`と同様ですが、FLUX.1特有の引数を指定する必要があります。
+
+コマンドラインの例は英語のドキュメントを参照してください。
+
+#### Chromaモデルの学習
+
+Chromaモデルを学習したい場合は、`--model_type=chroma`を指定します。ChromaはCLIP-Lを使用しないため、`--clip_l`引数は不要です。T5XXLとAEはFLUX.1と同様です。
+
+コマンドラインの例は英語のドキュメントを参照してください。
+
+学習中のサンプル画像生成には、ネガティブプロンプトを指定してください。また `--g 0` を指定して埋め込みガイダンススケールを無効化し、`--l 4.0` を指定してCFGスケールを設定します。
+
+</details>
+
 ### 4.1. Explanation of Key Options / 主要なコマンドライン引数の解説
 
-The script adds FLUX.1 specific arguments such as guidance scale, timestep sampling, block swapping, and options for training CLIP-L and T5-XXL LoRA modules. Some Stable Diffusion options like `--v2` and `--clip_skip` are not used.
+The script adds FLUX.1 specific arguments. For common arguments (like `--output_dir`, `--output_name`, `--network_module`, etc.), see the [`train_network.py` guide](train_network.md).
+
+#### Model-related [Required]
+
+* `--pretrained_model_name_or_path="<path to FLUX.1/Chroma model>"` **[Required]**
+  - Specifies the path to the base FLUX.1 or Chroma model `.safetensors` file. Diffusers format directories are not currently supported.
+* `--model_type=<model type>`
+  - Specifies the type of base model for training. Choose from `flux` or `chroma`. Default is `flux`.
+* `--clip_l="<path to CLIP-L model>"` **[Required when flux is selected]**
+  - Specifies the path to the CLIP-L Text Encoder model `.safetensors` file. Not needed when `--model_type=chroma`.
+* `--t5xxl="<path to T5-XXL model>"` **[Required]**
+  - Specifies the path to the T5-XXL Text Encoder model `.safetensors` file.
+* `--ae="<path to AE model>"` **[Required]**
+  - Specifies the path to the FLUX.1-compatible AutoEncoder model `.safetensors` file.
+
+#### FLUX.1 Training Parameters
+
+* `--guidance_scale=<float>`
+  - FLUX.1 dev version is distilled with specific guidance scale values, but for training, specify `1.0` to disable guidance scale. Default is `3.5`, so be sure to specify this. Usually ignored for schnell version.
+  - Chroma requires `--guidance_scale=0.0` to disable guidance scale.
+* `--timestep_sampling=<choice>`
+  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`. Default is `sigma`. Recommended is `flux_shift`. For Chroma models, `sigmoid` is recommended.
+* `--sigmoid_scale=<float>`
+  - Scale factor when `timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default and recommended value is `1.0`.
+* `--model_prediction_type=<choice>`
+  - Specifies what the model predicts. Choose from `raw` (use prediction as-is), `additive` (add to noise input), `sigma_scaled` (apply sigma scaling). Default is `sigma_scaled`. Recommended is `raw`.
+* `--discrete_flow_shift=<float>`
+  - Specifies the shift value for the scheduler used in Flow Matching. Default is `3.0`. This value is ignored when `timestep_sampling` is set to other than `shift`.
+
+#### Memory/Speed Related
+
+* `--fp8_base` 
+  - Enables training in FP8 format for FLUX.1, CLIP-L, and T5-XXL. This can significantly reduce VRAM usage, but the training results may vary. 
+* `--blocks_to_swap=<integer>` **[Experimental Feature]**
+  - Setting to reduce VRAM usage by swapping parts of the model (Transformer blocks) between CPU and GPU. Specify the number of blocks to swap as an integer (e.g., `18`). Larger values reduce VRAM usage but decrease training speed. Adjust according to your GPU's VRAM capacity. Can be used with `gradient_checkpointing`.
+  - Cannot be used with `--cpu_offload_checkpointing`.
+* `--cache_text_encoder_outputs`
+  - Caches the outputs of CLIP-L and T5-XXL. This reduces memory usage.
+* `--cache_latents`, `--cache_latents_to_disk`
+  - Caches the outputs of AE. Similar functionality to [sdxl_train_network.py](sdxl_train_network.md).
+
+#### Incompatible/Deprecated Arguments
+
+* `--v2`, `--v_parameterization`, `--clip_skip`: These are Stable Diffusion-specific arguments and are not used in FLUX.1 training.
+* `--max_token_length`: This is an argument for Stable Diffusion v1/v2. For FLUX.1, use `--t5xxl_max_token_length`.
+* `--split_mode`: Deprecated argument. Use `--blocks_to_swap` instead.
+
+<details>
+<summary>日本語</summary>
+
+[`train_network.py`のガイド](train_network.md)で説明されている引数に加え、以下のFLUX.1特有の引数を指定します。共通の引数（`--output_dir`, `--output_name`, `--network_module`, `--network_dim`, `--network_alpha`, `--learning_rate`など）については、上記ガイドを参照してください。
+
+コマンドラインの例と詳細な引数の説明は英語のドキュメントを参照してください。
+
+</details>
 
 ### 4.2. Starting Training / 学習の開始
 
-Training begins once you run the command with the required options. Log checking is the same as in `train_network.py`.
+Training begins once you run the command with the required options. Log checking is the same as in [`train_network.py`](train_network.md#32-starting-the-training--学習の開始).
+
+<details>
+<summary>日本語</summary>
+
+必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
+
+</details>
 
 ## 5. Using the Trained Model / 学習済みモデルの利用
 
 After training, a LoRA model file is saved in `output_dir` and can be used in inference environments supporting FLUX.1 (e.g. ComfyUI + Flux nodes).
 
-## 6. Others / その他
-
-Additional notes on VRAM optimization, training options, multi-resolution datasets, block selection and text encoder LoRA are provided in the Japanese section.
-
 <details>
 <summary>日本語</summary>
 
-
-
-# `flux_train_network.py` を用いたFLUX.1モデルのLoRA学習ガイド
-
-このドキュメントでは、`sd-scripts`リポジトリに含まれる`flux_train_network.py`を使用して、FLUX.1モデルに対するLoRA (Low-Rank Adaptation) モデルを学習する基本的な手順について解説します。
-
-## 1. はじめに
-
-`flux_train_network.py`は、FLUX.1モデルに対してLoRAなどの追加ネットワークを学習させるためのスクリプトです。FLUX.1はStable Diffusionとは異なるアーキテクチャを持つ画像生成モデルであり、このスクリプトを使用することで、特定のキャラクターや画風を再現するLoRAモデルを作成できます。
-
-このガイドは、基本的なLoRA学習の手順を理解しているユーザーを対象としています。基本的な使い方や共通のオプションについては、[`train_network.py`のガイド](train_network.md)を参照してください。また一部のパラメータは [`sdxl_train_network.py`](sdxl_train_network.md) と同様のものがあるため、そちらも参考にしてください。
-
-**前提条件:**
-
-*   `sd-scripts`リポジトリのクローンとPython環境のセットアップが完了していること。
-*   学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）
-
-## 2. `train_network.py` との違い
-
-`flux_train_network.py`は`train_network.py`をベースに、FLUX.1モデルに対応するための変更が加えられています。主な違いは以下の通りです。
-
-*   **対象モデル:** FLUX.1モデル（dev版またはschnell版）を対象とします。
-*   **モデル構造:** Stable Diffusionとは異なり、FLUX.1はTransformerベースのアーキテクチャを持ちます。Text EncoderとしてCLIP-LとT5-XXLの二つを使用し、VAEの代わりに専用のAutoEncoder (AE) を使用します。
-*   **必須の引数:** FLUX.1モデル、CLIP-L、T5-XXL、AEの各モデルファイルを指定する引数が追加されています。
-*   **一部引数の非互換性:** Stable Diffusion向けの引数の一部（例: `--v2`, `--clip_skip`, `--max_token_length`）はFLUX.1の学習では使用されません。
-*   **FLUX.1特有の引数:** タイムステップのサンプリング方法やガイダンススケールなど、FLUX.1特有の学習パラメータを指定する引数が追加されています。
-
-## 3. 準備
-
-学習を開始する前に、以下のファイルが必要です。
-
-1.  **学習スクリプト:** `flux_train_network.py`
-2.  **FLUX.1モデルファイル:** 学習のベースとなるFLUX.1モデルの`.safetensors`ファイル（例: `flux1-dev.safetensors`）。
-3.  **Text Encoderモデルファイル:**
-    *   CLIP-Lモデルの`.safetensors`ファイル。例として`clip_l.safetensors`を使用します。
-    *   T5-XXLモデルの`.safetensors`ファイル。例として`t5xxl.safetensors`を使用します。
-4.  **AutoEncoderモデルファイル:** FLUX.1に対応するAEモデルの`.safetensors`ファイル。例として`ae.safetensors`を使用します。
-5.  **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）。
-
-    *   例として`my_flux_dataset_config.toml`を使用します。
-
-## 4. 学習の実行
-
-学習は、ターミナルから`flux_train_network.py`を実行することで開始します。基本的なコマンドラインの構造は`train_network.py`と同様ですが、FLUX.1特有の引数を指定する必要があります。
-
-以下に、基本的なコマンドライン実行例を示します。
-
-```bash
-accelerate launch --num_cpu_threads_per_process 1 flux_train_network.py 
- --pretrained_model_name_or_path="<path to FLUX.1 model>" 
- --clip_l="<path to CLIP-L model>" 
- --t5xxl="<path to T5-XXL model>" 
- --ae="<path to AE model>" 
- --dataset_config="my_flux_dataset_config.toml" 
- --output_dir="<output directory for training results>" 
- --output_name="my_flux_lora" 
- --save_model_as=safetensors 
- --network_module=networks.lora_flux 
- --network_dim=16 
- --network_alpha=1 
- --learning_rate=1e-4 
- --optimizer_type="AdamW8bit" 
- --lr_scheduler="constant" 
- --sdpa  
- --max_train_epochs=10 
- --save_every_n_epochs=1 
- --mixed_precision="fp16" 
- --gradient_checkpointing 
- --guidance_scale=1.0 
- --timestep_sampling="flux_shift" 
- --blocks_to_swap=18
- --cache_text_encoder_outputs 
- --cache_latents
-```
-
-※実際には1行で書くか、適切な改行文字（`\` または `^`）を使用してください。
-
-### 4.1. 主要なコマンドライン引数の解説（`train_network.py`からの追加・変更点）
-
-[`train_network.py`のガイド](train_network.md)で説明されている引数に加え、以下のFLUX.1特有の引数を指定します。共通の引数（`--output_dir`, `--output_name`, `--network_module`, `--network_dim`, `--network_alpha`, `--learning_rate`など）については、上記ガイドを参照してください。
-
-#### モデル関連 [必須]
-
-*   `--pretrained_model_name_or_path="<path to FLUX.1 model>"` **[必須]**
-    *   学習のベースとなるFLUX.1モデル（dev版またはschnell版）の`.safetensors`ファイルのパスを指定します。Diffusers形式のディレクトリは現在サポートされていません。
-*   `--clip_l="<path to CLIP-L model>"` **[必須]**
-    *   CLIP-L Text Encoderモデルの`.safetensors`ファイルのパスを指定します。
-*   `--t5xxl="<path to T5-XXL model>"` **[必須]**
-    *   T5-XXL Text Encoderモデルの`.safetensors`ファイルのパスを指定します。
-*   `--ae="<path to AE model>"` **[必須]**
-    *   FLUX.1に対応するAutoEncoderモデルの`.safetensors`ファイルのパスを指定します。
-
-#### FLUX.1 学習パラメータ
-
-*   `--guidance_scale=<float>`
-    *   FLUX.1 dev版は特定のガイダンススケール値で蒸留されていますが、学習時には `1.0` を指定してガイダンススケールを無効化します。デフォルトは`3.5`ですので、必ず指定してください。schnell版では通常無視されます。
-*   `--timestep_sampling=<choice>`
-    *   学習時に使用するタイムステップ（ノイズレベル）のサンプリング方法を指定します。`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift` から選択します。デフォルトは `sigma` です。推奨は `flux_shift` です。
-*   `--sigmoid_scale=<float>`
-    *   `timestep_sampling` に `sigmoid` または `shift`, `flux_shift` を指定した場合のスケール係数です。デフォルトおよび推奨値は`1.0`です。
-*   `--model_prediction_type=<choice>`
-    *   モデルが何を予測するかを指定します。`raw` (予測値をそのまま使用), `additive` (ノイズ入力に加算), `sigma_scaled` (シグマスケーリングを適用) から選択します。デフォルトは `sigma_scaled` です。推奨は `raw` です。
-*   `--discrete_flow_shift=<float>`
-    *   Flow Matchingで使用されるスケジューラのシフト値を指定します。デフォルトは`3.0`です。`timestep_sampling`に`flux_shift`を指定した場合は、この値は無視されます。
-
-#### メモリ・速度関連
-
-*   `--blocks_to_swap=<integer>` **[実験的機能]**
-    *   VRAM使用量を削減するために、モデルの一部（Transformerブロック）をCPUとGPU間でスワップする設定です。スワップするブロック数を整数で指定します（例: `18`）。値を大きくするとVRAM使用量は減りますが、学習速度は低下します。GPUのVRAM容量に応じて調整してください。`gradient_checkpointing`と併用可能です。
-    *   `--cpu_offload_checkpointing`とは併用できません。
-* `--cache_text_encoder_outputs`
-    *   CLIP-LおよびT5-XXLの出力をキャッシュします。これにより、メモリ使用量が削減されます。
-* `--cache_latents`, `--cache_latents_to_disk`
-    *   AEの出力をキャッシュします。[sdxl_train_network.py](sdxl_train_network.md)と同様の機能です。
-
-#### 非互換・非推奨の引数
-
-*   `--v2`, `--v_parameterization`, `--clip_skip`: Stable Diffusion特有の引数のため、FLUX.1学習では使用されません。
-*   `--max_token_length`: Stable Diffusion v1/v2向けの引数です。FLUX.1では`--t5xxl_max_token_length`を使用してください。
-*   `--split_mode`: 非推奨の引数です。代わりに`--blocks_to_swap`を使用してください。
-
-### 4.2. 学習の開始
-
-必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
-
-## 5. 学習済みモデルの利用
-
 学習が完了すると、指定した`output_dir`にLoRAモデルファイル（例: `my_flux_lora.safetensors`）が保存されます。このファイルは、FLUX.1モデルに対応した推論環境（例: ComfyUI + ComfyUI-FluxNodes）で使用できます。
 
-## 6. その他
+</details>
 
-`flux_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python flux_train_network.py --help`) を参照してください。
+## 6. Advanced Settings / 高度な設定
 
-# FLUX.1 LoRA学習の補足説明
+### 6.1. VRAM Usage Optimization / VRAM使用量の最適化
 
-以下は、以上の基本的なFLUX.1 LoRAの学習手順を補足するものです。より詳細な設定オプションなどについて説明します。
+FLUX.1 is a relatively large model, so GPUs without sufficient VRAM require optimization. Here are settings to reduce VRAM usage (with `--fp8_base`):
 
-## 1. VRAM使用量の最適化
+#### Recommended Settings by GPU Memory
 
-FLUX.1モデルは比較的大きなモデルであるため、十分なVRAMを持たないGPUでは工夫が必要です。以下に、VRAM使用量を削減するための設定を紹介します。
+| GPU Memory | Recommended Settings |
+|------------|---------------------|
+| 24GB VRAM | Basic settings work fine (batch size 2) |
+| 16GB VRAM | Set batch size to 1 and use `--blocks_to_swap` |
+| 12GB VRAM | Use `--blocks_to_swap 16` and 8bit AdamW |
+| 10GB VRAM | Use `--blocks_to_swap 22`, recommend fp8 format for T5XXL |
+| 8GB VRAM | Use `--blocks_to_swap 28`, recommend fp8 format for T5XXL |
 
-### 1.1 メモリ使用量別の推奨設定
+#### Key VRAM Reduction Options
 
-| GPUメモリ | 推奨設定 |
-|----------|----------|
-| 24GB VRAM | 基本設定で問題なく動作します（バッチサイズ2） |
-| 16GB VRAM | バッチサイズ1に設定し、`--blocks_to_swap`を使用 |
-| 12GB VRAM | `--blocks_to_swap 16`と8bit AdamWを使用 |
-| 10GB VRAM | `--blocks_to_swap 22`を使用、T5XXLはfp8形式を推奨 |
-| 8GB VRAM | `--blocks_to_swap 28`を使用、T5XXLはfp8形式を推奨 |
+- **`--fp8_base`**: Enables training in FP8 format.
 
-### 1.2 主要なVRAM削減オプション
+- **`--blocks_to_swap <number>`**: Swaps blocks between CPU and GPU to reduce VRAM usage. Higher numbers save more VRAM but reduce training speed. FLUX.1 supports up to 35 blocks for swapping.
 
-- **`--blocks_to_swap <数値>`**：
-  CPUとGPU間でブロックをスワップしてVRAM使用量を削減します。数値が大きいほど多くのブロックをスワップし、より多くのVRAMを節約できますが、学習速度は低下します。FLUX.1では最大35ブロックまでスワップ可能です。
+- **`--cpu_offload_checkpointing`**: Offloads gradient checkpoints to CPU. Can reduce VRAM usage by up to 1GB but decreases training speed by about 15%. Cannot be used with `--blocks_to_swap`. Chroma models do not support this option.
 
-- **`--cpu_offload_checkpointing`**：
-  勾配チェックポイントをCPUにオフロードします。これにより最大1GBのVRAM使用量を削減できますが、学習速度は約15%低下します。`--blocks_to_swap`とは併用できません。
-
-- **`--cache_text_encoder_outputs` / `--cache_text_encoder_outputs_to_disk`**：
-  CLIP-LとT5-XXLの出力をキャッシュします。これによりメモリ使用量を削減できます。
-
-- **`--cache_latents` / `--cache_latents_to_disk`**：
-  AEの出力をキャッシュします。メモリ使用量を削減できます。
-
-- **Adafactor オプティマイザの使用**：
-  8bit AdamWよりもVRAM使用量を削減できます。以下の設定を使用してください：
+- **Using Adafactor optimizer**: Can reduce VRAM usage more than 8bit AdamW:
   ```
   --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
   ```
 
-- **T5XXLのfp8形式の使用**：
-  10GB未満のVRAMを持つGPUでは、T5XXLのfp8形式チェックポイントの使用を推奨します。[comfyanonymous/flux_text_encoders](https://huggingface.co/comfyanonymous/flux_text_encoders)から`t5xxl_fp8_e4m3fn.safetensors`をダウンロードできます（`scaled`なしで使用してください）。
+- **Using T5XXL fp8 format**: For GPUs with less than 10GB VRAM, using fp8 format T5XXL checkpoints is recommended. Download `t5xxl_fp8_e4m3fn.safetensors` from [comfyanonymous/flux_text_encoders](https://huggingface.co/comfyanonymous/flux_text_encoders) (use without `scaled`).
 
-- **FP8/FP16 混合学習 [実験的機能]**：
-  `--fp8_base_unet` オプションを指定すると、FLUX.1モデル本体をFP8形式で学習し、Text Encoder (CLIP-L/T5XXL) をBF16/FP16形式で学習できます。これにより、さらにVRAM使用量を削減できる可能性があります。このオプションを指定すると、`--fp8_base` オプションも自動的に有効になります。
+- **FP8/FP16 Mixed Training [Experimental]**: Specify `--fp8_base_unet` to train the FLUX.1 model in FP8 format while training Text Encoders (CLIP-L/T5XXL) in BF16/FP16 format. This can further reduce VRAM usage.
 
-- **`pytorch-optimizer` の利用**:
-  `pytorch-optimizer` ライブラリに含まれる様々なオプティマイザを使用できます。`requirements.txt` に追加されているため、別途インストールは不要です。
-  例えば、CAME オプティマイザを使用する場合は以下のように指定します。
-  ```bash
-  --optimizer_type "pytorch_optimizer.CAME" --optimizer_args "weight_decay=0.01"
- 
-## 2. FLUX.1 LoRA学習の重要な設定オプション
+<details>
+<summary>日本語</summary>
 
-FLUX.1の学習には多くの未知の点があり、いくつかの設定は引数で指定できます。以下に重要な引数とその説明を示します。
+FLUX.1モデルは比較的大きなモデルであるため、十分なVRAMを持たないGPUでは工夫が必要です。VRAM使用量を削減するための設定の詳細は英語のドキュメントを参照してください。
 
-### 2.1 タイムステップのサンプリング方法
+主要なVRAM削減オプション：
+- `--fp8_base`: FP8形式での学習を有効化
+- `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
+- `--cpu_offload_checkpointing`: 勾配チェックポイントをCPUにオフロード  
+- Adafactorオプティマイザの使用
+- T5XXLのfp8形式の使用
+- FP8/FP16混合学習（実験的機能）
 
-`--timestep_sampling`オプションで、タイムステップ（0-1）のサンプリング方法を指定できます：
+</details>
 
-- `sigma`：SD3と同様のシグマベース
-- `uniform`：一様ランダム
-- `sigmoid`：正規分布乱数のシグモイド（x-flux、AI-toolkitなどと同様）
-- `shift`：正規分布乱数のシグモイド値をシフト
-- `flux_shift`：解像度に応じて正規分布乱数のシグモイド値をシフト（FLUX.1 dev推論と同様）。この設定では`--discrete_flow_shift`は無視されます。
+### 6.2. Important FLUX.1 LoRA Training Settings / FLUX.1 LoRA学習の重要な設定
 
+FLUX.1 training has many unknowns, and several settings can be specified with arguments:
 
-#### タイムステップ分布の可視化
+#### Timestep Sampling Methods
 
-`--timestep_sampling`, `--sigmoid_scale`, `--discrete_flow_shift` の組み合わせによって、学習中にサンプリングされるタイムステップの分布が変化します。以下にいくつかの例を示します。
+The `--timestep_sampling` option specifies how timesteps (0-1) are sampled:
 
-*   `--timestep_sampling shift` と `--discrete_flow_shift` の効果 (`--sigmoid_scale` はデフォルトの1.0):
-    ![Figure_2](https://github.com/user-attachments/assets/d9de42f9-f17d-40da-b88d-d964402569c6)
+- `sigma`: Sigma-based like SD3
+- `uniform`: Uniform random
+- `sigmoid`: Sigmoid of normal distribution random (similar to x-flux, AI-toolkit)
+- `shift`: Sigmoid value of normal distribution random with shift. The `--discrete_flow_shift` setting is used to shift the sigmoid value.
+- `flux_shift`: Shift sigmoid value of normal distribution random according to resolution (similar to FLUX.1 dev inference).
 
-*   `--timestep_sampling sigmoid` と `--timestep_sampling uniform` の比較 (`--discrete_flow_shift` は無視される):
-    ![Figure_3](https://github.com/user-attachments/assets/27029009-1f5d-4dc0-bb24-13d02ac4fdad)
+`--discrete_flow_shift` only applies when `--timestep_sampling` is set to `shift`.
 
-*   `--timestep_sampling sigmoid` と `--sigmoid_scale` の効果 (`--discrete_flow_shift` は無視される):
-    ![Figure_4](https://github.com/user-attachments/assets/08a2267c-e47e-48b7-826e-f9a080787cdc)
+#### Model Prediction Processing
 
-#### AI Toolkit 設定との比較
+The `--model_prediction_type` option specifies how to interpret and process model predictions:
 
-[Ostris氏のAI Toolkit](https://github.com/ostris/ai-toolkit) で使用されている設定は、概ね以下のオプションに相当すると考えられます。
-```
---timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 1.0
-```
+- `raw`: Use as-is (similar to x-flux) **[Recommended]**
+- `additive`: Add to noise input
+- `sigma_scaled`: Apply sigma scaling (similar to SD3)
 
-### 2.2 モデル予測の処理方法
+#### Recommended Settings
 
-`--model_prediction_type`オプションで、モデルの予測をどのように解釈し処理するかを指定できます：
-
-- `raw`：そのまま使用（x-fluxと同様）【推奨】
-- `additive`：ノイズ入力に加算
-- `sigma_scaled`：シグマスケーリングを適用（SD3と同様）
-
-### 2.3 推奨設定
-
-実験の結果、以下の設定が良好に動作することが確認されています：
+Based on experiments, the following settings work well:
 ```
 --timestep_sampling shift --discrete_flow_shift 3.1582 --model_prediction_type raw --guidance_scale 1.0
 ```
 
-ガイダンススケールについて：FLUX.1 dev版は特定のガイダンススケール値で蒸留されていますが、学習時には`--guidance_scale 1.0`を指定してガイダンススケールを無効化することを推奨します。
-
-
-### 2.4 T5 Attention Mask の適用
-
-`--apply_t5_attn_mask` オプションを指定すると、T5XXL Text Encoder の学習および推論時に Attention Mask が適用されます。
-
-Attention Maskに対応した推論環境が限られるため、このオプションは推奨されません。
-
-### 2.5 IP ノイズガンマ
-
-`--ip_noise_gamma` および `--ip_noise_gamma_random_strength` オプションを使用することで、学習時に Input Perturbation ノイズのガンマ値を調整できます。詳細は Stable Diffusion 3 の学習オプションを参照してください。
-
-### 2.6 LoRA-GGPO サポート
-
-LoRA-GGPO (Gradient Group Proportion Optimizer) を使用できます。これは LoRA の学習を安定化させるための手法です。以下の `network_args` を指定して有効化します。ハイパーパラメータ (`ggpo_sigma`, `ggpo_beta`) は調整が必要です。
-
-```bash
---network_args "ggpo_sigma=0.03" "ggpo_beta=0.01"
+For Chroma models, the following settings are recommended:
 ```
-TOMLファイルで指定する場合:
-```toml
-network_args = ["ggpo_sigma=0.03", "ggpo_beta=0.01"]
+--timestep_sampling sigmoid --model_prediction_type raw --guidance_scale 0.0
 ```
 
-### 2.7 Q/K/V 射影層の分割 [実験的機能]
+**About Guidance Scale**: FLUX.1 dev version is distilled with specific guidance scale values, but for training, specify `--guidance_scale 1.0` to disable guidance scale. Chroma requires `--guidance_scale 0.0` to disable guidance scale because it is not distilled.
 
-`--network_args "split_qkv=True"` を指定することで、Attention層内の Q/K/V (および SingleStreamBlock の Text) 射影層を個別に分割し、それぞれに LoRA を適用できます。
+<details>
+<summary>日本語</summary>
 
-**技術的詳細:**
-FLUX.1 の元々の実装では、Q/K/V (および Text) の射影層は一つに結合されています。ここに LoRA を適用すると、一つの大きな LoRA モジュールが適用されます。一方、Diffusers の実装ではこれらの射影層は分離されており、それぞれに小さな LoRA モジュールが適用されます。このオプションは後者の挙動を模倣します。
-保存される LoRA モデルの互換性は維持されますが、内部的には分割された LoRA の重みを結合して保存するため、ゼロ要素が多くなりモデルサイズが大きくなる可能性があります。`convert_flux_lora.py` スクリプトを使用して Diffusers (AI-Toolkit) 形式に変換すると、サイズが削減されます。
+FLUX.1の学習には多くの未知の点があり、いくつかの設定は引数で指定できます。詳細な説明とコマンドラインの例は英語のドキュメントを参照してください。
 
-## 3. 各層に対するランク指定
+主要な設定オプション：
+- タイムステップのサンプリング方法（`--timestep_sampling`）
+- モデル予測の処理方法（`--model_prediction_type`）
+- 推奨設定の組み合わせ
 
-FLUX.1の各層に対して異なるランク（network_dim）を指定できます。これにより、特定の層に対してLoRAの効果を強調したり、無効化したりできます。
+</details>
 
-以下のnetwork_argsを指定することで、各層のランクを指定できます。0を指定するとその層にはLoRAが適用されません。
+### 6.3. Layer-specific Rank Configuration / 各層に対するランク指定
 
-| network_args | 対象レイヤー |
+You can specify different ranks (network_dim) for each layer of FLUX.1. This allows you to emphasize or disable LoRA effects for specific layers.
+
+Specify the following network_args to set ranks for each layer. Setting 0 disables LoRA for that layer:
+
+| network_args | Target Layer |
 |--------------|--------------|
-| img_attn_dim | DoubleStreamBlockのimg_attn |
-| txt_attn_dim | DoubleStreamBlockのtxt_attn |
-| img_mlp_dim | DoubleStreamBlockのimg_mlp |
-| txt_mlp_dim | DoubleStreamBlockのtxt_mlp |
-| img_mod_dim | DoubleStreamBlockのimg_mod |
-| txt_mod_dim | DoubleStreamBlockのtxt_mod |
-| single_dim | SingleStreamBlockのlinear1とlinear2 |
-| single_mod_dim | SingleStreamBlockのmodulation |
+| img_attn_dim | DoubleStreamBlock img_attn |
+| txt_attn_dim | DoubleStreamBlock txt_attn |
+| img_mlp_dim | DoubleStreamBlock img_mlp |
+| txt_mlp_dim | DoubleStreamBlock txt_mlp |
+| img_mod_dim | DoubleStreamBlock img_mod |
+| txt_mod_dim | DoubleStreamBlock txt_mod |
+| single_dim | SingleStreamBlock linear1 and linear2 |
+| single_mod_dim | SingleStreamBlock modulation |
 
-使用例：
+Example usage:
 ```
 --network_args "img_attn_dim=4" "img_mlp_dim=8" "txt_attn_dim=2" "txt_mlp_dim=2" "img_mod_dim=2" "txt_mod_dim=2" "single_dim=4" "single_mod_dim=2"
 ```
 
-さらに、FLUXの条件付けレイヤーにLoRAを適用するには、network_argsに`in_dims`を指定します。5つの数値をカンマ区切りのリストとして指定する必要があります。
+To apply LoRA to FLUX conditioning layers, specify `in_dims` in network_args as a comma-separated list of 5 numbers:
 
-例：
 ```
 --network_args "in_dims=[4,2,2,2,4]"
 ```
 
-各数値は、`img_in`、`time_in`、`vector_in`、`guidance_in`、`txt_in`に対応します。上記の例では、すべての条件付けレイヤーにLoRAを適用し、`img_in`と`txt_in`のランクを4、その他のランクを2に設定しています。
+Each number corresponds to `img_in`, `time_in`, `vector_in`, `guidance_in`, `txt_in`. The example above applies LoRA to all conditioning layers with ranks of 4 for `img_in` and `txt_in`, and ranks of 2 for others.
 
-0を指定するとそのレイヤーにはLoRAが適用されません。例えば、`[4,0,0,0,4]`は`img_in`と`txt_in`にのみLoRAを適用します。
+<details>
+<summary>日本語</summary>
 
-## 4. 学習するブロックの指定
+FLUX.1の各層に対して異なるランク（network_dim）を指定できます。これにより、特定の層に対してLoRAの効果を強調したり、無効化したりできます。
 
-FLUX.1 LoRA学習では、network_argsの`train_double_block_indices`と`train_single_block_indices`を指定することで、学習するブロックを指定できます。インデックスは0ベースです。省略した場合のデフォルトはすべてのブロックを学習することです。
+詳細な設定方法とコマンドラインの例は英語のドキュメントを参照してください。
 
-インデックスは、`0,1,5,8`のような整数のリストや、`0,1,4-5,7`のような整数の範囲として指定します。
-- double blocksの数は19なので、有効な範囲は0-18です
-- single blocksの数は38なので、有効な範囲は0-37です
-- `all`を指定するとすべてのブロックを学習します
-- `none`を指定するとブロックを学習しません
+</details>
 
-使用例：
+### 6.4. Block Selection for Training / 学習するブロックの指定
+
+You can specify which blocks to train using `train_double_block_indices` and `train_single_block_indices` in network_args. Indices are 0-based. Default is to train all blocks if omitted.
+
+Specify indices as integer lists like `0,1,5,8` or integer ranges like `0,1,4-5,7`:
+- Double blocks: 19 blocks, valid range 0-18
+- Single blocks: 38 blocks, valid range 0-37
+- Specify `all` to train all blocks
+- Specify `none` to skip training blocks
+
+Example usage:
 ```
 --network_args "train_double_block_indices=0,1,8-12,18" "train_single_block_indices=3,10,20-25,37"
 ```
 
-または：
+Or:
 ```
 --network_args "train_double_block_indices=none" "train_single_block_indices=10-15"
 ```
 
-`train_double_block_indices`または`train_single_block_indices`のどちらか一方だけを指定した場合、もう一方は通常通り学習されます。
+<details>
+<summary>日本語</summary>
 
-## 5. Text Encoder LoRAのサポート
+FLUX.1 LoRA学習では、network_argsの`train_double_block_indices`と`train_single_block_indices`を指定することで、学習するブロックを指定できます。
+
+詳細な設定方法とコマンドラインの例は英語のドキュメントを参照してください。
+
+</details>
+
+### 6.5. Regular Expression-based Rank/LR Configuration / 正規表現によるランク・学習率の指定
+
+You can specify ranks (dims) and learning rates for LoRA modules using regular expressions. This allows for more flexible and fine-grained control than specifying by layer.
+
+These settings are specified via the `network_args` argument.
+
+*   `network_reg_dims`: Specify ranks for modules matching a regular expression. The format is a comma-separated string of `pattern=rank`.
+    *   Example: `--network_args "network_reg_dims=single.*_modulation.*=4,img_attn=8"`
+    *   This sets the rank to 4 for modules whose names contain `single` and contain `_modulation`, and to 8 for modules containing `img_attn`.
+*   `network_reg_lrs`: Specify learning rates for modules matching a regular expression. The format is a comma-separated string of `pattern=lr`.
+    *   Example: `--network_args "network_reg_lrs=single_blocks_(\d|10)_=1e-3,double_blocks=2e-3"`
+    *   This sets the learning rate to `1e-3` for modules whose names contain `single_blocks` followed by a digit (`0` to `9`) or `10`, and to `2e-3` for modules whose names contain `double_blocks`.
+
+**Notes:**
+
+*   Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
+*   If a module name matches multiple patterns, the setting from the last matching pattern in the string will be applied.
+*   These settings are applied after the block-specific training settings (`train_double_block_indices`, `train_single_block_indices`).
+
+<details>
+<summary>日本語</summary>
+
+正規表現を用いて、LoRAのモジュールごとにランク（dim）や学習率を指定することができます。これにより、層ごとの指定よりも柔軟できめ細やかな制御が可能になります。
+
+これらの設定は `network_args` 引数で指定します。
+
+*   `network_reg_dims`: 正規表現にマッチするモジュールに対してランクを指定します。`pattern=rank` という形式の文字列をカンマで区切って指定します。
+    *   例: `--network_args "network_reg_dims=single.*_modulation.*=4,img_attn=8"`
+    *   この例では、名前に `single` で始まり `_modulation` を含むモジュールのランクを4に、`img_attn` を含むモジュールのランクを8に設定します。
+*   `network_reg_lrs`: 正規表現にマッチするモジュールに対して学習率を指定します。`pattern=lr` という形式の文字列をカンマで区切って指定します。
+    *   例: `--network_args "network_reg_lrs=single_blocks_(\d|10)_=1e-3,double_blocks=2e-3"`
+    *   この例では、名前が `single_blocks` で始まり、後に数字（`0`から`9`）または`10`が続くモジュールの学習率を `1e-3` に、`double_blocks` を含むモジュールの学習率を `2e-3` に設定します。
+**注意点:**
+
+*   `network_reg_dims` および `network_reg_lrs` での設定は、全体設定である `--network_dim` や `--learning_rate` よりも優先されます。
+*   あるモジュール名が複数のパターンにマッチした場合、文字列の中で後方にあるパターンの設定が適用されます。
+*   これらの設定は、ブロック指定（`train_double_block_indices`, `train_single_block_indices`）が適用された後に行われます。
+
+</details>
+
+### 6.6. Text Encoder LoRA Support / Text Encoder LoRAのサポート
+
+FLUX.1 LoRA training supports training CLIP-L and T5XXL LoRA:
+
+- To train only FLUX.1: specify `--network_train_unet_only`
+- To train FLUX.1 and CLIP-L: omit `--network_train_unet_only`
+- To train FLUX.1, CLIP-L, and T5XXL: omit `--network_train_unet_only` and add `--network_args "train_t5xxl=True"`
+
+You can specify individual learning rates for CLIP-L and T5XXL with `--text_encoder_lr`. For example, `--text_encoder_lr 1e-4 1e-5` sets the first value for CLIP-L and the second for T5XXL. Specifying one value uses the same learning rate for both. If `--text_encoder_lr` is not specified, the default `--learning_rate` is used for both.
+
+<details>
+<summary>日本語</summary>
 
 FLUX.1 LoRA学習は、CLIP-LとT5XXL LoRAのトレーニングもサポートしています。
 
-- FLUX.1のみをトレーニングする場合は、`--network_train_unet_only`を指定します
-- FLUX.1とCLIP-Lをトレーニングする場合は、`--network_train_unet_only`を省略します
-- FLUX.1、CLIP-L、T5XXLすべてをトレーニングする場合は、`--network_train_unet_only`を省略し、`--network_args "train_t5xxl=True"`を追加します
+詳細な設定方法とコマンドラインの例は英語のドキュメントを参照してください。
 
-CLIP-LとT5XXLの学習率は、`--text_encoder_lr`で個別に指定できます。例えば、`--text_encoder_lr 1e-4 1e-5`とすると、最初の値はCLIP-Lの学習率、2番目の値はT5XXLの学習率になります。1つだけ指定すると、CLIP-LとT5XXLの学習率は同じになります。`--text_encoder_lr`を指定しない場合、デフォルトの学習率`--learning_rate`が両方に使用されます。
+</details>
 
-## 6. マルチ解像度トレーニング
+### 6.7. Multi-Resolution Training / マルチ解像度トレーニング
 
-データセット設定ファイルで複数の解像度を定義できます。各解像度に対して異なるバッチサイズを指定することができます。
+You can define multiple resolutions in the dataset configuration file, with different batch sizes for each resolution.
 
-設定ファイルの例：
+Configuration file example:
 ```toml
 [general]
-# 共通設定をここで定義
+# Common settings
 flip_aug = true
 color_aug = false
 keep_tokens_separator= "|||"
@@ -425,85 +514,152 @@ caption_tag_dropout_rate = 0
 caption_extension = ".txt"
 
 [[datasets]]
-# 最初の解像度の設定
+# First resolution settings
 batch_size = 2
 enable_bucket = true
 resolution = [1024, 1024]
 
   [[datasets.subsets]]
-  image_dir = "画像ディレクトリへのパス"
+  image_dir = "path/to/image/directory"
   num_repeats = 1
 
 [[datasets]]
-# 2番目の解像度の設定
+# Second resolution settings
 batch_size = 3
 enable_bucket = true
 resolution = [768, 768]
 
   [[datasets.subsets]]
-  image_dir = "画像ディレクトリへのパス"
-  num_repeats = 1
-
-[[datasets]]
-# 3番目の解像度の設定
-batch_size = 4
-enable_bucket = true
-resolution = [512, 512]
-
-  [[datasets.subsets]]
-  image_dir = "画像ディレクトリへのパス"
+  image_dir = "path/to/image/directory"
   num_repeats = 1
 ```
 
-各解像度セクションの`[[datasets.subsets]]`部分は、データセットディレクトリを定義します。各解像度に対して同じディレクトリを指定してください。</details>
+<details>
+<summary>日本語</summary>
 
-## 7. 検証 (Validation)
+データセット設定ファイルで複数の解像度を定義できます。各解像度に対して異なるバッチサイズを指定することができます。
 
-学習中に検証データセットを使用して損失 (Validation Loss) を計算し、モデルの汎化性能を評価できます。
+設定ファイルの例は英語のドキュメントを参照してください。
 
-検証を設定するには、データセット設定 TOML ファイルに `[validation]` セクションを追加します。設定方法は学習データセットと同様ですが、`num_repeats` は通常 1 に設定します。
+</details>
+
+### 6.8. Validation / 検証
+
+You can calculate validation loss during training using a validation dataset to evaluate model generalization performance.
+
+To set up validation, add a `[validation]` section to your dataset configuration TOML file. Configuration is similar to training datasets, but `num_repeats` is usually set to 1.
 
 ```toml
-# ... (学習データセットの設定) ...
+# ... (training dataset configuration) ...
 
 [validation]
 batch_size = 1
 enable_bucket = true
-resolution = [1024, 1024] # 検証に使用する解像度
+resolution = [1024, 1024] # Resolution for validation
 
   [[validation.subsets]]
-  image_dir = "検証用画像ディレクトリへのパス"
+  image_dir = "path/to/validation/images"
   num_repeats = 1
   caption_extension = ".txt"
-  # ... 他の検証データセット固有の設定 ...
+  # ... other validation dataset settings ...
 ```
 
-**注意点:**
+**Notes:**
 
-*   検証損失の計算は、固定されたタイムステップサンプリングと乱数シードで行われます。これにより、ランダム性による損失の変動を抑え、より安定した評価が可能になります。
-*   現在のところ、`--blocks_to_swap` オプションを使用している場合、または Schedule-Free オプティマイザ (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`) を使用している場合は、検証損失はサポートされていません。
+* Validation loss calculation uses fixed timestep sampling and random seeds to reduce loss variation due to randomness for more stable evaluation.
+* Currently, validation loss is not supported when using `--blocks_to_swap` or Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
 
-## 8. データセット関連の追加オプション
+<details>
+<summary>日本語</summary>
 
-### 8.1 リサイズ時の補間方法指定
+学習中に検証データセットを使用して損失 (Validation Loss) を計算し、モデルの汎化性能を評価できます。
 
-データセットの画像を学習解像度にリサイズする際の補間方法を指定できます。データセット設定 TOML ファイルの `[[datasets]]` セクションまたは `[general]` セクションで `interpolation_type` を指定します。
+詳細な設定方法とコマンドラインの例は英語のドキュメントを参照してください。
 
-利用可能な値: `bicubic` (デフォルト), `bilinear`, `lanczos`, `nearest`, `area`
+</details>
+
+## 7. Additional Options / 追加オプション
+
+### 7.1. Other FLUX.1-specific Options / その他のFLUX.1特有のオプション
+
+- **T5 Attention Mask Application**: Specify `--apply_t5_attn_mask` to apply attention masks during T5XXL Text Encoder training and inference. Not recommended due to limited inference environment support. **For Chroma models, this option is required.**
+
+- **IP Noise Gamma**: Use `--ip_noise_gamma` and `--ip_noise_gamma_random_strength` to adjust Input Perturbation noise gamma values during training. See Stable Diffusion 3 training options for details.
+
+- **LoRA-GGPO Support**: Use LoRA-GGPO (Gradient Group Proportion Optimizer) to stabilize LoRA training:
+  ```bash
+  --network_args "ggpo_sigma=0.03" "ggpo_beta=0.01"
+  ```
+
+- **Q/K/V Projection Layer Splitting [Experimental]**: Specify `--network_args "split_qkv=True"` to individually split and apply LoRA to Q/K/V (and SingleStreamBlock Text) projection layers within Attention layers.
+
+<details>
+<summary>日本語</summary>
+
+その他のFLUX.1特有のオプション：
+- T5 Attention Maskの適用（Chromaモデルでは必須）
+- IPノイズガンマ
+- LoRA-GGPOサポート
+- Q/K/V射影層の分割（実験的機能）
+
+詳細な設定方法とコマンドラインの例は英語のドキュメントを参照してください。
+
+</details>
+
+### 7.2. Dataset-related Additional Options / データセット関連の追加オプション
+
+#### Interpolation Method for Resizing
+
+You can specify the interpolation method when resizing dataset images to training resolution. Specify `interpolation_type` in the `[[datasets]]` or `[general]` section of the dataset configuration TOML file.
+
+Available values: `bicubic` (default), `bilinear`, `lanczos`, `nearest`, `area`
 
 ```toml
 [[datasets]]
 resolution = [1024, 1024]
 enable_bucket = true
-interpolation_type = "lanczos" # 例: Lanczos補間を使用
+interpolation_type = "lanczos" # Example: Use Lanczos interpolation
 # ...
 ```
 
-## 9. 関連ツール
+<details>
+<summary>日本語</summary>
 
-`flux_train_network.py` で学習したモデルや、学習プロセスに役立つ関連スクリプトが提供されています。
+データセットの画像を学習解像度にリサイズする際の補間方法を指定できます。
 
-*   **`networks/flux_extract_lora.py`**: 学習済みモデルとベースモデルの差分から LoRA モデルを抽出します。
-*   **`convert_flux_lora.py`**: 学習した LoRA モデルを Diffusers (AI-Toolkit) 形式など、他の形式に変換します。Q/K/V分割オプションで学習した場合、このスクリプトで変換するとモデルサイズを削減できます。
-*   **`networks/flux_merge_lora.py`**: 学習した LoRA モデルを FLUX.1 ベースモデルにマージします。
-*   **`flux_minimal_inference.py`**: 学習した LoRA モデルを適用して画像を生成するためのシンプルな推論スクリプトです。
+設定方法とオプションの詳細は英語のドキュメントを参照してください。
+
+</details>
+
+## 8. Related Tools / 関連ツール
+
+Several related scripts are provided for models trained with `flux_train_network.py` and to assist with the training process:
+
+* **`networks/flux_extract_lora.py`**: Extracts LoRA models from the difference between trained and base models.
+* **`convert_flux_lora.py`**: Converts trained LoRA models to other formats like Diffusers (AI-Toolkit) format. When trained with Q/K/V split option, converting with this script can reduce model size.
+* **`networks/flux_merge_lora.py`**: Merges trained LoRA models into FLUX.1 base models.
+* **`flux_minimal_inference.py`**: Simple inference script for generating images with trained LoRA models. You can specify `flux` or `chroma` with the `--model_type` argument.
+
+<details>
+<summary>日本語</summary>
+
+`flux_train_network.py` で学習したモデルや、学習プロセスに役立つ関連スクリプトが提供されています：
+
+* **`networks/flux_extract_lora.py`**: 学習済みモデルとベースモデルの差分から LoRA モデルを抽出。
+* **`convert_flux_lora.py`**: 学習した LoRA モデルを Diffusers (AI-Toolkit) 形式など他の形式に変換。
+* **`networks/flux_merge_lora.py`**: 学習した LoRA モデルを FLUX.1 ベースモデルにマージ。
+* **`flux_minimal_inference.py`**: 学習した LoRA モデルを適用して画像を生成するシンプルな推論スクリプト。
+  `--model_type` 引数で `flux` または `chroma` を指定できます。
+
+</details>
+
+## 9. Others / その他
+
+`flux_train_network.py` includes many features common with `train_network.py`, such as sample image generation (`--sample_prompts`, etc.) and detailed optimizer settings. For these features, refer to the [`train_network.py` guide](train_network.md#5-other-features--その他の機能) or the script help (`python flux_train_network.py --help`).
+
+<details>
+<summary>日本語</summary>
+
+`flux_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python flux_train_network.py --help`) を参照してください。
+
+</details>

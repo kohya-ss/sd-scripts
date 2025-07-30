@@ -645,7 +645,7 @@ class NetworkTrainer:
         net_kwargs = {}
         if args.network_args is not None:
             for net_arg in args.network_args:
-                key, value = net_arg.split("=")
+                key, value = net_arg.split("=", 1)
                 net_kwargs[key] = value
 
         # if a new network is added in future, add if ~ then blocks for each network (;'∀')
