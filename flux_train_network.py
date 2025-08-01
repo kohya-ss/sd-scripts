@@ -51,6 +51,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             self.use_clip_l = True
         else:
             self.use_clip_l = False  # Chroma does not use CLIP-L
+            assert args.apply_t5_attn_mask, "apply_t5_attn_mask must be True for Chroma / Chromaではapply_t5_attn_maskを指定する必要があります"
 
         if args.fp8_base_unet:
             args.fp8_base = True  # if fp8_base_unet is enabled, fp8_base is also enabled for FLUX.1
