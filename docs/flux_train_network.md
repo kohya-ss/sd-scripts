@@ -557,11 +557,11 @@ validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed 
 
   [[datasets.subsets]]
   image_dir = "path/to/image/directory"
-  validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a valiation dataset
+  validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
 
   [[datasets.subsets]]
   image_dir = "path/to/image/full_validation"
-  validation_split = 1.0 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a valiation dataset
+  validation_split = 1.0 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
 ```
 
 **Notes:**
