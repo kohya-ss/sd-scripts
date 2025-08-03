@@ -150,7 +150,7 @@ def main(args):
             ort_sess = ort.InferenceSession(
                 onnx_path,
                 providers=(["OpenVINOExecutionProvider"]),
-                provider_options=[{'device_type' : "GPU_FP32"}],
+                provider_options=[{'device_type' : "GPU", "precision": "FP32"}],
             )
         else:
             ort_sess = ort.InferenceSession(
