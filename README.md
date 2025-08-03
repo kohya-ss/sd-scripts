@@ -16,6 +16,29 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 
 ### Recent Updates
 
+Jul 30, 2025:
+- **Breaking Change**: For FLUX.1 and Chroma training, the CFG (Classifier-Free Guidance, using negative prompts) scale option for sample image generation during training has been changed from `--g` to `--l`. The `--g` option is now used for the embedded guidance scale. Please update your prompts accordingly. See [Sample Image Generation During Training](#sample-image-generation-during-training) for details.
+
+- Support for [Chroma](https://huggingface.co/lodestones/Chroma) has been added in PR [#2157](https://github.com/kohya-ss/sd-scripts/pull/2157). Thank you to lodestones for the high-quality model.
+    - Chroma is a new model based on FLUX.1 schnell. In this repository, `flux_train_network.py` is used for training LoRAs for Chroma with `--model_type chroma`. `--apply_t5_attn_mask` is also needed for Chroma training.
+    - Please refer to the [FLUX.1 LoRA training documentation](./docs/flux_train_network.md) for more details.
+
+Jul 21, 2025:
+- Support for [Lumina-Image 2.0](https://github.com/Alpha-VLLM/Lumina-Image-2.0) has been added in PR [#1927](https://github.com/kohya-ss/sd-scripts/pull/1927) and [#2138](https://github.com/kohya-ss/sd-scripts/pull/2138). Special thanks to sdbds and RockerBOO for their contributions.
+    - Please refer to the [Lumina-Image 2.0 documentation](./docs/lumina_train_network.md) for more details.
+- We have started adding comprehensive training-related documentation to [docs](./docs). These documents are being created with the help of generative AI and will be updated over time. While there are still many gaps at this stage, we plan to improve them gradually.
+
+    Currently, the following documents are available:
+    - train_network.md
+    - sdxl_train_network.md
+    - sdxl_train_network_advanced.md
+    - flux_train_network.md
+    - sd3_train_network.md
+    - lumina_train_network.md
+    
+Jul 10, 2025:
+- [AI Coding Agents](#for-developers-using-ai-coding-agents) section is added to the README. This section provides instructions for developers using AI coding agents like Claude and Gemini to understand the project context and coding standards.
+
 May 1, 2025:
 - The error when training FLUX.1 with mixed precision in flux_train.py with DeepSpeed enabled has been resolved. Thanks to sharlynxy for PR [#2060](https://github.com/kohya-ss/sd-scripts/pull/2060). Please refer to the PR for details.
   - If you enable DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
@@ -54,46 +77,30 @@ Jan 25, 2025:
   - It will be added to other scripts as well.
   - As a current limitation, validation loss is not supported when `--block_to_swap` is specified, or when schedule-free optimizer is used.
 
-Dec 15, 2024:
+## For Developers Using AI Coding Agents
 
-- RAdamScheduleFree optimizer is supported. PR [#1830](https://github.com/kohya-ss/sd-scripts/pull/1830) Thanks to nhamanasu!
-  - Update to `schedulefree==1.4` is required. Please update individually or with `pip install --use-pep517 --upgrade -r requirements.txt`.
-  - Available with `--optimizer_type=RAdamScheduleFree`. No need to specify warm up steps as well as learning rate scheduler.
+This repository provides recommended instructions to help AI agents like Claude and Gemini understand our project context and coding standards.
 
-Dec 7, 2024:
+To use them, you need to opt-in by creating your own configuration file in the project root.
 
-- The option to specify the model name during ControlNet training was different in each script. It has been unified. Please specify `--controlnet_model_name_or_path`. PR [#1821](https://github.com/kohya-ss/sd-scripts/pull/1821) Thanks to sdbds!
-<!-- 
-Also, the ControlNet training script for SD has been changed from `train_controlnet.py` to `train_control_net.py`.
-  - `train_controlnet.py` is still available, but it will be removed in the future.
--->
+**Quick Setup:**
 
-- Fixed an issue where the saved model would be corrupted (pos_embed would not be saved) when `--enable_scaled_pos_embed` was specified in `sd3_train.py`.
+1.  Create a `CLAUDE.md` and/or `GEMINI.md` file in the project root.
+2.  Add the following line to your `CLAUDE.md` to import the repository's recommended prompt:
 
-Dec 3, 2024:
+    ```markdown
+    @./.ai/claude.prompt.md
+    ```
 
--`--blocks_to_swap` now works in FLUX.1 ControlNet training. Sample commands for 24GB VRAM and 16GB VRAM are added [here](#flux1-controlnet-training).
+    or for Gemini:
 
-Dec 2, 2024:
+    ```markdown
+    @./.ai/gemini.prompt.md
+    ```
 
-- FLUX.1 ControlNet training is supported. PR [#1813](https://github.com/kohya-ss/sd-scripts/pull/1813). Thanks to minux302!  See PR and [here](#flux1-controlnet-training) for details.
-  - Not fully tested. Feedback is welcome.
-  - 80GB VRAM is required for 1024x1024 resolution, and 48GB VRAM is required for 512x512 resolution.
-  - Currently, it only works in Linux environment (or Windows WSL2) because DeepSpeed is required.
-  - Multi-GPU training is not tested.
+3.  You can now add your own personal instructions below the import line (e.g., `Always respond in Japanese.`).
 
-Dec 1, 2024:
-
-- Pseudo Huber loss is now available for FLUX.1 and SD3.5 training. See PR [#1808](https://github.com/kohya-ss/sd-scripts/pull/1808)  for details. Thanks to recris!
-  - Specify `--loss_type huber` or `--loss_type smooth_l1` to use it. `--huber_c` and `--huber_scale` are also available.
-
-- [Prodigy + ScheduleFree](https://github.com/LoganBooker/prodigy-plus-schedule-free) is supported. See PR [#1811](https://github.com/kohya-ss/sd-scripts/pull/1811) for details. Thanks to rockerBOO!
-
-Nov 14, 2024:
-
-- Improved the implementation of block swap and made it available for both FLUX.1 and SD3 LoRA training. See [FLUX.1 LoRA training](#flux1-lora-training) etc. for how to use the new options. Training is possible with about 8-10GB of VRAM.
-- During fine-tuning, the memory usage when specifying the same number of blocks has increased slightly, but the training speed when specifying block swap has been significantly improved.
-- There may be bugs due to the significant changes. Feedback is welcome.
+This approach ensures that you have full control over the instructions given to your agent while benefiting from the shared project context. Your `CLAUDE.md` and `GEMINI.md` are already listed in `.gitignore`, so it won't be committed to the repository.
 
 ## FLUX.1 training
 
@@ -1367,9 +1374,8 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
   * `--w` Specifies the width of the generated image.
   * `--h` Specifies the height of the generated image.
   * `--d` Specifies the seed of the generated image.
-  * `--l` Specifies the CFG scale of the generated image.
-    * In guidance distillation models like FLUX.1, this value is used as the embedded guidance scale for backward compatibility.
-  * `--g` Specifies the CFG scale for the models with embedded guidance scale. The default is `1.0`, `1.0` means no CFG. In general, should not be changed unless you train the un-distilled FLUX.1 models.
+  * `--l` Specifies the CFG scale of the generated image. For FLUX.1 models, the default is `1.0`, which means no CFG. For Chroma models, set to around `4.0` to enable CFG.
+  * `--g` Specifies the embedded guidance scale for the models with embedded guidance (FLUX.1), the default is `3.5`. Set to `0.0` for Chroma models.
   * `--s` Specifies the number of steps in the generation.
 
   The prompt weighting such as `( )` and `[ ]` are working.
