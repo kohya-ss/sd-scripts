@@ -36,8 +36,10 @@ from library.config_util import (
 import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
 from library.custom_train_functions import (
+    PreferenceOptimization,
     apply_snr_weight,
     get_weighted_text_embeddings,
+    normalize_gradients,
     prepare_scheduler_for_custom_training,
     scale_v_prediction_loss_like_noise_prediction,
     add_v_prediction_like_loss,
@@ -66,23 +68,8 @@ class NetworkTrainer:
         lr_scheduler,
         lr_descriptions,
         optimizer=None,
-        keys_scaled=None,
-        mean_norm=None,
-        maximum_norm=None,
-        mean_grad_norm=None,
-        mean_combined_norm=None,
     ):
         logs = {"loss/current": current_loss, "loss/average": avr_loss}
-
-        if keys_scaled is not None:
-            logs["max_norm/keys_scaled"] = keys_scaled
-            logs["max_norm/max_key_norm"] = maximum_norm
-        if mean_norm is not None:
-            logs["norm/avg_key_norm"] = mean_norm
-        if mean_grad_norm is not None:
-            logs["norm/avg_grad_norm"] = mean_grad_norm
-        if mean_combined_norm is not None:
-            logs["norm/avg_combined_norm"] = mean_combined_norm
 
         lrs = lr_scheduler.get_last_lr()
         for i, lr in enumerate(lrs):
@@ -108,7 +95,11 @@ class NetworkTrainer:
             if (
                 args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None
             ):  # tracking d*lr value of unet.
-                logs["lr/d*lr"] = optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
+
+                if "effective_lr" in optimizer.param_groups[i]:
+                    logs["lr/d*lr"] = optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["effective_lr"]
+                else:
+                    logs["lr/d*lr"] = optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
         else:
             idx = 0
             if not args.network_train_unet_only:
@@ -122,7 +113,10 @@ class NetworkTrainer:
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
                 if args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower()) and optimizer is not None:
-                    logs[f"lr/d*lr/group{i}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
+                    if "effective_lr" in optimizer.param_groups[i]:
+                        logs[f"lr/d*lr/group{i}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["effective_lr"]
+                    else:
+                        logs[f"lr/d*lr/group{i}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
 
         return logs
 
@@ -255,21 +249,25 @@ class NetworkTrainer:
 
     def get_noise_pred_and_target(
         self,
-        args,
-        accelerator,
+        args: argparse.Namespace,
+        accelerator: Accelerator,
         noise_scheduler,
-        latents,
-        batch,
+        latents: torch.FloatTensor,
+        batch: dict[str, torch.Tensor],
         text_encoder_conds,
         unet,
         network,
-        weight_dtype,
-        train_unet,
+        weight_dtype: torch.dtype,
+        train_unet: bool,
         is_train=True,
-    ):
+        timesteps=None,
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None]:
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
-        noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+        noise, noisy_latents, rand_timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+
+        if timesteps is None:
+            timesteps = rand_timesteps
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
@@ -320,10 +318,10 @@ class NetworkTrainer:
                     )
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
+        sigmas = timesteps / noise_scheduler.config.num_train_timesteps
+        return noise_pred, noisy_latents, target, sigmas, timesteps, None
 
-        return noise_pred, target, timesteps, None
-
-    def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
+    def post_process_loss(self, loss: torch.Tensor, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
             loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
         if args.scale_v_pred_loss_like_noise_pred:
@@ -380,10 +378,12 @@ class NetworkTrainer:
         is_train=True,
         train_text_encoder=True,
         train_unet=True,
-    ) -> torch.Tensor:
+        multipliers=1.0,
+    ) -> tuple[torch.Tensor, dict[str, float | int]]:
         """
         Process a batch for the network
         """
+        metrics: dict[str, float | int] = {}
         with torch.no_grad():
             if "latents" in batch and batch["latents"] is not None:
                 latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
@@ -447,7 +447,8 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+
+        noise_pred, noisy_latents, target, sigmas, timesteps, weighting = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -461,20 +462,60 @@ class NetworkTrainer:
             is_train=is_train,
         )
 
+        losses: dict[str, torch.Tensor] = {}
+
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
         if weighting is not None:
             loss = loss * weighting
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
-        loss = loss.mean([1, 2, 3])
 
-        loss_weights = batch["loss_weights"]  # 各sampleごとのweight
-        loss = loss * loss_weights
+        if self.po.is_po():
+            if self.po.is_reference():
+                accelerator.unwrap_model(network).set_multiplier(0.0)
+                ref_noise_pred, ref_noisy_latents, ref_target, ref_sigmas, ref_timesteps, ref_weighting = (
+                    self.get_noise_pred_and_target(
+                        args,
+                        accelerator,
+                        noise_scheduler,
+                        latents,
+                        batch,
+                        text_encoder_conds,
+                        unet,
+                        network,
+                        weight_dtype,
+                        train_unet,
+                        is_train=False,
+                        timesteps=timesteps,
+                    )
+                )
+
+                # reset network multipliers
+                accelerator.unwrap_model(network).set_multiplier(1.0)
+
+                ref_loss = train_util.conditional_loss(ref_noise_pred.float(), ref_target.float(), args.loss_type, "none", huber_c)
+
+                if weighting is not None:
+                    ref_loss = ref_loss * weighting
+                if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
+                    ref_loss = apply_masked_loss(ref_loss, batch)
+                loss, metrics_po = self.po(loss, ref_loss)
+            else:
+                loss, metrics_po = self.po(loss)
+
+            metrics.update(metrics_po)
+        else:
+            loss = loss.mean([1, 2, 3])
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-        return loss.mean()
+        for k in losses.keys():
+            losses[k] = self.post_process_loss(losses[k], args, timesteps, noise_scheduler, latents)
+            # if "loss_weights" in batch and len(batch["loss_weights"]) == loss.shape[0]:
+            #     losses[k] *= batch["loss_weights"]  # 各sampleごとのweight
+
+        return loss.mean(), losses, metrics
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1041,6 +1082,14 @@ class NetworkTrainer:
             "ss_validate_every_n_epochs": args.validate_every_n_epochs,
             "ss_validate_every_n_steps": args.validate_every_n_steps,
             "ss_resize_interpolation": args.resize_interpolation,
+            "ss_mapo_beta": args.mapo_beta,
+            "ss_cpo_beta": args.cpo_beta,
+            "ss_bpo_beta": args.bpo_beta,
+            "ss_bpo_lambda": args.bpo_lambda,
+            "ss_sdpo_beta": args.sdpo_beta,
+            "ss_ddo_beta": args.ddo_beta,
+            "ss_ddo_alpha": args.ddo_alpha,
+            "ss_dpo_beta": args.beta_dpo,
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1261,6 +1310,11 @@ class NetworkTrainer:
         val_step_loss_recorder = train_util.LossRecorder()
         val_epoch_loss_recorder = train_util.LossRecorder()
 
+        self.po = PreferenceOptimization(args)
+
+        if self.po.is_po():
+            logger.info(f"Preference optimization activated: {self.po.algo}")
+
         del train_dataset_group
         if val_dataset_group is not None:
             del val_dataset_group
@@ -1401,7 +1455,7 @@ class NetworkTrainer:
                     # preprocess batch for each model
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True)
 
-                    loss = self.process_batch(
+                    loss, losses, metrics = self.process_batch(
                         batch,
                         text_encoders,
                         unet,
@@ -1420,8 +1474,14 @@ class NetworkTrainer:
                     )
 
                     accelerator.backward(loss)
+
+                    if args.norm_gradient:
+                        normalize_gradients(network)
+
+                    # Checks if the accelerator has performed an optimization step behind the scenes
                     if accelerator.sync_gradients:
                         self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+
                         if args.max_grad_norm != 0.0:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -1435,29 +1495,31 @@ class NetworkTrainer:
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
+                max_mean_logs = {}
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
                         args.scale_weight_norms, accelerator.device
                     )
-                    mean_grad_norm = None
-                    mean_combined_norm = None
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
-                else:
-                    if hasattr(network, "weight_norms"):
-                        weight_norms = network.weight_norms()
-                        mean_norm = weight_norms.mean().item() if weight_norms is not None else None
-                        grad_norms = network.grad_norms()
-                        mean_grad_norm = grad_norms.mean().item() if grad_norms is not None else None
-                        combined_weight_norms = network.combined_weight_norms()
-                        mean_combined_norm = combined_weight_norms.mean().item() if combined_weight_norms is not None else None
-                        maximum_norm = weight_norms.max().item() if weight_norms is not None else None
-                        keys_scaled = None
-                        max_mean_logs = {}
-                    else:
-                        keys_scaled, mean_norm, maximum_norm = None, None, None
-                        mean_grad_norm = None
-                        mean_combined_norm = None
-                        max_mean_logs = {}
+                    metrics["max_norm/avg_key_norm"] = mean_norm
+                    metrics["max_norm/max_key_norm"] = maximum_norm
+                    metrics["max_norm/keys_scaled"] = keys_scaled
+
+                if hasattr(network, "weight_norms"):
+                    weight_norms = network.weight_norms()
+                    if weight_norms is not None:
+                        metrics["norm/avg_key_norm"] = weight_norms.mean().item()
+                        metrics["norm/max_key_norm"] = weight_norms.max().item()
+
+                    grad_norms = network.grad_norms()
+                    if grad_norms is not None:
+                        metrics["norm/avg_grad_norm"] = grad_norms.mean().item()
+                        metrics["norm/max_grad_norm"] = grad_norms.max().item()
+
+                    combined_weight_norms = network.combined_weight_norms()
+                    if combined_weight_norms is not None:
+                        metrics["norm/avg_combined_norm"] = combined_weight_norms.mean().item()
+                        metrics["norm/max_combined_norm"] = combined_weight_norms.max().item()
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
@@ -1500,13 +1562,8 @@ class NetworkTrainer:
                         lr_scheduler,
                         lr_descriptions,
                         optimizer,
-                        keys_scaled,
-                        mean_norm,
-                        maximum_norm,
-                        mean_grad_norm,
-                        mean_combined_norm,
                     )
-                    self.step_logging(accelerator, logs, global_step, epoch + 1)
+                    self.step_logging(accelerator, {**logs, **metrics}, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
                 # for example, if validate_every_n_steps=100, validate at step 100, 200, 300, ...
@@ -1532,7 +1589,7 @@ class NetworkTrainer:
 
                             args.min_timestep = args.max_timestep = timestep  # dirty hack to change timestep
 
-                            loss = self.process_batch(
+                            loss, losses, val_metrics = self.process_batch(
                                 batch,
                                 text_encoders,
                                 unet,
@@ -1610,7 +1667,7 @@ class NetworkTrainer:
                         # temporary, for batch processing
                         self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
 
-                        loss = self.process_batch(
+                        loss, losses, val_metrics = self.process_batch(
                             batch,
                             text_encoders,
                             unet,
@@ -1875,6 +1932,7 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
     )
+    parser.add_argument("--norm_gradient", action="store_true", help="Normalize gradients to 1.0")
     return parser
 
 

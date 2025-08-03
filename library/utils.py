@@ -16,6 +16,7 @@ from PIL import Image
 import numpy as np
 from safetensors.torch import load_file
 
+
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
 
@@ -87,6 +88,7 @@ def setup_logging(args=None, log_level=None, reset=False):
     if msg_init is not None:
         logger = logging.getLogger(__name__)
         logger.info(msg_init)
+
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -398,7 +400,9 @@ def pil_resize(image, size, interpolation):
     return resized_cv2
 
 
-def resize_image(image: np.ndarray, width: int, height: int, resized_width: int, resized_height: int, resize_interpolation: Optional[str] = None):
+def resize_image(
+    image: np.ndarray, width: int, height: int, resized_width: int, resized_height: int, resize_interpolation: Optional[str] = None
+):
     """
     Resize image with resize interpolation. Default interpolation to AREA if image is smaller, else LANCZOS.
 
@@ -449,28 +453,29 @@ def get_cv2_interpolation(interpolation: Optional[str]) -> Optional[int]:
     https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga5bb5a1fea74ea38e1a5445ca803ff121
     """
     if interpolation is None:
-        return None 
+        return None
 
     if interpolation == "lanczos" or interpolation == "lanczos4":
-        # Lanczos interpolation over 8x8 neighborhood 
+        # Lanczos interpolation over 8x8 neighborhood
         return cv2.INTER_LANCZOS4
     elif interpolation == "nearest":
-        # Bit exact nearest neighbor interpolation. This will produce same results as the nearest neighbor method in PIL, scikit-image or Matlab. 
+        # Bit exact nearest neighbor interpolation. This will produce same results as the nearest neighbor method in PIL, scikit-image or Matlab.
         return cv2.INTER_NEAREST_EXACT
     elif interpolation == "bilinear" or interpolation == "linear":
         # bilinear interpolation
         return cv2.INTER_LINEAR
     elif interpolation == "bicubic" or interpolation == "cubic":
-        # bicubic interpolation 
+        # bicubic interpolation
         return cv2.INTER_CUBIC
     elif interpolation == "area":
-        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method. 
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
         return cv2.INTER_AREA
     elif interpolation == "box":
-        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method. 
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
         return cv2.INTER_AREA
     else:
         return None
+
 
 def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resampling]:
     """
@@ -479,7 +484,7 @@ def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resamp
     https://pillow.readthedocs.io/en/stable/handbook/concepts.html#concept-filters
     """
     if interpolation is None:
-        return None 
+        return None
 
     if interpolation == "lanczos":
         return Image.Resampling.LANCZOS
@@ -493,7 +498,7 @@ def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resamp
         # For resize calculate the output pixel value using cubic interpolation on all pixels that may contribute to the output value. For other transformations cubic interpolation over a 4x4 environment in the input image is used.
         return Image.Resampling.BICUBIC
     elif interpolation == "area":
-        # Image.Resampling.BOX may be more appropriate if upscaling 
+        # Image.Resampling.BOX may be more appropriate if upscaling
         # Area interpolation is related to cv2.INTER_AREA
         # Produces a sharper image than Resampling.BILINEAR, doesn’t have dislocations on local level like with Resampling.BOX.
         return Image.Resampling.HAMMING
@@ -503,11 +508,36 @@ def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resamp
     else:
         return None
 
+
 def validate_interpolation_fn(interpolation_str: str) -> bool:
     """
     Check if a interpolation function is supported
     """
     return interpolation_str in ["lanczos", "nearest", "bilinear", "linear", "bicubic", "cubic", "area", "box"]
+
+
+# For debugging
+def save_latent_as_img(vae, latent_to, output_name):
+    """Save latent as image using VAE"""
+    from PIL import Image
+
+    with torch.no_grad():
+        image = vae.decode(latent_to.to(vae.dtype)).float()
+        # VAE outputs are typically in the range [-1, 1], so rescale to [0, 255]
+        image = (image / 2 + 0.5).clamp(0, 1)
+
+        # Convert to numpy array with values in range [0, 255]
+        image = (image * 255).cpu().numpy().astype(np.uint8)
+
+        # Rearrange dimensions from [batch_size, channels, height, width] to [batch_size, height, width, channels]
+        image = image.transpose(0, 2, 3, 1)
+
+        # Take the first image if you have a batch
+        pil_image = Image.fromarray(image[0])
+
+        # Save the image
+        pil_image.save(output_name)
+
 
 # endregion
 

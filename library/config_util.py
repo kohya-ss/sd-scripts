@@ -76,6 +76,11 @@ class BaseSubsetParams:
     validation_seed: int = 0
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
+    preference: bool = False
+    preference_caption_prefix: Optional[str] = None
+    preference_caption_suffix: Optional[str] = None
+    non_preference_caption_prefix: Optional[str] = None
+    non_preference_caption_suffix: Optional[str] = None
 
 
 @dataclass
@@ -198,6 +203,11 @@ class ConfigSanitizer:
         "caption_suffix": str,
         "custom_attributes": dict,
         "resize_interpolation": str,
+        "preference": bool,
+        "preference_caption_prefix": str,
+        "preference_caption_suffix": str,
+        "non_preference_caption_prefix": str,
+        "non_preference_caption_suffix": str
     }
     # DO means DropOut
     DO_SUBSET_ASCENDABLE_SCHEMA = {

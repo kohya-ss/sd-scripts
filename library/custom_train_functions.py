@@ -1,10 +1,15 @@
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import torch
+from torch import Tensor
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Callable, Protocol
+import math
 import argparse
 import random
 import re
 from torch.types import Number
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Callable
 from .utils import setup_logging
 
 setup_logging()
@@ -65,7 +70,9 @@ def fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler):
     noise_scheduler.alphas_cumprod = alphas_cumprod
 
 
-def apply_snr_weight(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, gamma: Number, v_prediction=False):
+def apply_snr_weight(
+    loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, gamma: Number, v_prediction=False
+):
     snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
     min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
     if v_prediction:
@@ -91,7 +98,9 @@ def get_snr_scale(timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler):
     return scale
 
 
-def add_v_prediction_like_loss(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, v_pred_like_loss: torch.Tensor):
+def add_v_prediction_like_loss(
+    loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, v_pred_like_loss: torch.Tensor
+):
     scale = get_snr_scale(timesteps, noise_scheduler)
     # logger.info(f"add v-prediction like loss: {v_pred_like_loss}, scale: {scale}, loss: {loss}, time: {timesteps}")
     loss = loss + loss / scale * v_pred_like_loss
@@ -142,6 +151,75 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
             default=False,
             help="Enable weighted captions in the standard style (token:1.3). No commas inside parens, or shuffle/dropout may break the decoder. / 「[token]」、「(token)」「(token:1.3)」のような重み付きキャプションを有効にする。カンマを括弧内に入れるとシャッフルやdropoutで重みづけがおかしくなるので注意",
         )
+
+    parser.add_argument(
+        "--beta_dpo",
+        type=int,
+        help="DPO KL Divergence penalty. Recommended values for SD1.5 B=2000, SDXL B=5000 / DPO KL 発散ペナルティ。SD1.5 の推奨値 B=2000、SDXL B=5000",
+    )
+    parser.add_argument(
+        "--mapo_beta",
+        type=float,
+        help="MaPO beta regularization parameter. Recommended values of 0.01 to 0.1 / 相対比損失の MaPO ～ 0.25 です",
+    )
+    parser.add_argument(
+        "--cpo_beta",
+        type=float,
+        help="CPO beta regularization parameter. Recommended value of 0.1",
+    )
+    parser.add_argument(
+        "--bpo_beta",
+        type=float,
+        help="BPO beta regularization parameter. Recommended value of 0.1",
+    )
+    parser.add_argument(
+        "--bpo_lambda",
+        type=float,
+        help="BPO beta regularization parameter. Recommended value of 0.0 to 0.2. -0.5 similar to DPO gradient.",
+    )
+    parser.add_argument(
+        "--sdpo_beta",
+        type=float,
+        help="SDPO beta regularization parameter. Recommended value of 0.02",
+    )
+    parser.add_argument(
+        "--sdpo_epsilon",
+        type=float,
+        default=0.1,
+        help="SDPO epsilon for clipping importance weighting. Recommended value of 0.1",
+    )
+    parser.add_argument(
+        "--simpo_gamma_beta_ratio",
+        type=float,
+        help="SimPO target reward margin term. Ensure the reward for the chosen exceeds the rejected. Recommended: 0.25-1.75",
+    )
+    parser.add_argument(
+        "--simpo_beta",
+        type=float,
+        help="SDPO beta controls the scaling of the reward difference. Recommended: 2.0-2.5",
+    )
+    parser.add_argument(
+        "--simpo_smoothing",
+        type=float,
+        help="SDPO smoothing of chosen/rejected. Recommended: 0.0",
+    )
+    parser.add_argument(
+        "--simpo_loss_type",
+        type=str,
+        default="sigmoid",
+        choices=["sigmoid", "hinge"],
+        help="SDPO loss type. Options: sigmoid, hinge. Default: sigmoid",
+    )
+    parser.add_argument(
+        "--ddo_alpha",
+        type=float,
+        help="Controls weight of the fake samples loss term (range: 0.5-50). Higher values increase penalty on reference model samples. Start with 4.0.",
+    )
+    parser.add_argument(
+        "--ddo_beta",
+        type=float,
+        help="Scaling factor for likelihood ratio (range: 0.01-0.1). Higher values create stronger separation between target and reference distributions. Start with 0.05.",
+    )
 
 
 re_attention = re.compile(
@@ -492,7 +570,7 @@ def apply_masked_loss(loss, batch) -> torch.FloatTensor:
         # print(f"conditioning_image: {mask_image.shape}")
     elif "alpha_masks" in batch and batch["alpha_masks"] is not None:
         # alpha mask is 0 to 1
-        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1) # add channel dimension
+        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1)  # add channel dimension
         # print(f"mask_image: {mask_image.shape}, {mask_image.mean()}")
     else:
         return loss
@@ -501,6 +579,443 @@ def apply_masked_loss(loss, batch) -> torch.FloatTensor:
     mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
     loss = loss * mask_image
     return loss
+
+
+def assert_po_variables(args):
+    if args.ddo_beta is not None or args.ddo_alpha is not None:
+        assert args.ddo_beta is not None and args.ddo_alpha is not None, "Both ddo_beta and ddo_alpha must be set together"
+    elif args.bpo_beta is not None or args.bpo_lambda is not None:
+        assert args.bpo_beta is not None and args.bpo_lambda is not None, "Both bpo_beta and bpo_lambda must be set together"
+
+
+class PreferenceOptimization:
+    def __init__(self, args):
+        self.loss_fn = None
+        self.loss_ref_fn = None
+
+        assert_po_variables(args)
+
+        if args.ddo_beta is not None or args.ddo_alpha is not None:
+            self.algo = "DDO"
+            self.loss_ref_fn = ddo_loss
+            self.args = {"beta": args.ddo_beta, "alpha": args.ddo_alpha}
+        elif args.bpo_beta is not None or args.bpo_lambda is not None:
+            self.algo = "BPO"
+            self.loss_ref_fn = bpo_loss
+            self.args = {"beta": args.bpo_beta, "lambda_": args.bpo_lambda}
+        elif args.beta_dpo is not None:
+            self.algo = "Diffusion DPO"
+            self.loss_ref_fn = diffusion_dpo_loss
+            self.args = {"beta": args.beta_dpo}
+        elif args.sdpo_beta is not None:
+            self.algo = "SDPO"
+            self.loss_ref_fn = sdpo_loss
+            self.args = {"beta": args.sdpo_beta, "epsilon": args.sdpo_epsilon}
+
+        if args.mapo_beta is not None:
+            self.algo = "MaPO"
+            self.loss_fn = mapo_loss
+            self.args = {"beta": args.mapo_beta}
+        elif args.simpo_beta is not None:
+            self.algo = "SimPO"
+            self.loss_fn = simpo_loss
+            self.args = {
+                "beta": args.simpo_beta,
+                "gamma_beta_ratio": args.simpo_gamma_beta_ratio,
+                "smoothing": args.simpo_smoothing,
+                "loss_type": args.simpo_loss_type,
+            }
+        elif args.cpo_beta is not None:
+            self.algo = "CPO"
+            self.loss_fn = cpo_loss
+            self.args = {"beta": args.cpo_beta}
+
+    def is_po(self):
+        return self.loss_fn is not None or self.loss_ref_fn is not None
+
+    def is_reference(self):
+        return self.loss_ref_fn is not None
+
+    def __call__(self, loss: torch.Tensor, ref_loss: torch.Tensor | None = None):
+        if self.is_reference():
+            assert ref_loss is not None, "Reference required for this preference optimization"
+            assert self.loss_ref_fn is not None, "No reference loss function"
+            loss, metrics = self.loss_ref_fn(loss, ref_loss, **self.args)
+        else:
+            assert self.loss_fn is not None, "No loss function"
+            loss, metrics = self.loss_fn(loss, **self.args)
+
+        return loss, metrics
+
+
+def diffusion_dpo_loss(loss: torch.Tensor, ref_loss: Tensor, beta: float):
+    """
+    Diffusion DPO loss
+
+    Args:
+        loss: pairs of w, l losses B//2
+        ref_loss: ref pairs of w, l losses B//2
+        beta_dpo: beta_dpo weight
+    """
+    loss_w, loss_l = loss.chunk(2)
+    ref_losses_w, ref_losses_l = ref_loss.chunk(2)
+
+    model_diff = loss_w - loss_l
+    ref_diff = ref_losses_w - ref_losses_l
+
+    scale_term = -0.5 * beta
+    inside_term = scale_term * (model_diff - ref_diff)
+    loss = -1 * torch.nn.functional.logsigmoid(inside_term).mean(dim=(1, 2, 3))
+
+    implicit_acc = (inside_term > 0).sum().float() / inside_term.size(0)
+
+    metrics = {
+        "loss/diffusion_dpo_total_loss": loss.detach().mean().item(),
+        "loss/diffusion_dpo_ref_loss": ref_loss.detach().mean().item(),
+        "loss/diffusion_dpo_implicit_acc": implicit_acc.detach().mean().item(),
+    }
+
+    return loss, metrics
+
+
+def mapo_loss(model_losses: torch.Tensor, beta: float, total_timesteps=1000) -> tuple[torch.Tensor, dict[str, int | float]]:
+    """
+    MaPO loss
+
+    Paper: Margin-aware Preference Optimization for Aligning Diffusion Models without Reference
+           https://mapo-t2i.github.io/
+
+    Args:
+        loss: pairs of w, l losses B//2, C, H, W. We want full distribution of the
+              loss for numerical stability
+        mapo_weight: mapo weight
+        total_timesteps: number of timesteps
+    """
+    loss_w, loss_l = model_losses.chunk(2)
+
+    phi_coefficient = 0.5
+    win_score = (phi_coefficient * loss_w) / (torch.exp(phi_coefficient * loss_w) - 1)
+    lose_score = (phi_coefficient * loss_l) / (torch.exp(phi_coefficient * loss_l) - 1)
+
+    # Score difference loss
+    score_difference = win_score - lose_score
+
+    # Margin loss.
+    # By multiplying T in the inner term , we try to maximize the
+    # margin throughout the overall denoising process.
+    # T here is the number of training steps from the
+    # underlying noise scheduler.
+    margin = F.logsigmoid(score_difference * total_timesteps + 1e-10)
+    margin_losses = beta * margin
+
+    # Full MaPO loss
+    loss = loss_w.mean(dim=(1, 2, 3)) - margin_losses.mean(dim=(1, 2, 3))
+
+    metrics = {
+        "loss/mapo_total": loss.detach().mean().item(),
+        "loss/mapo_ratio": -margin_losses.detach().mean().item(),
+        "loss/mapo_w_loss": loss_w.detach().mean().item(),
+        "loss/mapo_l_loss": loss_l.detach().mean().item(),
+        "loss/mapo_score_difference": score_difference.detach().mean().item(),
+        "loss/mapo_win_score": win_score.detach().mean().item(),
+        "loss/mapo_lose_score": lose_score.detach().mean().item(),
+    }
+
+    return loss, metrics
+
+
+def ddo_loss(loss, ref_loss, w_t: float, ddo_alpha: float = 4.0, ddo_beta: float = 0.05):
+    """
+    Implements Direct Discriminative Optimization (DDO) loss.
+
+    DDO bridges likelihood-based generative training with GAN objectives
+    by parameterizing a discriminator using the likelihood ratio between
+    a learnable target model and a fixed reference model.
+
+    Args:
+        loss: Target model loss
+        ref_loss: Reference model loss (should be detached)
+        w_t: weight at timestep
+        ddo_alpha: Weight coefficient for the fake samples loss term.
+                   Controls the balance between real/fake samples in training.
+                   Higher values increase penalty on reference model samples.
+        ddo_beta: Scaling factor for the likelihood ratio to control gradient magnitude.
+                  Smaller values produce a smoother optimization landscape.
+                  Too large values can lead to numerical instability.
+
+    Returns:
+        tuple: (total_loss, metrics_dict)
+            - total_loss: Combined DDO loss for optimization
+            - metrics_dict: Dictionary containing component losses for monitoring
+    """
+    ref_loss = ref_loss.detach()  # Ensure no gradients to reference
+
+    # Log likelihood from weighted loss
+    target_logp = -torch.sum(w_t * loss, dim=(1, 2, 3))
+    ref_logp = -torch.sum(w_t * ref_loss, dim=(1, 2, 3))
+
+    # ∆xt,t,ε = -w(t) * [||εθ(xt,t) - ε||²₂ - ||εθref(xt,t) - ε||²₂]
+    delta = target_logp - ref_logp
+
+    # log_ratio = β * log pθ(x)/pθref(x)
+    log_ratio = ddo_beta * delta
+
+    # E_pdata[log σ(-log_ratio)]
+    data_loss = -F.logsigmoid(log_ratio)
+
+    # αE_pθref[log(1 - σ(log_ratio))]
+    ref_loss_term = -ddo_alpha * F.logsigmoid(-log_ratio)
+
+    total_loss = data_loss + ref_loss_term
+
+    metrics = {
+        "loss/ddo_data": data_loss.detach().mean().item(),
+        "loss/ddo_ref": ref_loss_term.detach().mean().item(),
+        "loss/ddo_total": total_loss.detach().mean().item(),
+        "loss/ddo_sigmoid_log_ratio": torch.sigmoid(log_ratio).mean().item(),
+    }
+
+    return total_loss, metrics
+
+
+def cpo_loss(loss: torch.Tensor, beta: float = 0.1) -> tuple[torch.Tensor, dict[str, int | float]]:
+    """
+    CPO Loss = L(π_θ; U) - E[log π_θ(y_w|x)]
+
+    Where L(π_θ; U) is the uniform reference DPO loss and the second term
+    is a behavioral cloning regularizer on preferred data.
+
+    Args:
+        loss: Losses of w and l B, C, H, W
+        beta: Weight for log ratio (Similar to Diffusion DPO)
+    """
+    # L(π_θ; U) - DPO loss with uniform reference (no reference model needed)
+    loss_w, loss_l = loss.chunk(2)
+
+    # Prevent values from being too small, causing large gradients
+    log_ratio = torch.max(loss_w - loss_l, torch.full_like(loss_w, 0.01))
+    uniform_dpo_loss = -F.logsigmoid(beta * log_ratio).mean()
+
+    # Behavioral cloning regularizer: -E[log π_θ(y_w|x)]
+    bc_regularizer = -loss_w.mean()
+
+    # Total CPO loss
+    cpo_loss = uniform_dpo_loss + bc_regularizer
+
+    metrics = {}
+    metrics["loss/cpo_reward_margin"] = uniform_dpo_loss.detach().mean().item()
+
+    return cpo_loss, metrics
+
+
+def bpo_loss(loss: Tensor, ref_loss: Tensor, beta: float, lambda_: float) -> tuple[Tensor, dict[str, int | float]]:
+    """
+    Bregman Preference Optimization
+
+    Paper: Preference Optimization by Estimating the
+        Ratio of the Data Distribution
+
+    Computes the BPO loss
+        loss: Loss from the training model B
+        ref_loss: Loss from the reference model B
+        param beta : Regularization coefficient
+        param lambda : hyperparameter for SBA
+    """
+    # Compute the model ratio corresponding to Line 4 of Algorithm 1.
+    loss_w, loss_l = loss.chunk(2)
+    ref_loss_w, ref_loss_l = ref_loss.chunk(2)
+
+    logits = loss_w - loss_l - ref_loss_w + ref_loss_l
+    reward_margin = beta * logits
+    R = torch.exp(-reward_margin)
+
+    # Clip R values to be no smaller than 0.01 for training stability
+    R = torch.max(R, torch.full_like(R, 0.01))
+
+    # Compute the loss according to the function h , following Line 5 of Algorithm 1.
+    if lambda_ == 0.0:
+        losses = R + torch.log(R)
+    else:
+        losses = R ** (lambda_ + 1) - ((lambda_ + 1) / lambda_) * (R ** (-lambda_))
+        losses /= 4 * (1 + lambda_)
+
+    metrics = {}
+    metrics["loss/bpo_reward_margin"] = reward_margin.detach().mean().item()
+    metrics["loss/bpo_R"] = R.detach().mean().item()
+    return losses.mean(dim=(1, 2, 3)), metrics
+
+
+def kto_loss(loss: Tensor, ref_loss: Tensor, kl_loss: Tensor, ref_kl_loss: Tensor, w_t=1.0, undesirable_w_t=1.0, beta=0.1):
+    """
+    KTO: Model Alignment as Prospect Theoretic Optimization
+    https://arxiv.org/abs/2402.01306
+
+    Compute the Kahneman-Tversky loss for a batch of policy and reference model losses.
+    If generation y ~ p_desirable, we have the 'desirable' loss:
+        L(x, y) := 1 - sigmoid(beta * ([log p_policy(y|x) - log p_reference(y|x)] - KL(p_policy || p_reference)))
+    If generation y ~ p_undesirable, we have the 'undesirable' loss:
+        L(x, y) := 1 - sigmoid(beta * (KL(p_policy || p_reference) - [log p_policy(y|x) - log p_reference(y|x)]))
+    The desirable losses are weighed by w_t.
+    The undesirable losses are weighed by undesirable_w_t.
+    This should be used to address imbalances in the ratio of desirable:undesirable examples respectively.
+    The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
+    log p_policy(y'|x) - log p_reference(y'|x). Doing so avoids the requirement that there be equal numbers of
+    desirable and undesirable examples in the microbatch. It can be estimated differently: the 'z1' estimate
+    takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
+    is more probable under the policy than the reference.
+    """
+    loss_w, loss_l = loss.chunk(2)
+    ref_loss_w, ref_loss_l = ref_loss.chunk(2)
+
+    # Convert losses to rewards (negative loss = positive reward)
+    chosen_rewards = -(loss_w - loss_l)
+    rejected_rewards = -(ref_loss_w - ref_loss_l)
+    KL_rewards = -(kl_loss - ref_kl_loss)
+
+    # Estimate KL divergence using unmatched samples
+    KL_estimate = KL_rewards.mean().clamp(min=0)
+
+    losses = []
+
+    # Desirable (chosen) samples: we want reward > KL
+    if chosen_rewards.shape[0] > 0:
+        chosen_kto_losses = w_t * (1 - F.sigmoid(beta * (chosen_rewards - KL_estimate)))
+        losses.append(chosen_kto_losses)
+
+    # Undesirable (rejected) samples: we want KL > reward
+    if rejected_rewards.shape[0] > 0:
+        rejected_kto_losses = undesirable_w_t * (1 - F.sigmoid(beta * (KL_estimate - rejected_rewards)))
+        losses.append(rejected_kto_losses)
+
+    if losses:
+        total_loss = torch.cat(losses, 0).mean()
+    else:
+        total_loss = torch.tensor(0.0)
+
+    return total_loss
+
+
+def ipo_loss(loss: Tensor, ref_loss: Tensor, tau=0.1):
+    """
+    IPO: Iterative Preference Optimization for Text-to-Video Generation
+    https://arxiv.org/abs/2502.02088
+    """
+    loss_w, loss_l = loss.chunk(2)
+    ref_loss_w, ref_loss_l = ref_loss.chunk(2)
+
+    chosen_rewards = loss_w - ref_loss_w
+    rejected_rewards = loss_l - ref_loss_l
+
+    losses = (chosen_rewards - rejected_rewards - (1 / (2 * tau))).pow(2)
+
+    metrics: dict[str, int | float] = {}
+    metrics["loss/ipo_chosen_rewards"] = chosen_rewards.detach().mean().item()
+    metrics["loss/ipo_rejected_rewards"] = rejected_rewards.detach().mean().item()
+
+    return losses, metrics
+
+
+def compute_importance_weight(loss: Tensor, ref_loss: Tensor) -> Tensor:
+    """
+    Compute importance weight w(t) = p_θ(x_{t-1}|x_t) / q(x_{t-1}|x_t, x_0)
+
+    Args:
+        loss: Training model loss B, ...
+        ref_loss: Reference model loss B, ...
+    """
+    # Approximate importance weight (higher when model prediction is better)
+    w_t = torch.exp(-loss + ref_loss)  # [batch_size]
+    return w_t
+
+
+def clip_importance_weight(w_t: Tensor, epsilon=0.1) -> Tensor:
+    """
+    Clip importance weights: w̃(t) = clip(w(t), 1-ε, 1+ε)
+    """
+    return torch.clamp(w_t, 1 - epsilon, 1 + epsilon)
+
+
+def sdpo_loss(loss: Tensor, ref_loss: Tensor, beta=0.02, epsilon=0.1) -> tuple[Tensor, dict[str, int | float]]:
+    """
+    SDPO Loss (Formula 11):
+    L_SDPO(θ) = -E[log σ(w̃_θ(t) · ψ(x^w_{t-1}|x^w_t) - w̃_θ(t) · ψ(x^l_{t-1}|x^l_t))]
+
+    where ψ(x_{t-1}|x_t) = β · log(p*_θ(x_{t-1}|x_t) / p_ref(x_{t-1}|x_t))
+    """
+
+    loss_w, loss_l = loss.chunk(2)
+    ref_loss_w, ref_loss_l = ref_loss.chunk(2)
+
+    # Compute step-wise importance weights for inverse weighting
+    w_theta_w = compute_importance_weight(loss_w, ref_loss_w)
+    w_theta_l = compute_importance_weight(loss_l, ref_loss_l)
+
+    # Inverse weighting with clipping (Formula 12)
+    w_theta_w_inv = clip_importance_weight(1.0 / (w_theta_w + 1e-8), epsilon=epsilon)
+    w_theta_l_inv = clip_importance_weight(1.0 / (w_theta_l + 1e-8), epsilon=epsilon)
+    w_theta_max = torch.max(w_theta_w_inv, w_theta_l_inv)  # [batch_size]
+
+    # Compute ψ terms: ψ(x_{t-1}|x_t) = β · log(p*_θ(x_{t-1}|x_t) / p_ref(x_{t-1}|x_t))
+    # Approximated using negative MSE differences
+
+    # For preferred samples
+    log_ratio_w = -loss_w + ref_loss_w
+    psi_w = beta * log_ratio_w  # [batch_size]
+
+    # For dispreferred samples
+    log_ratio_l = -loss_l + ref_loss_l
+    psi_l = beta * log_ratio_l  # [batch_size]
+
+    # Final SDPO loss computation
+    logits = w_theta_max * psi_w - w_theta_max * psi_l  # [batch_size]
+    sigmoid_loss = -torch.log(torch.sigmoid(logits))  # [batch_size]
+
+    metrics: dict[str, int | float] = {}
+    metrics["loss/sdpo_log_ratio_w"] = log_ratio_w.detach().mean().item()
+    metrics["loss/sdpo_log_ratio_l"] = log_ratio_l.detach().mean().item()
+    metrics["loss/sdpo_w_theta_max"] = w_theta_max.detach().mean().item()
+    metrics["loss/sdpo_w_theta_w"] = w_theta_w.detach().mean().item()
+    metrics["loss/sdpo_w_theta_l"] = w_theta_l.detach().mean().item()
+
+    return sigmoid_loss.mean(dim=(1, 2, 3)), metrics
+
+
+def simpo_loss(
+    loss: torch.Tensor, loss_type: str = "sigmoid", gamma_beta_ratio: float = 0.25, beta: float = 2.0, smoothing: float = 0.0
+) -> tuple[torch.Tensor, dict[str, int | float]]:
+    """
+    Compute the SimPO loss for a batch of policy and reference model
+
+    SimPO: Simple Preference Optimization with a Reference-Free Reward
+    https://arxiv.org/abs/2405.14734
+    """
+    loss_w, loss_l = loss.chunk(2)
+
+    pi_logratios = loss_w - loss_l
+    pi_logratios = pi_logratios
+    logits = pi_logratios - gamma_beta_ratio
+
+    if loss_type == "sigmoid":
+        losses = -F.logsigmoid(beta * logits) * (1 - smoothing) - F.logsigmoid(-beta * logits) * smoothing
+    elif loss_type == "hinge":
+        losses = torch.relu(1 - beta * logits)
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}. Should be one of ['sigmoid', 'hinge']")
+
+    metrics = {}
+    metrics["loss/simpo_chosen_rewards"] = (beta * loss_w.detach()).mean().item()
+    metrics["loss/simpo_rejected_rewards"] = (beta * loss_l.detach()).mean().item()
+    metrics["loss/simpo_logratio"] = (beta * logits.detach()).mean().item()
+
+    return losses, metrics
+
+
+def normalize_gradients(model):
+    total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in model.parameters() if p.grad is not None]))
+    if total_norm > 0:
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.div_(total_norm)
 
 
 """
