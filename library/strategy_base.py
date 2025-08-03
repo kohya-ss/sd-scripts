@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union, Callable
 
 import numpy as np
 import torch
@@ -430,9 +430,21 @@ class LatentsCachingStrategy:
         bucket_reso: Tuple[int, int],
         npz_path: str,
         flip_aug: bool,
-        alpha_mask: bool,
+        apply_alpha_mask: bool,
         multi_resolution: bool = False,
-    ):
+    ) -> bool:
+        """
+        Args:
+            latents_stride: stride of latents
+            bucket_reso: resolution of the bucket
+            npz_path: path to the npz file
+            flip_aug: whether to flip images
+            apply_alpha_mask: whether to apply alpha mask
+            multi_resolution: whether to use multi-resolution latents
+
+        Returns:
+            bool
+        """
         if not self.cache_to_disk:
             return False
         if not os.path.exists(npz_path):
@@ -451,7 +463,7 @@ class LatentsCachingStrategy:
                 return False
             if flip_aug and "latents_flipped" + key_reso_suffix not in npz:
                 return False
-            if alpha_mask and "alpha_mask" + key_reso_suffix not in npz:
+            if apply_alpha_mask and "alpha_mask" + key_reso_suffix not in npz:
                 return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
@@ -462,22 +474,35 @@ class LatentsCachingStrategy:
     # TODO remove circular dependency for ImageInfo
     def _default_cache_batch_latents(
         self,
-        encode_by_vae,
-        vae_device,
-        vae_dtype,
+        encode_by_vae: Callable,
+        vae_device: torch.device,
+        vae_dtype: torch.dtype,
         image_infos: List,
         flip_aug: bool,
-        alpha_mask: bool,
+        apply_alpha_mask: bool,
         random_crop: bool,
         multi_resolution: bool = False,
     ):
         """
         Default implementation for cache_batch_latents. Image loading, VAE, flipping, alpha mask handling are common.
+
+        Args:
+            encode_by_vae: function to encode images by VAE
+            vae_device: device to use for VAE
+            vae_dtype: dtype to use for VAE
+            image_infos: list of ImageInfo
+            flip_aug: whether to flip images
+            apply_alpha_mask: whether to apply alpha mask
+            random_crop: whether to random crop images
+            multi_resolution: whether to use multi-resolution latents
+        
+        Returns: 
+            None
         """
         from library import train_util  # import here to avoid circular import
 
         img_tensor, alpha_masks, original_sizes, crop_ltrbs = train_util.load_images_and_masks_for_caching(
-            image_infos, alpha_mask, random_crop
+            image_infos, apply_alpha_mask, random_crop
         )
         img_tensor = img_tensor.to(device=vae_device, dtype=vae_dtype)
 
@@ -520,12 +545,40 @@ class LatentsCachingStrategy:
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
         """
         for SD/SDXL
+
+        Args:
+            npz_path (str): Path to the npz file.
+            bucket_reso (Tuple[int, int]): The resolution of the bucket.
+        
+        Returns:
+            Tuple[
+                Optional[np.ndarray], 
+                Optional[List[int]], 
+                Optional[List[int]], 
+                Optional[np.ndarray], 
+                Optional[np.ndarray]
+            ]: Latent np tensors, original size, crop (left top, right bottom), flipped latents, alpha mask
         """
         return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
 
     def _default_load_latents_from_disk(
         self, latents_stride: Optional[int], npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Args:
+            latents_stride (Optional[int]): Stride for latents. If None, load all latents.
+            npz_path (str): Path to the npz file.
+            bucket_reso (Tuple[int, int]): The resolution of the bucket.
+       
+        Returns:
+            Tuple[
+                Optional[np.ndarray], 
+                Optional[List[int]], 
+                Optional[List[int]], 
+                Optional[np.ndarray], 
+                Optional[np.ndarray]
+            ]: Latent np tensors, original size, crop (left top, right bottom), flipped latents, alpha mask
+        """
         if latents_stride is None:
             key_reso_suffix = ""
         else:
@@ -553,6 +606,19 @@ class LatentsCachingStrategy:
         alpha_mask=None,
         key_reso_suffix="",
     ):
+        """
+        Args:
+            npz_path (str): Path to the npz file.
+            latents_tensor (torch.Tensor): Latent tensor
+            original_size (List[int]): Original size of the image
+            crop_ltrb (List[int]): Crop left top right bottom
+            flipped_latents_tensor (Optional[torch.Tensor]): Flipped latent tensor
+            alpha_mask (Optional[torch.Tensor]): Alpha mask
+            key_reso_suffix (str): Key resolution suffix
+
+        Returns:
+            None
+        """
         kwargs = {}
 
         if os.path.exists(npz_path):

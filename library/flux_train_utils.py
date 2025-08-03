@@ -67,7 +67,7 @@ def sample_images(
     # unwrap unet and text_encoder(s)
     flux = accelerator.unwrap_model(flux)
     if text_encoders is not None:
-        text_encoders = [accelerator.unwrap_model(te) for te in text_encoders]
+        text_encoders = [(accelerator.unwrap_model(te) if te is not None else None) for te in text_encoders]
     if controlnet is not None:
         controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
@@ -154,9 +154,8 @@ def sample_image_inference(
     sample_steps = prompt_dict.get("sample_steps", 20)
     width = prompt_dict.get("width", 512)
     height = prompt_dict.get("height", 512)
-    # TODO refactor variable names
-    cfg_scale = prompt_dict.get("guidance_scale", 1.0)
-    emb_guidance_scale = prompt_dict.get("scale", 3.5)
+    emb_guidance_scale = prompt_dict.get("guidance_scale", 3.5)
+    cfg_scale = prompt_dict.get("scale", 1.0)
     seed = prompt_dict.get("seed")
     controlnet_image = prompt_dict.get("controlnet_image")
     prompt: str = prompt_dict.get("prompt", "")
@@ -242,7 +241,7 @@ def sample_image_inference(
         dtype=weight_dtype,
         generator=torch.Generator(device=accelerator.device).manual_seed(seed) if seed is not None else None,
     )
-    timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)  # FLUX.1 dev -> shift=True
+    timesteps = get_schedule(sample_steps, noise.shape[1], shift=True)  # Chroma can use shift=True
     img_ids = flux_utils.prepare_img_ids(1, packed_latent_height, packed_latent_width).to(accelerator.device, weight_dtype)
     t5_attn_mask = t5_attn_mask.to(accelerator.device) if args.apply_t5_attn_mask else None
 
@@ -403,8 +402,8 @@ def denoise(
                 y=torch.cat([neg_l_pooled, vec], dim=0),
                 block_controlnet_hidden_states=block_samples,
                 block_controlnet_single_hidden_states=block_single_samples,
-                timesteps=t_vec,
-                guidance=guidance_vec,
+                timesteps=t_vec.repeat(2),
+                guidance=guidance_vec.repeat(2),
                 txt_attention_mask=nc_c_t5_attn_mask,
             )
             neg_pred, pred = torch.chunk(nc_c_pred, 2, dim=0)
@@ -688,4 +687,12 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         type=float,
         default=3.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
+    )
+
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        choices=["flux", "chroma"],
+        default="flux",
+        help="Model type to use for training / トレーニングに使用するモデルタイプ：flux or chroma (default: flux)",
     )

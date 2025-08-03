@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import time
-from typing import Optional
+from typing import Optional, Union, Callable, Tuple
 import torch
 import torch.nn as nn
 
@@ -19,7 +19,7 @@ def synchronize_device(device: torch.device):
 def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
-    weight_swap_jobs = []
+    weight_swap_jobs: list[Tuple[nn.Module, nn.Module, torch.Tensor, torch.Tensor]] = []
 
     # This is not working for all cases (e.g. SD3), so we need to find the corresponding modules
     # for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
@@ -42,20 +42,19 @@ def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, laye
 
     torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
 
-    with torch.no_grad():
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream):
-            # cuda to cpu
-            for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
-                cuda_data_view.record_stream(stream)
-                module_to_cpu.weight.data = cuda_data_view.data.to("cpu", non_blocking=True)
+    stream = torch.Stream(device="cuda")
+    with torch.cuda.stream(stream):
+        # cuda to cpu
+        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
+            cuda_data_view.record_stream(stream)
+            module_to_cpu.weight.data = cuda_data_view.data.to("cpu", non_blocking=True)
 
-            stream.synchronize()
+        stream.synchronize()
 
-            # cpu to cuda
-            for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
-                cuda_data_view.copy_(module_to_cuda.weight.data, non_blocking=True)
-                module_to_cuda.weight.data = cuda_data_view
+        # cpu to cuda
+        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
+            cuda_data_view.copy_(module_to_cuda.weight.data, non_blocking=True)
+            module_to_cuda.weight.data = cuda_data_view
 
     stream.synchronize()
     torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
@@ -67,23 +66,24 @@ def swap_weight_devices_no_cuda(device: torch.device, layer_to_cpu: nn.Module, l
     """
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
-    weight_swap_jobs = []
+    weight_swap_jobs: list[Tuple[nn.Module, nn.Module, torch.Tensor, torch.Tensor]] = []
     for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
         if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
             weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
+
 
     # device to cpu
     for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
         module_to_cpu.weight.data = cuda_data_view.data.to("cpu", non_blocking=True)
 
-    synchronize_device()
+    synchronize_device(device)
 
     # cpu to device
     for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
         cuda_data_view.copy_(module_to_cuda.weight.data, non_blocking=True)
         module_to_cuda.weight.data = cuda_data_view
 
-    synchronize_device()
+    synchronize_device(device)
 
 
 def weighs_to_device(layer: nn.Module, device: torch.device):
@@ -149,13 +149,16 @@ class Offloader:
             print(f"Waited for block {block_idx}: {time.perf_counter()-start_time:.2f}s")
 
 
+# Gradient tensors
+_grad_t = Union[tuple[torch.Tensor, ...], torch.Tensor]
+
 class ModelOffloader(Offloader):
     """
     supports forward offloading
     """
 
-    def __init__(self, blocks: list[nn.Module], num_blocks: int, blocks_to_swap: int, device: torch.device, debug: bool = False):
-        super().__init__(num_blocks, blocks_to_swap, device, debug)
+    def __init__(self, blocks: Union[list[nn.Module], nn.ModuleList], blocks_to_swap: int, device: torch.device, debug: bool = False):
+        super().__init__(len(blocks), blocks_to_swap, device, debug)
 
         # register backward hooks
         self.remove_handles = []
@@ -169,7 +172,7 @@ class ModelOffloader(Offloader):
         for handle in self.remove_handles:
             handle.remove()
 
-    def create_backward_hook(self, blocks: list[nn.Module], block_index: int) -> Optional[callable]:
+    def create_backward_hook(self, blocks: Union[list[nn.Module], nn.ModuleList], block_index: int) -> Optional[Callable[[nn.Module, _grad_t, _grad_t], Union[None, _grad_t]]]:
         # -1 for 0-based index
         num_blocks_propagated = self.num_blocks - block_index - 1
         swapping = num_blocks_propagated > 0 and num_blocks_propagated <= self.blocks_to_swap
@@ -183,7 +186,7 @@ class ModelOffloader(Offloader):
         block_idx_to_cuda = self.blocks_to_swap - num_blocks_propagated
         block_idx_to_wait = block_index - 1
 
-        def backward_hook(module, grad_input, grad_output):
+        def backward_hook(module: nn.Module, grad_input: _grad_t, grad_output: _grad_t):
             if self.debug:
                 print(f"Backward hook for block {block_index}")
 
@@ -195,7 +198,7 @@ class ModelOffloader(Offloader):
 
         return backward_hook
 
-    def prepare_block_devices_before_forward(self, blocks: list[nn.Module]):
+    def prepare_block_devices_before_forward(self, blocks: Union[list[nn.Module], nn.ModuleList]):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
@@ -208,7 +211,7 @@ class ModelOffloader(Offloader):
 
         for b in blocks[self.num_blocks - self.blocks_to_swap :]:
             b.to(self.device)  # move block to device first
-            weighs_to_device(b, "cpu")  # make sure weights are on cpu
+            weighs_to_device(b, torch.device("cpu"))  # make sure weights are on cpu
 
         synchronize_device(self.device)
         clean_memory_on_device(self.device)
@@ -218,7 +221,7 @@ class ModelOffloader(Offloader):
             return
         self._wait_blocks_move(block_idx)
 
-    def submit_move_blocks(self, blocks: list[nn.Module], block_idx: int):
+    def submit_move_blocks(self, blocks: Union[list[nn.Module], nn.ModuleList], block_idx: int):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
         if block_idx >= self.blocks_to_swap:

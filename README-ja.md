@@ -155,11 +155,12 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
   `#` で始まる行はコメントになります。`--n` のように「ハイフン二個＋英小文字」の形でオプションを指定できます。以下が使用可能できます。
 
-  * `--n` Negative prompt up to the next option.
-  * `--w` Specifies the width of the generated image.
-  * `--h` Specifies the height of the generated image.
-  * `--d` Specifies the seed of the generated image.
-  * `--l` Specifies the CFG scale of the generated image.
-  * `--s` Specifies the number of steps in the generation.
+  * `--n` ネガティブプロンプト（次のオプションまで）
+  * `--w` 生成画像の幅を指定
+  * `--h` 生成画像の高さを指定
+  * `--d` 生成画像のシード値を指定
+  * `--l` 生成画像のCFGスケールを指定。FLUX.1モデルでは、デフォルトは `1.0` でCFGなしを意味します。Chromaモデルでは、CFGを有効にするために `4.0` 程度に設定してください
+  * `--g` 埋め込みガイダンス付きモデル（FLUX.1）の埋め込みガイダンススケールを指定、デフォルトは `3.5`。Chromaモデルでは `0.0` に設定してください
+  * `--s` 生成時のステップ数を指定
 
   `( )` や `[ ]` などの重みづけも動作します。
