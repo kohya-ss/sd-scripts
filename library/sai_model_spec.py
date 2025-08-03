@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import dataclass, field
 from io import BytesIO
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Union
 import safetensors
 from library.utils import setup_logging
 
@@ -36,30 +36,26 @@ metadata = {
 """
 
 BASE_METADATA = {
-    # === Universal MUST fields ===
-    "modelspec.sai_model_spec": "1.0.1",  # Updated to latest spec version
+    # === MUST ===
+    "modelspec.sai_model_spec": "1.0.1", 
     "modelspec.architecture": None,
     "modelspec.implementation": None,
     "modelspec.title": None,
+    "modelspec.resolution": None,
     
-    # === Universal SHOULD fields ===
+    # === SHOULD ===
     "modelspec.description": None,
     "modelspec.author": None,
     "modelspec.date": None,
     "modelspec.hash_sha256": None,
     
-    # === Universal CAN fields ===
+    # === CAN===
     "modelspec.implementation_version": None,
     "modelspec.license": None,
     "modelspec.usage_hint": None,
     "modelspec.thumbnail": None,
     "modelspec.tags": None,
     "modelspec.merged_from": None,
-    
-    # === Image generation MUST fields ===
-    "modelspec.resolution": None,
-    
-    # === Image generation CAN fields ===
     "modelspec.trigger_phrase": None,
     "modelspec.prediction_type": None,
     "modelspec.timestep_range": None,
@@ -68,12 +64,6 @@ BASE_METADATA = {
     "modelspec.is_negative_embedding": None,
     "modelspec.unet_dtype": None,
     "modelspec.vae_dtype": None,
-    
-    # === Text prediction fields ===
-    "modelspec.data_format": None,
-    "modelspec.format_type": None,
-    "modelspec.language": None,
-    "modelspec.format_template": None,
 }
 
 # 別に使うやつだけ定義
@@ -113,49 +103,39 @@ class ModelSpecMetadata:
     All fields correspond to modelspec.* keys in the final metadata.
     """
     
-    # === Universal MUST fields ===
+    # === MUST ===
     architecture: str
     implementation: str
     title: str
+    resolution: str | None = None
     
-    # === Universal SHOULD fields ===
-    description: Optional[str] = None
-    author: Optional[str] = None
-    date: Optional[str] = None
-    hash_sha256: Optional[str] = None
+    # === SHOULD ===
+    description: str | None = None
+    author: str | None = None
+    date: str | None = None
+    hash_sha256: str | None = None
     
-    # === Universal CAN fields ===
+    # === CAN ===
     sai_model_spec: str = "1.0.1"
-    implementation_version: Optional[str] = None
-    license: Optional[str] = None
-    usage_hint: Optional[str] = None
-    thumbnail: Optional[str] = None
-    tags: Optional[str] = None
-    merged_from: Optional[str] = None
-    
-    # === Image generation MUST fields ===
-    resolution: Optional[str] = None
-    
-    # === Image generation CAN fields ===
-    trigger_phrase: Optional[str] = None
-    prediction_type: Optional[str] = None
-    timestep_range: Optional[str] = None
-    encoder_layer: Optional[str] = None
-    preprocessor: Optional[str] = None
-    is_negative_embedding: Optional[str] = None
-    unet_dtype: Optional[str] = None
-    vae_dtype: Optional[str] = None
-    
-    # === Text prediction fields ===
-    data_format: Optional[str] = None
-    format_type: Optional[str] = None
-    language: Optional[str] = None
-    format_template: Optional[str] = None
+    implementation_version: str | None = None
+    license: str | None = None
+    usage_hint: str | None = None
+    thumbnail: str | None = None
+    tags: str | None = None
+    merged_from: str | None = None
+    trigger_phrase: str | None = None
+    prediction_type: str | None = None
+    timestep_range: str | None = None
+    encoder_layer: str | None = None
+    preprocessor: str | None = None
+    is_negative_embedding: str | None = None
+    unet_dtype: str | None = None
+    vae_dtype: str | None = None
     
     # === Additional metadata ===
-    additional_fields: Dict[str, str] = field(default_factory=dict)
+    additional_fields: dict[str, str] = field(default_factory=dict)
     
-    def to_metadata_dict(self) -> Dict[str, str]:
+    def to_metadata_dict(self) -> dict[str, str]:
         """Convert dataclass to metadata dictionary with modelspec. prefixes."""
         metadata = {}
         
@@ -212,7 +192,7 @@ def determine_architecture(
     sdxl: bool,
     lora: bool,
     textual_inversion: bool,
-    model_config: Optional[dict] = None
+    model_config: dict[str, str] | None = None
 ) -> str:
     """Determine model architecture string from parameters."""
     
@@ -256,8 +236,8 @@ def determine_implementation(
     lora: bool,
     textual_inversion: bool,
     sdxl: bool,
-    model_config: Optional[dict] = None,
-    is_stable_diffusion_ckpt: Optional[bool] = None
+    model_config: dict[str, str] | None = None,
+    is_stable_diffusion_ckpt: bool | None = None
 ) -> str:
     """Determine implementation string from parameters."""
     
@@ -321,9 +301,9 @@ def file_to_data_url(file_path: str) -> str:
 
 
 def determine_resolution(
-    reso: Optional[Union[int, Tuple[int, int]]] = None,
+    reso: Union[int, tuple[int, int]] | None = None,
     sdxl: bool = False,
-    model_config: Optional[dict] = None,
+    model_config: dict[str, str] | None = None,
     v2: bool = False,
     v_parameterization: bool = False
 ) -> str:
@@ -386,25 +366,25 @@ def update_hash_sha256(metadata: dict, state_dict: dict):
 
 
 def build_metadata_dataclass(
-    state_dict: Optional[dict],
+    state_dict: dict | None,
     v2: bool,
     v_parameterization: bool,
     sdxl: bool,
     lora: bool,
     textual_inversion: bool,
     timestamp: float,
-    title: Optional[str] = None,
-    reso: Optional[Union[int, Tuple[int, int]]] = None,
-    is_stable_diffusion_ckpt: Optional[bool] = None,
-    author: Optional[str] = None,
-    description: Optional[str] = None,
-    license: Optional[str] = None,
-    tags: Optional[str] = None,
-    merged_from: Optional[str] = None,
-    timesteps: Optional[Tuple[int, int]] = None,
-    clip_skip: Optional[int] = None,
-    model_config: Optional[dict] = None,
-    optional_metadata: Optional[dict] = None,
+    title: str | None = None,
+    reso: int | tuple[int, int] | None = None,
+    is_stable_diffusion_ckpt: bool | None = None,
+    author: str | None = None,
+    description: str | None = None,
+    license: str | None = None,
+    tags: str | None = None,
+    merged_from: str | None = None,
+    timesteps: tuple[int, int] | None = None,
+    clip_skip: int | None = None,
+    model_config: dict | None = None,
+    optional_metadata: dict | None = None,
 ) -> ModelSpecMetadata:
     """
     Build ModelSpec 1.0.1 compliant metadata dataclass.
@@ -515,26 +495,26 @@ def build_metadata_dataclass(
 
 
 def build_metadata(
-    state_dict: Optional[dict],
+    state_dict: dict | None,
     v2: bool,
     v_parameterization: bool,
     sdxl: bool,
     lora: bool,
     textual_inversion: bool,
     timestamp: float,
-    title: Optional[str] = None,
-    reso: Optional[Union[int, Tuple[int, int]]] = None,
-    is_stable_diffusion_ckpt: Optional[bool] = None,
-    author: Optional[str] = None,
-    description: Optional[str] = None,
-    license: Optional[str] = None,
-    tags: Optional[str] = None,
-    merged_from: Optional[str] = None,
-    timesteps: Optional[Tuple[int, int]] = None,
-    clip_skip: Optional[int] = None,
-    model_config: Optional[dict] = None,
-    optional_metadata: Optional[dict] = None,
-) -> Dict[str, str]:
+    title: str | None = None,
+    reso: int | tuple[int, int] | None = None,
+    is_stable_diffusion_ckpt: bool | None = None,
+    author: str | None = None,
+    description: str | None = None,
+    license: str | None = None,
+    tags: str | None = None,
+    merged_from: str | None = None,
+    timesteps: tuple[int, int] | None = None,
+    clip_skip: int | None = None,
+    model_config: dict | None = None,
+    optional_metadata: dict | None = None,
+) -> dict[str, str]:
     """
     Build ModelSpec 1.0.1 compliant metadata for safetensors models.
     Legacy function that returns dict - prefer build_metadata_dataclass for new code.
@@ -572,7 +552,7 @@ def build_metadata(
 # region utils
 
 
-def get_title(metadata: dict) -> Optional[str]:
+def get_title(metadata: dict) -> str | None:
     return metadata.get(MODELSPEC_TITLE, None)
 
 
@@ -587,7 +567,7 @@ def load_metadata_from_safetensors(model: str) -> dict:
     return metadata
 
 
-def build_merged_from(models: List[str]) -> str:
+def build_merged_from(models: list[str]) -> str:
     def get_title(model: str):
         metadata = load_metadata_from_safetensors(model)
         title = metadata.get(MODELSPEC_TITLE, None)
@@ -602,7 +582,6 @@ def build_merged_from(models: List[str]) -> str:
 def add_model_spec_arguments(parser: argparse.ArgumentParser):
     """Add all ModelSpec metadata arguments to the parser."""
     
-    # === Existing standard metadata fields ===
     parser.add_argument(
         "--metadata_title",
         type=str,
@@ -633,9 +612,6 @@ def add_model_spec_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
     )
-    
-    # === Universal CAN fields ===
-    # Note: implementation_version is automatically set to sd-scripts/{commit_hash}
     parser.add_argument(
         "--metadata_usage_hint",
         type=str,
@@ -654,8 +630,6 @@ def add_model_spec_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="source models for merged model metadata / メタデータに書き込まれるマージ元モデル名",
     )
-    
-    # === Image generation CAN fields ===
     parser.add_argument(
         "--metadata_trigger_phrase",
         type=str,
@@ -673,44 +647,6 @@ def add_model_spec_arguments(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="whether this is a negative embedding for model metadata / メタデータに書き込まれるネガティブ埋め込みかどうか",
-    )
-    parser.add_argument(
-        "--metadata_unet_dtype",
-        type=str,
-        default=None,
-        help="UNet data type for model metadata / メタデータに書き込まれるUNetのデータ型",
-    )
-    parser.add_argument(
-        "--metadata_vae_dtype",
-        type=str,
-        default=None,
-        help="VAE data type for model metadata / メタデータに書き込まれるVAEのデータ型",
-    )
-    
-    # === Text prediction fields ===
-    parser.add_argument(
-        "--metadata_data_format",
-        type=str,
-        default=None,
-        help="data format for text prediction model metadata / メタデータに書き込まれるテキスト予測モデルのデータ形式",
-    )
-    parser.add_argument(
-        "--metadata_format_type",
-        type=str,
-        default=None,
-        help="format type for text prediction model metadata / メタデータに書き込まれるテキスト予測モデルの形式タイプ",
-    )
-    parser.add_argument(
-        "--metadata_language",
-        type=str,
-        default=None,
-        help="language for text prediction model metadata / メタデータに書き込まれるテキスト予測モデルの言語",
-    )
-    parser.add_argument(
-        "--metadata_format_template",
-        type=str,
-        default=None,
-        help="format template for text prediction model metadata / メタデータに書き込まれるテキスト予測モデルの形式テンプレート",
     )
 
 
