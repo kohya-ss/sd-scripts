@@ -107,7 +107,8 @@ class ModelSpecMetadata:
     architecture: str
     implementation: str
     title: str
-    resolution: str | None = None
+    resolution: str
+    sai_model_spec: str = "1.0.1"
     
     # === SHOULD ===
     description: str | None = None
@@ -116,7 +117,6 @@ class ModelSpecMetadata:
     hash_sha256: str | None = None
     
     # === CAN ===
-    sai_model_spec: str = "1.0.1"
     implementation_version: str | None = None
     license: str | None = None
     usage_hint: str | None = None
