@@ -547,21 +547,21 @@ resolution = [768, 768]
 
 You can calculate validation loss during training using a validation dataset to evaluate model generalization performance.
 
-To set up validation, add a `[validation]` section to your dataset configuration TOML file. Configuration is similar to training datasets, but `num_repeats` is usually set to 1.
+To set up validation, add a `validation_split` and optionally `validation_seed` to your dataset configuration TOML file. 
 
 ```toml
-# ... (training dataset configuration) ...
-
-[validation]
-batch_size = 1
+[[datasets]]
 enable_bucket = true
-resolution = [1024, 1024] # Resolution for validation
+resolution = [1024, 1024]
+validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
 
-  [[validation.subsets]]
-  image_dir = "path/to/validation/images"
-  num_repeats = 1
-  caption_extension = ".txt"
-  # ... other validation dataset settings ...
+  [[datasets.subsets]]
+  image_dir = "path/to/image/directory"
+  validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
+
+  [[datasets.subsets]]
+  image_dir = "path/to/image/full_validation"
+  validation_split = 1.0 # Will use this full subset as a validation subset. 
 ```
 
 **Notes:**
