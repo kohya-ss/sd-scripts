@@ -3484,6 +3484,7 @@ def get_sai_model_spec(
     sd3: str = None,
     flux: str = None, # "dev", "schnell" or "chroma"
     lumina: str = None,
+    optional_metadata: dict[str, str] | None = None
 ):
     timestamp = time.time()
 
@@ -3499,6 +3500,34 @@ def get_sai_model_spec(
         timesteps = (min_time_step, max_time_step)
     else:
         timesteps = None
+
+    # Convert individual model parameters to model_config dict
+    # TODO: Update calls to this function to pass in the model config
+    model_config = {}
+    if sd3 is not None:
+        model_config["sd3"] = sd3
+    if flux is not None:
+        model_config["flux"] = flux
+    if lumina is not None:
+        model_config["lumina"] = lumina
+
+    # Extract metadata_* fields from args and merge with optional_metadata
+    extracted_metadata = {}
+    
+    # Extract all metadata_* attributes from args
+    for attr_name in dir(args):
+        if attr_name.startswith("metadata_") and not attr_name.startswith("metadata___"):
+            value = getattr(args, attr_name, None)
+            if value is not None:
+                # Remove metadata_ prefix and exclude already handled fields
+                field_name = attr_name[9:]  # len("metadata_") = 9
+                if field_name not in ["title", "author", "description", "license", "tags"]:
+                    extracted_metadata[field_name] = value
+    
+    # Merge extracted metadata with provided optional_metadata
+    all_optional_metadata = {**extracted_metadata}
+    if optional_metadata:
+        all_optional_metadata.update(optional_metadata)
 
     metadata = sai_model_spec.build_metadata(
         state_dict,
@@ -3517,11 +3546,73 @@ def get_sai_model_spec(
         tags=args.metadata_tags,
         timesteps=timesteps,
         clip_skip=args.clip_skip,  # None or int
-        sd3=sd3,
-        flux=flux,
-        lumina=lumina,
+        model_config=model_config, 
+        optional_metadata=all_optional_metadata if all_optional_metadata else None,
     )
     return metadata
+
+
+def get_sai_model_spec_dataclass(
+    state_dict: dict,
+    args: argparse.Namespace,
+    sdxl: bool,
+    lora: bool,
+    textual_inversion: bool,
+    is_stable_diffusion_ckpt: Optional[bool] = None,
+    sd3: str = None,
+    flux: str = None,
+    lumina: str = None,
+    optional_metadata: dict[str, str] | None = None
+) -> sai_model_spec.ModelSpecMetadata:
+    """
+    Get ModelSpec metadata as a dataclass - preferred for new code.
+    Automatically extracts metadata_* fields from args.
+    """
+    timestamp = time.time()
+
+    v2 = args.v2
+    v_parameterization = args.v_parameterization
+    reso = args.resolution
+
+    title = args.metadata_title if args.metadata_title is not None else args.output_name
+
+    if args.min_timestep is not None or args.max_timestep is not None:
+        min_time_step = args.min_timestep if args.min_timestep is not None else 0
+        max_time_step = args.max_timestep if args.max_timestep is not None else 1000
+        timesteps = (min_time_step, max_time_step)
+    else:
+        timesteps = None
+
+    # Convert individual model parameters to model_config dict
+    model_config = {}
+    if sd3 is not None:
+        model_config["sd3"] = sd3
+    if flux is not None:
+        model_config["flux"] = flux
+    if lumina is not None:
+        model_config["lumina"] = lumina
+
+    # Use the dataclass function directly
+    return sai_model_spec.build_metadata_dataclass(
+        state_dict,
+        v2,
+        v_parameterization,
+        sdxl,
+        lora,
+        textual_inversion,
+        timestamp,
+        title=title,
+        reso=reso,
+        is_stable_diffusion_ckpt=is_stable_diffusion_ckpt,
+        author=args.metadata_author,
+        description=args.metadata_description,
+        license=args.metadata_license,
+        tags=args.metadata_tags,
+        timesteps=timesteps,
+        clip_skip=args.clip_skip,
+        model_config=model_config,
+        optional_metadata=optional_metadata,
+    )
 
 
 def add_sd_models_arguments(parser: argparse.ArgumentParser):
@@ -4103,39 +4194,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--output_config", action="store_true", help="output command line args to given .toml file / 引数を.tomlファイルに出力する"
     )
-
-    # SAI Model spec
-    parser.add_argument(
-        "--metadata_title",
-        type=str,
-        default=None,
-        help="title for model metadata (default is output_name) / メタデータに書き込まれるモデルタイトル、省略時はoutput_name",
-    )
-    parser.add_argument(
-        "--metadata_author",
-        type=str,
-        default=None,
-        help="author name for model metadata / メタデータに書き込まれるモデル作者名",
-    )
-    parser.add_argument(
-        "--metadata_description",
-        type=str,
-        default=None,
-        help="description for model metadata / メタデータに書き込まれるモデル説明",
-    )
-    parser.add_argument(
-        "--metadata_license",
-        type=str,
-        default=None,
-        help="license for model metadata / メタデータに書き込まれるモデルライセンス",
-    )
-    parser.add_argument(
-        "--metadata_tags",
-        type=str,
-        default=None,
-        help="tags for model metadata, separated by comma / メタデータに書き込まれるモデルタグ、カンマ区切り",
-    )
-
     if support_dreambooth:
         # DreamBooth training
         parser.add_argument(

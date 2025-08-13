@@ -31,6 +31,7 @@ from library import (
     lumina_util,
     strategy_base,
     strategy_lumina,
+    sai_model_spec
 )
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
@@ -904,6 +905,7 @@ def setup_parser() -> argparse.ArgumentParser:
 
     add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)  # TODO split this
+    sai_model_spec.add_model_spec_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, False)
     train_util.add_masked_loss_arguments(parser)
