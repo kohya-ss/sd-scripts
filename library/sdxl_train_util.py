@@ -24,8 +24,7 @@ TOKENIZER2_PATH = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
 
 # DEFAULT_NOISE_OFFSET = 0.0357
 
-
-def load_target_model(args, accelerator, model_version: str, weight_dtype):
+def load_target_model_backup(args, accelerator, model_version: str, weight_dtype):
     model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
@@ -61,6 +60,38 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
 
     return load_stable_diffusion_format, text_encoder1, text_encoder2, vae, unet, logit_scale, ckpt_info
 
+def load_target_model(args, accelerator, model_version: str, weight_dtype):
+    model_dtype = match_mixed_precision(args, weight_dtype)  # prepare fp16/bf16
+    logger.info(f"loading model for process {accelerator.state.local_process_index} {accelerator.state.process_index} /{accelerator.state.num_processes}")
+    (
+        load_stable_diffusion_format,
+        text_encoder1,
+        text_encoder2,
+        vae,
+        unet,
+        logit_scale,
+        ckpt_info,
+    ) = _load_target_model(
+        args.pretrained_model_name_or_path,
+        args.vae,
+        model_version,
+        weight_dtype,
+        accelerator.device if args.lowram else "cpu",
+        model_dtype,
+    )
+    # work on low-ram device
+    if args.lowram:
+        text_encoder1.to(accelerator.device)
+        text_encoder2.to(accelerator.device)
+        unet.to(accelerator.device)
+        vae.to(accelerator.device)
+
+    clean_memory_on_device(accelerator.device)
+    logger.info(f"model loaded for process {accelerator.state.local_process_index} {accelerator.state.process_index} /{accelerator.state.num_processes}")
+    accelerator.wait_for_everyone()
+    logger.info(f"model loaded for all processes {accelerator.state.local_process_index} {accelerator.state.process_index} /{accelerator.state.num_processes}")
+
+    return load_stable_diffusion_format, text_encoder1, text_encoder2, vae, unet, logit_scale, ckpt_info
 
 def _load_target_model(
     name_or_path: str, vae_path: Optional[str], model_version: str, weight_dtype, device="cpu", model_dtype=None, disable_mmap=False

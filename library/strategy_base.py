@@ -55,6 +55,7 @@ class TokenizeStrategy:
         self, model_class: Any, model_id: str, subfolder: Optional[str] = None, tokenizer_cache_dir: Optional[str] = None
     ) -> Any:
         tokenizer = None
+        #TODO: skip_npz_check adaption (However I don't cache TE latents)
         if tokenizer_cache_dir:
             local_tokenizer_path = os.path.join(tokenizer_cache_dir, model_id.replace("/", "_"))
             if os.path.exists(local_tokenizer_path):
@@ -447,10 +448,11 @@ class LatentsCachingStrategy:
         """
         if not self.cache_to_disk:
             return False
-        if not os.path.exists(npz_path):
-            return False
+        # In multinode training, os.path will hang, but np.load not sure.
         if self.skip_disk_cache_validity_check:
             return True
+        if not os.path.exists(npz_path):
+            return False
 
         expected_latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
 
@@ -560,6 +562,7 @@ class LatentsCachingStrategy:
         """
         return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
 
+    # TODO: Solve Multinode hang
     def _default_load_latents_from_disk(
         self, latents_stride: Optional[int], npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:

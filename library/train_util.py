@@ -14,7 +14,7 @@ import shutil
 import time
 import typing
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
+from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, ProfileKwargs, PartialState, DataLoaderConfiguration
 import glob
 import math
 import os
@@ -137,7 +137,20 @@ IMAGE_TRANSFORMS = transforms.Compose(
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3 = "_sd3_te.npz"
+SKIP_NPZ_PATH_CHECK = False
 
+# Trigger by args.skip_cache_check
+def set_skip_npz_path_check(skip: bool):
+    global SKIP_NPZ_PATH_CHECK
+    SKIP_NPZ_PATH_CHECK = skip
+
+def npz_path_exists(path):
+    """
+    Check if the (cached latents) path exists. This is necessary for NFS systems.
+    """
+    if SKIP_NPZ_PATH_CHECK:
+        return True
+    return os.path.exists(path)
 
 def split_train_val(
     paths: List[str],
@@ -209,6 +222,18 @@ class ImageInfo:
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
         self.resize_interpolation: Optional[str] = None
 
+    @staticmethod
+    def _pin_tensor(tensor):
+        return tensor.pin_memory() if tensor is not None else tensor
+
+    def pin_memory(self):
+        self.latents = self._pin_tensor(self.latents)
+        self.latents_flipped = self._pin_tensor(self.latents_flipped)
+        self.text_encoder_outputs1 = self._pin_tensor(self.text_encoder_outputs1)
+        self.text_encoder_outputs2 = self._pin_tensor(self.text_encoder_outputs2)
+        self.text_encoder_pool2 = self._pin_tensor(self.text_encoder_pool2)
+        self.alpha_mask = self._pin_tensor(self.alpha_mask)
+        return self
 
 class BucketManager:
     def __init__(self, no_upscale, max_reso, min_size, max_size, reso_steps) -> None:
@@ -432,6 +457,7 @@ class BaseSubset:
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
+        skip_npz_check: Optional[bool] = SKIP_NPZ_PATH_CHECK,
         resize_interpolation: Optional[str] = None,
     ) -> None:
         self.image_dir = image_dir
@@ -463,8 +489,9 @@ class BaseSubset:
         self.validation_seed = validation_seed
         self.validation_split = validation_split
 
-        self.resize_interpolation = resize_interpolation
 
+        self.skip_npz_check = skip_npz_check or SKIP_NPZ_PATH_CHECK # For multinode training
+        self.resize_interpolation = resize_interpolation
 
 class DreamBoothSubset(BaseSubset):
     def __init__(
@@ -1403,7 +1430,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 if not is_main_process:  # store to info only
                     continue
 
-                if os.path.exists(te_out_npz):
+                if npz_path_exists(te_out_npz):
                     # TODO check varidity of cache here
                     continue
 
@@ -1851,6 +1878,11 @@ class BaseDataset(torch.utils.data.Dataset):
         example["bucket_reso"] = bucket_reso
         return example
 
+    def pin_memory(self):
+        for key in self.image_data.keys():
+            if hasattr(self.image_data[key], 'pin_memory') and callable(self.image_data[key].pin_memory):
+                self.image_data[key].pin_memory()
+
 
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
@@ -2141,6 +2173,10 @@ class DreamBoothDataset(BaseDataset):
 
         self.num_reg_images = num_reg_images
 
+    def pin_memory(self):
+        for key in self.image_data.keys():
+            if hasattr(self.image_data[key], 'pin_memory') and callable(self.image_data[key].pin_memory):
+                self.image_data[key].pin_memory()
 
 class FineTuningDataset(BaseDataset):
     def __init__(
@@ -2157,16 +2193,22 @@ class FineTuningDataset(BaseDataset):
         debug_dataset: bool,
         validation_seed: int,
         validation_split: float,
-        resize_interpolation: Optional[str],
+        skip_npz_check: Optional[bool] = SKIP_NPZ_PATH_CHECK,
+        resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
 
         self.batch_size = batch_size
+        self.skip_npz_check = skip_npz_check or SKIP_NPZ_PATH_CHECK
+        if self.skip_npz_check:
+            logger.info(f"Skip (VAE) latent checking enabled. Will assign all data path as *.npz directly.")
 
         self.num_train_images = 0
         self.num_reg_images = 0
 
         for subset in subsets:
+            #logger.info(f"image_dir: {subset.image_dir}")
+            
             if subset.num_repeats < 1:
                 logger.warning(
                     f"ignore subset with metadata_file='{subset.metadata_file}': num_repeats is less than 1 / num_repeatsが1を下回っているためサブセットを無視します: {subset.num_repeats}"
@@ -2180,7 +2222,7 @@ class FineTuningDataset(BaseDataset):
                 continue
 
             # メタデータを読み込む
-            if os.path.exists(subset.metadata_file):
+            if npz_path_exists(subset.metadata_file):
                 logger.info(f"loading existing metadata: {subset.metadata_file}")
                 with open(subset.metadata_file, "rt", encoding="utf-8") as f:
                     metadata = json.load(f)
@@ -2194,27 +2236,32 @@ class FineTuningDataset(BaseDataset):
                 continue
 
             tags_list = []
-            for image_key, img_md in metadata.items():
+            #for image_key, img_md in metadata.items():
+            for image_key, img_md in tqdm(metadata.items(), desc=f"load metadata: {subset.metadata_file}"):
                 # path情報を作る
                 abs_path = None
 
-                # まず画像を優先して探す
-                if os.path.exists(image_key):
-                    abs_path = image_key
+                #For speed (make sure it has been checked before training)
+                if self.skip_npz_check:
+                    abs_path = os.path.join(subset.image_dir, image_key + ".npz")
                 else:
-                    # わりといい加減だがいい方法が思いつかん
-                    paths = glob_images(subset.image_dir, image_key)
-                    if len(paths) > 0:
-                        abs_path = paths[0]
-
-                # なければnpzを探す
-                if abs_path is None:
-                    if os.path.exists(os.path.splitext(image_key)[0] + ".npz"):
-                        abs_path = os.path.splitext(image_key)[0] + ".npz"
+                    # まず画像を優先して探す
+                    if npz_path_exists(image_key):
+                        abs_path = image_key
                     else:
-                        npz_path = os.path.join(subset.image_dir, image_key + ".npz")
-                        if os.path.exists(npz_path):
-                            abs_path = npz_path
+                        # わりといい加減だがいい方法が思いつかん
+                        paths = glob_images(subset.image_dir, image_key)
+                        if len(paths) > 0:
+                            abs_path = paths[0]
+
+                    # なければnpzを探す
+                    if abs_path is None:
+                        if npz_path_exists(os.path.splitext(image_key)[0] + ".npz"):
+                            abs_path = os.path.splitext(image_key)[0] + ".npz"
+                        else:
+                            npz_path = os.path.join(subset.image_dir, image_key + ".npz")
+                            if npz_path_exists(npz_path):
+                                abs_path = npz_path
 
                 assert abs_path is not None, f"no image / 画像がありません: {image_key}"
 
@@ -2247,8 +2294,13 @@ class FineTuningDataset(BaseDataset):
                 image_info.image_size = img_md.get("train_resolution")
 
                 if not subset.color_aug and not subset.random_crop:
-                    # if npz exists, use them
-                    image_info.latents_npz, image_info.latents_npz_flipped = self.image_key_to_npz_file(subset, image_key)
+                    # Direct asign to skip most path checking.
+                    if self.skip_npz_check:
+                        image_info.latents_npz = abs_path
+                        image_info.latents_npz_flipped = abs_path.replace(".npz", "_flip.npz") if subset.flip_aug else None
+                    else:
+                        # if npz exists, use them
+                        image_info.latents_npz, image_info.latents_npz_flipped = self.image_key_to_npz_file(subset, image_key)
 
                 self.register_image(image_info, subset)
 
@@ -2347,10 +2399,10 @@ class FineTuningDataset(BaseDataset):
         base_name = os.path.splitext(image_key)[0]
         npz_file_norm = base_name + ".npz"
 
-        if os.path.exists(npz_file_norm):
+        if npz_path_exists(npz_file_norm):
             # image_key is full path
             npz_file_flip = base_name + "_flip.npz"
-            if not os.path.exists(npz_file_flip):
+            if not npz_path_exists(npz_file_flip):
                 npz_file_flip = None
             return npz_file_norm, npz_file_flip
 
@@ -2362,14 +2414,18 @@ class FineTuningDataset(BaseDataset):
         npz_file_norm = os.path.join(subset.image_dir, image_key + ".npz")
         npz_file_flip = os.path.join(subset.image_dir, image_key + "_flip.npz")
 
-        if not os.path.exists(npz_file_norm):
+        if not npz_path_exists(npz_file_norm):
             npz_file_norm = None
             npz_file_flip = None
-        elif not os.path.exists(npz_file_flip):
+        elif not npz_path_exists(npz_file_flip):
             npz_file_flip = None
 
         return npz_file_norm, npz_file_flip
 
+    def pin_memory(self):
+        for key in self.image_data.keys():
+            if hasattr(self.image_data[key], 'pin_memory') and callable(self.image_data[key].pin_memory):
+                self.image_data[key].pin_memory()
 
 class ControlNetDataset(BaseDataset):
     def __init__(
@@ -2677,7 +2733,7 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
 def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alpha_mask: bool):
     expected_latents_size = (reso[1] // 8, reso[0] // 8)  # bucket_resoはWxHなので注意
 
-    if not os.path.exists(npz_path):
+    if not npz_path_exists(npz_path):
         return False
 
     try:
@@ -3569,7 +3625,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
         "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, "
         "AdaFactor. "
-        "Also, you can use any optimizer by specifying the full path to the class, like 'bitsandbytes.optim.AdEMAMix8bit' or 'bitsandbytes.optim.PagedAdEMAMix8bit'.",
+        "Also, you can use any optimizer by specifying the full path to the class, like 'bitsandbytes.optim.AdEMAMix8bit', 'bitsandbytes.optim.PagedAdEMAMix8bit', 'pytorch_optimizer.CAME', or 'torchao.prototype.low_bit_optim.adam.AdamW4bit'.",
     )
 
     # backward compatibility
@@ -3853,6 +3909,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         action="store_true",
         help="persistent DataLoader workers (useful for reduce time gap between epoch, but may use more memory) / DataLoader のワーカーを持続させる (エポック間の時間差を少なくするのに有効だが、より多くのメモリを消費する可能性がある)",
     )
+    parser.add_argument(
+        "--pin_memory",
+        action="store_true",
+        help="Pin memory for faster GPU loading (Windows will have side effect) / GPU の読み込みを高速化するためのピンメモリ",
+    )
     parser.add_argument("--seed", type=int, default=None, help="random seed for training / 学習時の乱数のseed")
     parser.add_argument(
         "--gradient_checkpointing", action="store_true", help="enable gradient checkpointing / gradient checkpointingを有効にする"
@@ -3891,6 +3952,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--ddp_static_graph",
         action="store_true",
         help="enable static_graph for DDP / DDPでstatic_graphを有効にする",
+    )
+    parser.add_argument(
+        "--profiler_path",
+        type=str,
+        default="/dev/shm/trace",
+        help="Path for storing PyTorch Profiler traces. Recommended to store in RAM drive. / PyTorch Profiler トレースを保存するためのパス。RAM ドライブに保存することをお勧めします。",
     )
     parser.add_argument(
         "--clip_skip",
@@ -4605,7 +4672,6 @@ def add_sd_saving_arguments(parser: argparse.ArgumentParser):
         help="use safetensors format to save (if save_model_as is not specified) / checkpoint、モデルをsafetensors形式で保存する（save_model_as未指定時）",
     )
 
-
 def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentParser):
     if not args.config_file:
         return args
@@ -4796,15 +4862,37 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         optimizer_class = lion_pytorch.Lion
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type.endswith("4bit") or optimizer_type.endswith("Fp8"):
+        # https://github.com/pytorch/ao/tree/main/torchao/prototype/low_bit_optim
+        try:
+            from torchao.prototype.low_bit_optim import AdamW4bit, AdamWFp8
+        except ImportError:
+            raise ImportError("No torchao / torchaoがインストールされていないようです")
+
+        if optimizer_type == "AdamW4bit".lower():
+            logger.info(f"use 4-bit AdamW optimizer | {optimizer_kwargs}")
+            optimizer_class = AdamW4bit
+            optimizer = optimizer_class(trainable_params, lr=torch.tensor(lr), **optimizer_kwargs)
+        elif optimizer_type == "AdamWFp8".lower():
+            logger.info(f"use AdamW Fp8 optimizer | {optimizer_kwargs}")
+            optimizer_class = AdamWFp8
+            optimizer = optimizer_class(trainable_params, lr=torch.tensor(lr), **optimizer_kwargs)
+
     elif optimizer_type.endswith("8bit".lower()):
         try:
             import bitsandbytes as bnb
         except ImportError:
             raise ImportError("No bitsandbytes / bitsandbytesがインストールされていないようです")
 
+        #try:
+        #    from torchao.prototype.low_bit_optim import AdamW8bit
+        #except ImportError:
+        #    raise ImportError("No torchao / torchaoがインストールされていないようです")
+
         if optimizer_type == "AdamW8bit".lower():
             logger.info(f"use 8-bit AdamW optimizer | {optimizer_kwargs}")
             optimizer_class = bnb.optim.AdamW8bit
+            #optimizer_class = AdamW8bit
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
         elif optimizer_type == "SGDNesterov8bit".lower():
@@ -4986,6 +5074,8 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
             if args.lr_scheduler != "adafactor":
                 logger.info(f"use adafactor_scheduler / スケジューラにadafactor_schedulerを使用します")
             args.lr_scheduler = f"adafactor:{lr}"  # ちょっと微妙だけど
+            #logger.info(f"use adafactor_scheduler / スケジューラにadafactor_schedulerを使用します")
+            #args.lr_scheduler = f"adafactor:0"  # ちょっと微妙だけど
 
             lr = None
         else:
@@ -5396,9 +5486,20 @@ def prepare_accelerator(args: argparse.Namespace):
             if args.ddp_gradient_as_bucket_view or args.ddp_static_graph
             else None
         ),
+        (
+            ProfileKwargs(
+                activities=["cpu", "cuda"],
+                output_trace_dir=args.profiler_path,
+                profile_memory=True,
+                record_shapes=True,
+                with_flops=True
+            )
+        )
     ]
     kwargs_handlers = [i for i in kwargs_handlers if i is not None]
     deepspeed_plugin = deepspeed_utils.prepare_deepspeed_plugin(args)
+
+    dataloader_config = DataLoaderConfiguration(non_blocking=args.pin_memory)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -5408,6 +5509,7 @@ def prepare_accelerator(args: argparse.Namespace):
         kwargs_handlers=kwargs_handlers,
         dynamo_backend=dynamo_backend,
         deepspeed_plugin=deepspeed_plugin,
+        dataloader_config=dataloader_config
     )
     print("accelerator device:", accelerator.device)
     return accelerator
@@ -5477,7 +5579,7 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
     return text_encoder, vae, unet, load_stable_diffusion_format
 
 
-def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
+def load_target_model_backup(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
             logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
@@ -5498,6 +5600,24 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
         accelerator.wait_for_everyone()
     return text_encoder, vae, unet, load_stable_diffusion_format
 
+def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
+    logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}, {accelerator.process_index}")
+    text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
+        args,
+        weight_dtype,
+        accelerator.device if args.lowram else "cpu",
+        unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
+    )
+    # work on low-ram device
+    if args.lowram:
+        text_encoder.to(accelerator.device)
+        unet.to(accelerator.device)
+        vae.to(accelerator.device)
+
+    clean_memory_on_device(accelerator.device)
+    logger.info(f"Model loaded for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}, {accelerator.process_index}")
+    accelerator.wait_for_everyone()
+    return text_encoder, vae, unet, load_stable_diffusion_format
 
 def patch_accelerator_for_fp16_training(accelerator):
     
@@ -6361,13 +6481,15 @@ def sample_images_common(
     except Exception:
         pass
 
+    image_paths = []
+
     if distributed_state.num_processes <= 1:
         # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
         with torch.no_grad():
             for prompt_dict in prompts:
-                sample_image_inference(
+                image_paths = [sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
-                )
+                )]
     else:
         # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
         # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
@@ -6378,9 +6500,32 @@ def sample_images_common(
         with torch.no_grad():
             with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
                 for prompt_dict in prompt_dict_lists[0]:
-                    sample_image_inference(
+                    image_paths += [sample_image_inference(
                         accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
+                    )]
+
+    accelerator.wait_for_everyone()
+        # if not main process, return
+    if accelerator.is_main_process:
+        try:
+            import wandb
+            logger.info(image_paths)
+            wandb_logger = accelerator.get_tracker("wandb")
+            # parse base filename without ext from first image path
+            for image_path_saved in get_all_paths_like_imagepaths_by_time(image_paths[0]):
+                # 0327_bs768_lion_highres_focus_fixxl4_000020_13_20240329061413_42
+                # get 13
+                file_basename = os.path.basename(image_path_saved).split(".")[0]
+                sample_idx = int(file_basename.split("_")[-3])
+                logger.info(f"sample_idx: {sample_idx} -> {image_path_saved}")
+                wandb_logger.log(
+                    {f"sample_{sample_idx}" : wandb.Image(Image.open(image_path_saved))},
+                    commit=False,
+                    step=steps,
                     )
+        except Exception as e:
+            logger.warning(e)
+            pass                    
 
     # clear pipeline and cache to reduce vram usage
     del pipeline
@@ -6392,6 +6537,22 @@ def sample_images_common(
 
     clean_memory_on_device(accelerator.device)
 
+def get_all_paths_like_imagepaths_by_time(image_path):
+    file_basename = os.path.basename(image_path).split(".")[0]
+    timestamp_str = file_basename.split("_")[-2]
+    original_timestamp = datetime.datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+
+    front_fixed_part = "_".join(file_basename.split("_")[:-3])
+
+    for root, dirs, files in os.walk(os.path.dirname(image_path)):
+        for file in files:
+            front_fixed_part = "_".join(file_basename.split("_")[:-3])
+            if front_fixed_part in file:
+                timestamp_str = file.split("_")[-2]
+                timestamp = datetime.datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                # allow 60-second difference
+                if abs((timestamp - original_timestamp).total_seconds()) < 60:
+                    yield os.path.join(root, file)
 
 def sample_image_inference(
     accelerator: Accelerator,
@@ -6479,14 +6640,15 @@ def sample_image_inference(
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
     image.save(os.path.join(save_dir, img_filename))
 
+    return os.path.join(save_dir, img_filename)
     # send images to wandb if enabled
-    if "wandb" in [tracker.name for tracker in accelerator.trackers]:
-        wandb_tracker = accelerator.get_tracker("wandb")
-
-        import wandb
-
-        # not to commit images to avoid inconsistency between training and logging steps
-        wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
+    #if "wandb" in [tracker.name for tracker in accelerator.trackers]:
+    #    wandb_tracker = accelerator.get_tracker("wandb")
+    #
+    #    import wandb
+    #
+    #    # not to commit images to avoid inconsistency between training and logging steps
+    #    wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)  # positive prompt as a caption
 
 
 def init_trackers(accelerator: Accelerator, args: argparse.Namespace, default_tracker_name: str):
@@ -6566,6 +6728,10 @@ class collator_class:
         dataset.set_current_epoch(self.current_epoch.value)
         dataset.set_current_step(self.current_step.value)
         return examples[0]
+
+    def pin_memory(self):
+        if hasattr(self, 'pin_memory') and callable(self.pin_memory):
+            self.dataset.pin_memory()
 
 
 class LossRecorder:

@@ -238,10 +238,10 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     def is_disk_cached_outputs_expected(self, npz_path: str):
         if not self.cache_to_disk:
             return False
-        if not os.path.exists(npz_path):
-            return False
         if self.skip_disk_cache_validity_check:
             return True
+        if not os.path.exists(npz_path):
+            return False
 
         try:
             npz = np.load(npz_path)
