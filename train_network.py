@@ -414,13 +414,12 @@ class NetworkTrainer:
         if text_encoder_outputs_list is not None:
             text_encoder_conds = text_encoder_outputs_list  # List of text encoder outputs
 
-
         if len(text_encoder_conds) == 0 or text_encoder_conds[0] is None or train_text_encoder:
             # TODO this does not work if 'some text_encoders are trained' and 'some are not and not cached'
             with torch.set_grad_enabled(is_train and train_text_encoder), accelerator.autocast():
                 # Get the text embedding for conditioning
                 if args.weighted_captions:
-                    input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch['captions'])
+                    input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch["captions"])
                     encoded_text_encoder_conds = text_encoding_strategy.encode_tokens_with_weights(
                         tokenize_strategy,
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
@@ -747,6 +746,9 @@ class NetworkTrainer:
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
+
+        if hasattr(network, "register_optimizer"):
+            network.register_optimizer(optimizer)
 
         # prepare dataloader
         # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -1430,6 +1432,8 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+                        if hasattr(network, "update_gradient_ema"):
+                            network.update_gradient_ema()
 
                     optimizer.step()
                     lr_scheduler.step()
