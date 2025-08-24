@@ -330,6 +330,8 @@ def train(args):
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
+    fused_optimizers_supported = ['adafactor', 'adamoffload', 'nadamoffload', 'adamwoffload', 'nadamwoffload']
+
     if args.blockwise_fused_optimizers:
         # fused backward pass: https://pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
         # Instead of creating an optimizer for all parameters as in the tutorial, we create an optimizer for each block of parameters.
@@ -381,9 +383,24 @@ def train(args):
             raise ValueError("Schedule-free optimizer is not supported with blockwise fused optimizers")
         optimizer_train_fn = lambda: None  # dummy function
         optimizer_eval_fn = lambda: None  # dummy function
+
+        if (args.optimizer_type not in fused_optimizers_supported) and args.full_bf16:
+            logger.warning("Use of --blockwise_fused_optimizers with Adafactor optimizer prevents stochastic/Kahan weight updates.")
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
+
+    # Pass any Kahan summation arg to the optimizer
+    if args.kahan_summation:
+        # Self check parameter compatibility
+        if args.optimizer_type.lower() not in fused_optimizers_supported:
+            logger.warning("Kahan summation has been requested, but this is not supported by the selected optimizer.")
+        if not args.full_bf16:
+            logger.warning("Kahan summation requires --full_bf16")
+        if args.blockwise_fused_optimizers:
+            logger.warning("Kahan summation has been requested, but these are not compatible with --blockwise_fused_optimizer. "\
+                           "Perhaps try --fused_backward_pass instead.")
+    optimizer.use_kahan_summation = args.kahan_summation
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -474,10 +491,18 @@ def train(args):
     train_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     if args.fused_backward_pass:
-        # use fused optimizer for backward pass: other optimizers will be supported in the future
+        # use fused optimizer for backward pass. Only some specific optimizers are supported.
         import library.adafactor_fused
+        import library.adamw_fused
 
-        library.adafactor_fused.patch_adafactor_fused(optimizer)
+        if args.optimizer_type.lower() == "adafactor":
+            library.adafactor_fused.patch_adafactor_fused(optimizer)
+        elif args.optimizer_type.lower() == "adamoffload" or args.optimizer_type.lower() == "adamwoffload":
+            library.adamw_fused.patch_adamw_offload_fused(optimizer, False)
+        elif args.optimizer_type.lower() == "nadamoffload" or args.optimizer_type.lower() == "nadamwoffload":
+            library.adamw_fused.patch_adamw_offload_fused(optimizer, True)  # Nesterov
+        else:
+            logger.error(f"Optimizer '{args.optimizer}' does not have a --fused_backward_pass implementation available")
 
         for param_group, param_name_group in zip(optimizer.param_groups, param_names):
             for parameter, param_name in zip(param_group["params"], param_name_group):
@@ -815,6 +840,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "--blockwise_fused_optimizers",
         action="store_true",
         help="enable blockwise optimizers for fused backward pass and optimizer step / fused backward passとoptimizer step のためブロック単位のoptimizerを有効にする",
+    )
+    parser.add_argument(
+        "--kahan_summation",
+        action="store_true",
+        help="Offloads to CPU the float part lost during bf16 quantization, and re-adds it to the next step / "\
+            "bf16 量子化中に失われた浮動小数点部分を CPU にオフロードし、次のステップに再度追加します",
     )
     parser.add_argument(
         "--skip_latents_validity_check",

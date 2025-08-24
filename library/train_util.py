@@ -4814,9 +4814,6 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
 
     if args.fused_backward_pass:
         assert (
-            optimizer_type == "Adafactor".lower()
-        ), "fused_backward_pass currently only works with optimizer_type Adafactor / fused_backward_passは現在optimizer_type Adafactorでのみ機能します"
-        assert (
             args.gradient_accumulation_steps == 1
         ), "fused_backward_pass does not work with gradient_accumulation_steps > 1 / fused_backward_passはgradient_accumulation_steps>1では機能しません"
 
@@ -5057,6 +5054,18 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
                 logger.warning(f"clip_threshold=1.0 will be good / clip_thresholdは1.0が良いかもしれません")
 
         optimizer_class = transformers.optimization.Adafactor
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type.lower() == "adamoffload" or optimizer_type.lower() == "nadamoffload":
+        logger.info(f"use [N]AdamOffload optimizer | {optimizer_kwargs}")
+
+        optimizer_class = torch.optim.Adam
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type.lower() == "adamwoffload" or optimizer_type.lower() == "nadamwoffload":
+        logger.info(f"use [N]AdamWOffload optimizer | {optimizer_kwargs}")
+
+        optimizer_class = torch.optim.AdamW  # default weight_decay seems to be 0.01
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "AdamW".lower():
