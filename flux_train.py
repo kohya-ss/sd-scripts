@@ -502,7 +502,7 @@ def train(args):
         elif args.optimizer_type.lower() == "nadamoffload" or args.optimizer_type.lower() == "nadamwoffload":
             library.adamw_fused.patch_adamw_offload_fused(optimizer, True)  # Nesterov
         else:
-            logger.error(f"Optimizer '{args.optimizer}' does not have a --fused_backward_pass implementation available")
+            logger.error(f"Optimizer '{args.optimizer_type}' does not have a --fused_backward_pass implementation available")
 
         for param_group, param_name_group in zip(optimizer.param_groups, param_names):
             for parameter, param_name in zip(param_group["params"], param_name_group):
