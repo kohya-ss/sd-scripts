@@ -4,17 +4,28 @@ This repository contains training, generation and utility scripts for Stable Dif
 
 This feature is experimental. The options and the training script may change in the future. Please let us know if you have any idea to improve the training.
 
-__Please update PyTorch to 2.4.0. We have tested with `torch==2.4.0` and `torchvision==0.19.0` with CUDA 12.4. We also updated `accelerate` to 0.33.0 just to be safe. `requirements.txt` is also updated, so please update the requirements.__
+__Please update PyTorch to 2.6.0 or later. We have tested with `torch==2.6.0` and `torchvision==0.21.0` with CUDA 12.4. `requirements.txt` is also updated, so please update the requirements.__
 
 The command to install PyTorch is as follows:
-`pip3 install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu124`
+`pip3 install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124`
 
-If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed==0.16.7`.
+For RTX 50 series GPUs, PyTorch 2.8.0 with CUDA 12.8/9 should be used. `requirements.txt` will work with this version.
+
+If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed` (appropriate version is not confirmed yet).
 
 - [FLUX.1 training](#flux1-training)
 - [SD3 training](#sd3-training)
 
 ### Recent Updates
+
+Aug 28, 2025:
+- In order to support the latest GPUs and features, we have updated the **PyTorch and library versions**. There are many changes, so please let us know if you encounter any issues.
+- The PyTorch version used for testing has been updated to 2.6.0. We have confirmed that it works with PyTorch 2.6.0 and later.
+- The `requirements.txt` has been updated, so please update your dependencies.
+  - You can update the dependencies with `pip install -r requirements.txt`.
+  - The version specification for `bitsandbytes` has been removed. If you encounter errors on RTX 50 series GPUs, please update it with `pip install -U bitsandbytes`.
+- We have modified each script to minimize warnings as much as possible.
+  - The modified scripts will work in the old environment (library versions), but please update them when convenient.
 
 Jul 30, 2025:
 - **Breaking Change**: For FLUX.1 and Chroma training, the CFG (Classifier-Free Guidance, using negative prompts) scale option for sample image generation during training has been changed from `--g` to `--l`. The `--g` option is now used for the embedded guidance scale. Please update your prompts accordingly. See [Sample Image Generation During Training](#sample-image-generation-during-training) for details.
