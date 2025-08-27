@@ -6,7 +6,7 @@ ftfy==6.3.1
 opencv-python==4.10.0.84
 einops==0.7.0
 # pytorch-lightning==1.9.0
-bitsandbytes==0.45.4
+bitsandbytes
 lion-pytorch==0.2.3
 schedulefree==1.4
 pytorch-optimizer==3.7.0
