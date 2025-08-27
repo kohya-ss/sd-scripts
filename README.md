@@ -19,7 +19,7 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 ### Recent Updates
 
 Aug 28, 2025:
-- In order to support the latest GPUs and features, we have updated the **PyTorch and library versions**. There are many changes, so please let us know if you encounter any issues.
+- In order to support the latest GPUs and features, we have updated the **PyTorch and library versions**. PR [#2178](https://github.com/kohya-ss/sd-scripts/pull/2178) There are many changes, so please let us know if you encounter any issues.
 - The PyTorch version used for testing has been updated to 2.6.0. We have confirmed that it works with PyTorch 2.6.0 and later.
 - The `requirements.txt` has been updated, so please update your dependencies.
   - You can update the dependencies with `pip install -r requirements.txt`.
