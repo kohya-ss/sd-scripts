@@ -6008,7 +6008,6 @@ def get_noise_noisy_latents_and_timesteps(
     b_size = latents.shape[0]
     min_timestep = 0 if args.min_timestep is None else args.min_timestep
     max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
-
     timesteps = get_timesteps(min_timestep, max_timestep, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
@@ -6281,7 +6280,7 @@ def sample_images_common(
     vae,
     tokenizer,
     text_encoder,
-    unet,
+    unet_wrapped,
     prompt_replacement=None,
     controlnet=None,
 ):
@@ -6316,7 +6315,7 @@ def sample_images_common(
     vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
 
     # unwrap unet and text_encoder(s)
-    unet = accelerator.unwrap_model(unet)
+    unet = accelerator.unwrap_model(unet_wrapped)
     if isinstance(text_encoder, (list, tuple)):
         text_encoder = [accelerator.unwrap_model(te) for te in text_encoder]
     else:
@@ -6462,7 +6461,7 @@ def sample_image_inference(
     logger.info(f"sample_sampler: {sampler_name}")
     if seed is not None:
         logger.info(f"seed: {seed}")
-    with accelerator.autocast():
+    with accelerator.autocast(), torch.no_grad():
         latents = pipeline(
             prompt=prompt,
             height=height,
