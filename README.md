@@ -46,7 +46,8 @@ Jul 21, 2025:
     - flux_train_network.md
     - sd3_train_network.md
     - lumina_train_network.md
-    
+    - validation.md
+
 Jul 10, 2025:
 - [AI Coding Agents](#for-developers-using-ai-coding-agents) section is added to the README. This section provides instructions for developers using AI coding agents like Claude and Gemini to understand the project context and coding standards.
 
