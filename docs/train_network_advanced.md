@@ -128,7 +128,7 @@ Basic options are common with `train_network.py`.
 *   `--huber_c=C` / `--huber_scale=S`: Parameters for `huber` or `smooth_l1` loss.
 *   `--masked_loss`: Limits loss calculation area based on a mask image. Requires specifying mask images (black and white) in `conditioning_data_dir` in dataset settings. See [About Masked Loss](masked_loss_README.md) for details.
 
-### 1.10. Distributed Training and Others
+### 1.10. Distributed Training and Other Training Related Options
 
 *   `--seed=N`: Specifies the random seed. Set this to ensure training reproducibility.
 *   `--max_token_length=N` (`75`, `150`, `225`): Maximum token length processed by Text Encoders. For SDXL, typically `75` (default), `150`, or `225`. Longer lengths can handle more complex prompts but increase VRAM usage.
@@ -137,8 +137,11 @@ Basic options are common with `train_network.py`.
 *   `--persistent_data_loader_workers` / `--max_data_loader_n_workers=N`: Settings for DataLoader worker processes. Affects wait time between epochs and memory usage.
 *   `--config_file="<config file>"` / `--output_config`: Options to use/output a `.toml` file instead of command line arguments.
 *   **Accelerate/DeepSpeed related:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`): Detailed settings for distributed training. Accelerate settings (`accelerate config`) are usually sufficient. DeepSpeed requires separate configuration.
+* `--initial_epoch=<integer>` – Sets the initial epoch number. `1` means first epoch (same as not specifying). Note: `initial_epoch`/`initial_step` doesn't affect the lr scheduler, which means lr scheduler will start from 0 without `--resume`.
+* `--initial_step=<integer>` – Sets the initial step number including all epochs. `0` means first step (same as not specifying). Overwrites `initial_epoch`.
+* `--skip_until_initial_step` – Skips training until `initial_step` is reached.
 
-## 1.11. Console and Logging / コンソールとログ
+### 1.11. Console and Logging / コンソールとログ
 
 * `--console_log_level`: Sets the logging level for the console output. Choose from `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
 * `--console_log_file`: Redirects console logs to a specified file.
@@ -421,7 +424,7 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 *   `--masked_loss`
     *   マスク画像に基づいてLoss計算領域を限定します。データセット設定で`conditioning_data_dir`にマスク画像（白黒）を指定する必要があります。詳細は[マスクロスについて](masked_loss_README.md)を参照してください。
 
-### 1.10. 分散学習・その他
+### 1.10. 分散学習、その他学習関連
 
 *   `--seed=N`
     *   乱数シードを指定します。学習の再現性を確保したい場合に設定します。
@@ -437,8 +440,11 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
     *   コマンドライン引数の代わりに`.toml`ファイルを使用/出力するオプション。
 *   **Accelerate/DeepSpeed関連:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`)
     *   分散学習時の詳細設定。通常はAccelerateの設定 (`accelerate config`) で十分です。DeepSpeedを使用する場合は、別途設定が必要です。
+*   `--initial_epoch=<integer>` – 開始エポック番号を設定します。`1`で最初のエポック（未指定時と同じ）。注意：`initial_epoch`/`initial_step`はlr schedulerに影響しないため、`--resume`しない場合はlr schedulerは0から始まります。
+*   `--initial_step=<integer>` – 全エポックを含む開始ステップ番号を設定します。`0`で最初のステップ（未指定時と同じ）。`initial_epoch`を上書きします。
+*   `--skip_until_initial_step` – `initial_step`に到達するまで学習をスキップします。
 
-## 1.11. コンソールとログ
+### 1.11. コンソールとログ
 
 * `--console_log_level`: コンソール出力のログレベルを設定します。`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`から選択します。
 * `--console_log_file`: コンソールのログを指定されたファイルに出力します。

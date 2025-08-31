@@ -156,13 +156,19 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--enable_scaled_pos_embed` **[SD3.5][experimental]** – Scale positional embeddings when training with multiple resolutions.
 * `--training_shift=<float>` – Shift applied to the timestep distribution. Default `1.0`.
 * `--weighting_scheme=<choice>` – Weighting method for loss by timestep. Default `uniform`.
-* `--logit_mean`, `--logit_std`, `--mode_scale` – Parameters for `logit_normal` or `mode` weighting.
+* `--logit_mean=<float>` – Mean value for `logit_normal` weighting scheme. Default `0.0`.
+* `--logit_std=<float>` – Standard deviation for `logit_normal` weighting scheme. Default `1.0`.
+* `--mode_scale=<float>` – Scale factor for `mode` weighting scheme. Default `1.29`.
 
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>` **[experimental]** – Swap a number of Transformer blocks between CPU and GPU. More blocks reduce VRAM but slow training. Cannot be used with `--cpu_offload_checkpointing`.
 * `--cache_text_encoder_outputs` – Caches the outputs of the text encoders to reduce VRAM usage and speed up training. This is particularly effective for SD3, which uses three text encoders. Recommended when not training the text encoder LoRA. For more details, see the [`sdxl_train_network.py` guide](sdxl_train_network.md).
 * `--cache_text_encoder_outputs_to_disk` – Caches the text encoder outputs to disk when the above option is enabled.
+* `--t5xxl_device=<device>` **[not supported yet]** – Specifies the device for T5-XXL model. If not specified, uses accelerator's device.
+* `--t5xxl_dtype=<dtype>` **[not supported yet]** – Specifies the dtype for T5-XXL model. If not specified, uses default dtype from mixed precision.
+* `--save_clip` **[not supported yet]** – Saves CLIP models to checkpoint (unified checkpoint format not yet supported).
+* `--save_t5xxl` **[not supported yet]** – Saves T5-XXL model to checkpoint (unified checkpoint format not yet supported).
 
 #### Incompatible or Deprecated Options / 非互換・非推奨の引数
 
@@ -191,13 +197,19 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 *   `--enable_scaled_pos_embed` **[SD3.5向け][実験的機能]** – マルチ解像度学習時に解像度に応じてPositional Embeddingをスケーリングします。
 *   `--training_shift=<float>` – タイムステップ分布を調整するためのシフト値です。デフォルトは`1.0`です。
 *   `--weighting_scheme=<choice>` – タイムステップに応じた損失の重み付け方法を指定します。デフォルトは`uniform`です。
-*   `--logit_mean`, `--logit_std`, `--mode_scale` – `logit_normal`または`mode`使用時のパラメータです。
+*   `--logit_mean=<float>` – `logit_normal`重み付けスキームの平均値です。デフォルトは`0.0`です。
+*   `--logit_std=<float>` – `logit_normal`重み付けスキームの標準偏差です。デフォルトは`1.0`です。
+*   `--mode_scale=<float>` – `mode`重み付けスキームのスケール係数です。デフォルトは`1.29`です。
 
 #### メモリ・速度関連
 
 *   `--blocks_to_swap=<integer>` **[実験的機能]** – TransformerブロックをCPUとGPUでスワップしてVRAMを節約します。`--cpu_offload_checkpointing`とは併用できません。
 *   `--cache_text_encoder_outputs` – Text Encoderの出力をキャッシュし、VRAM使用量削減と学習高速化を図ります。SD3は3つのText Encoderを持つため特に効果的です。Text EncoderのLoRAを学習しない場合に推奨されます。詳細は[`sdxl_train_network.py`のガイド](sdxl_train_network.md)を参照してください。
 *   `--cache_text_encoder_outputs_to_disk` – 上記オプションと併用し、Text Encoderの出力をディスクにキャッシュします。
+*   `--t5xxl_device=<device>` **[未サポート]** – T5-XXLモデルのデバイスを指定します。指定しない場合はacceleratorのデバイスを使用します。
+*   `--t5xxl_dtype=<dtype>` **[未サポート]** – T5-XXLモデルのdtypeを指定します。指定しない場合はデフォルトのdtype（mixed precisionから）を使用します。
+*   `--save_clip` **[未サポート]** – CLIPモデルをチェックポイントに保存します（統合チェックポイント形式は未サポート）。
+*   `--save_t5xxl` **[未サポート]** – T5-XXLモデルをチェックポイントに保存します（統合チェックポイント形式は未サポート）。
 
 #### 非互換・非推奨の引数
 

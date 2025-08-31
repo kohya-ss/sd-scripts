@@ -42,7 +42,7 @@ Jul 21, 2025:
     Currently, the following documents are available:
     - train_network.md
     - sdxl_train_network.md
-    - sdxl_train_network_advanced.md
+    - train_network_advanced.md
     - flux_train_network.md
     - sd3_train_network.md
     - lumina_train_network.md
