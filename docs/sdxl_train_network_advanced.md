@@ -1,5 +1,3 @@
-Status: under review
-
 # Advanced Settings: Detailed Guide for SDXL LoRA Training Script `sdxl_train_network.py` / 高度な設定: SDXL LoRA学習スクリプト `sdxl_train_network.py` 詳細ガイド
 
 This document describes the advanced options available when training LoRA models for SDXL (Stable Diffusion XL) with `sdxl_train_network.py` in the `sd-scripts` repository. For the basics, please read [How to Use the LoRA Training Script `train_network.py`](train_network.md) and [How to Use the SDXL LoRA Training Script `sdxl_train_network.py`](sdxl_train_network.md).
@@ -137,10 +135,54 @@ Basic options are common with `train_network.py`.
 *   `--clip_skip=N`: Uses the output from N layers skipped from the final layer of Text Encoders. **Not typically used for SDXL**.
 *   `--lowram` / `--highvram`: Options for memory usage optimization. `--lowram` is for environments like Colab where RAM < VRAM, `--highvram` is for environments with ample VRAM.
 *   `--persistent_data_loader_workers` / `--max_data_loader_n_workers=N`: Settings for DataLoader worker processes. Affects wait time between epochs and memory usage.
-*   `--config_file=\"<config file>\"` / `--output_config`: Options to use/output a `.toml` file instead of command line arguments.
+*   `--config_file="<config file>"` / `--output_config`: Options to use/output a `.toml` file instead of command line arguments.
 *   **Accelerate/DeepSpeed related:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`): Detailed settings for distributed training. Accelerate settings (`accelerate config`) are usually sufficient. DeepSpeed requires separate configuration.
 
+## 1.11. Console and Logging / コンソールとログ
+
+* `--console_log_level`: Sets the logging level for the console output. Choose from `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
+* `--console_log_file`: Redirects console logs to a specified file.
+* `--console_log_simple`: Enables a simpler log format.
+
+### 1.12. Hugging Face Hub Integration / Hugging Face Hub 連携
+
+* `--huggingface_repo_id`: The repository name on Hugging Face Hub to upload the model to (e.g., `your-username/your-model`).
+* `--huggingface_repo_type`: The type of repository on Hugging Face Hub. Usually `model`.
+* `--huggingface_path_in_repo`: The path within the repository to upload files to.
+* `--huggingface_token`: Your Hugging Face Hub authentication token.
+* `--huggingface_repo_visibility`: Sets the visibility of the repository (`public` or `private`).
+* `--resume_from_huggingface`: Resumes training from a state saved on Hugging Face Hub.
+* `--async_upload`: Enables asynchronous uploading of models to the Hub, preventing it from blocking the training process.
+* `--save_n_epoch_ratio`: Saves the model at a certain ratio of total epochs. For example, `5` will save at least 5 checkpoints throughout the training.
+
+### 1.13. Advanced Attention Settings / 高度なAttention設定
+
+* `--mem_eff_attn`: Use memory-efficient attention mechanism. This is an older implementation and `sdpa` or `xformers` are generally recommended.
+* `--xformers`: Use xformers library for memory-efficient attention. Requires `pip install xformers`.
+
+### 1.14. Advanced LR Scheduler Settings / 高度な学習率スケジューラ設定
+
+* `--lr_scheduler_type`: Specifies a custom scheduler module.
+* `--lr_scheduler_args`: Provides additional arguments to the custom scheduler (e.g., `"T_max=100"`).
+* `--lr_decay_steps`: Sets the number of steps for the learning rate to decay.
+* `--lr_scheduler_timescale`: The timescale for the inverse square root scheduler.
+* `--lr_scheduler_min_lr_ratio`: Sets the minimum learning rate as a ratio of the initial learning rate for certain schedulers.
+
+### 1.15. Differential Learning with LoRA / LoRAの差分学習
+
+This technique involves merging a pre-trained LoRA into the base model before starting a new training session. This is useful for fine-tuning an existing LoRA or for learning the 'difference' from it.
+
+* `--base_weights`: Path to one or more LoRA weight files to be merged into the base model before training begins.
+* `--base_weights_multiplier`: A multiplier for the weights of the LoRA specified by `--base_weights`. You can specify multiple values if you provide multiple weights.
+
+### 1.16. Other Miscellaneous Options / その他のオプション
+
+* `--tokenizer_cache_dir`: Specifies a directory to cache the tokenizer, which is useful for offline training.
+* `--scale_weight_norms`: Scales the weight norms of the LoRA modules. This can help prevent overfitting by controlling the magnitude of the weights. A value of `1.0` is a good starting point.
+* `--disable_mmap_load_safetensors`: Disables memory-mapped loading for `.safetensors` files. This can speed up model loading in some environments like WSL.
+
 ## 2. Other Tips / その他のTips
+
 
 *   **VRAM Usage:** SDXL LoRA training requires a lot of VRAM. Even with 24GB VRAM, you might run out of memory depending on settings. Reduce VRAM usage with these settings:
     *   `--mixed_precision=\"bf16\"` or `\"fp16\"` (essential)
@@ -164,8 +206,6 @@ Basic options are common with `train_network.py`.
 
 <details>
 <summary>日本語</summary>
-
----
 
 # 高度な設定: SDXL LoRA学習スクリプト `sdxl_train_network.py` 詳細ガイド
 
@@ -398,7 +438,51 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 *   **Accelerate/DeepSpeed関連:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`)
     *   分散学習時の詳細設定。通常はAccelerateの設定 (`accelerate config`) で十分です。DeepSpeedを使用する場合は、別途設定が必要です。
 
+## 1.11. コンソールとログ
+
+* `--console_log_level`: コンソール出力のログレベルを設定します。`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`から選択します。
+* `--console_log_file`: コンソールのログを指定されたファイルに出力します。
+* `--console_log_simple`: よりシンプルなログフォーマットを有効にします。
+
+### 1.12. Hugging Face Hub 連携
+
+* `--huggingface_repo_id`: モデルをアップロードするHugging Face Hubのリポジトリ名 (例: `your-username/your-model`)。
+* `--huggingface_repo_type`: Hugging Face Hubのリポジトリの種類。通常は`model`です。
+* `--huggingface_path_in_repo`: リポジトリ内でファイルをアップロードするパス。
+* `--huggingface_token`: Hugging Face Hubの認証トークン。
+* `--huggingface_repo_visibility`: リポジトリの公開設定 (`public`または`private`)。
+* `--resume_from_huggingface`: Hugging Face Hubに保存された状態から学習を再開します。
+* `--async_upload`: Hubへのモデルの非同期アップロードを有効にし、学習プロセスをブロックしないようにします。
+* `--save_n_epoch_ratio`: 総エポック数に対する特定の比率でモデルを保存します。例えば`5`を指定すると、学習全体で少なくとも5つのチェックポイントが保存されます。
+
+### 1.13. 高度なAttention設定
+
+* `--mem_eff_attn`: メモリ効率の良いAttentionメカニズムを使用します。これは古い実装であり、一般的には`sdpa`や`xformers`の使用が推奨されます。
+* `--xformers`: メモリ効率の良いAttentionのためにxformersライブラリを使用します。`pip install xformers`が必要です。
+
+### 1.14. 高度な学習率スケジューラ設定
+
+* `--lr_scheduler_type`: カスタムスケジューラモジュールを指定します。
+* `--lr_scheduler_args`: カスタムスケジューラに追加の引数を渡します (例: `"T_max=100"`)。
+* `--lr_decay_steps`: 学習率が減衰するステップ数を設定します。
+* `--lr_scheduler_timescale`: 逆平方根スケジューラのタイムスケール。
+* `--lr_scheduler_min_lr_ratio`: 特定のスケジューラについて、初期学習率に対する最小学習率の比率を設定します。
+
+### 1.15. LoRAの差分学習
+
+既存の学習済みLoRAをベースモデルにマージしてから、新たな学習を開始する手法です。既存LoRAのファインチューニングや、差分を学習させたい場合に有効です。
+
+* `--base_weights`: 学習開始前にベースモデルにマージするLoRAの重みファイルを1つ以上指定します。
+* `--base_weights_multiplier`: `--base_weights`で指定したLoRAの重みの倍率。複数指定も可能です。
+
+### 1.16. その他のオプション
+
+* `--tokenizer_cache_dir`: オフラインでの学習に便利なように、tokenizerをキャッシュするディレクトリを指定します。
+* `--scale_weight_norms`: LoRAモジュールの重みのノルムをスケーリングします。重みの大きさを制御することで過学習を防ぐ助けになります。`1.0`が良い出発点です。
+* `--disable_mmap_load_safetensors`: `.safetensors`ファイルのメモリマップドローディングを無効にします。WSLなどの一部環境でモデルの読み込みを高速化できます。
+
 ## 2. その他のTips
+
 
 *   **VRAM使用量:** SDXL LoRA学習は多くのVRAMを必要とします。24GB VRAMでも設定によってはメモリ不足になることがあります。以下の設定でVRAM使用量を削減できます。
     *   `--mixed_precision="bf16"` または `"fp16"` (必須級)
@@ -421,8 +505,5 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 `sdxl_train_network.py` は非常に多くのオプションを提供しており、SDXL LoRA学習の様々な側面をカスタマイズできます。このドキュメントが、より高度な設定やチューニングを行う際の助けとなれば幸いです。
 
 不明な点や詳細については、各スクリプトの `--help` オプションや、リポジトリ内の他のドキュメント、実装コード自体を参照してください。
-
----
-
 
 </details>
