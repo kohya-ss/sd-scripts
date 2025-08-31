@@ -73,7 +73,7 @@ def adamw_offload_step_param(self, p, group):
         # the min and max of the results were noted, and then the values were scaled
         # to the 0-65535 range for storage. This process is reversed here.
 
-        u16power = 16.0  # This value worked acceptably in testing to spread the values more evenly
+        u16power = 8.0  # This value worked acceptably in testing to spread the values more evenly
 
         exp_avg_min = state['exp_avg_min']
         exp_avg_max = state['exp_avg_max']
