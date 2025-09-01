@@ -583,18 +583,3 @@ Each option can also be specified with prompt options, `--glt`, `--glr`, `--gls`
 __Please specify `euler_a` for the sampler.__ Because the source code of the sampler is modified. It will not work with other samplers.
 
 It is more effective with SD 1.5. It is quite subtle with SDXL.
-
-# Gradual Latent について (Japanese section - kept for reference)
-
-latentのサイズを徐々に大きくしていくHires fixです。`gen_img.py` 、``sdxl_gen_img.py` 、`gen_img.py` に以下のオプションが追加されています。
-
-- `--gradual_latent_timesteps` : latentのサイズを大きくし始めるタイムステップを指定します。デフォルトは None で、Gradual Latentを使用しません。750 くらいから始めてみてください。
-- `--gradual_latent_ratio` : latentの初期サイズを指定します。デフォルトは 0.5 で、デフォルトの latent サイズの半分のサイズから始めます。
-- `--gradual_latent_ratio_step`: latentのサイズを大きくする割合を指定します。デフォルトは 0.125 で、latentのサイズを 0.625, 0.75, 0.875, 1.0 と徐々に大きくします。
-- `--gradual_latent_ratio_every_n_steps`: latentのサイズを大きくする間隔を指定します。デフォルトは 3 で、3ステップごとに latent のサイズを大きくします。
-
-それぞれのオプションは、プロンプトオプション、`--glt`、`--glr`、`--gls`、`--gle` でも指定できます。
-
-サンプラーに手を加えているため、__サンプラーに `euler_a` を指定してください。__ 他のサンプラーでは動作しません。
-
-SD 1.5 のほうが効果があります。SDXL ではかなり微妙です。
