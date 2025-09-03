@@ -332,7 +332,7 @@ def main(args):
     if args.always_first_tags is not None:
         always_first_tags = [tag for tag in args.always_first_tags.split(stripped_caption_separator) if tag.strip() != ""]
 
-    def run_batch(path_imgs: tuple[list[str], np.ndarray, list[tuple[int, int]]]) -> Optional[list[str]]:
+    def run_batch(path_imgs: tuple[list[str], np.ndarray, list[tuple[int, int]]]) -> Optional[dict[str, dict]]:
         nonlocal args, default_format, model, ort_sess, input_name, tag_freq
 
         imgs = path_imgs[1]
