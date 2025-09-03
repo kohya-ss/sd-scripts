@@ -2253,31 +2253,35 @@ class FineTuningDataset(BaseDataset):
                         npz_path = candidate
                         break
                 if npz_path is not None:
-                    npz_paths.remove(npz_path)  # remove to speed up next search
+                    npz_paths.remove(npz_path)  # remove to avoid matching same file (share prefix)
                     abs_path = abs_path or npz_path
 
                 assert abs_path is not None, f"no image / 画像がありません: {image_key}"
 
                 caption = img_md.get("caption")
                 tags = img_md.get("tags")
+                image_size = img_md.get("image_size")
+
                 if caption is None:
-                    caption = tags  # could be multiline
-                    tags = None
+                    caption = ""
 
                 if subset.enable_wildcard:
-                    # tags must be single line
+                    # tags must be single line (split by caption separator)
                     if tags is not None:
                         tags = tags.replace("\n", subset.caption_separator)
 
                     # add tags to each line of caption
-                    if caption is not None and tags is not None:
+                    if tags is not None:
                         caption = "\n".join(
                             [f"{line}{subset.caption_separator}{tags}" for line in caption.split("\n") if line.strip() != ""]
                         )
+                        tags_list.append(tags)
                 else:
                     # use as is
                     if tags is not None and len(tags) > 0:
-                        caption = caption + subset.caption_separator + tags
+                        if len(caption) > 0:
+                            caption = caption + subset.caption_separator
+                        caption = caption + tags
                         tags_list.append(tags)
 
                 if caption is None:
@@ -2288,8 +2292,10 @@ class FineTuningDataset(BaseDataset):
                     subset.resize_interpolation if subset.resize_interpolation is not None else self.resize_interpolation
                 )
 
-                # get image size from npz filename
-                if npz_path is not None and strategy is not None:
+                if image_size is not None:
+                    image_info.image_size = tuple(image_size)  # width, height
+                elif npz_path is not None and strategy is not None:
+                    # get image size from npz filename
                     w, h = strategy.get_image_size_from_disk_cache_path(abs_path, npz_path)
                     image_info.image_size = (w, h)
                     size_set_count += 1
