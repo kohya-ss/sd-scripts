@@ -2206,9 +2206,25 @@ class FineTuningDataset(BaseDataset):
 
             # メタデータを読み込む
             if os.path.exists(subset.metadata_file):
-                logger.info(f"loading existing metadata: {subset.metadata_file}")
-                with open(subset.metadata_file, "rt", encoding="utf-8") as f:
-                    metadata = json.load(f)
+                if subset.metadata_file.endswith(".jsonl"):
+                    logger.info(f"loading existing JSOL metadata: {subset.metadata_file}")
+                    # optional JSONL format
+                    # {"image_path": "/path/to/image1.jpg", "caption": "A caption for image1", "image_size": [width, height]}
+                    metadata = {}
+                    with open(subset.metadata_file, "rt", encoding="utf-8") as f:
+                        for line in f:
+                            line_md = json.loads(line)
+                            image_md = {"caption": line_md.get("caption", "")}
+                            if "image_size" in line_md:
+                                image_md["image_size"] = line_md["image_size"]
+                            if "tags" in line_md:
+                                image_md["tags"] = line_md["tags"]
+                            metadata[line_md["image_path"]] = image_md
+                else:
+                    # standard JSON format
+                    logger.info(f"loading existing metadata: {subset.metadata_file}")
+                    with open(subset.metadata_file, "rt", encoding="utf-8") as f:
+                        metadata = json.load(f)
             else:
                 raise ValueError(f"no metadata / メタデータファイルがありません: {subset.metadata_file}")
 
