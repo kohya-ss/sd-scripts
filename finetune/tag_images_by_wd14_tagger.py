@@ -239,7 +239,7 @@ def main(args):
     def remove_underscore(tags):
         return [tag.replace("_", " ") if len(tag) > 3 else tag for tag in tags]
 
-    def process_tag_replacement(tags: list[str], tag_replacements_arg: str):
+    def process_tag_replacement(tags: list[str], tag_replacements_arg: str) -> list[str]:
         # escape , and ; in tag_replacement: wd14 tag names may contain , and ;,
         # so user must be specified them like `aa\,bb,AA\,BB;cc\;dd,CC\;DD` which means
         # `aa,bb` is replaced with `AA,BB` and `cc;dd` is replaced with `CC;DD`
@@ -257,6 +257,8 @@ def main(args):
 
             if source in tags:
                 tags[tags.index(source)] = target
+
+        return tags
 
     if default_format:
         with open(os.path.join(model_location, CSV_FILE), "r", encoding="utf-8") as f:
