@@ -23,6 +23,19 @@ This repository contains the scripts for:
 * Image generation
 * Model conversion (supports 1.x and 2.x, Stable Diffision ckpt/safetensors and Diffusers)
 
+### Sponsors
+
+We are grateful to the following companies for their generous sponsorship:
+
+<a href="https://aihub.co.jp/top-en">
+  <img src="./images/logo_aihub.png" alt="AiHUB Inc." title="AiHUB Inc." height="100px">
+</a>
+
+### Support the Project
+
+If you find this project helpful, please consider supporting its development via [GitHub Sponsors](https://github.com/sponsors/kohya-ss/). Your support is greatly appreciated!
+
+
 ## About requirements.txt
 
 The file does not contain requirements for PyTorch. Because the version of PyTorch depends on the environment, it is not included in the file. Please install PyTorch first according to the environment. See installation instructions below.

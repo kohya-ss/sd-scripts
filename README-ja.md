@@ -17,6 +17,18 @@ GUIやPowerShellスクリプトなど、より使いやすくする機能が[bma
 * 画像生成
 * モデル変換（Stable Diffision ckpt/safetensorsとDiffusersの相互変換）
 
+### スポンサー
+
+このプロジェクトを支援してくださる企業・団体の皆様に深く感謝いたします。
+
+<a href="https://aihub.co.jp/">
+  <img src="./images/logo_aihub.png" alt="AiHUB株式会社" title="AiHUB株式会社" height="100px">
+</a>
+
+### スポンサー募集のお知らせ
+
+このプロジェクトがお役に立ったなら、ご支援いただけると嬉しく思います。 [GitHub Sponsors](https://github.com/sponsors/kohya-ss/)で受け付けています。
+
 ## 使用法について
 
 * [学習について、共通編](./docs/train_README-ja.md) : データ整備やオプションなど

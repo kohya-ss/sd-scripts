@@ -6,4 +6,8 @@ venv
 build
 .vscode
 wandb
-sd_xl_base_1.0.safetensors
+CLAUDE.md
+GEMINI.md
+.claude
+.gemini
+MagicMock
