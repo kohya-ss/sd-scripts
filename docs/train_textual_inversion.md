@@ -268,10 +268,7 @@ In your prompts, simply use the token string you trained (e.g., "mychar") and th
    * Try adjusting the learning rate (lower values like 5e-7)
    * Increase the number of training steps
 
-3. **Out of memory errors**
-   * Reduce batch size in the dataset configuration
-   * Use `--gradient_checkpointing`
-   * Use `--cache_latents` (for SDXL)
+   * Use `--cache_latents`
 
 <details>
 <summary>日本語</summary>
