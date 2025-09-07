@@ -11,6 +11,7 @@
 |------------|:------:|----------|----------------|
 | `--downscale_freq_shift` | `0.0` | **時間埋め込みの周波数ダウンスケール**を 1.0 (従来値) に戻す。キャラクター LoRA で *identity* が定着しやすい傾向。 | `library/sdxl_original_unet.py`<br>本家 PR #1187 で 1.0→0.0 に変更された挙動を選択式に復活。|
 | `--te_mlp_fc_only` | 全層 | Text Encoder の学習対象を **MLP (全結合) 層だけ**に限定。キーワードベースのキャラ LoRA で“語彙を固めつつ柔軟性を保つ”目的。 | 本家 PR #1964 以前の挙動を再現。|
+| `--fp16_safe_norms` | `False` | 縮約系（LayerNorm/GroupNorm/Softmax）だけ **fp32 で演算**し、重みと他演算は fp16 のまま。fp16 + 小バッチ（例: `batch_size=1`）で学習安定性を向上。 | `library/sdxl_original_unet.py` にラッパ実装。<br>注意: Softmax の fp32 化は通常のAttention経路のみ（`--xformers`/`--sdpa` 使用時は各実装に依存）。Normは全経路でfp32化。|
 | `--skip_grad_norm` | ― | 直近 *N = 200* step の **勾配 L2 ノルムの移動平均 + 2.5σ** を動的しきい値とし、超過 step の更新をスキップ。NaN/Inf も既定でスキップ。 | 破綻防止・fp16 の安定化補助。しきい値は `--skip_grad_norm_max` で上限可。|
 | `--skip_grad_norm_max` | 無制限 | `--skip_grad_norm` が計算する動的しきい値の**上限キャップ**。 | 例: `--skip_grad_norm_max 200000` |
 | `--grad_norm_log` | 無効 | 100 step ごとに **(epoch, step, norm, threshold, loss, ThreshOff)** を `gradient_logs+<LoRA名>.txt` へ追記。<br>ThreshOffは、0=閾値有効, 1=閾値がNaNで無効, 2=閾値が`--idle_free_phase`で無効 | スキップを *OFF* にすれば純ログモード。 |
