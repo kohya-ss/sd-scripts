@@ -291,9 +291,13 @@ def resize_like(x, target, mode="bicubic", align_corners=False):
 
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
-        if self.weight.dtype != torch.float32:
-            return super().forward(x)
-        return super().forward(x.float()).type(x.dtype)
+        # fp16-safe path: upcast inputs for reduction stability while keeping weights in fp16
+        if maruoCfg.fp16_safe_norms and x.dtype == torch.float16:
+            return super().forward(x.float()).to(dtype=x.dtype)
+        # legacy fp32-weight path
+        if self.weight.dtype == torch.float32:
+            return super().forward(x.float()).type(x.dtype)
+        return super().forward(x)
 
 
 class ResnetBlock2D(nn.Module):
@@ -475,7 +479,10 @@ class CrossAttention(nn.Module):
             beta=0,
             alpha=self.scale,
         )
-        attention_probs = attention_scores.softmax(dim=-1)
+        if maruoCfg.fp16_safe_norms and attention_scores.dtype == torch.float16:
+            attention_probs = attention_scores.float().softmax(dim=-1).to(dtype=attention_scores.dtype)
+        else:
+            attention_probs = attention_scores.softmax(dim=-1)
 
         # cast back to the original dtype
         attention_probs = attention_probs.to(value.dtype)
@@ -643,17 +650,45 @@ class BasicTransformerBlock(nn.Module):
         self.attn2.set_use_sdpa(sdpa)
 
     def forward_body(self, hidden_states, context=None, timestep=None):
-        # 1. Self-Attention
-        norm_hidden_states = self.norm1(hidden_states)
+        # 1. Self-Attention (LayerNorm in fp32 when requested)
+        if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
+            norm_hidden_states = F.layer_norm(
+                hidden_states.float(),
+                self.norm1.normalized_shape,
+                self.norm1.weight.float() if self.norm1.weight is not None else None,
+                self.norm1.bias.float() if self.norm1.bias is not None else None,
+                self.norm1.eps,
+            ).to(dtype=hidden_states.dtype)
+        else:
+            norm_hidden_states = self.norm1(hidden_states)
 
         hidden_states = self.attn1(norm_hidden_states) + hidden_states
 
-        # 2. Cross-Attention
-        norm_hidden_states = self.norm2(hidden_states)
+        # 2. Cross-Attention (LayerNorm in fp32 when requested)
+        if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
+            norm_hidden_states = F.layer_norm(
+                hidden_states.float(),
+                self.norm2.normalized_shape,
+                self.norm2.weight.float() if self.norm2.weight is not None else None,
+                self.norm2.bias.float() if self.norm2.bias is not None else None,
+                self.norm2.eps,
+            ).to(dtype=hidden_states.dtype)
+        else:
+            norm_hidden_states = self.norm2(hidden_states)
         hidden_states = self.attn2(norm_hidden_states, context=context) + hidden_states
 
-        # 3. Feed-forward
-        hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
+        # 3. Feed-forward (LayerNorm in fp32 when requested)
+        if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
+            ln3 = F.layer_norm(
+                hidden_states.float(),
+                self.norm3.normalized_shape,
+                self.norm3.weight.float() if self.norm3.weight is not None else None,
+                self.norm3.bias.float() if self.norm3.bias is not None else None,
+                self.norm3.eps,
+            ).to(dtype=hidden_states.dtype)
+        else:
+            ln3 = self.norm3(hidden_states)
+        hidden_states = self.ff(ln3) + hidden_states
 
         return hidden_states
 
@@ -736,7 +771,17 @@ class Transformer2DModel(nn.Module):
         batch, _, height, weight = hidden_states.shape
         residual = hidden_states
 
-        hidden_states = self.norm(hidden_states)
+        # GroupNorm in fp32 when requested
+        if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
+            hidden_states = F.group_norm(
+                hidden_states.float(),
+                num_groups=self.norm.num_groups,
+                weight=self.norm.weight.float() if self.norm.weight is not None else None,
+                bias=self.norm.bias.float() if self.norm.bias is not None else None,
+                eps=self.norm.eps,
+            ).to(dtype=hidden_states.dtype)
+        else:
+            hidden_states = self.norm(hidden_states)
         if not self.use_linear_projection:
             hidden_states = self.proj_in(hidden_states)
             inner_dim = hidden_states.shape[1]

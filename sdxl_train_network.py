@@ -181,6 +181,11 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable TE-MLP-FC-only training",
     )
+    parser.add_argument(
+        "--fp16_safe_norms",
+        action="store_true",
+        help="Compute reduction ops (LayerNorm/GroupNorm/Softmax) in fp32 while keeping weights/other ops in fp16.",
+    )
     return parser
 
 
@@ -193,6 +198,7 @@ if __name__ == "__main__":
     # map CLI options to global config
     maruoCfg.downscale_freq_shift = bool(getattr(args, "downscale_freq_shift", False))
     maruoCfg.te_mlp_fc_only = bool(getattr(args, "te_mlp_fc_only", False))
+    maruoCfg.fp16_safe_norms = bool(getattr(args, "fp16_safe_norms", False))
 
     trainer = SdxlNetworkTrainer()
     trainer.train(args)
