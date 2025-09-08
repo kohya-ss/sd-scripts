@@ -551,17 +551,15 @@ To set up validation, add a `validation_split` and optionally `validation_seed` 
 
 ```toml
 validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
-
-[[datasets]]
 enable_bucket = true
 resolution = [1024, 1024]
 
+[[datasets]]
   [[datasets.subsets]]
+  # This directory will use 100% of the images for training
   image_dir = "path/to/image/directory"
 
 [[datasets]]
-enable_bucket = true
-resolution = [1024, 1024]
 validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
 
   [[datasets.subsets]]
@@ -569,8 +567,6 @@ validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full s
   image_dir = "path/to/image/second-directory"
 
 [[datasets]]
-enable_bucket = true
-resolution = [1024, 1024]
 validation_split = 1.0 # Will use this full subset as a validation subset. 
 
   [[datasets.subsets]]
