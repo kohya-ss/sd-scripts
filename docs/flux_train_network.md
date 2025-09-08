@@ -577,7 +577,7 @@ validation_split = 1.0 # Will use this full subset as a validation subset.
 **Notes:**
 
 * Validation loss calculation uses fixed timestep sampling and random seeds to reduce loss variation due to randomness for more stable evaluation.
-* Currently, validation loss is not supported when using `--blocks_to_swap` or Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
+* Currently, validation loss is not supported when using Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
 
 <details>
 <summary>日本語</summary>
