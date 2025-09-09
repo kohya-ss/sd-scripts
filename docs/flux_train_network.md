@@ -550,24 +550,34 @@ You can calculate validation loss during training using a validation dataset to 
 To set up validation, add a `validation_split` and optionally `validation_seed` to your dataset configuration TOML file. 
 
 ```toml
-[[datasets]]
+validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
 enable_bucket = true
 resolution = [1024, 1024]
-validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
 
+[[datasets]]
   [[datasets.subsets]]
+  # This directory will use 100% of the images for training
   image_dir = "path/to/image/directory"
-  validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
+
+[[datasets]]
+validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
 
   [[datasets.subsets]]
+  # This directory will split 10% to validation and 90% to training
+  image_dir = "path/to/image/second-directory"
+
+[[datasets]]
+validation_split = 1.0 # Will use this full subset as a validation subset. 
+
+  [[datasets.subsets]]
+  # This directory will use the 100% to validation and 0% to training
   image_dir = "path/to/image/full_validation"
-  validation_split = 1.0 # Will use this full subset as a validation subset. 
 ```
 
 **Notes:**
 
 * Validation loss calculation uses fixed timestep sampling and random seeds to reduce loss variation due to randomness for more stable evaluation.
-* Currently, validation loss is not supported when using `--blocks_to_swap` or Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
+* Currently, validation loss is not supported when using Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
 
 <details>
 <summary>日本語</summary>
