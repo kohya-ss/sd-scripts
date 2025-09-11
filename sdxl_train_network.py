@@ -199,6 +199,9 @@ if __name__ == "__main__":
     maruoCfg.downscale_freq_shift = bool(getattr(args, "downscale_freq_shift", False))
     maruoCfg.te_mlp_fc_only = bool(getattr(args, "te_mlp_fc_only", False))
     maruoCfg.fp16_safe_norms = bool(getattr(args, "fp16_safe_norms", False))
+    logger.info(
+        f"fp16_safe_norms is {'enabled' if maruoCfg.fp16_safe_norms else 'disabled'}"
+    )
 
     trainer = SdxlNetworkTrainer()
     trainer.train(args)
