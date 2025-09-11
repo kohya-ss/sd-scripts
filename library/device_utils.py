@@ -2,6 +2,7 @@ import functools
 import gc
 
 import torch
+
 try:
     # intel gpu support for pytorch older than 2.5
     # ipex is not needed after pytorch 2.5
@@ -49,6 +50,15 @@ def clean_memory_on_device(device: torch.device):
         torch.xpu.empty_cache()
     if device.type == "mps":
         torch.mps.empty_cache()
+
+
+def synchronize_device(device: torch.device):
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "xpu":
+        torch.xpu.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 
 @functools.lru_cache(maxsize=None)

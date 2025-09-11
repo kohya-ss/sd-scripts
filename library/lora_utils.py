@@ -7,7 +7,7 @@ import torch
 
 from tqdm import tqdm
 
-from library.custom_offloading_utils import synchronize_device
+from library.device_utils import synchronize_device
 from library.fp8_optimization_utils import load_safetensors_with_fp8_optimization
 from library.utils import MemoryEfficientSafeOpen, setup_logging
 

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from library import custom_offloading_utils
 from library.attention import attention
 from library.hunyuan_image_utils import timestep_embedding, apply_rotary_emb, _to_tuple, apply_gate, modulate
 from library.attention import attention
@@ -608,7 +609,18 @@ class MMDoubleStreamBlock(nn.Module):
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_mlp = MLP(hidden_size, mlp_hidden_dim, act_layer=lambda: nn.GELU(approximate="tanh"), bias=True)
 
-    def forward(
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+        self.cpu_offload_checkpointing = cpu_offload
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+    def _forward(
         self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, seq_lens: list[int] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Extract modulation parameters for image and text streams
@@ -688,6 +700,18 @@ class MMDoubleStreamBlock(nn.Module):
 
         return img, txt
 
+    def forward(
+        self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, seq_lens: list[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.gradient_checkpointing and self.training:
+            forward_fn = self._forward
+            if self.cpu_offload_checkpointing:
+                forward_fn = custom_offloading_utils.cpu_offload_wrapper(forward_fn, self.img_attn_qkv.weight.device)
+
+            return torch.utils.checkpoint.checkpoint(forward_fn, img, txt, vec, freqs_cis, seq_lens, use_reentrant=False)
+        else:
+            return self._forward(img, txt, vec, freqs_cis, seq_lens)
+
 
 class MMSingleStreamBlock(nn.Module):
     """
@@ -748,7 +772,18 @@ class MMSingleStreamBlock(nn.Module):
         self.mlp_act = nn.GELU(approximate="tanh")
         self.modulation = ModulateDiT(hidden_size, factor=3, act_layer=nn.SiLU)
 
-    def forward(
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+        self.cpu_offload_checkpointing = cpu_offload
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+    def _forward(
         self,
         x: torch.Tensor,
         vec: torch.Tensor,
@@ -799,6 +834,23 @@ class MMSingleStreamBlock(nn.Module):
         output = self.linear2(output)
 
         return x + apply_gate(output, gate=mod_gate)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        vec: torch.Tensor,
+        txt_len: int,
+        freqs_cis: Tuple[torch.Tensor, torch.Tensor] = None,
+        seq_lens: list[int] = None,
+    ) -> torch.Tensor:
+        if self.gradient_checkpointing and self.training:
+            forward_fn = self._forward
+            if self.cpu_offload_checkpointing:
+                forward_fn = custom_offloading_utils.create_cpu_offloading_wrapper(forward_fn, self.linear1.weight.device)
+
+            return torch.utils.checkpoint.checkpoint(forward_fn, x, vec, txt_len, freqs_cis, seq_lens, use_reentrant=False)
+        else:
+            return self._forward(x, vec, txt_len, freqs_cis, seq_lens)
 
 
 # endregion

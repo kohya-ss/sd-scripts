@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 BYT5_TOKENIZER_PATH = "google/byt5-small"
-QWEN_2_5_VL_IMAGE_ID ="Qwen/Qwen2.5-VL-7B-Instruct"
+QWEN_2_5_VL_IMAGE_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 
 # Copy from Glyph-SDXL-V2
@@ -228,6 +228,7 @@ def load_byt5(
 
     info = byt5_text_encoder.load_state_dict(sd, strict=True, assign=True)
     byt5_text_encoder.to(device)
+    byt5_text_encoder.eval()
     logger.info(f"BYT5 text encoder loaded with info: {info}")
 
     return byt5_tokenizer, byt5_text_encoder
@@ -404,6 +405,7 @@ def load_qwen2_5_vl(
     info = qwen2_5_vl.load_state_dict(sd, strict=True, assign=True)
     logger.info(f"Loaded Qwen2.5-VL: {info}")
     qwen2_5_vl.to(device)
+    qwen2_5_vl.eval()
 
     if dtype is not None:
         if dtype.itemsize == 1:  # fp8
@@ -494,43 +496,59 @@ def load_qwen2_5_vl(
 
     # Load tokenizer
     logger.info(f"Loading tokenizer from {QWEN_2_5_VL_IMAGE_ID}")
-    tokenizer = Qwen2Tokenizer.from_pretrained(QWEN_2_5_VL_IMAGE_ID) 
+    tokenizer = Qwen2Tokenizer.from_pretrained(QWEN_2_5_VL_IMAGE_ID)
     return tokenizer, qwen2_5_vl
+
+
+TOKENIZER_MAX_LENGTH = 1024
+PROMPT_TEMPLATE_ENCODE_START_IDX = 34
 
 
 def get_qwen_prompt_embeds(
     tokenizer: Qwen2Tokenizer, vlm: Qwen2_5_VLForConditionalGeneration, prompt: Union[str, list[str]] = None
-):
-    tokenizer_max_length = 1024
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    input_ids, mask = get_qwen_tokens(tokenizer, prompt)
+    return get_qwen_prompt_embeds_from_tokens(vlm, input_ids, mask)
+
+
+def get_qwen_tokens(tokenizer: Qwen2Tokenizer, prompt: Union[str, list[str]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    tokenizer_max_length = TOKENIZER_MAX_LENGTH
 
     # HunyuanImage-2.1 does not use "<|im_start|>assistant\n" in the prompt template
     prompt_template_encode = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>"
     # \n<|im_start|>assistant\n"
-    prompt_template_encode_start_idx = 34
+    prompt_template_encode_start_idx = PROMPT_TEMPLATE_ENCODE_START_IDX
     # default_sample_size = 128
-
-    device = vlm.device
-    dtype = vlm.dtype
 
     prompt = [prompt] if isinstance(prompt, str) else prompt
 
     template = prompt_template_encode
     drop_idx = prompt_template_encode_start_idx
     txt = [template.format(e) for e in prompt]
-    txt_tokens = tokenizer(txt, max_length=tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt").to(
-        device
-    )
+    txt_tokens = tokenizer(txt, max_length=tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt")
+    return txt_tokens.input_ids, txt_tokens.attention_mask
+
+
+def get_qwen_prompt_embeds_from_tokens(
+    vlm: Qwen2_5_VLForConditionalGeneration, input_ids: torch.Tensor, attention_mask: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    tokenizer_max_length = TOKENIZER_MAX_LENGTH
+    drop_idx = PROMPT_TEMPLATE_ENCODE_START_IDX
+
+    device = vlm.device
+    dtype = vlm.dtype
+
+    input_ids = input_ids.to(device=device)
+    attention_mask = attention_mask.to(device=device)
 
     if dtype.itemsize == 1:  # fp8
+        # TODO dtype should be vlm.dtype?
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=True):
-            encoder_hidden_states = vlm(
-                input_ids=txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask, output_hidden_states=True
-            )
+            encoder_hidden_states = vlm(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
     else:
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype, enabled=True):
-            encoder_hidden_states = vlm(
-                input_ids=txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask, output_hidden_states=True
-            )
+            encoder_hidden_states = vlm(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+
     hidden_states = encoder_hidden_states.hidden_states[-3]  # use the 3rd last layer's hidden states for HunyuanImage-2.1
     if hidden_states.shape[1] > tokenizer_max_length + drop_idx:
         logger.warning(f"Hidden states shape {hidden_states.shape} exceeds max length {tokenizer_max_length + drop_idx}")
@@ -545,7 +563,7 @@ def get_qwen_prompt_embeds(
     # ----------------------------------------------------------
 
     prompt_embeds = hidden_states[:, drop_idx:, :]
-    encoder_attention_mask = txt_tokens.attention_mask[:, drop_idx:]
+    encoder_attention_mask = attention_mask[:, drop_idx:]
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
     return prompt_embeds, encoder_attention_mask
@@ -565,16 +583,41 @@ def format_prompt(texts, styles):
     return prompt
 
 
+BYT5_MAX_LENGTH = 128
+
+
 def get_glyph_prompt_embeds(
-    tokenizer: T5Tokenizer, text_encoder: T5Stack, prompt: Union[str, list[str]] = None
+    tokenizer: T5Tokenizer, text_encoder: T5Stack, prompt: Optional[str] = None
 ) -> Tuple[list[bool], torch.Tensor, torch.Tensor]:
-    byt5_max_length = 128
-    if not prompt:
+    byt5_tokens, byt5_text_mask = get_byt5_text_tokens(tokenizer, prompt)
+    return get_byt5_prompt_embeds_from_tokens(text_encoder, byt5_tokens, byt5_text_mask)
+
+
+def get_byt5_prompt_embeds_from_tokens(
+    text_encoder: T5Stack, byt5_text_ids: Optional[torch.Tensor], byt5_text_mask: Optional[torch.Tensor]
+) -> Tuple[list[bool], torch.Tensor, torch.Tensor]:
+    byt5_max_length = BYT5_MAX_LENGTH
+
+    if byt5_text_ids is None or byt5_text_mask is None:
         return (
             [False],
             torch.zeros((1, byt5_max_length, 1472), device=text_encoder.device),
             torch.zeros((1, byt5_max_length), device=text_encoder.device, dtype=torch.int64),
         )
+
+    byt5_text_ids = byt5_text_ids.to(device=text_encoder.device)
+    byt5_text_mask = byt5_text_mask.to(device=text_encoder.device)
+
+    with torch.no_grad(), torch.autocast(device_type=text_encoder.device.type, dtype=text_encoder.dtype, enabled=True):
+        byt5_prompt_embeds = text_encoder(byt5_text_ids, attention_mask=byt5_text_mask.float())
+    byt5_emb = byt5_prompt_embeds[0]
+
+    return [True], byt5_emb, byt5_text_mask
+
+
+def get_byt5_text_tokens(tokenizer, prompt):
+    if not prompt:
+        return None, None
 
     try:
         text_prompt_texts = []
@@ -594,56 +637,26 @@ def get_glyph_prompt_embeds(
         text_prompt_texts.extend(matches_quote_chinese_double)
 
         if not text_prompt_texts:
-            return (
-                [False],
-                torch.zeros((1, byt5_max_length, 1472), device=text_encoder.device),
-                torch.zeros((1, byt5_max_length), device=text_encoder.device, dtype=torch.int64),
-            )
+            return None, None
 
         text_prompt_style_list = [{"color": None, "font-family": None} for _ in range(len(text_prompt_texts))]
         glyph_text_formatted = format_prompt(text_prompt_texts, text_prompt_style_list)
+        logger.info(f"Glyph text formatted: {glyph_text_formatted}")
 
-        byt5_text_ids, byt5_text_mask = get_byt5_text_tokens(tokenizer, byt5_max_length, glyph_text_formatted)
+        byt5_text_inputs = tokenizer(
+            glyph_text_formatted,
+            padding="max_length",
+            max_length=BYT5_MAX_LENGTH,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
 
-        byt5_text_ids = byt5_text_ids.to(device=text_encoder.device)
-        byt5_text_mask = byt5_text_mask.to(device=text_encoder.device)
+        byt5_text_ids = byt5_text_inputs.input_ids
+        byt5_text_mask = byt5_text_inputs.attention_mask
 
-        byt5_prompt_embeds = text_encoder(byt5_text_ids, attention_mask=byt5_text_mask.float())
-        byt5_emb = byt5_prompt_embeds[0]
-
-        return [True], byt5_emb, byt5_text_mask
+        return byt5_text_ids, byt5_text_mask
 
     except Exception as e:
         logger.warning(f"Warning: Error in glyph encoding, using fallback: {e}")
-        return (
-            [False],
-            torch.zeros((1, byt5_max_length, 1472), device=text_encoder.device),
-            torch.zeros((1, byt5_max_length), device=text_encoder.device, dtype=torch.int64),
-        )
-
-
-def get_byt5_text_tokens(tokenizer, max_length, text_list):
-    """
-    Get byT5 text tokens.
-
-    Args:
-        tokenizer: The tokenizer object
-        max_length: Maximum token length
-        text_list: List or string of text
-
-    Returns:
-        Tuple of (byt5_text_ids, byt5_text_mask)
-    """
-    if isinstance(text_list, list):
-        text_prompt = " ".join(text_list)
-    else:
-        text_prompt = text_list
-
-    byt5_text_inputs = tokenizer(
-        text_prompt, padding="max_length", max_length=max_length, truncation=True, add_special_tokens=True, return_tensors="pt"
-    )
-
-    byt5_text_ids = byt5_text_inputs.input_ids
-    byt5_text_mask = byt5_text_inputs.attention_mask
-
-    return byt5_text_ids, byt5_text_mask
+        return None, None

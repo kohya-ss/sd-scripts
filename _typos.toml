@@ -29,7 +29,10 @@ koo="koo"
 yos="yos"
 wn="wn"
 hime="hime"
+OT="OT"
 
-
-[files]
-extend-exclude = ["_typos.toml", "venv"]
+# [files]
+# # Extend the default list of files to check
+# extend-exclude = [
+#     "library/hunyuan_image_text_encoder.py",
+# ]

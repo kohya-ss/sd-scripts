@@ -7,8 +7,8 @@ import os
 import re
 import time
 import copy
-from types import ModuleType
-from typing import Tuple, Optional, List, Any, Dict
+from types import ModuleType, SimpleNamespace
+from typing import Tuple, Optional, List, Any, Dict, Union
 
 import numpy as np
 import torch
@@ -21,7 +21,7 @@ from PIL import Image
 from library import hunyuan_image_models, hunyuan_image_text_encoder, hunyuan_image_utils
 from library import hunyuan_image_vae
 from library.hunyuan_image_vae import HunyuanVAE2D
-from library.device_utils import clean_memory_on_device
+from library.device_utils import clean_memory_on_device, synchronize_device
 from networks import lora_hunyuan_image
 
 
@@ -29,7 +29,6 @@ lycoris_available = find_spec("lycoris") is not None
 if lycoris_available:
     from lycoris.kohya import create_network_from_weights
 
-from library.custom_offloading_utils import synchronize_device
 from library.utils import mem_eff_save_file, setup_logging
 
 setup_logging()
@@ -513,10 +512,11 @@ def prepare_text_inputs(
     else:
         move_models_to_device_if_needed()
 
-        embed, mask = hunyuan_image_text_encoder.get_qwen_prompt_embeds(tokenizer_vlm, text_encoder_vlm, prompt)
-        ocr_mask, embed_byt5, mask_byt5 = hunyuan_image_text_encoder.get_glyph_prompt_embeds(
-            tokenizer_byt5, text_encoder_byt5, prompt
-        )
+        with torch.no_grad():
+            embed, mask = hunyuan_image_text_encoder.get_qwen_prompt_embeds(tokenizer_vlm, text_encoder_vlm, prompt)
+            ocr_mask, embed_byt5, mask_byt5 = hunyuan_image_text_encoder.get_glyph_prompt_embeds(
+                tokenizer_byt5, text_encoder_byt5, prompt
+            )
         embed = embed.cpu()
         mask = mask.cpu()
         embed_byt5 = embed_byt5.cpu()
@@ -531,12 +531,13 @@ def prepare_text_inputs(
     else:
         move_models_to_device_if_needed()
 
-        negative_embed, negative_mask = hunyuan_image_text_encoder.get_qwen_prompt_embeds(
-            tokenizer_vlm, text_encoder_vlm, negative_prompt
-        )
-        negative_ocr_mask, negative_embed_byt5, negative_mask_byt5 = hunyuan_image_text_encoder.get_glyph_prompt_embeds(
-            tokenizer_byt5, text_encoder_byt5, negative_prompt
-        )
+        with torch.no_grad():
+            negative_embed, negative_mask = hunyuan_image_text_encoder.get_qwen_prompt_embeds(
+                tokenizer_vlm, text_encoder_vlm, negative_prompt
+            )
+            negative_ocr_mask, negative_embed_byt5, negative_mask_byt5 = hunyuan_image_text_encoder.get_glyph_prompt_embeds(
+                tokenizer_byt5, text_encoder_byt5, negative_prompt
+            )
         negative_embed = negative_embed.cpu()
         negative_mask = negative_mask.cpu()
         negative_embed_byt5 = negative_embed_byt5.cpu()
@@ -617,6 +618,18 @@ def generate(
         # model.move_to_device_except_swap_blocks(device)  # Handles block swap correctly
         # model.prepare_block_swap_before_forward()
 
+    return generate_body(args, model, context, context_null, device, seed)
+
+
+def generate_body(
+    args: Union[argparse.Namespace, SimpleNamespace],
+    model: hunyuan_image_models.HYImageDiffusionTransformer,
+    context: Dict[str, Any],
+    context_null: Optional[Dict[str, Any]],
+    device: torch.device,
+    seed: int,
+) -> torch.Tensor:
+
     # set random generator
     seed_g = torch.Generator(device="cpu")
     seed_g.manual_seed(seed)
@@ -633,6 +646,10 @@ def generate(
     embed_byt5 = context["embed_byt5"].to(device, dtype=torch.bfloat16)
     mask_byt5 = context["mask_byt5"].to(device, dtype=torch.bfloat16)
     ocr_mask = context["ocr_mask"]  # list of bool
+
+    if context_null is None:
+        context_null = context  # dummy for unconditional
+
     negative_embed = context_null["embed"].to(device, dtype=torch.bfloat16)
     negative_mask = context_null["mask"].to(device, dtype=torch.bfloat16)
     negative_embed_byt5 = context_null["embed_byt5"].to(device, dtype=torch.bfloat16)

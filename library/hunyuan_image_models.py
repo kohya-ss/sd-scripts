@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
 
+from library import custom_offloading_utils
 from library.fp8_optimization_utils import apply_fp8_monkey_patch
 from library.lora_utils import load_safetensors_with_lora_and_fp8
 from library.utils import setup_logging
@@ -132,6 +133,74 @@ class HYImageDiffusionTransformer(nn.Module):
 
         self.final_layer = FinalLayer(self.hidden_size, self.patch_size, self.out_channels, nn.SiLU)
 
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+        self.blocks_to_swap = None
+
+        self.offloader_double = None
+        self.offloader_single = None
+        self.num_double_blocks = len(self.double_blocks)
+        self.num_single_blocks = len(self.single_blocks)
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False):
+        self.gradient_checkpointing = True
+        self.cpu_offload_checkpointing = cpu_offload
+
+        for block in self.double_blocks + self.single_blocks:
+            block.enable_gradient_checkpointing(cpu_offload=cpu_offload)
+
+        print(f"HunyuanImage-2.1: Gradient checkpointing enabled. CPU offload: {cpu_offload}")
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.cpu_offload_checkpointing = False
+
+        for block in self.double_blocks + self.single_blocks:
+            block.disable_gradient_checkpointing()
+
+        print("HunyuanImage-2.1: Gradient checkpointing disabled.")
+
+    def enable_block_swap(self, num_blocks: int, device: torch.device, supports_backward: bool = False):
+        self.blocks_to_swap = num_blocks
+        double_blocks_to_swap = num_blocks // 2
+        single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
+
+        assert double_blocks_to_swap <= self.num_double_blocks - 2 and single_blocks_to_swap <= self.num_single_blocks - 2, (
+            f"Cannot swap more than {self.num_double_blocks - 2} double blocks and {self.num_single_blocks - 2} single blocks. "
+            f"Requested {double_blocks_to_swap} double blocks and {single_blocks_to_swap} single blocks."
+        )
+
+        self.offloader_double = custom_offloading_utils.ModelOffloader(
+            self.double_blocks, double_blocks_to_swap, supports_backward, device
+        )
+        self.offloader_single = custom_offloading_utils.ModelOffloader(
+            self.single_blocks, single_blocks_to_swap, supports_backward, device
+        )
+        # , debug=True
+        print(
+            f"HunyuanImage-2.1: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
+        )
+
+    def move_to_device_except_swap_blocks(self, device: torch.device):
+        # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
+        if self.blocks_to_swap:
+            save_double_blocks = self.double_blocks
+            save_single_blocks = self.single_blocks
+            self.double_blocks = nn.ModuleList()
+            self.single_blocks = nn.ModuleList()
+
+        self.to(device)
+
+        if self.blocks_to_swap:
+            self.double_blocks = save_double_blocks
+            self.single_blocks = save_single_blocks
+
+    def prepare_block_swap_before_forward(self):
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+        self.offloader_double.prepare_block_devices_before_forward(self.double_blocks)
+        self.offloader_single.prepare_block_devices_before_forward(self.single_blocks)
+
     def get_rotary_pos_embed(self, rope_sizes):
         """
         Generate 2D rotary position embeddings for image tokens.
@@ -255,16 +324,29 @@ class HYImageDiffusionTransformer(nn.Module):
         txt = txt[:, :max_txt_len, :]
         txt_seq_len = txt.shape[1]
 
+        input_device = img.device
+
         # Process through double-stream blocks (separate image/text attention)
         for index, block in enumerate(self.double_blocks):
+            if self.blocks_to_swap:
+                self.offloader_double.wait_for_block(index)
             img, txt = block(img, txt, vec, freqs_cis, seq_lens)
+            if self.blocks_to_swap:
+                self.offloader_double.submit_move_blocks(self.double_blocks, index)
 
         # Concatenate image and text tokens for joint processing
         x = torch.cat((img, txt), 1)
 
         # Process through single-stream blocks (joint attention)
         for index, block in enumerate(self.single_blocks):
+            if self.blocks_to_swap:
+                self.offloader_single.wait_for_block(index)
             x = block(x, vec, txt_seq_len, freqs_cis, seq_lens)
+            if self.blocks_to_swap:
+                self.offloader_single.submit_move_blocks(self.single_blocks, index)
+
+        x = x.to(input_device)
+        vec = vec.to(input_device)
 
         img = x[:, :img_seq_len, ...]
 

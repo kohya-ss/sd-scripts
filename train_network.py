@@ -475,6 +475,9 @@ class NetworkTrainer:
 
         return loss.mean()
 
+    def cast_text_encoder(self):
+        return True # default for other than HunyuanImage
+    
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
@@ -832,7 +835,7 @@ class NetworkTrainer:
             t_enc.requires_grad_(False)
 
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
-            if t_enc.device.type != "cpu":
+            if t_enc.device.type != "cpu" and self.cast_text_encoder():
                 t_enc.to(dtype=te_weight_dtype)
 
                 # nn.Embedding not support FP8
