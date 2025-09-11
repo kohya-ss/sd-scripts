@@ -171,10 +171,10 @@ class HYImageDiffusionTransformer(nn.Module):
         )
 
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, supports_backward, device
+            self.double_blocks, double_blocks_to_swap, device, supports_backward=supports_backward
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, single_blocks_to_swap, supports_backward, device
+            self.single_blocks, single_blocks_to_swap, device, supports_backward=supports_backward
         )
         # , debug=True
         print(
