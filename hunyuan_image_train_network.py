@@ -394,7 +394,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         if self.is_swapping_blocks:
             # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
             logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device)
+            model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
 
         return model, text_encoders
 
