@@ -47,6 +47,7 @@ from library.avg_ckpt_util import (
     load_lora_state_dict,
 )
 from library.utils import setup_logging, add_logging_arguments
+from library.rounding_util import round_parameters
 from accelerate.utils import broadcast
 
 setup_logging()
@@ -154,6 +155,37 @@ class NetworkTrainer:
             f"avg_cp: {args.avg_cp}, avg_window: {args.avg_window}, avg_begin: {args.avg_begin}, "
             f"avg_mode: {args.avg_mode}, avg_reset_stats: {args.avg_reset_stats}"
         )
+        if args.round_lora_step is not None and args.round_lora_step > 0:
+            logger.info(
+                f"lora rounding: step={args.round_lora_step}, mode={args.round_lora_mode}, "
+                f"every={args.round_lora_every}, begin={args.round_lora_begin}"
+            )
+        # parse bits schedule if provided
+        def _parse_bits_sched(spec: str):
+            items = []
+            if not spec:
+                return items
+            for part in spec.split(","):
+                if not part:
+                    continue
+                k, v = part.split(":")
+                p = float(k)
+                b = int(v)
+                assert 0.0 <= p <= 1.0, "progress must be in [0,1]"
+                assert b > 0, "bits must be > 0"
+                items.append((p, b))
+            items.sort(key=lambda x: x[0])
+            return items
+
+        dq_bits_sched = _parse_bits_sched(getattr(args, "dq_delta_bits_sched", None))
+
+        if ((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step and args.dq_delta_step > 0)
+            or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched):
+            logger.info(
+                f"lora delta fake-quant: step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
+                f"mode={args.dq_delta_mode}, begin={args.dq_delta_begin}, granularity={getattr(args,'dq_delta_granularity',None)}, "
+                f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, bits_sched={dq_bits_sched}"
+            )
 
         cache_latents = args.cache_latents
         use_dreambooth_method = args.in_json is None
@@ -334,6 +366,39 @@ class NetworkTrainer:
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
+
+        # Configure LoRA delta fake-quantization if available
+        if (((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step) or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched) and hasattr(network, "set_delta_fake_quant")):
+            unwrapped = accelerator.unwrap_model(network)
+            unwrapped.set_delta_fake_quant(
+                getattr(args, "dq_delta_step", None),
+                args.dq_delta_mode,
+                granularity=args.dq_delta_granularity,
+                stat=args.dq_delta_stat,
+                bits=getattr(args, "dq_delta_bits", None),
+                range_mul=getattr(args, "dq_delta_range_mul", None),
+            )
+            # propagate EMA decay if supported
+            if hasattr(unwrapped, "text_encoder_loras"):
+                for l in unwrapped.text_encoder_loras:
+                    if hasattr(l, "delta_q_ema_decay"):
+                        l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
+            if hasattr(unwrapped, "unet_loras"):
+                for l in unwrapped.unet_loras:
+                    if hasattr(l, "delta_q_ema_decay"):
+                        l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
+            # Scope control: unet / te / both
+            scope = getattr(args, "dq_delta_scope", "both")
+            if scope == "unet" and hasattr(unwrapped, "text_encoder_loras"):
+                for l in unwrapped.text_encoder_loras:
+                    l.delta_q_enabled = False
+                for l in unwrapped.unet_loras:
+                    l.delta_q_enabled = True
+            elif scope == "te" and hasattr(unwrapped, "unet_loras"):
+                for l in unwrapped.unet_loras:
+                    l.delta_q_enabled = False
+                for l in unwrapped.text_encoder_loras:
+                    l.delta_q_enabled = True
 
         if args.network_weights is not None:
             # FIXME consider alpha of weights
@@ -1100,6 +1165,9 @@ class NetworkTrainer:
                 skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
                 initial_step = 1
 
+            # track last applied bits to avoid redundant updates
+            last_applied_bits = getattr(args, "dq_delta_bits", None)
+
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
                 current_step.value = global_step
                 if initial_step > 0:
@@ -1107,6 +1175,36 @@ class NetworkTrainer:
                     continue
 
                 with accelerator.accumulate(training_model):
+                    # Toggle delta fake-quantization based on training progress
+                    if hasattr(accelerator.unwrap_model(network), "set_delta_quant_enabled"):
+                        dq_configured = (
+                            (getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step)
+                            or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits)
+                            or bool(dq_bits_sched)
+                        )
+                        if dq_configured:
+                            progress_frac = (global_step / float(args.max_train_steps)) if args.max_train_steps > 0 else 1.0
+                            accelerator.unwrap_model(network).set_delta_quant_enabled(progress_frac >= args.dq_delta_begin)
+
+                            # Apply bits scheduling if specified
+                            if dq_bits_sched:
+                                cur_bits = last_applied_bits
+                                for p, b in dq_bits_sched:
+                                    if progress_frac >= p:
+                                        cur_bits = b
+                                    else:
+                                        break
+                                if cur_bits != last_applied_bits:
+                                    accelerator.unwrap_model(network).set_delta_fake_quant(
+                                        getattr(args, "dq_delta_step", None),
+                                        args.dq_delta_mode,
+                                        granularity=args.dq_delta_granularity,
+                                        stat=args.dq_delta_stat,
+                                        bits=cur_bits,
+                                        range_mul=getattr(args, "dq_delta_range_mul", None),
+                                    )
+                                    last_applied_bits = cur_bits
+
                     on_step_start(text_encoder, unet)
 
                     if "latents" in batch and batch["latents"] is not None:
@@ -1230,6 +1328,23 @@ class NetworkTrainer:
                         optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad(set_to_none=True)
+
+                        # Optional: quantize/round LoRA trainable parameters after each optimizer step
+                        if (
+                            args.round_lora_step is not None
+                            and args.round_lora_step > 0
+                            and accelerator.sync_gradients
+                        ):
+                            # step index after this update
+                            next_step_idx = global_step + 1
+                            # respect warmup for rounding based on overall training progress
+                            progress_frac = next_step_idx / float(args.max_train_steps)
+                            if progress_frac >= args.round_lora_begin and (next_step_idx % max(1, args.round_lora_every) == 0):
+                                round_parameters(
+                                    accelerator.unwrap_model(network).get_trainable_params(),
+                                    step=args.round_lora_step,
+                                    mode=args.round_lora_mode,
+                                )
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -1504,6 +1619,97 @@ def setup_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="reset optimizer stats after averaging / 平均化後にOptimizer統計をリセットする",
+    )
+    # LoRA delta fake-quantization (on forward only)
+    parser.add_argument(
+        "--dq_delta_step",
+        type=float,
+        default=None,
+        help="Fake-quantize only LoRA delta output per forward with this step (STE). None/<=0 to disable / LoRAの差分出力のみをこの刻みでフェイク量子化（STE）。Noneまたは<=0で無効",
+    )
+    parser.add_argument(
+        "--dq_delta_mode",
+        type=str,
+        default="det",
+        choices=["det", "stoch"],
+        help="Fake-quant mode: det or stoch / フェイク量子化モード：det=最近傍、stoch=確率的",
+    )
+    parser.add_argument(
+        "--dq_delta_begin",
+        type=float,
+        default=0.0,
+        help="Enable fake-quant after this fraction of total steps [0-1] / 学習進行率がこの割合を超えてから有効化 [0-1]",
+    )
+    parser.add_argument(
+        "--dq_delta_scope",
+        type=str,
+        default="both",
+        choices=["unet", "te", "both"],
+        help="Apply delta fake-quant to: unet, te, or both / Δのフェイク量子化の適用範囲（unet/te/both）",
+    )
+    parser.add_argument(
+        "--dq_delta_granularity",
+        type=str,
+        default="tensor",
+        choices=["tensor", "channel"],
+        help="Granularity of delta fake-quant: whole tensor or per-channel / Δのフェイク量子化の粒度（テンソル全体/チャネル別）",
+    )
+    parser.add_argument(
+        "--dq_delta_stat",
+        type=str,
+        default="rms",
+        choices=["rms", "absmax", "none", "ema_minmax", "ema_std"],
+        help="Statistic for scale/step: rms/absmax/none or EMA variants ema_minmax/ema_std. Channel-wise when granularity=channel. / スケール/ステップの統計：rms/absmax/none または EMA 版 ema_minmax/ema_std（granularity=channelでチャネル別）",
+    )
+    parser.add_argument(
+        "--dq_delta_ema_decay",
+        type=float,
+        default=0.99,
+        help="EMA decay for ema_minmax/ema_std statistics (0-1, closer to 1 = slower). / ema_minmax/ema_std 用の EMA 係数",
+    )
+    parser.add_argument(
+        "--dq_delta_bits",
+        type=int,
+        default=None,
+        help="If set, use N-bit symmetric fake-quant (overrides step path). Recommended: 8 / Nビット対称フェイク量子化（step指定より優先）。推奨: 8",
+    )
+    parser.add_argument(
+        "--dq_delta_range_mul",
+        type=float,
+        default=3.0,
+        help="When bits mode with stat=rms, dynamic range = range_mul * RMS. / bitsモードかつstat=rms時の有効レンジ倍率（range=倍率×RMS）",
+    )
+    parser.add_argument(
+        "--dq_delta_bits_sched",
+        type=str,
+        default=None,
+        help="Schedule bits by progress fraction, e.g. '0.0:6,0.5:8,0.8:10' / 学習進行率に応じたビット数スケジュール（例: '0.0:6,0.5:8,0.8:10'）",
+    )
+    # LoRA rounding options
+    parser.add_argument(
+        "--round_lora_step",
+        type=float,
+        default=None,
+        help="Round LoRA trainable weights to multiples of this step after optimizer step (disabled if None or <= 0) / Optimizer更新後にLoRAの学習パラメータをこの刻みに丸める（Noneまたは<=0で無効）",
+    )
+    parser.add_argument(
+        "--round_lora_mode",
+        type=str,
+        default="det",
+        choices=["det", "stoch"],
+        help="Rounding mode: det (deterministic) or stoch (stochastic) / 丸めモード：det=最近傍、stoch=確率的",
+    )
+    parser.add_argument(
+        "--round_lora_every",
+        type=int,
+        default=1,
+        help="Apply rounding every N optimizer steps (only when gradients sync) / 丸めを適用するステップ間隔（同期更新時のみ）",
+    )
+    parser.add_argument(
+        "--round_lora_begin",
+        type=float,
+        default=0.0,
+        help="Begin rounding after this fraction of total steps [0-1] / 学習全体のこの進行率以降で丸めを開始 [0-1]",
     )
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")

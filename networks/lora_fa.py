@@ -15,6 +15,13 @@ import numpy as np
 import torch
 import re
 import library.maruo_global_config as maruoCfg
+from library.rounding_util import (
+    fake_quantize,
+    compute_per_channel_step,
+    fake_quantize_levels,
+    compute_scale_bits,
+    _reduce_dims_and_shape,
+)
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -38,6 +45,13 @@ class LoRAModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        delta_q_step: Optional[float] = None,
+        delta_q_mode: str = "det",
+        delta_q_granularity: str = "tensor",
+        delta_q_stat: str = "rms",
+        delta_q_bits: Optional[int] = None,
+        delta_q_range_mul: float = 3.0,
+        delta_q_ema_decay: float = 0.99,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -86,6 +100,32 @@ class LoRAModule(torch.nn.Module):
         self.dropout = dropout
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
+        # delta fake quantization (applied to LoRA delta output only)
+        self.delta_q_step = float(delta_q_step) if (delta_q_step is not None) else None
+        self.delta_q_mode = delta_q_mode
+        self.delta_q_enabled = True
+        self.delta_q_granularity = delta_q_granularity
+        self.delta_q_stat = delta_q_stat
+        self.delta_q_bits = delta_q_bits
+        self.delta_q_range_mul = delta_q_range_mul
+        self.delta_q_ema_decay = delta_q_ema_decay
+        self.register_buffer("_ema_min", None, persistent=False)
+        self.register_buffer("_ema_max", None, persistent=False)
+        self.register_buffer("_ema_std", None, persistent=False)
+
+    def _ensure_ema_buffers(self, delta: torch.Tensor):
+        reduce_dims, shape = _reduce_dims_and_shape(delta)
+        if reduce_dims is None:
+            return None, None
+        if self._ema_min is None and (self.delta_q_stat == "ema_minmax"):
+            cur_min = torch.amin(delta.to(torch.float32), dim=reduce_dims)
+            cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
+            self._ema_min = cur_min.detach()
+            self._ema_max = cur_max.detach()
+        if self._ema_std is None and (self.delta_q_stat == "ema_std"):
+            cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
+            self._ema_std = cur_std.detach()
+        return reduce_dims, shape
 
     def get_trainable_params(self):
         params = self.named_parameters()
@@ -136,7 +176,70 @@ class LoRAModule(torch.nn.Module):
 
         lx = self.lora_up(lx)
 
-        return org_forwarded + lx * self.multiplier * scale
+        delta = lx * self.multiplier * scale
+        # Update EMA stats every step (even if quantization not enabled yet)
+        if self.training and self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+            reduce_dims, shape = self._ensure_ema_buffers(delta)
+            if reduce_dims is not None:
+                decay = float(self.delta_q_ema_decay)
+                if self.delta_q_stat == "ema_minmax":
+                    cur_min = torch.amin(delta.to(torch.float32), dim=reduce_dims)
+                    cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
+                    self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
+                    self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
+                else:
+                    cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
+                    self._ema_std = decay * self._ema_std + (1.0 - decay) * cur_std
+
+        if self.training and self.delta_q_enabled:
+            if self.delta_q_bits is not None and self.delta_q_bits > 0:
+                if self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+                    reduce_dims, shape = _reduce_dims_and_shape(delta)
+                    if reduce_dims is None:
+                        scale = compute_scale_bits(
+                            delta,
+                            bits=self.delta_q_bits,
+                            granularity=self.delta_q_granularity,
+                            stat="rms",
+                            range_mul=self.delta_q_range_mul,
+                        )
+                    else:
+                        if self.delta_q_stat == "ema_minmax":
+                            max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
+                            rng = max_abs
+                        else:
+                            rng = (self._ema_std * self.delta_q_range_mul).view(shape)
+                        qmax = (1 << (self.delta_q_bits - 1)) - 1
+                        scale = (rng / qmax).to(torch.float32)
+                else:
+                    scale = compute_scale_bits(
+                        delta,
+                        bits=self.delta_q_bits,
+                        granularity=self.delta_q_granularity,
+                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                        range_mul=self.delta_q_range_mul,
+                    )
+                qmax = (1 << (self.delta_q_bits - 1)) - 1
+                delta = fake_quantize_levels(delta, scale=scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+            elif self.delta_q_step is not None and self.delta_q_step > 0:
+                if self.delta_q_granularity == "channel":
+                    if self.delta_q_stat in ("ema_minmax", "ema_std"):
+                        reduce_dims, shape = _reduce_dims_and_shape(delta)
+                        if reduce_dims is None:
+                            step_t = self.delta_q_step
+                        else:
+                            if self.delta_q_stat == "ema_minmax":
+                                stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
+                            else:
+                                stat_val = self._ema_std.view(shape)
+                            step_t = (float(self.delta_q_step) * stat_val).to(torch.float32)
+                    else:
+                        step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
+                else:
+                    step_t = self.delta_q_step
+                delta = fake_quantize(delta, step=step_t, mode=self.delta_q_mode)
+
+        return org_forwarded + delta
 
 
 class LoRAInfModule(LoRAModule):
@@ -895,6 +998,12 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
+                                delta_q_step=getattr(self, 'delta_q_step', None),
+                                delta_q_mode=getattr(self, 'delta_q_mode', 'det'),
+                                delta_q_granularity=getattr(self, 'delta_q_granularity', 'tensor'),
+                                delta_q_stat=getattr(self, 'delta_q_stat', 'rms'),
+                                delta_q_bits=getattr(self, 'delta_q_bits', None),
+                                delta_q_range_mul=getattr(self, 'delta_q_range_mul', 3.0),
                             )
                             loras.append(lora)
             return loras, skipped
@@ -944,6 +1053,32 @@ class LoRANetwork(torch.nn.Module):
         for lora in self.text_encoder_loras + self.unet_loras:
             assert lora.lora_name not in names, f"duplicated lora name: {lora.lora_name}"
             names.add(lora.lora_name)
+
+    # runtime control for delta fake-quant (enable/disable)
+    def set_delta_fake_quant(
+        self,
+        step: Optional[float],
+        mode: str = "det",
+        granularity: Optional[str] = None,
+        stat: Optional[str] = None,
+        bits: Optional[int] = None,
+        range_mul: Optional[float] = None,
+    ):
+        for l in self.text_encoder_loras + self.unet_loras:
+            l.delta_q_step = step
+            l.delta_q_mode = mode
+            if granularity is not None:
+                l.delta_q_granularity = granularity
+            if stat is not None:
+                l.delta_q_stat = stat
+            if bits is not None:
+                l.delta_q_bits = bits
+            if range_mul is not None:
+                l.delta_q_range_mul = range_mul
+
+    def set_delta_quant_enabled(self, enabled: bool):
+        for l in self.text_encoder_loras + self.unet_loras:
+            l.delta_q_enabled = enabled
 
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
