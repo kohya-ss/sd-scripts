@@ -3,7 +3,7 @@ SD 1.xおよび2.xのモデル、当リポジトリで学習したLoRA、Control
 # 概要
 
 * Diffusers (v0.10.2) ベースの推論（画像生成）スクリプト。
-* SD 1.xおよび2.x (base/v-parameterization)モデルに対応。
+* SD 1.x、2.x (base/v-parameterization)、およびSDXLモデルに対応。
 * txt2img、img2img、inpaintingに対応。
 * 対話モード、およびファイルからのプロンプト読み込み、連続生成に対応。
 * プロンプト1行あたりの生成枚数を指定可能。
@@ -96,13 +96,19 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 
 - `--ckpt <モデル名>`：モデル名を指定します。`--ckpt`オプションは必須です。Stable Diffusionのcheckpointファイル、またはDiffusersのモデルフォルダ、Hugging FaceのモデルIDを指定できます。
 
+- `--v1`：Stable Diffusion 1.x系のモデルを使う場合に指定します。これがデフォルトの動作です。
+
 - `--v2`：Stable Diffusion 2.x系のモデルを使う場合に指定します。1.x系の場合には指定不要です。
+
+- `--sdxl`：Stable Diffusion XLモデルを使う場合に指定します。
 
 - `--v_parameterization`：v-parameterizationを使うモデルを使う場合に指定します（`768-v-ema.ckpt`およびそこからの追加学習モデル、Waifu Diffusion v1.5など）。
     
-    `--v2`の指定有無が間違っているとモデル読み込み時にエラーになります。`--v_parameterization`の指定有無が間違っていると茶色い画像が表示されます。
+    `--v2`や`--sdxl`の指定有無が間違っているとモデル読み込み時にエラーになります。`--v_parameterization`の指定有無が間違っていると茶色い画像が表示されます。
 
 - `--vae`：使用するVAEを指定します。未指定時はモデル内のVAEを使用します。
+
+- `--tokenizer_cache_dir`：トークナイザーのキャッシュディレクトリを指定します（オフライン利用のため）。
 
 ## 画像生成と出力
 
@@ -111,6 +117,10 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 - `--prompt <プロンプト>`：プロンプトを指定します。スペースを含む場合はダブルクォーテーションで囲んでください。
 
 - `--from_file <プロンプトファイル名>`：プロンプトが記述されたファイルを指定します。1行1プロンプトで記述してください。なお画像サイズやguidance scaleはプロンプトオプション（後述）で指定できます。
+
+- `--from_module <モジュールファイル>`：Pythonモジュールからプロンプトを読み込みます。モジュールは`get_prompter(args, pipe, networks)`関数を実装している必要があります。
+
+- `--prompter_module_args`：prompterモジュールに渡す追加の引数を指定します。
 
 - `--W <画像幅>`：画像の幅を指定します。デフォルトは`512`です。
 
@@ -132,6 +142,24 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 
 - `--negative_scale` : uncoditioningのguidance scaleを個別に指定します。[gcem156氏のこちらの記事](https://note.com/gcem156/n/ne9a53e4a6f43)を参考に実装したものです。
 
+- `--emb_normalize_mode`：embedding正規化モードを指定します。"original"（デフォルト）、"abs"、"none"から選択できます。プロンプトの重みの正規化方法に影響します。
+
+## SDXL固有のオプション
+
+SDXL モデル（`--sdxl`フラグ付き）を使用する場合、追加のコンディショニングオプションが利用できます：
+
+- `--original_height`：SDXL コンディショニング用の元の高さを指定します。これはモデルの対象解像度の理解に影響します。
+
+- `--original_width`：SDXL コンディショニング用の元の幅を指定します。これはモデルの対象解像度の理解に影響します。
+
+- `--original_height_negative`：SDXL ネガティブコンディショニング用の元の高さを指定します。
+
+- `--original_width_negative`：SDXL ネガティブコンディショニング用の元の幅を指定します。
+
+- `--crop_top`：SDXL コンディショニング用のクロップ上オフセットを指定します。
+
+- `--crop_left`：SDXL コンディショニング用のクロップ左オフセットを指定します。
+
 ## メモリ使用量や生成速度の調整
 
 - `--batch_size <バッチサイズ>`：バッチサイズを指定します。デフォルトは`1`です。バッチサイズが大きいとメモリを多く消費しますが、生成速度が速くなります。
@@ -139,7 +167,15 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 - `--vae_batch_size <VAEのバッチサイズ>`：VAEのバッチサイズを指定します。デフォルトはバッチサイズと同じです。
     VAEのほうがメモリを多く消費するため、デノイジング後（stepが100%になった後）でメモリ不足になる場合があります。このような場合にはVAEのバッチサイズを小さくしてください。
 
+- `--vae_slices <スライス数>`：VAE処理時に画像をスライスに分割してVRAM使用量を削減します。None（デフォルト）で分割なし。16や32のような値が推奨されます。有効にすると処理が遅くなりますが、VRAM使用量が少なくなります。
+
+- `--no_half_vae`：VAE処理でfp16/bf16精度の使用を防ぎます。代わりにfp32を使用します。VAE関連の問題やアーティファクトが発生した場合に使用してください。
+
 - `--xformers`：xformersを使う場合に指定します。
+
+- `--sdpa`：最適化のためにPyTorch 2のscaled dot-product attentionを使用します。
+
+- `--diffusers_xformers`：Diffusers経由でxformersを使用します（注：Hypernetworksと互換性がありません）。
 
 - `--fp16`：fp16（単精度）での推論を行います。`fp16`と`bf16`をどちらも指定しない場合はfp32（単精度）での推論を行います。
 
@@ -156,6 +192,12 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 - `--network_merge`：使用する追加ネットワークの重みを`--network_mul`に指定した重みであらかじめマージします。`--network_pre_calc` と同時に使用できません。プロンプトオプションの`--am`、およびRegional LoRAは使用できなくなりますが、LoRA未使用時と同じ程度まで生成が高速化されます。
 
 - `--network_pre_calc`：使用する追加ネットワークの重みを生成ごとにあらかじめ計算します。プロンプトオプションの`--am`が使用できます。LoRA未使用時と同じ程度まで生成は高速化されますが、生成前に重みを計算する時間が必要で、またメモリ使用量も若干増加します。Regional LoRA使用時は無効になります 。
+
+- `--network_regional_mask_max_color_codes`：リージョナルマスクに使用する色コードの最大数を指定します。指定されていない場合、マスクはチャンネルごとに適用されます。Regional LoRAと組み合わせて、マスク内の色で定義できるリージョン数を制御するために使用されます。
+
+- `--network_args`：key=value形式でネットワークモジュールに渡す追加引数を指定します。例: `--network_args "alpha=1.0,dropout=0.1"`。
+
+- `--network_merge_n_models`：ネットワークマージを使用する場合、マージするモデル数を指定します（全ての読み込み済みネットワークをマージする代わりに）。
 
 # 主なオプションの指定例
 
@@ -235,7 +277,9 @@ python gen_img_diffusers.py --ckpt model.safetensors
 
 - `--sequential_file_name`：ファイル名を連番にするかどうかを指定します。指定すると生成されるファイル名が`im_000001.png`からの連番になります。
 
-- `--use_original_file_name`：指定すると生成ファイル名がオリジナルのファイル名と同じになります。
+- `--use_original_file_name`：指定すると生成ファイル名がオリジナルのファイル名の前に追加されます（img2imgモード用）。
+
+- `--clip_vision_strength`：指定した強度でimg2img用のCLIP Vision Conditioningを有効にします。CLIP Visionモデルを使用して入力画像からのコンディショニングを強化します。
 
 ## コマンドラインからの実行例
 
@@ -306,7 +350,9 @@ img2imgと併用できません。
 - `--highres_fix_upscaler`：2nd stageに任意のupscalerを利用します。現在は`--highres_fix_upscaler tools.latent_upscaler` のみ対応しています。
 
 - `--highres_fix_upscaler_args`：`--highres_fix_upscaler`で指定したupscalerに渡す引数を指定します。
-    `tools.latent_upscaler`の場合は、`--highres_fix_upscaler_args "weights=D:\Work\SD\Models\others\etc\upscaler-v1-e100-220.safetensors"`のように重みファイルを指定します。 
+    `tools.latent_upscaler`の場合は、`--highres_fix_upscaler_args "weights=D:\Work\SD\Models\others\etc\upscaler-v1-e100-220.safetensors"`のように重みファイルを指定します。
+
+- `--highres_fix_disable_control_net`：Highres fixの2nd stageでControlNetを無効にします。デフォルトでは、ControlNetは両ステージで使用されます。
 
 コマンドラインの例です。
 
@@ -318,6 +364,34 @@ python gen_img_diffusers.py  --ckpt trinart_characters_it4_v1_vae_merged.ckpt
     --images_per_prompt 1  --interactive 
     --highres_fix_scale 0.5 --highres_fix_steps 28 --strength 0.5
 ```
+
+## Deep Shrink
+
+Deep Shrinkは、異なるタイムステップで異なる深度のUNetを使用して生成プロセスを最適化する技術です。生成品質と効率を向上させることができます。
+
+以下のオプションがあります：
+
+- `--ds_depth_1`：第1フェーズでこの深度のDeep Shrinkを有効にします。有効な値は0から8です。
+
+- `--ds_timesteps_1`：このタイムステップまでDeep Shrink深度1を適用します。デフォルトは650です。
+
+- `--ds_depth_2`：Deep Shrinkの第2フェーズの深度を指定します。
+
+- `--ds_timesteps_2`：このタイムステップまでDeep Shrink深度2を適用します。デフォルトは650です。
+
+- `--ds_ratio`：Deep Shrinkでのダウンサンプリングの比率を指定します。デフォルトは0.5です。
+
+これらのパラメータはプロンプトオプションでも指定できます：
+
+- `--dsd1`：プロンプトからDeep Shrink深度1を指定します。
+  
+- `--dst1`：プロンプトからDeep Shrinkタイムステップ1を指定します。
+  
+- `--dsd2`：プロンプトからDeep Shrink深度2を指定します。
+  
+- `--dst2`：プロンプトからDeep Shrinkタイムステップ2を指定します。
+  
+- `--dsr`：プロンプトからDeep Shrink比率を指定します。
 
 ## ControlNet
 
@@ -345,6 +419,20 @@ python gen_img_diffusers.py --ckpt model_ckpt --scale 8 --steps 48 --outdir txt2
     --control_net_models diff_control_sd15_canny.safetensors --control_net_weights 1.0 
     --guide_image_path guide.png --control_net_ratios 1.0 --interactive
 ```
+
+## ControlNet-LLLite
+
+ControlNet-LLLiteは、類似の誘導目的に使用できるControlNetの軽量な代替手段です。
+
+以下のオプションがあります：
+
+- `--control_net_lllite_models`：ControlNet-LLLiteモデルファイルを指定します。
+
+- `--control_net_multipliers`：ControlNet-LLLiteの倍率を指定します（重みに類似）。
+
+- `--control_net_ratios`：ControlNet-LLLiteを適用するステップの比率を指定します。
+
+注意：ControlNetとControlNet-LLLiteは同時に使用できません。
 
 ## Attention Couple + Reginal LoRA
 
@@ -450,7 +538,9 @@ python gen_img_diffusers.py --ckpt wd-v1-3-full-pruned-half.ckpt
 
 - `--opt_channels_last` : 推論時にテンソルのチャンネルを最後に配置します。場合によっては高速化されることがあります。
 
-- `--network_show_meta` : 追加ネットワークのメタデータを表示します。
+- `--shuffle_prompts`：繰り返し時にプロンプトの順序をシャッフルします。`--from_file`で複数のプロンプトを使用する場合に便利です。
+
+- `--network_show_meta`：追加ネットワークのメタデータを表示します。
 
 
 --- 
@@ -478,6 +568,8 @@ latentのサイズを徐々に大きくしていくHires fixです。`gen_img.py
 - `--gradual_latent_ratio` : latentの初期サイズを指定します。デフォルトは 0.5 で、デフォルトの latent サイズの半分のサイズから始めます。
 - `--gradual_latent_ratio_step`: latentのサイズを大きくする割合を指定します。デフォルトは 0.125 で、latentのサイズを 0.625, 0.75, 0.875, 1.0 と徐々に大きくします。
 - `--gradual_latent_ratio_every_n_steps`: latentのサイズを大きくする間隔を指定します。デフォルトは 3 で、3ステップごとに latent のサイズを大きくします。
+- `--gradual_latent_s_noise`：Gradual LatentのS_noiseパラメータを指定します。デフォルトは1.0です。
+- `--gradual_latent_unsharp_params`：Gradual Latentのアンシャープマスクパラメータをksize,sigma,strength,target-x形式で指定します（target-x: 1=True, 0=False）。推奨値：`3,0.5,0.5,1`または`3,1.0,1.0,0`。
 
 それぞれのオプションは、プロンプトオプション、`--glt`、`--glr`、`--gls`、`--gle` でも指定できます。
 

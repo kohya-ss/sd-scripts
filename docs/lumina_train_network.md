@@ -170,6 +170,8 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--model_prediction_type=<choice>` – Model prediction processing method. Options: `raw`, `additive`, `sigma_scaled`. Default `raw`. **Recommended: `raw`**
 * `--system_prompt=<string>` – System prompt to prepend to all prompts. Recommended: `"You are an assistant designed to generate high-quality images based on user prompts."` or `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 * `--use_flash_attn` – Use Flash Attention. Requires `pip install flash-attn` (may not be supported in all environments). If installed correctly, it speeds up training. 
+* `--use_sage_attn` – Use Sage Attention for the model.
+* `--sample_batch_size=<integer>` – Batch size to use for sampling, defaults to `--training_batch_size` value. Sample batches are bucketed by width, height, guidance scale, and seed.
 * `--sigmoid_scale=<float>` – Scale factor for sigmoid timestep sampling. Default `1.0`.
 
 #### Memory and Speed / メモリ・速度関連
@@ -216,6 +218,8 @@ For Lumina Image 2.0, you can specify different dimensions for various component
 *   `--model_prediction_type=<choice>` – モデル予測の処理方法を指定します。`raw`, `additive`, `sigma_scaled`から選択します。デフォルトは`raw`です。**推奨: `raw`**
 *   `--system_prompt=<string>` – 全てのプロンプトに前置するシステムプロンプトを指定します。推奨: `"You are an assistant designed to generate high-quality images based on user prompts."` または `"You are an assistant designed to generate high-quality images with the highest degree of image-text alignment based on textual prompts."`
 *   `--use_flash_attn` – Flash Attentionを使用します。`pip install flash-attn`でインストールが必要です（環境によってはサポートされていません）。正しくインストールされている場合は、指定すると学習が高速化されます。
+*   `--use_sage_attn` – Sage Attentionを使用します。
+*   `--sample_batch_size=<integer>` – サンプリングに使用するバッチサイズ。デフォルトは `--training_batch_size` の値です。サンプルバッチは、幅、高さ、ガイダンススケール、シードによってバケット化されます。
 *   `--sigmoid_scale=<float>` – sigmoidタイムステップサンプリングのスケール係数を指定します。デフォルトは`1.0`です。
 
 #### メモリ・速度関連

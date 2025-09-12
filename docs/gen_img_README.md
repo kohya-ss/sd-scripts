@@ -4,7 +4,7 @@ This is an inference (image generation) script that supports SD 1.x and 2.x mode
 # Overview
 
 * Inference (image generation) script.
-* Supports SD 1.x and 2.x (base/v-parameterization) models.
+* Supports SD 1.x, 2.x (base/v-parameterization), and SDXL models.
 * Supports txt2img, img2img, and inpainting.
 * Supports interactive mode, prompt reading from files, and continuous generation.
 * The number of images generated per prompt line can be specified.
@@ -13,7 +13,7 @@ This is an inference (image generation) script that supports SD 1.x and 2.x mode
 * Supports xformers for high-speed generation.
     * Although xformers are used for memory-saving generation, it is not as optimized as Automatic 1111's Web UI, so it uses about 6GB of VRAM for 512*512 image generation.
 * Extension of prompts to 225 tokens. Supports negative prompts and weighting.
-* Supports various samplers from Diffusers (fewer samplers than Web UI).
+* Supports various samplers from Diffusers including ddim, pndm, lms, euler, euler_a, heun, dpm_2, dpm_2_a, dpmsolver, dpmsolver++, dpmsingle.
 * Supports clip skip (uses the output of the nth layer from the end) of Text Encoder.
 * Separate loading of VAE.
 * Supports CLIP Guided Stable Diffusion, VGG16 Guided Stable Diffusion, Highres. fix, and upscale.
@@ -100,13 +100,19 @@ Specify from the command line.
 
 - `--ckpt <model_name>`: Specifies the model name. The `--ckpt` option is mandatory. You can specify a Stable Diffusion checkpoint file, a Diffusers model folder, or a Hugging Face model ID.
 
+- `--v1`: Specify when using Stable Diffusion 1.x series models. This is the default behavior.
+
 - `--v2`: Specify when using Stable Diffusion 2.x series models. Not required for 1.x series.
+
+- `--sdxl`: Specify when using Stable Diffusion XL models.
 
 - `--v_parameterization`: Specify when using models that use v-parameterization (`768-v-ema.ckpt` and models with additional training from it, Waifu Diffusion v1.5, etc.).
 
-    If the `--v2` specification is incorrect, an error will occur when loading the model. If the `--v_parameterization` specification is incorrect, a brown image will be displayed.
+    If the `--v2` or `--sdxl` specification is incorrect, an error will occur when loading the model. If the `--v_parameterization` specification is incorrect, a brown image will be displayed.
 
 - `--vae`: Specifies the VAE to use. If not specified, the VAE in the model will be used.
+
+- `--tokenizer_cache_dir`: Specifies the cache directory for the tokenizer (for offline usage).
 
 ## Image Generation and Output
 
@@ -118,6 +124,8 @@ Specify from the command line.
 
 - `--from_module <module_file>`: Loads prompts from a Python module. The module should implement a `get_prompter(args, pipe, networks)` function.
 
+- `--prompter_module_args`: Specifies additional arguments to pass to the prompter module.
+
 - `--W <image_width>`: Specifies the width of the image. The default is `512`.
 
 - `--H <image_height>`: Specifies the height of the image. The default is `512`.
@@ -126,7 +134,7 @@ Specify from the command line.
 
 - `--scale <guidance_scale>`: Specifies the unconditional guidance scale. The default is `7.5`.
 
-- `--sampler <sampler_name>`: Specifies the sampler. The default is `ddim`. ddim, pndm, dpmsolver, dpmsolver+++, lms, euler, euler_a provided by Diffusers can be specified (the last three can also be specified as k_lms, k_euler, k_euler_a).
+- `--sampler <sampler_name>`: Specifies the sampler. The default is `ddim`. The following samplers are supported: ddim, pndm, lms, euler, euler_a, heun, dpm_2, dpm_2_a, dpmsolver, dpmsolver++, dpmsingle. Some can also be specified with k_ prefix (k_lms, k_euler, k_euler_a, k_dpm_2, k_dpm_2_a).
 
 - `--outdir <image_output_destination_folder>`: Specifies the output destination for images.
 
@@ -140,6 +148,22 @@ Specify from the command line.
 
 - `--emb_normalize_mode`: Specifies the embedding normalization mode. Options are "original" (default), "abs", and "none". This affects how prompt weights are normalized.
 
+## SDXL-Specific Options
+
+When using SDXL models (with `--sdxl` flag), additional conditioning options are available:
+
+- `--original_height`: Specifies the original height for SDXL conditioning. This affects the model's understanding of the target resolution.
+
+- `--original_width`: Specifies the original width for SDXL conditioning. This affects the model's understanding of the target resolution.
+
+- `--original_height_negative`: Specifies the original height for SDXL negative conditioning.
+
+- `--original_width_negative`: Specifies the original width for SDXL negative conditioning.
+
+- `--crop_top`: Specifies the crop top offset for SDXL conditioning.
+
+- `--crop_left`: Specifies the crop left offset for SDXL conditioning.
+
 ## Adjusting Memory Usage and Generation Speed
 
 - `--batch_size <batch_size>`: Specifies the batch size. The default is `1`. A larger batch size consumes more memory but speeds up generation.
@@ -149,11 +173,13 @@ Specify from the command line.
 
 - `--vae_slices <number_of_slices>`: Splits the image into slices for VAE processing to reduce VRAM usage. None (default) for no splitting. Values like 16 or 32 are recommended. Enabling this is slower but uses less VRAM.
 
-- `--no_half_vae`: Prevents using fp16/bf16 precision for VAE processing. Uses fp32 instead.
+- `--no_half_vae`: Prevents using fp16/bf16 precision for VAE processing. Uses fp32 instead. Use this if you encounter VAE-related issues or artifacts.
 
 - `--xformers`: Specify when using xformers.
 
 - `--sdpa`: Use scaled dot-product attention in PyTorch 2 for optimization.
+
+- `--diffusers_xformers`: Use xformers via Diffusers (note: incompatible with Hypernetworks).
 
 - `--fp16`: Performs inference in fp16 (single precision). If neither `fp16` nor `bf16` is specified, inference is performed in fp32 (single precision).
 
@@ -172,6 +198,10 @@ Specify from the command line.
 - `--network_pre_calc`: Calculates the weights of the additional network to be used in advance for each generation. The prompt option `--am` can be used. Generation is accelerated to the same extent as when LoRA is not used, but time is required to calculate the weights before generation, and memory usage also increases slightly. It is disabled when Regional LoRA is used.
 
 - `--network_regional_mask_max_color_codes`: Specifies the maximum number of color codes to use for regional masks. If not specified, masks are applied by channel. Used with Regional LoRA to control the number of regions that can be defined by colors in the mask.
+
+- `--network_args`: Specifies additional arguments to pass to the network module in key=value format. For example: `--network_args "alpha=1.0,dropout=0.1"`.
+
+- `--network_merge_n_models`: When using network merging, specifies the number of models to merge (instead of merging all loaded networks).
 
 # Examples of Main Option Specifications
 
@@ -259,7 +289,7 @@ Example:
 
 - `--sequential_file_name`: Specifies whether to make file names sequential. If specified, the generated file names will be sequential starting from `im_000001.png`.
 
-- `--use_original_file_name`: If specified, the generated file name will be the same as the original file name.
+- `--use_original_file_name`: If specified, the generated file name will be prepended with the original file name (for img2img mode).
 
 - `--clip_vision_strength`: Enables CLIP Vision Conditioning for img2img with the specified strength. Uses the CLIP Vision model to enhance conditioning from the input image.
 
@@ -374,6 +404,16 @@ These parameters can also be specified through prompt options:
 - `--dst2`: Specifies Deep Shrink timestep 2 from the prompt.
   
 - `--dsr`: Specifies Deep Shrink ratio from the prompt.
+
+*Additional prompt options for Gradual Latent (requires `euler_a` sampler):*
+
+- `--glt`: Specifies the timestep to start increasing the size of the latent for Gradual Latent. Overrides the command line specification.
+
+- `--glr`: Specifies the initial size of the latent for Gradual Latent as a ratio. Overrides the command line specification.
+
+- `--gls`: Specifies the ratio to increase the size of the latent for Gradual Latent. Overrides the command line specification.
+
+- `--gle`: Specifies the interval to increase the size of the latent for Gradual Latent. Overrides the command line specification.
 
 ## ControlNet
 
@@ -536,25 +576,10 @@ Gradual Latent is a Hires fix that gradually increases the size of the latent.  
 - `--gradual_latent_ratio_step`: Specifies the ratio to increase the size of the latent. The default is 0.125, which means the latent size is gradually increased to 0.625, 0.75, 0.875, 1.0.
 - `--gradual_latent_ratio_every_n_steps`: Specifies the interval to increase the size of the latent. The default is 3, which means the latent size is increased every 3 steps.
 - `--gradual_latent_s_noise`: Specifies the s_noise parameter for Gradual Latent. Default is 1.0.
-- `--gradual_latent_unsharp_params`: Specifies unsharp mask parameters for Gradual Latent: ksize, sigma, strength, target-x (1 means True). Values like `3,0.5,0.5,1` or `3,1.0,1.0,0` are recommended.
+- `--gradual_latent_unsharp_params`: Specifies unsharp mask parameters for Gradual Latent in the format: ksize,sigma,strength,target-x (where target-x: 1=True, 0=False). Recommended values: `3,0.5,0.5,1` or `3,1.0,1.0,0`.
 
 Each option can also be specified with prompt options, `--glt`, `--glr`, `--gls`, `--gle`.
 
 __Please specify `euler_a` for the sampler.__ Because the source code of the sampler is modified. It will not work with other samplers.
 
 It is more effective with SD 1.5. It is quite subtle with SDXL.
-
-# Gradual Latent について (Japanese section - kept for reference)
-
-latentのサイズを徐々に大きくしていくHires fixです。`gen_img.py` 、``sdxl_gen_img.py` 、`gen_img.py` に以下のオプションが追加されています。
-
-- `--gradual_latent_timesteps` : latentのサイズを大きくし始めるタイムステップを指定します。デフォルトは None で、Gradual Latentを使用しません。750 くらいから始めてみてください。
-- `--gradual_latent_ratio` : latentの初期サイズを指定します。デフォルトは 0.5 で、デフォルトの latent サイズの半分のサイズから始めます。
-- `--gradual_latent_ratio_step`: latentのサイズを大きくする割合を指定します。デフォルトは 0.125 で、latentのサイズを 0.625, 0.75, 0.875, 1.0 と徐々に大きくします。
-- `--gradual_latent_ratio_every_n_steps`: latentのサイズを大きくする間隔を指定します。デフォルトは 3 で、3ステップごとに latent のサイズを大きくします。
-
-それぞれのオプションは、プロンプトオプション、`--glt`、`--glr`、`--gls`、`--gle` でも指定できます。
-
-サンプラーに手を加えているため、__サンプラーに `euler_a` を指定してください。__ 他のサンプラーでは動作しません。
-
-SD 1.5 のほうが効果があります。SDXL ではかなり微妙です。
