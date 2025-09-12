@@ -46,6 +46,11 @@ from library.custom_train_functions import (
 )
 from library.utils import setup_logging, add_logging_arguments
 
+try:
+    from wavelet_loss import WaveletLoss
+except:
+    raise ImportError("wavelet-loss is not installed. Install it with `pip install git+https://github.com/rockerBOO/wavelet-loss`")
+
 setup_logging()
 import logging
 
@@ -56,6 +61,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.is_flow_matching = False
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -171,9 +177,9 @@ class NetworkTrainer:
         train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
         val_dataset_group: Optional[train_util.DatasetGroup],
     ):
-        train_dataset_group.verify_bucket_reso_steps(64)
+        train_dataset_group.verify_bucket_reso_steps(32)
         if val_dataset_group is not None:
-            val_dataset_group.verify_bucket_reso_steps(64)
+            val_dataset_group.verify_bucket_reso_steps(32)
 
     def load_target_model(self, args, weight_dtype, accelerator) -> tuple:
         text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
@@ -266,7 +272,7 @@ class NetworkTrainer:
         weight_dtype,
         train_unet,
         is_train=True,
-    ):
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.IntTensor, torch.Tensor | None, torch.Tensor]:
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
         noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
@@ -321,7 +327,10 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        sigmas = timesteps / noise_scheduler.config.num_train_timesteps
+        sigmas = sigmas.view(-1, 1, 1, 1)
+
+        return noise_pred, noisy_latents, target, sigmas, timesteps, None, noise
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -380,10 +389,11 @@ class NetworkTrainer:
         is_train=True,
         train_text_encoder=True,
         train_unet=True,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, float | int]]:
         """
         Process a batch for the network
         """
+        metrics: dict[str, int | float] = {}
         with torch.no_grad():
             if "latents" in batch and batch["latents"] is not None:
                 latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
@@ -446,7 +456,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, noisy_latents, target, sigmas, timesteps, weighting, noise = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -460,12 +470,76 @@ class NetworkTrainer:
             is_train=is_train,
         )
 
+        losses: dict[str, torch.Tensor] = {}
+
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+
+        if args.wavelet_loss:
+            def maybe_denoise_latents(denoise_latents: bool, noisy_latents, sigmas, noise_pred, noise):
+                if denoise_latents:
+                    if self.is_flow_matching:
+                        # denoise latents to use for wavelet loss
+                        wavelet_predicted = (noisy_latents - sigmas * noise_pred) / (1.0 - sigmas)
+                        wavelet_target = (noisy_latents - sigmas * noise) / (1.0 - sigmas)
+
+                    else:
+                        # Get alpha values from scheduler
+                        alphas_cumprod = noise_scheduler.alphas_cumprod.to(noisy_latents.device)
+                        alpha_t = alphas_cumprod[timesteps].reshape(-1, 1, 1, 1)
+                        sqrt_alpha_t = torch.sqrt(alpha_t)
+                        sqrt_one_minus_alpha_t = torch.sqrt(1.0 - alpha_t)
+                        
+                        # Predict x0 (clean latents) from noise prediction
+                        wavelet_predicted = (noisy_latents - sqrt_one_minus_alpha_t * noise_pred) / sqrt_alpha_t
+                        wavelet_target = (noisy_latents - sqrt_one_minus_alpha_t * noise) / sqrt_alpha_t
+    
+                    return wavelet_predicted, wavelet_target
+                else:
+                    return  noise_pred, target
+
+
+            def wavelet_loss_fn(args):
+                loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
+                def loss_fn(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
+                    return train_util.conditional_loss(input, target, loss_type, reduction, huber_c)
+
+                return loss_fn
+
+            self.wavelet_loss.set_loss_fn(wavelet_loss_fn(args))
+
+            wavelet_predicted, wavelet_target = maybe_denoise_latents(args.wavelet_loss_rectified_flow, noisy_latents, sigmas, noise_pred, noise)
+
+            wav_losses, metrics_wavelet = self.wavelet_loss(wavelet_predicted.float(), wavelet_target.float(), timesteps)
+            metrics_wavelet = {f"wavelet_loss/{k}": v for k, v in metrics_wavelet.items()}
+            metrics.update(metrics_wavelet)
+
+            current_losses = []
+            for i, wav_loss in enumerate(wav_losses):
+                # Downsample loss to wavelet size
+                downsampled_loss = torch.nn.functional.adaptive_avg_pool2d(loss, wav_loss.shape[-2:])
+                
+                # Combine with wavelet loss
+                combined_loss = downsampled_loss + args.wavelet_loss_alpha * wav_loss
+                
+                # Upsample back to original latent size
+                upsampled_loss = torch.nn.functional.interpolate(
+                    combined_loss, 
+                    size=loss.shape[-2:],  # Original latent size
+                    mode='bilinear', 
+                    align_corners=False
+                )
+                
+                current_losses.append(upsampled_loss)
+
+            # Now combine all levels at original latent resolution
+            loss = torch.stack(current_losses).mean(dim=0)  # Average across levels
+
         if weighting is not None:
             loss = loss * weighting
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
+
         loss = loss.mean([1, 2, 3])
 
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
@@ -473,7 +547,11 @@ class NetworkTrainer:
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-        return loss.mean()
+        for k in losses.keys():
+            losses[k] = self.post_process_loss(losses[k], args, timesteps, noise_scheduler, latents)
+            # loss_weights = batch["loss_weights"]  # 各sampleごとのweight
+
+        return loss.mean(), losses, metrics
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1040,6 +1118,19 @@ class NetworkTrainer:
             "ss_validate_every_n_epochs": args.validate_every_n_epochs,
             "ss_validate_every_n_steps": args.validate_every_n_steps,
             "ss_resize_interpolation": args.resize_interpolation,
+            "ss_wavelet_loss": args.wavelet_loss,
+            "ss_wavelet_loss_alpha": args.wavelet_loss_alpha,
+            "ss_wavelet_loss_type": args.wavelet_loss_type,
+            "ss_wavelet_loss_transform": args.wavelet_loss_transform,
+            "ss_wavelet_loss_wavelet": args.wavelet_loss_wavelet,
+            "ss_wavelet_loss_level": args.wavelet_loss_level,
+            "ss_wavelet_loss_band_weights": json.dumps(args.wavelet_loss_band_weights) if args.wavelet_loss_band_weights is not None else None,
+            "ss_wavelet_loss_band_level_weights": json.dumps(args.wavelet_loss_band_level_weights) if args.wavelet_loss_band_weights is not None else None,
+            "ss_wavelet_loss_quaternion_component_weights": json.dumps(args.wavelet_loss_quaternion_component_weights) if args.wavelet_loss_quaternion_component_weights is not None else None,
+            "ss_wavelet_loss_ll_level_threshold": args.wavelet_loss_ll_level_threshold,
+            "ss_wavelet_loss_rectified_flow": args.wavelet_loss_rectified_flow,
+            "ss_wavelet_loss_energy_ratio": args.wavelet_loss_energy_ratio,
+            "ss_wavelet_loss_energy_scale_factor": args.wavelet_loss_energy_scale_factor,
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1260,6 +1351,33 @@ class NetworkTrainer:
         val_step_loss_recorder = train_util.LossRecorder()
         val_epoch_loss_recorder = train_util.LossRecorder()
 
+        if args.wavelet_loss:
+            self.wavelet_loss = WaveletLoss(
+                transform_type=args.wavelet_loss_transform,
+                wavelet=args.wavelet_loss_wavelet, 
+                level=args.wavelet_loss_level, 
+                band_weights=args.wavelet_loss_band_weights, 
+                band_level_weights=args.wavelet_loss_band_level_weights, 
+                quaternion_component_weights=args.wavelet_loss_quaternion_component_weights,
+                ll_level_threshold=args.wavelet_loss_ll_level_threshold, 
+                metrics=args.wavelet_loss_metrics,
+                device=accelerator.device
+            )
+
+            logger.info("Wavelet Loss:")
+            logger.info(f"\tLevel: {args.wavelet_loss_level}")
+            logger.info(f"\tAlpha: {args.wavelet_loss_alpha}")
+            logger.info(f"\tTransform: {args.wavelet_loss_transform}")
+            logger.info(f"\tWavelet: {args.wavelet_loss_wavelet}")
+            if args.wavelet_loss_ll_level_threshold is not None:
+                logger.info(f"\tLL level threshold: {args.wavelet_loss_ll_level_threshold}")
+            if args.wavelet_loss_band_weights is not None:
+                logger.info(f"\tBand weights: {args.wavelet_loss_band_weights}")
+            if args.wavelet_loss_band_level_weights is not None:
+                logger.info(f"\tBand level weights: {args.wavelet_loss_band_level_weights}")
+            if args.wavelet_loss_quaternion_component_weights is not None:
+                logger.info(f"\tQuaternion component weights: {args.wavelet_loss_quaternion_component_weights}")
+
         del train_dataset_group
         if val_dataset_group is not None:
             del val_dataset_group
@@ -1400,7 +1518,7 @@ class NetworkTrainer:
                     # preprocess batch for each model
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True)
 
-                    loss = self.process_batch(
+                    loss, _losses, metrics = self.process_batch(
                         batch,
                         text_encoders,
                         unet,
@@ -1505,6 +1623,7 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
+                    logs = {**logs, **metrics}
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
@@ -1531,7 +1650,7 @@ class NetworkTrainer:
 
                             args.min_timestep = args.max_timestep = timestep  # dirty hack to change timestep
 
-                            loss = self.process_batch(
+                            loss, _losses, metrics = self.process_batch(
                                 batch,
                                 text_encoders,
                                 unet,
@@ -1609,7 +1728,7 @@ class NetworkTrainer:
                         # temporary, for batch processing
                         self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
 
-                        loss = self.process_batch(
+                        loss, _losses, metrics = self.process_batch(
                             batch,
                             text_encoders,
                             unet,

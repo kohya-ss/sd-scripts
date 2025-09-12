@@ -43,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           # Pre-install torch to pin version (requirements.txt has dependencies like transformers which requires pytorch)
-          pip install dadaptation==3.2 torch==${{ matrix.pytorch-version }} torchvision pytest==8.3.4
+          pip install dadaptation==3.2 torch==${{ matrix.pytorch-version }} torchvision pytest==8.3.4 PyWavelets==1.8.0 git+https://github.com/rockerBOO/wavelet-loss
           pip install -r requirements.txt
 
       - name: Test with pytest
