@@ -50,7 +50,7 @@ class ByT5Mapper(nn.Module):
         Returns:
             Transformed embeddings [..., out_dim1].
         """
-        residual = x
+        residual = x if self.use_residual else None
         x = self.layernorm(x)
         x = self.fc1(x)
         x = self.act_fn(x)
@@ -411,6 +411,7 @@ class SingleTokenRefiner(nn.Module):
 
         context_aware_representations = self.c_embedder(context_aware_representations)
         c = timestep_aware_representations + context_aware_representations
+        del timestep_aware_representations, context_aware_representations
         x = self.input_embedder(x)
         x = self.individual_token_refiner(x, c, txt_lens)
         return x
@@ -447,6 +448,7 @@ class FinalLayer(nn.Module):
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift=shift, scale=scale)
+        del shift, scale, c
         x = self.linear(x)
         return x
 
@@ -494,6 +496,7 @@ class RMSNorm(nn.Module):
             Normalized and scaled tensor.
         """
         output = self._norm(x.float()).type_as(x)
+        del x
         output = output * self.weight
         return output
 
@@ -634,8 +637,10 @@ class MMDoubleStreamBlock(nn.Module):
         # Process image stream for attention
         img_modulated = self.img_norm1(img)
         img_modulated = modulate(img_modulated, shift=img_mod1_shift, scale=img_mod1_scale)
+        del img_mod1_shift, img_mod1_scale
 
         img_qkv = self.img_attn_qkv(img_modulated)
+        del img_modulated
         img_q, img_k, img_v = img_qkv.chunk(3, dim=-1)
         del img_qkv
 
@@ -649,17 +654,15 @@ class MMDoubleStreamBlock(nn.Module):
 
         # Apply rotary position embeddings to image tokens
         if freqs_cis is not None:
-            img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-            assert (
-                img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
-            ), f"RoPE output shape mismatch: got {img_qq.shape}, {img_kk.shape}, expected {img_q.shape}, {img_k.shape}"
-            img_q, img_k = img_qq, img_kk
+            img_q, img_k = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
+            del freqs_cis
 
         # Process text stream for attention
         txt_modulated = self.txt_norm1(txt)
         txt_modulated = modulate(txt_modulated, shift=txt_mod1_shift, scale=txt_mod1_scale)
 
         txt_qkv = self.txt_attn_qkv(txt_modulated)
+        del txt_modulated
         txt_q, txt_k, txt_v = txt_qkv.chunk(3, dim=-1)
         del txt_qkv
 
@@ -672,31 +675,44 @@ class MMDoubleStreamBlock(nn.Module):
         txt_k = self.txt_attn_k_norm(txt_k).to(txt_v)
 
         # Concatenate image and text tokens for joint attention
+        img_seq_len = img.shape[1]
         q = torch.cat([img_q, txt_q], dim=1)
+        del img_q, txt_q
         k = torch.cat([img_k, txt_k], dim=1)
+        del img_k, txt_k
         v = torch.cat([img_v, txt_v], dim=1)
-        attn = attention(q, k, v, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        del img_v, txt_v
+
+        qkv = [q, k, v]
+        del q, k, v
+        attn = attention(qkv, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        del qkv
 
         # Split attention outputs back to separate streams
-        img_attn, txt_attn = (attn[:, : img_q.shape[1]].contiguous(), attn[:, img_q.shape[1] :].contiguous())
+        img_attn, txt_attn = (attn[:, : img_seq_len].contiguous(), attn[:, img_seq_len :].contiguous())
+        del attn
 
         # Apply attention projection and residual connection for image stream
         img = img + apply_gate(self.img_attn_proj(img_attn), gate=img_mod1_gate)
+        del img_attn, img_mod1_gate
 
         # Apply MLP and residual connection for image stream
         img = img + apply_gate(
             self.img_mlp(modulate(self.img_norm2(img), shift=img_mod2_shift, scale=img_mod2_scale)),
             gate=img_mod2_gate,
         )
+        del img_mod2_shift, img_mod2_scale, img_mod2_gate
 
         # Apply attention projection and residual connection for text stream
         txt = txt + apply_gate(self.txt_attn_proj(txt_attn), gate=txt_mod1_gate)
+        del txt_attn, txt_mod1_gate
 
         # Apply MLP and residual connection for text stream
         txt = txt + apply_gate(
             self.txt_mlp(modulate(self.txt_norm2(txt), shift=txt_mod2_shift, scale=txt_mod2_scale)),
             gate=txt_mod2_gate,
         )
+        del txt_mod2_shift, txt_mod2_scale, txt_mod2_gate
 
         return img, txt
 
@@ -797,6 +813,7 @@ class MMSingleStreamBlock(nn.Module):
 
         # Compute Q, K, V, and MLP input
         qkv_mlp = self.linear1(x_mod)
+        del x_mod
         q, k, v, mlp = qkv_mlp.split([self.hidden_size, self.hidden_size, self.hidden_size, self.mlp_hidden_dim], dim=-1)
         del qkv_mlp
 
@@ -810,27 +827,34 @@ class MMSingleStreamBlock(nn.Module):
 
         # Separate image and text tokens
         img_q, txt_q = q[:, :-txt_len, :, :], q[:, -txt_len:, :, :]
+        del q
         img_k, txt_k = k[:, :-txt_len, :, :], k[:, -txt_len:, :, :]
-        img_v, txt_v = v[:, :-txt_len, :, :], v[:, -txt_len:, :, :]
+        del k
+        # img_v, txt_v = v[:, :-txt_len, :, :], v[:, -txt_len:, :, :]
+        # del v
 
         # Apply rotary position embeddings only to image tokens
-        img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-        assert (
-            img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
-        ), f"RoPE output shape mismatch: got {img_qq.shape}, {img_kk.shape}, expected {img_q.shape}, {img_k.shape}"
-        img_q, img_k = img_qq, img_kk
+        img_q, img_k = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
+        del freqs_cis
 
         # Recombine and compute joint attention
         q = torch.cat([img_q, txt_q], dim=1)
+        del img_q, txt_q
         k = torch.cat([img_k, txt_k], dim=1)
-        v = torch.cat([img_v, txt_v], dim=1)
-        attn = attention(q, k, v, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        del img_k, txt_k
+        # v = torch.cat([img_v, txt_v], dim=1)
+        # del img_v, txt_v
+        qkv = [q, k, v]
+        del q, k, v
+        attn = attention(qkv, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        del qkv
 
         # Combine attention and MLP outputs, apply gating
         # output = self.linear2(attn, self.mlp_act(mlp))
 
         mlp = self.mlp_act(mlp)
         output = torch.cat([attn, mlp], dim=2).contiguous()
+        del attn, mlp
         output = self.linear2(output)
 
         return x + apply_gate(output, gate=mod_gate)

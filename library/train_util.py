@@ -1744,7 +1744,39 @@ class BaseDataset(torch.utils.data.Dataset):
             # [[clip_l, clip_g, t5xxl], [clip_l, clip_g, t5xxl], ...] -> [torch.stack(clip_l), torch.stack(clip_g), torch.stack(t5xxl)]
             if len(tensors_list) == 0 or tensors_list[0] == None or len(tensors_list[0]) == 0 or tensors_list[0][0] is None:
                 return None
-            return [torch.stack([converter(x[i]) for x in tensors_list]) for i in range(len(tensors_list[0]))]
+
+            # old implementation without padding: all elements must have same length
+            # return [torch.stack([converter(x[i]) for x in tensors_list]) for i in range(len(tensors_list[0]))]
+
+            # new implementation with padding support
+            result = []
+            for i in range(len(tensors_list[0])):
+                tensors = [x[i] for x in tensors_list]
+                if tensors[0].ndim == 0:
+                    # scalar value: e.g. ocr mask
+                    result.append(torch.stack([converter(x[i]) for x in tensors_list]))
+                    continue
+
+                min_len = min([len(x) for x in tensors])
+                max_len = max([len(x) for x in tensors])
+
+                if min_len == max_len:
+                    # no padding
+                    result.append(torch.stack([converter(x) for x in tensors]))
+                else:
+                    # padding
+                    tensors = [converter(x) for x in tensors]
+                    if tensors[0].ndim == 1:
+                        # input_ids or mask
+                        result.append(
+                            torch.stack([(torch.nn.functional.pad(x, (0, max_len - x.shape[0]))) for x in tensors])
+                        )
+                    else:
+                        # text encoder outputs
+                        result.append(
+                            torch.stack([(torch.nn.functional.pad(x, (0, 0, 0, max_len - x.shape[0]))) for x in tensors])
+                        )
+            return result
 
         # set example
         example = {}

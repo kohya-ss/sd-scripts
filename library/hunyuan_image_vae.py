@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 VAE_SCALE_FACTOR = 32  # 32x spatial compression
 
+LATENT_SCALING_FACTOR = 0.75289  # Latent scaling factor for Hunyuan Image-2.1
+
 
 def swish(x: Tensor) -> Tensor:
     """Swish activation function: x * sigmoid(x)."""
@@ -378,7 +380,7 @@ class HunyuanVAE2D(nn.Module):
         layers_per_block = 2
         ffactor_spatial = 32  # 32x spatial compression
         sample_size = 384  # Minimum sample size for tiling
-        scaling_factor = 0.75289  # Latent scaling factor
+        scaling_factor = LATENT_SCALING_FACTOR  # 0.75289  # Latent scaling factor
 
         self.ffactor_spatial = ffactor_spatial
         self.scaling_factor = scaling_factor

@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 from typing import Any, Optional, Union
 import argparse
 import os
@@ -12,7 +13,7 @@ import torch.nn as nn
 from PIL import Image
 from accelerate import Accelerator, PartialState
 
-from library import hunyuan_image_models, hunyuan_image_vae, strategy_base, train_util
+from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, train_util
 from library.device_utils import clean_memory_on_device, init_ipex
 
 init_ipex()
@@ -24,7 +25,6 @@ from library import (
     hunyuan_image_text_encoder,
     hunyuan_image_utils,
     hunyuan_image_vae,
-    sai_model_spec,
     sd3_train_utils,
     strategy_base,
     strategy_hunyuan_image,
@@ -79,8 +79,6 @@ def sample_images(
     dit = accelerator.unwrap_model(dit)
     if text_encoders is not None:
         text_encoders = [(accelerator.unwrap_model(te) if te is not None else None) for te in text_encoders]
-    if controlnet is not None:
-        controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
     prompts = train_util.load_prompts(args.sample_prompts)
@@ -162,10 +160,10 @@ def sample_image_inference(
     sample_steps = prompt_dict.get("sample_steps", 20)
     width = prompt_dict.get("width", 512)
     height = prompt_dict.get("height", 512)
-    cfg_scale = prompt_dict.get("scale", 1.0)
+    cfg_scale = prompt_dict.get("scale", 3.5)
     seed = prompt_dict.get("seed")
     prompt: str = prompt_dict.get("prompt", "")
-    flow_shift: float = prompt_dict.get("flow_shift", 4.0)
+    flow_shift: float = prompt_dict.get("flow_shift", 5.0)
     # sampler_name: str = prompt_dict.get("sample_sampler", args.sample_sampler)
 
     if prompt_replacement is not None:
@@ -208,11 +206,10 @@ def sample_image_inference(
         text_encoder_conds = []
         if sample_prompts_te_outputs and prpt in sample_prompts_te_outputs:
             text_encoder_conds = sample_prompts_te_outputs[prpt]
-            print(f"Using cached text encoder outputs for prompt: {prpt}")
+            # print(f"Using cached text encoder outputs for prompt: {prpt}")
         if text_encoders is not None:
-            print(f"Encoding prompt: {prpt}")
+            # print(f"Encoding prompt: {prpt}")
             tokens_and_masks = tokenize_strategy.tokenize(prpt)
-            # strategy has apply_t5_attn_mask option
             encoded_text_encoder_conds = encoding_strategy.encode_tokens(tokenize_strategy, text_encoders, tokens_and_masks)
 
             # if text_encoder_conds is not cached, use encoded_text_encoder_conds
@@ -255,16 +252,21 @@ def sample_image_inference(
 
     from hunyuan_image_minimal_inference import generate_body  # import here to avoid circular import
 
-    latents = generate_body(gen_args, dit, arg_c, arg_c_null, accelerator.device, seed)
+    dit_is_training = dit.training
+    dit.eval()
+    x = generate_body(gen_args, dit, arg_c, arg_c_null, accelerator.device, seed)
+    if dit_is_training:
+        dit.train()
+    clean_memory_on_device(accelerator.device)
 
     # latent to image
-    clean_memory_on_device(accelerator.device)
     org_vae_device = vae.device  # will be on cpu
     vae.to(accelerator.device)  # distributed_state.device is same as accelerator.device
-    with torch.autocast(accelerator.device.type, vae.dtype, enabled=True), torch.no_grad():
-        x = x / hunyuan_image_vae.VAE_SCALE_FACTOR
-        x = vae.decode(x)
+    with torch.no_grad():
+        x = x / vae.scaling_factor
+        x = vae.decode(x.to(vae.device, dtype=vae.dtype))
     vae.to(org_vae_device)
+
     clean_memory_on_device(accelerator.device)
 
     x = x.clamp(-1, 1)
@@ -299,6 +301,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         super().__init__()
         self.sample_prompts_te_outputs = None
         self.is_swapping_blocks: bool = False
+        self.rotary_pos_emb_cache = {}
 
     def assert_extra_args(
         self,
@@ -341,12 +344,42 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
     def load_target_model(self, args, weight_dtype, accelerator):
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
 
-        # currently offload to cpu for some models
+        vl_dtype = torch.float8_e4m3fn if args.fp8_vl else torch.bfloat16
+        vl_device = "cpu"
+        _, text_encoder_vlm = hunyuan_image_text_encoder.load_qwen2_5_vl(
+            args.text_encoder, dtype=vl_dtype, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
+        )
+        _, text_encoder_byt5 = hunyuan_image_text_encoder.load_byt5(
+            args.byt5, dtype=torch.float16, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
+        )
+
+        vae = hunyuan_image_vae.load_vae(args.vae, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
+        vae.to(dtype=torch.float16)  # VAE is always fp16
+        vae.eval()
+        if args.vae_enable_tiling:
+            vae.enable_tiling()
+            logger.info("VAE tiling is enabled")
+
+        model_version = hunyuan_image_utils.MODEL_VERSION_2_1
+        return model_version, [text_encoder_vlm, text_encoder_byt5], vae, None  # unet will be loaded later
+
+    def load_unet_lazily(self, args, weight_dtype, accelerator, text_encoders) -> tuple[nn.Module, list[nn.Module]]:
+        if args.cache_text_encoder_outputs:
+            logger.info("Replace text encoders with dummy models to save memory")
+
+            # This doesn't free memory, so we move text encoders to meta device in cache_text_encoder_outputs_if_needed
+            text_encoders = [flux_utils.dummy_clip_l() for _ in text_encoders]
+            clean_memory_on_device(accelerator.device)
+            gc.collect()
+
         loading_dtype = None if args.fp8_scaled else weight_dtype
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
         split_attn = True
 
         attn_mode = "torch"
+        if args.xformers:
+            attn_mode = "xformers"
+            logger.info("xformers is enabled for attention")
 
         model = hunyuan_image_models.load_hunyuan_image_model(
             accelerator.device,
@@ -363,19 +396,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
             logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
             model.enable_block_swap(args.blocks_to_swap, accelerator.device)
 
-        vl_dtype = torch.bfloat16
-        vl_device = "cpu"
-        _, text_encoder_vlm = hunyuan_image_text_encoder.load_qwen2_5_vl(
-            args.text_encoder, dtype=vl_dtype, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
-        )
-        _, text_encoder_byt5 = hunyuan_image_text_encoder.load_byt5(
-            args.byt5, dtype=torch.float16, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
-        )
-
-        vae = hunyuan_image_vae.load_vae(args.vae, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
-
-        model_version = hunyuan_image_utils.MODEL_VERSION_2_1
-        return model_version, [text_encoder_vlm, text_encoder_byt5], vae, model
+        return model, text_encoders
 
     def get_tokenize_strategy(self, args):
         return strategy_hunyuan_image.HunyuanImageTokenizeStrategy(args.tokenizer_cache_dir)
@@ -404,7 +425,6 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
-            # if the text encoders is trained, we need tokenization, so is_partial is True
             return strategy_hunyuan_image.HunyuanImageTextEncoderOutputsCachingStrategy(
                 args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, args.skip_cache_check, False
             )
@@ -417,11 +437,9 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         if args.cache_text_encoder_outputs:
             if not args.lowram:
                 # メモリ消費を減らす
-                logger.info("move vae and unet to cpu to save memory")
+                logger.info("move vae to cpu to save memory")
                 org_vae_device = vae.device
-                org_unet_device = unet.device
                 vae.to("cpu")
-                unet.to("cpu")
                 clean_memory_on_device(accelerator.device)
 
             logger.info("move text encoders to gpu")
@@ -457,17 +475,14 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
             accelerator.wait_for_everyone()
 
-            # move back to cpu
-            logger.info("move VLM back to cpu")
-            text_encoders[0].to("cpu")
-            logger.info("move byT5 back to cpu")
-            text_encoders[1].to("cpu")
+            # text encoders are not needed for training, so we move to meta device
+            logger.info("move text encoders to meta device to save memory")
+            text_encoders = [te.to("meta") for te in text_encoders]
             clean_memory_on_device(accelerator.device)
 
             if not args.lowram:
-                logger.info("move vae and unet back to original device")
+                logger.info("move vae back to original device")
                 vae.to(org_vae_device)
-                unet.to(org_unet_device)
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
             text_encoders[0].to(accelerator.device)
@@ -477,21 +492,19 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         text_encoders = text_encoder  # for compatibility
         text_encoders = self.get_models_for_text_encoding(args, accelerator, text_encoders)
 
-        flux_train_utils.sample_images(
-            accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs
-        )
+        sample_images(accelerator, args, epoch, global_step, flux, ae, text_encoders, self.sample_prompts_te_outputs)
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
         noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
         self.noise_scheduler_copy = copy.deepcopy(noise_scheduler)
         return noise_scheduler
 
-    def encode_images_to_latents(self, args, vae, images):
-        return vae.encode(images)
+    def encode_images_to_latents(self, args, vae: hunyuan_image_vae.HunyuanVAE2D, images):
+        return vae.encode(images).sample()
 
     def shift_scale_latents(self, args, latents):
         # for encoding, we need to scale the latents
-        return latents * hunyuan_image_vae.VAE_SCALE_FACTOR
+        return latents * hunyuan_image_vae.LATENT_SCALING_FACTOR
 
     def get_noise_pred_and_target(
         self,
@@ -509,12 +522,16 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
 
         # get noisy model input and timesteps
-        noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
+        noisy_model_input, _, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
             args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
         )
+        # bfloat16 is too low precision for 0-1000 TODO fix get_noisy_model_input_and_timesteps
+        timesteps = (sigmas[:, 0, 0, 0] * 1000).to(torch.int64)
+        # print(
+        #     f"timestep: {timesteps}, noisy_model_input shape: {noisy_model_input.shape}, mean: {noisy_model_input.mean()}, std: {noisy_model_input.std()}"
+        # )
 
         if args.gradient_checkpointing:
             noisy_model_input.requires_grad_(True)
@@ -526,31 +543,33 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         # ocr_mask is for inference only, so it is not used here
         vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask = text_encoder_conds
 
+        # print(f"embed shape: {vlm_embed.shape}, mean: {vlm_embed.mean()}, std: {vlm_embed.std()}")
+        # print(f"embed_byt5 shape: {byt5_embed.shape}, mean: {byt5_embed.mean()}, std: {byt5_embed.std()}")
+        # print(f"latents shape: {latents.shape}, mean: {latents.mean()}, std: {latents.std()}")
+        # print(f"mask shape: {vlm_mask.shape}, sum: {vlm_mask.sum()}")
+        # print(f"mask_byt5 shape: {byt5_mask.shape}, sum: {byt5_mask.sum()}")
         with torch.set_grad_enabled(is_train), accelerator.autocast():
-            model_pred = unet(noisy_model_input, timesteps / 1000, vlm_embed, vlm_mask, byt5_embed, byt5_mask)
+            model_pred = unet(
+                noisy_model_input, timesteps, vlm_embed, vlm_mask, byt5_embed, byt5_mask  # , self.rotary_pos_emb_cache
+            )
 
-        # model prediction and weighting is omitted for HunyuanImage-2.1 currently
+        # apply model prediction type
+        model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
 
         # flow matching loss
         target = noise - latents
 
         # differential output preservation is not used for HunyuanImage-2.1 currently
 
-        return model_pred, target, timesteps, None
+        return model_pred, target, timesteps, weighting
 
     def post_process_loss(self, loss, args, timesteps, noise_scheduler):
         return loss
 
     def get_sai_model_spec(self, args):
-        # if self.model_type != "chroma":
-        #     model_description = "schnell" if self.is_schnell else "dev"
-        # else:
-        #     model_description = "chroma"
-        # return train_util.get_sai_model_spec(None, args, False, True, False, flux=model_description)
-        train_util.get_sai_model_spec_dataclass(None, args, False, True, False, hunyuan_image="2.1")
+        return train_util.get_sai_model_spec_dataclass(None, args, False, True, False, hunyuan_image="2.1").to_metadata_dict()
 
     def update_metadata(self, metadata, args):
-        metadata["ss_model_type"] = args.model_type
         metadata["ss_logit_mean"] = args.logit_mean
         metadata["ss_logit_std"] = args.logit_std
         metadata["ss_mode_scale"] = args.mode_scale
@@ -568,6 +587,9 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
     def cast_text_encoder(self):
         return False  # VLM is bf16, byT5 is fp16, so do not cast to other dtype
+
+    def cast_vae(self):
+        return False  # VAE is fp16, so do not cast to other dtype
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
         # fp8 text encoder for HunyuanImage-2.1 is not supported currently
@@ -598,6 +620,17 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_dit_training_arguments(parser)
 
     parser.add_argument(
+        "--text_encoder",
+        type=str,
+        help="path to Qwen2.5-VL (*.sft or *.safetensors), should be bfloat16 / Qwen2.5-VLのパス（*.sftまたは*.safetensors）、bfloat16が前提",
+    )
+    parser.add_argument(
+        "--byt5",
+        type=str,
+        help="path to byt5 (*.sft or *.safetensors), should be float16 / byt5のパス（*.sftまたは*.safetensors）、float16が前提",
+    )
+
+    parser.add_argument(
         "--timestep_sampling",
         choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
         default="sigma",
@@ -613,17 +646,24 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model_prediction_type",
         choices=["raw", "additive", "sigma_scaled"],
-        default="sigma_scaled",
+        default="raw",
         help="How to interpret and process the model prediction: "
-        "raw (use as is), additive (add to noisy input), sigma_scaled (apply sigma scaling)."
+        "raw (use as is), additive (add to noisy input), sigma_scaled (apply sigma scaling). Default is raw unlike FLUX.1."
         " / モデル予測の解釈と処理方法："
-        "raw（そのまま使用）、additive（ノイズ入力に加算）、sigma_scaled（シグマスケーリングを適用）。",
+        "raw（そのまま使用）、additive（ノイズ入力に加算）、sigma_scaled（シグマスケーリングを適用）。デフォルトはFLUX.1とは異なりrawです。",
     )
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
-        default=3.0,
-        help="Discrete flow shift for the Euler Discrete Scheduler, default is 3.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは3.0。",
+        default=5.0,
+        help="Discrete flow shift for the Euler Discrete Scheduler, default is 5.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは5.0。",
+    )
+    parser.add_argument("--fp8_scaled", action="store_true", help="use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
+    parser.add_argument("--fp8_vl", action="store_true", help="use fp8 for VLM text encoder / VLMテキストエンコーダにfp8を使用する")
+    parser.add_argument(
+        "--vae_enable_tiling",
+        action="store_true",
+        help="Enable tiling for VAE decoding and encoding / VAEデコーディングとエンコーディングのタイルを有効にする",
     )
 
     return parser

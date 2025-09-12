@@ -30,11 +30,7 @@ from library.hunyuan_image_modules import (
 from library.hunyuan_image_utils import get_nd_rotary_pos_embed
 
 FP8_OPTIMIZATION_TARGET_KEYS = ["double_blocks", "single_blocks"]
-FP8_OPTIMIZATION_EXCLUDE_KEYS = [
-    "norm",
-    "_mod",
-    "modulation",
-]
+FP8_OPTIMIZATION_EXCLUDE_KEYS = ["norm", "_mod", "modulation", "_emb"]
 
 
 # region DiT Model
@@ -141,6 +137,14 @@ class HYImageDiffusionTransformer(nn.Module):
         self.offloader_single = None
         self.num_double_blocks = len(self.double_blocks)
         self.num_single_blocks = len(self.single_blocks)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
 
     def enable_gradient_checkpointing(self, cpu_offload: bool = False):
         self.gradient_checkpointing = True
@@ -273,6 +277,7 @@ class HYImageDiffusionTransformer(nn.Module):
         encoder_attention_mask: torch.Tensor,
         byt5_text_states: Optional[torch.Tensor] = None,
         byt5_text_mask: Optional[torch.Tensor] = None,
+        rotary_pos_emb_cache: Optional[Dict[Tuple[int, int], Tuple[torch.Tensor, torch.Tensor]]] = None,
     ) -> torch.Tensor:
         """
         Forward pass through the HunyuanImage diffusion transformer.
@@ -296,7 +301,15 @@ class HYImageDiffusionTransformer(nn.Module):
         # Calculate spatial dimensions for rotary position embeddings
         _, _, oh, ow = x.shape
         th, tw = oh, ow  # Height and width (patch_size=[1,1] means no spatial downsampling)
-        freqs_cis = self.get_rotary_pos_embed((th, tw))
+        if rotary_pos_emb_cache is not None:
+            if (th, tw) in rotary_pos_emb_cache:
+                freqs_cis = rotary_pos_emb_cache[(th, tw)]
+                freqs_cis = (freqs_cis[0].to(img.device), freqs_cis[1].to(img.device))
+            else:
+                freqs_cis = self.get_rotary_pos_embed((th, tw))
+                rotary_pos_emb_cache[(th, tw)] = (freqs_cis[0].cpu(), freqs_cis[1].cpu())
+        else:
+            freqs_cis = self.get_rotary_pos_embed((th, tw))
 
         # Reshape image latents to sequence format: [B, C, H, W] -> [B, H*W, C]
         img = self.img_in(img)
@@ -349,9 +362,11 @@ class HYImageDiffusionTransformer(nn.Module):
         vec = vec.to(input_device)
 
         img = x[:, :img_seq_len, ...]
+        del x
 
         # Apply final projection to output space
         img = self.final_layer(img, vec)
+        del vec
 
         # Reshape from sequence to spatial format: [B, L, C] -> [B, C, H, W]
         img = self.unpatchify_2d(img, th, tw)

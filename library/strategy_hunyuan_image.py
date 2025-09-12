@@ -21,14 +21,27 @@ class HunyuanImageTokenizeStrategy(TokenizeStrategy):
             Qwen2Tokenizer, hunyuan_image_text_encoder.QWEN_2_5_VL_IMAGE_ID, tokenizer_cache_dir=tokenizer_cache_dir
         )
         self.byt5_tokenizer = self._load_tokenizer(
-            AutoTokenizer, hunyuan_image_text_encoder.BYT5_TOKENIZER_PATH, tokenizer_cache_dir=tokenizer_cache_dir
+            AutoTokenizer, hunyuan_image_text_encoder.BYT5_TOKENIZER_PATH, subfolder="", tokenizer_cache_dir=tokenizer_cache_dir
         )
 
     def tokenize(self, text: Union[str, List[str]]) -> List[torch.Tensor]:
         text = [text] if isinstance(text, str) else text
 
         vlm_tokens, vlm_mask = hunyuan_image_text_encoder.get_qwen_tokens(self.vlm_tokenizer, text)
-        byt5_tokens, byt5_mask = hunyuan_image_text_encoder.get_byt5_text_tokens(self.byt5_tokenizer, text)
+
+        # byt5_tokens, byt5_mask = hunyuan_image_text_encoder.get_byt5_text_tokens(self.byt5_tokenizer, text)
+        byt5_tokens = []
+        byt5_mask = []
+        for t in text:
+            tokens, mask = hunyuan_image_text_encoder.get_byt5_text_tokens(self.byt5_tokenizer, t)
+            if tokens is None:
+                tokens = torch.zeros((1, 1), dtype=torch.long)
+                mask = torch.zeros((1, 1), dtype=torch.long)
+            byt5_tokens.append(tokens)
+            byt5_mask.append(mask)
+        max_len = max([m.shape[1] for m in byt5_mask])
+        byt5_tokens = torch.cat([torch.nn.functional.pad(t, (0, max_len - t.shape[1]), value=0) for t in byt5_tokens], dim=0)
+        byt5_mask = torch.cat([torch.nn.functional.pad(m, (0, max_len - m.shape[1]), value=0) for m in byt5_mask], dim=0)
 
         return [vlm_tokens, vlm_mask, byt5_tokens, byt5_mask]
 
@@ -46,11 +59,24 @@ class HunyuanImageTextEncodingStrategy(TextEncodingStrategy):
 
         # autocast and no_grad are handled in hunyuan_image_text_encoder
         vlm_embed, vlm_mask = hunyuan_image_text_encoder.get_qwen_prompt_embeds_from_tokens(qwen2vlm, vlm_tokens, vlm_mask)
-        ocr_mask, byt5_embed, byt5_mask = hunyuan_image_text_encoder.get_byt5_prompt_embeds_from_tokens(
-            byt5, byt5_tokens, byt5_mask
-        )
 
-        return [vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask]
+        # ocr_mask, byt5_embed, byt5_mask = hunyuan_image_text_encoder.get_byt5_prompt_embeds_from_tokens(
+        #     byt5, byt5_tokens, byt5_mask
+        # )
+        ocr_mask, byt5_embed, byt5_updated_mask = [], [], []
+        for i in range(byt5_tokens.shape[0]):
+            ocr_m, byt5_e, byt5_m = hunyuan_image_text_encoder.get_byt5_prompt_embeds_from_tokens(
+                byt5, byt5_tokens[i : i + 1], byt5_mask[i : i + 1]
+            )
+            ocr_mask.append(torch.zeros((1,), dtype=torch.long) + (1 if ocr_m[0] else 0))  # 1 or 0
+            byt5_embed.append(byt5_e)
+            byt5_updated_mask.append(byt5_m)
+
+        ocr_mask = torch.cat(ocr_mask, dim=0).to(torch.bool)  # [B]
+        byt5_embed = torch.cat(byt5_embed, dim=0)
+        byt5_updated_mask = torch.cat(byt5_updated_mask, dim=0)
+
+        return [vlm_embed, vlm_mask, byt5_embed, byt5_updated_mask, ocr_mask]
 
 
 class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
@@ -110,7 +136,6 @@ class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStr
 
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
-            # attn_mask is applied in text_encoding_strategy.encode_tokens if apply_t5_attn_mask is True
             vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask = huyuan_image_text_encoding_strategy.encode_tokens(
                 tokenize_strategy, models, tokens_and_masks
             )
@@ -124,7 +149,7 @@ class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStr
         vlm_mask = vlm_mask.cpu().numpy()
         byt5_embed = byt5_embed.cpu().numpy()
         byt5_mask = byt5_mask.cpu().numpy()
-        ocr_mask = np.array(ocr_mask, dtype=bool)
+        ocr_mask = ocr_mask.cpu().numpy()
 
         for i, info in enumerate(infos):
             vlm_embed_i = vlm_embed[i]
@@ -175,7 +200,13 @@ class HunyuanImageLatentsCachingStrategy(LatentsCachingStrategy):
     def cache_batch_latents(
         self, vae: hunyuan_image_vae.HunyuanVAE2D, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool
     ):
-        encode_by_vae = lambda img_tensor: vae.encode(img_tensor).sample()
+        # encode_by_vae = lambda img_tensor: vae.encode(img_tensor).sample()
+        def encode_by_vae(img_tensor):
+            # no_grad is handled in _default_cache_batch_latents
+            nonlocal vae
+            with torch.autocast(device_type=vae.device.type, dtype=vae.dtype):
+                return vae.encode(img_tensor).sample()
+
         vae_device = vae.device
         vae_dtype = vae.dtype
 

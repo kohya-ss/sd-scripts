@@ -598,7 +598,7 @@ def get_byt5_prompt_embeds_from_tokens(
 ) -> Tuple[list[bool], torch.Tensor, torch.Tensor]:
     byt5_max_length = BYT5_MAX_LENGTH
 
-    if byt5_text_ids is None or byt5_text_mask is None:
+    if byt5_text_ids is None or byt5_text_mask is None or byt5_text_mask.sum() == 0:
         return (
             [False],
             torch.zeros((1, byt5_max_length, 1472), device=text_encoder.device),
