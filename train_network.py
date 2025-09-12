@@ -479,10 +479,13 @@ class NetworkTrainer:
 
         return loss.mean()
 
-    def cast_text_encoder(self):
+    def cast_text_encoder(self, args):
         return True  # default for other than HunyuanImage
-    
-    def cast_vae(self):
+
+    def cast_vae(self, args):
+        return True  # default for other than HunyuanImage
+
+    def cast_unet(self, args):
         return True  # default for other than HunyuanImage
 
     def train(self, args):
@@ -593,7 +596,7 @@ class NetworkTrainer:
 
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
-        vae_dtype = (torch.float32 if args.no_half_vae else weight_dtype) if self.cast_vae() else None
+        vae_dtype = (torch.float32 if args.no_half_vae else weight_dtype) if self.cast_vae(args) else None
 
         # load target models: unet may be None for lazy loading
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
@@ -844,12 +847,13 @@ class NetworkTrainer:
             unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
 
         unet.requires_grad_(False)
-        unet.to(dtype=unet_weight_dtype)
+        if self.cast_unet(args):
+            unet.to(dtype=unet_weight_dtype)
         for i, t_enc in enumerate(text_encoders):
             t_enc.requires_grad_(False)
 
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
-            if t_enc.device.type != "cpu" and self.cast_text_encoder():
+            if t_enc.device.type != "cpu" and self.cast_text_encoder(args):
                 t_enc.to(dtype=te_weight_dtype)
 
                 # nn.Embedding not support FP8
@@ -875,7 +879,8 @@ class NetworkTrainer:
                 # default implementation is:  unet = accelerator.prepare(unet)
                 unet = self.prepare_unet_with_accelerator(args, accelerator, unet)  # accelerator does some magic here
             else:
-                unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+                # move to device because unet is not prepared by accelerator
+                unet.to(accelerator.device, dtype=unet_weight_dtype if self.cast_unet(args) else None)
             if train_text_encoder:
                 text_encoders = [
                     (accelerator.prepare(t_enc) if flag else t_enc)

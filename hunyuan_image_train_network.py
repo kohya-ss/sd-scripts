@@ -325,6 +325,8 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
             logger.info(
                 "fp8_scaled is used, so fp8_base and fp8_base_unet are ignored / fp8_scaledが使われているので、fp8_baseとfp8_base_unetは無視されます"
             )
+            args.fp8_base = False
+            args.fp8_base_unet = False
 
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning(
@@ -585,11 +587,14 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         # do not support text encoder training for HunyuanImage-2.1
         pass
 
-    def cast_text_encoder(self):
+    def cast_text_encoder(self, args):
         return False  # VLM is bf16, byT5 is fp16, so do not cast to other dtype
 
-    def cast_vae(self):
+    def cast_vae(self, args):
         return False  # VAE is fp16, so do not cast to other dtype
+
+    def cast_unet(self, args):
+        return not args.fp8_scaled  # if fp8_scaled is used, do not cast to other dtype
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
         # fp8 text encoder for HunyuanImage-2.1 is not supported currently
