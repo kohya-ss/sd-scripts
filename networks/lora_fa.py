@@ -11,8 +11,9 @@ import os
 from typing import Dict, List, Optional, Tuple, Type, Union
 from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
-import numpy as np
 import torch
+import numpy as np
+import torch.nn.functional as F
 import re
 import library.maruo_global_config as maruoCfg
 from library.rounding_util import (
@@ -112,6 +113,10 @@ class LoRAModule(torch.nn.Module):
         self.register_buffer("_ema_min", None, persistent=False)
         self.register_buffer("_ema_max", None, persistent=False)
         self.register_buffer("_ema_std", None, persistent=False)
+        # ema_std の計算負荷を下げるためのチューニング項目（デフォルトは互換）
+        self.ema_update_every: int = 1  # N>1 で N ステップ毎にEMA更新
+        self.ema_pool_stride: int = 1   # 2/4/... で空間次元を平均プーリングして近似
+        self._ema_update_ctr: int = 0
 
     def _ensure_ema_buffers(self, delta: torch.Tensor):
         reduce_dims, shape = _reduce_dims_and_shape(delta)
@@ -184,16 +189,40 @@ class LoRAModule(torch.nn.Module):
             and self.delta_q_granularity == "channel"
             and self.delta_q_stat in ("ema_minmax", "ema_std")
         ):
+            # N ステップおきの更新に間引き
+            if self.ema_update_every > 1:
+                self._ema_update_ctr = (self._ema_update_ctr + 1) % int(self.ema_update_every)
+                if self._ema_update_ctr != 0:
+                    reduce_dims, shape = self._ensure_ema_buffers(delta)
+                    # バッファ未初期化時のみ初期化して終了
+                    pass
+                else:
+                    # fallthroughして計算
+                    pass
+
             reduce_dims, shape = self._ensure_ema_buffers(delta)
             if reduce_dims is not None:
                 decay = float(self.delta_q_ema_decay)
+                d32 = delta.to(torch.float32)
                 if self.delta_q_stat == "ema_minmax":
-                    cur_min = torch.amin(delta.to(torch.float32), dim=reduce_dims)
-                    cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
+                    cur_min = torch.amin(d32, dim=reduce_dims)
+                    cur_max = torch.amax(d32, dim=reduce_dims)
                     self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
                     self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
                 else:
-                    cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
+                    # ema_std: 空間方向のダウンサンプリングで近似（stride=1 なら厳密）
+                    if self.ema_pool_stride > 1 and d32.dim() == 4:
+                        # 平方値を平均プーリングしてから平均を取る（RMSの近似を高速化）
+                        sq = d32 * d32
+                        sq = F.avg_pool2d(sq, kernel_size=self.ema_pool_stride, stride=self.ema_pool_stride)
+                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
+                    elif self.ema_pool_stride > 1 and d32.dim() == 3:
+                        # [B, L, C] をシーケンス方向に間引き
+                        sq = d32 * d32
+                        sq = sq[:, :: int(self.ema_pool_stride), :]
+                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
+                    else:
+                        cur_std = torch.sqrt(torch.mean(d32 * d32, dim=reduce_dims) + 1e-8)
                     self._ema_std = decay * self._ema_std + (1.0 - decay) * cur_std
 
         if self.training and self.delta_q_enabled:

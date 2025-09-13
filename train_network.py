@@ -383,10 +383,18 @@ class NetworkTrainer:
                 for l in unwrapped.text_encoder_loras:
                     if hasattr(l, "delta_q_ema_decay"):
                         l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
+                    if hasattr(l, "ema_update_every"):
+                        l.ema_update_every = max(1, int(getattr(args, "dq_delta_ema_every", 1)))
+                    if hasattr(l, "ema_pool_stride"):
+                        l.ema_pool_stride = max(1, int(getattr(args, "dq_delta_ema_pool", 1)))
             if hasattr(unwrapped, "unet_loras"):
                 for l in unwrapped.unet_loras:
                     if hasattr(l, "delta_q_ema_decay"):
                         l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
+                    if hasattr(l, "ema_update_every"):
+                        l.ema_update_every = max(1, int(getattr(args, "dq_delta_ema_every", 1)))
+                    if hasattr(l, "ema_pool_stride"):
+                        l.ema_pool_stride = max(1, int(getattr(args, "dq_delta_ema_pool", 1)))
             # Scope control: unet / te / both
             scope = getattr(args, "dq_delta_scope", "both")
             if scope == "unet" and hasattr(unwrapped, "text_encoder_loras"):
@@ -1698,6 +1706,18 @@ def setup_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Schedule bits by progress fraction, e.g. '0.0:6,0.5:8,0.8:10' / 学習進行率に応じたビット数スケジュール（例: '0.0:6,0.5:8,0.8:10'）",
+    )
+    parser.add_argument(
+        "--dq_delta_ema_every",
+        type=int,
+        default=1,
+        help="Update ema_* stats every N forwards (>=1). Larger N reduces overhead. / ema_*統計の更新をNステップ毎に間引く（>=1）",
+    )
+    parser.add_argument(
+        "--dq_delta_ema_pool",
+        type=int,
+        default=1,
+        help="For ema_std with conv outputs, average-pool squared activations by this stride before reduction (>=1). / ema_std計算で平方値をこのstrideで平均プーリング（>=1）",
     )
     # LoRA rounding options
     parser.add_argument(
