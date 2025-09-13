@@ -44,7 +44,6 @@ def mem_eff_save_file(tensors: Dict[str, torch.Tensor], filename: str, metadata:
                 validated[key] = value
         return validated
 
-    # print(f"Using memory efficient save file: {filename}")
 
     header = {}
     offset = 0
