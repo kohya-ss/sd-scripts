@@ -13,10 +13,12 @@ For RTX 50 series GPUs, PyTorch 2.8.0 with CUDA 12.8/9 should be used. `requirem
 
 If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed` (appropriate version is not confirmed yet).
 
-- [FLUX.1 training](#flux1-training)
-- [SD3 training](#sd3-training)
-
 ### Recent Updates
+
+Sep 13, 2025:
+- The loading speed of `.safetensors` files has been improved for SD3, FLUX.1 and Lumina. See [PR #2200](https://github.com/kohya-ss/sd-scripts/pull/2200) for more details.
+    - Model loading can be up to 1.5 times faster.
+    - This is a wide-ranging update, so there may be bugs. Please let us know if you encounter any issues.
 
 Sep 4, 2025:
 - The information about FLUX.1 and SD3/SD3.5 training that was described in the README has been organized and divided into the following documents:
