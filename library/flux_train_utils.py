@@ -16,10 +16,11 @@ from safetensors.torch import save_file
 
 from library import flux_models, flux_utils, strategy_base, train_util
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.safetensors_utils import mem_eff_save_file
 
 init_ipex()
 
-from .utils import setup_logging, mem_eff_save_file
+from .utils import setup_logging
 
 setup_logging()
 import logging
