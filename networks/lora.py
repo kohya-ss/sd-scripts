@@ -108,10 +108,8 @@ class LoRAModule(torch.nn.Module):
         # EMA buffers (initialized lazily per channel)
         self.register_buffer("_ema_min", None, persistent=False)
         self.register_buffer("_ema_max", None, persistent=False)
-        self.register_buffer("_ema_std", None, persistent=False)
         # Performance tuning knobs for ema_* stats (default keeps backward compatibility)
         self.ema_update_every: int = 1  # update ema_* every N forwards (>=1)
-        self.ema_pool_stride: int = 1   # avg-pool squared activations spatially before reduction (>=1)
         self._ema_update_ctr: int = 0
 
     def _ensure_ema_buffers(self, delta: torch.Tensor):
@@ -124,9 +122,6 @@ class LoRAModule(torch.nn.Module):
             cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
             self._ema_min = cur_min.detach()
             self._ema_max = cur_max.detach()
-        if self._ema_std is None and (self.delta_q_stat == "ema_std"):
-            cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
-            self._ema_std = cur_std.detach()
         return reduce_dims, shape
 
     def apply_to(self):
@@ -172,7 +167,7 @@ class LoRAModule(torch.nn.Module):
             self.training
             and self.delta_q_enabled
             and self.delta_q_granularity == "channel"
-            and self.delta_q_stat in ("ema_minmax", "ema_std")
+            and self.delta_q_stat == "ema_minmax"
         ):
             # thin update frequency
             if self.ema_update_every > 1:
@@ -188,28 +183,15 @@ class LoRAModule(torch.nn.Module):
             if reduce_dims is not None:
                 decay = float(self.delta_q_ema_decay)
                 d32 = delta.to(torch.float32)
-                if self.delta_q_stat == "ema_minmax":
-                    cur_min = torch.amin(d32, dim=reduce_dims)
-                    cur_max = torch.amax(d32, dim=reduce_dims)
-                    self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
-                    self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
-                else:
-                    if self.ema_pool_stride > 1 and d32.dim() == 4:
-                        sq = d32 * d32
-                        sq = torch.nn.functional.avg_pool2d(sq, kernel_size=self.ema_pool_stride, stride=self.ema_pool_stride)
-                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
-                    elif self.ema_pool_stride > 1 and d32.dim() == 3:
-                        sq = d32 * d32
-                        sq = sq[:, :: int(self.ema_pool_stride), :]
-                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
-                    else:
-                        cur_std = torch.sqrt(torch.mean(d32 * d32, dim=reduce_dims) + 1e-8)
-                    self._ema_std = decay * self._ema_std + (1.0 - decay) * cur_std
+                cur_min = torch.amin(d32, dim=reduce_dims)
+                cur_max = torch.amax(d32, dim=reduce_dims)
+                self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
+                self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
 
         if self.training and self.delta_q_enabled:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
                 # bits mode: compute scale per setting (supports EMA stats)
-                if self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+                if self.delta_q_granularity == "channel" and self.delta_q_stat == "ema_minmax":
                     reduce_dims, shape = _reduce_dims_and_shape(delta)
                     if reduce_dims is None:
                         scale = compute_scale_bits(
@@ -220,11 +202,8 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                         )
                     else:
-                        if self.delta_q_stat == "ema_minmax":
-                            max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                            rng = max_abs
-                        else:  # ema_std
-                            rng = (self._ema_std * self.delta_q_range_mul).view(shape)
+                        max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
+                        rng = max_abs
                         qmax = (1 << (self.delta_q_bits - 1)) - 1
                         scale = (rng / qmax).to(torch.float32)
                 else:
@@ -239,15 +218,12 @@ class LoRAModule(torch.nn.Module):
                 delta = fake_quantize_levels(delta, scale=scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
-                    if self.delta_q_stat in ("ema_minmax", "ema_std"):
+                    if self.delta_q_stat == "ema_minmax":
                         reduce_dims, shape = _reduce_dims_and_shape(delta)
                         if reduce_dims is None:
                             step_t = self.delta_q_step
                         else:
-                            if self.delta_q_stat == "ema_minmax":
-                                stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                            else:
-                                stat_val = self._ema_std.view(shape)
+                            stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
                             step_t = (float(self.delta_q_step) * stat_val).to(torch.float32)
                     else:
                         step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)

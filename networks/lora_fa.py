@@ -13,7 +13,6 @@ from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
 import torch
 import numpy as np
-import torch.nn.functional as F
 import re
 import library.maruo_global_config as maruoCfg
 from library.rounding_util import (
@@ -112,10 +111,8 @@ class LoRAModule(torch.nn.Module):
         self.delta_q_ema_decay = delta_q_ema_decay
         self.register_buffer("_ema_min", None, persistent=False)
         self.register_buffer("_ema_max", None, persistent=False)
-        self.register_buffer("_ema_std", None, persistent=False)
-        # ema_std の計算負荷を下げるためのチューニング項目（デフォルトは互換）
+        # ema_std は廃止（メモリ/速度のため）
         self.ema_update_every: int = 1  # N>1 で N ステップ毎にEMA更新
-        self.ema_pool_stride: int = 1   # 2/4/... で空間次元を平均プーリングして近似
         self._ema_update_ctr: int = 0
 
     def _ensure_ema_buffers(self, delta: torch.Tensor):
@@ -127,9 +124,6 @@ class LoRAModule(torch.nn.Module):
             cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
             self._ema_min = cur_min.detach()
             self._ema_max = cur_max.detach()
-        if self._ema_std is None and (self.delta_q_stat == "ema_std"):
-            cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
-            self._ema_std = cur_std.detach()
         return reduce_dims, shape
 
     def get_trainable_params(self):
@@ -187,7 +181,7 @@ class LoRAModule(torch.nn.Module):
             self.training
             and self.delta_q_enabled
             and self.delta_q_granularity == "channel"
-            and self.delta_q_stat in ("ema_minmax", "ema_std")
+            and self.delta_q_stat == "ema_minmax"
         ):
             # N ステップおきの更新に間引き
             if self.ema_update_every > 1:
@@ -204,30 +198,14 @@ class LoRAModule(torch.nn.Module):
             if reduce_dims is not None:
                 decay = float(self.delta_q_ema_decay)
                 d32 = delta.to(torch.float32)
-                if self.delta_q_stat == "ema_minmax":
-                    cur_min = torch.amin(d32, dim=reduce_dims)
-                    cur_max = torch.amax(d32, dim=reduce_dims)
-                    self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
-                    self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
-                else:
-                    # ema_std: 空間方向のダウンサンプリングで近似（stride=1 なら厳密）
-                    if self.ema_pool_stride > 1 and d32.dim() == 4:
-                        # 平方値を平均プーリングしてから平均を取る（RMSの近似を高速化）
-                        sq = d32 * d32
-                        sq = F.avg_pool2d(sq, kernel_size=self.ema_pool_stride, stride=self.ema_pool_stride)
-                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
-                    elif self.ema_pool_stride > 1 and d32.dim() == 3:
-                        # [B, L, C] をシーケンス方向に間引き
-                        sq = d32 * d32
-                        sq = sq[:, :: int(self.ema_pool_stride), :]
-                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
-                    else:
-                        cur_std = torch.sqrt(torch.mean(d32 * d32, dim=reduce_dims) + 1e-8)
-                    self._ema_std = decay * self._ema_std + (1.0 - decay) * cur_std
+                cur_min = torch.amin(d32, dim=reduce_dims)
+                cur_max = torch.amax(d32, dim=reduce_dims)
+                self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
+                self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
 
         if self.training and self.delta_q_enabled:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                if self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+                if self.delta_q_granularity == "channel" and self.delta_q_stat == "ema_minmax":
                     reduce_dims, shape = _reduce_dims_and_shape(delta)
                     if reduce_dims is None:
                         scale = compute_scale_bits(
@@ -238,11 +216,8 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                         )
                     else:
-                        if self.delta_q_stat == "ema_minmax":
-                            max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                            rng = max_abs
-                        else:
-                            rng = (self._ema_std * self.delta_q_range_mul).view(shape)
+                        max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
+                        rng = max_abs
                         qmax = (1 << (self.delta_q_bits - 1)) - 1
                         scale = (rng / qmax).to(torch.float32)
                 else:
@@ -257,15 +232,12 @@ class LoRAModule(torch.nn.Module):
                 delta = fake_quantize_levels(delta, scale=scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
-                    if self.delta_q_stat in ("ema_minmax", "ema_std"):
+                    if self.delta_q_stat == "ema_minmax":
                         reduce_dims, shape = _reduce_dims_and_shape(delta)
                         if reduce_dims is None:
                             step_t = self.delta_q_step
                         else:
-                            if self.delta_q_stat == "ema_minmax":
-                                stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                            else:
-                                stat_val = self._ema_std.view(shape)
+                            stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
                             step_t = (float(self.delta_q_step) * stat_val).to(torch.float32)
                     else:
                         step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
