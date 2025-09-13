@@ -23,7 +23,7 @@ from library import sdxl_model_util
 # region models
 
 # TODO remove dependency on flux_utils
-from library.utils import load_safetensors
+from library.safetensors_utils import load_safetensors
 from library.flux_utils import load_t5xxl as flux_utils_load_t5xxl
 
 
@@ -246,7 +246,7 @@ def load_vae(
     vae_sd = {}
     if vae_path:
         logger.info(f"Loading VAE from {vae_path}...")
-        vae_sd = load_safetensors(vae_path, device, disable_mmap)
+        vae_sd = load_safetensors(vae_path, device, disable_mmap, dtype=vae_dtype)
     else:
         # remove prefix "first_stage_model."
         vae_sd = {}

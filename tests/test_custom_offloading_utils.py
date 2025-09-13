@@ -4,7 +4,7 @@ import torch.nn as nn
 from unittest.mock import patch, MagicMock
 
 from library.custom_offloading_utils import (
-    synchronize_device, 
+    _synchronize_device, 
     swap_weight_devices_cuda,
     swap_weight_devices_no_cuda,
     weighs_to_device,
@@ -50,21 +50,21 @@ class SimpleModel(nn.Module):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_cuda_synchronize(mock_cuda_sync):
     device = torch.device('cuda')
-    synchronize_device(device)
+    _synchronize_device(device)
     mock_cuda_sync.assert_called_once()
 
 @patch('torch.xpu.synchronize')
 @pytest.mark.skipif(not torch.xpu.is_available(), reason="XPU not available")
 def test_xpu_synchronize(mock_xpu_sync):
     device = torch.device('xpu')
-    synchronize_device(device)
+    _synchronize_device(device)
     mock_xpu_sync.assert_called_once()
 
 @patch('torch.mps.synchronize')
 @pytest.mark.skipif(not torch.xpu.is_available(), reason="MPS not available")
 def test_mps_synchronize(mock_mps_sync):
     device = torch.device('mps')
-    synchronize_device(device)
+    _synchronize_device(device)
     mock_mps_sync.assert_called_once()
 
 
@@ -111,7 +111,7 @@ def test_swap_weight_devices_cuda():
 
 
 
-@patch('library.custom_offloading_utils.synchronize_device')
+@patch('library.custom_offloading_utils._synchronize_device')
 def test_swap_weight_devices_no_cuda(mock_sync_device):
     device = torch.device('cpu')
     layer_to_cpu = SimpleModel()
@@ -121,7 +121,7 @@ def test_swap_weight_devices_no_cuda(mock_sync_device):
         with patch('torch.Tensor.copy_'):
             swap_weight_devices_no_cuda(device, layer_to_cpu, layer_to_cuda)
             
-            # Verify synchronize_device was called twice
+            # Verify _synchronize_device was called twice
             assert mock_sync_device.call_count == 2
 
 
@@ -279,8 +279,8 @@ def test_backward_hook_execution(mock_wait, mock_submit):
 
 
 @patch('library.custom_offloading_utils.weighs_to_device')
-@patch('library.custom_offloading_utils.synchronize_device')
-@patch('library.custom_offloading_utils.clean_memory_on_device')
+@patch('library.custom_offloading_utils._synchronize_device')
+@patch('library.custom_offloading_utils._clean_memory_on_device')
 def test_prepare_block_devices_before_forward(mock_clean, mock_sync, mock_weights_to_device, model_offloader):
     model = SimpleModel(4)
     blocks = model.blocks
@@ -291,7 +291,7 @@ def test_prepare_block_devices_before_forward(mock_clean, mock_sync, mock_weight
         # Check that weighs_to_device was called for each block
         assert mock_weights_to_device.call_count == 4
         
-        # Check that synchronize_device and clean_memory_on_device were called
+        # Check that _synchronize_device and _clean_memory_on_device were called
         mock_sync.assert_called_once_with(model_offloader.device)
         mock_clean.assert_called_once_with(model_offloader.device)
 
