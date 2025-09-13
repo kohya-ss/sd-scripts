@@ -983,53 +983,67 @@ class NetworkTrainer:
 
             trigger_count = 0
             cap_release_counter = 0
-            prev_grad_vector = None
+            # For cosine logging, keep previous gradients as per-parameter tensors to avoid huge concat each step
+            prev_grad_list = None
+            prev_grad_norm = None
             idle_counter = 0
             idle_free_counter = 0
             in_idle_free = False
 
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 nonlocal trigger_count, cap_release_counter
-                nonlocal prev_grad_vector, idle_counter, idle_free_counter, in_idle_free
+                nonlocal prev_grad_list, prev_grad_norm, idle_counter, idle_free_counter, in_idle_free
                 device = next(model.parameters()).device
-                gradient_norm = torch.tensor(0.0, device=device)
-                grad_vector = [] if log_grad_cosine else None
+                grad_norm_sqr = torch.tensor(0.0, device=device)
+                # accumulate dot product with previous grads without concatenation
+                dot_sum = torch.tensor(0.0, device=device) if (log_grad_cosine and prev_grad_list is not None) else None
+                cur_grads = [] if log_grad_cosine else None
 
                 # 各パラメータの勾配ノルムの二乗を加算
                 with torch.no_grad():
+                    idx = 0
                     for param in model.parameters():
                         if param.grad is not None:
                             grad = param.grad
-                            gradient_norm += grad.norm() ** 2
+                            # sum of squares
+                            grad_norm_sqr += (grad.detach() * grad.detach()).sum()
                             if log_grad_cosine:
-                                grad_vector.append(grad.detach().view(-1))
-                gradient_norm = gradient_norm.sqrt().item()
+                                if prev_grad_list is not None and idx < len(prev_grad_list):
+                                    # accumulate dot product per-parameter to avoid giant torch.cat
+                                    dot_sum += (grad.detach() * prev_grad_list[idx]).sum()
+                                cur_grads.append(grad.detach().clone())
+                                idx += 1
+                current_grad_norm = torch.sqrt(grad_norm_sqr).item()
 
                 cosine_sim = None
                 if log_grad_cosine:
-                    current_grad = torch.cat(grad_vector) if len(grad_vector) > 0 else None
-                    if prev_grad_vector is not None and current_grad is not None:
-                        cosine_sim = torch.nn.functional.cosine_similarity(
-                            current_grad, prev_grad_vector, dim=0, eps=1e-8
-                        ).item()
+                    if prev_grad_list is not None and dot_sum is not None and prev_grad_norm is not None:
+                        denom = (current_grad_norm * (prev_grad_norm + 1e-12))
+                        # avoid divide-by-zero
+                        if denom == 0.0:
+                            cosine_sim = float("nan")
+                        else:
+                            cosine_sim = (dot_sum / denom).item()
                     else:
                         cosine_sim = float("nan")
-                    prev_grad_vector = current_grad
+                    # store for next step
+                    prev_grad_list = cur_grads
+                    prev_grad_norm = current_grad_norm
 
                 # 勾配ノルムが NaN / Inf かどうかを判定
-                is_nan = math.isnan(gradient_norm)
-                is_inf = math.isinf(gradient_norm)
+                is_nan = math.isnan(current_grad_norm)
+                is_inf = math.isinf(current_grad_norm)
 
                 appended = False
                 if not is_nan and not is_inf:
-                    moving_avg_window.append(gradient_norm)
+                    moving_avg_window.append(current_grad_norm)
                 else:
                     # 設定に応じて NaN / Inf も移動平均窓へ入れる
                     if is_nan and nan_to_window:
-                        moving_avg_window.append(gradient_norm)
+                        moving_avg_window.append(current_grad_norm)
                         appended = True
                     if is_inf and inf_to_window:
-                        moving_avg_window.append(gradient_norm)
+                        moving_avg_window.append(current_grad_norm)
                         appended = True
 
                 if in_idle_free:
@@ -1087,7 +1101,7 @@ class NetworkTrainer:
                 if log_grad_norm:
                     scale_val = scaler_for_log.get_scale() if log_grad_scale else None
                     flag = 2 if in_idle_free else (1 if math.isnan(dynamic_threshold) else 0)
-                    log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val},{flag}"
+                    log_line = f"{epoch},{step},{current_grad_norm},{dynamic_threshold},{loss_val},{flag}"
                     if log_grad_scale:
                         log_line += f",{scale_val}"
                     if log_grad_cosine:
@@ -1107,7 +1121,7 @@ class NetworkTrainer:
                 if in_idle_free:
                     return False
 
-                return gradient_norm > dynamic_threshold
+                return current_grad_norm > dynamic_threshold
         else:
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 return False

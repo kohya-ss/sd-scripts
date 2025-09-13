@@ -177,8 +177,13 @@ class LoRAModule(torch.nn.Module):
         lx = self.lora_up(lx)
 
         delta = lx * self.multiplier * scale
-        # Update EMA stats every step (even if quantization not enabled yet)
-        if self.training and self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+        # Update EMA stats only when delta-quantization is enabled (avoids per-step overhead before begin)
+        if (
+            self.training
+            and self.delta_q_enabled
+            and self.delta_q_granularity == "channel"
+            and self.delta_q_stat in ("ema_minmax", "ema_std")
+        ):
             reduce_dims, shape = self._ensure_ema_buffers(delta)
             if reduce_dims is not None:
                 decay = float(self.delta_q_ema_decay)
