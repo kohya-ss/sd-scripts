@@ -33,8 +33,5 @@ OT="OT"
 byt="byt"
 tak="tak"
 
-# [files]
-# # Extend the default list of files to check
-# extend-exclude = [
-#     "library/hunyuan_image_text_encoder.py",
-# ]
+[files]
+extend-exclude = ["_typos.toml", "venv"]
