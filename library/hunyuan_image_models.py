@@ -185,6 +185,20 @@ class HYImageDiffusionTransformer(nn.Module):
             f"HunyuanImage-2.1: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
         )
 
+    def switch_block_swap_for_inference(self):
+        if self.blocks_to_swap:
+            self.offloader_double.set_forward_only(True)
+            self.offloader_single.set_forward_only(True)
+            self.prepare_block_swap_before_forward()
+            print(f"HunyuanImage-2.1: Block swap set to forward only.")
+
+    def switch_block_swap_for_training(self):
+        if self.blocks_to_swap:
+            self.offloader_double.set_forward_only(False)
+            self.offloader_single.set_forward_only(False)
+            self.prepare_block_swap_before_forward()
+            print(f"HunyuanImage-2.1: Block swap set to forward and backward.")
+
     def move_to_device_except_swap_blocks(self, device: torch.device):
         # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
         if self.blocks_to_swap:

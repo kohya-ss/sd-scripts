@@ -1,7 +1,7 @@
 import argparse
 import copy
 import gc
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 import argparse
 import os
 import time
@@ -47,7 +47,7 @@ def sample_images(
     args: argparse.Namespace,
     epoch,
     steps,
-    dit,
+    dit: hunyuan_image_models.HYImageDiffusionTransformer,
     vae,
     text_encoders,
     sample_prompts_te_outputs,
@@ -77,6 +77,8 @@ def sample_images(
 
     # unwrap unet and text_encoder(s)
     dit = accelerator.unwrap_model(dit)
+    dit = cast(hunyuan_image_models.HYImageDiffusionTransformer, dit)
+    dit.switch_block_swap_for_inference()
     if text_encoders is not None:
         text_encoders = [(accelerator.unwrap_model(te) if te is not None else None) for te in text_encoders]
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
@@ -139,6 +141,7 @@ def sample_images(
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
 
+    dit.switch_block_swap_for_training()
     clean_memory_on_device(accelerator.device)
 
 
