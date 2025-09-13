@@ -9,7 +9,8 @@ from tqdm import tqdm
 
 from library.device_utils import synchronize_device
 from library.fp8_optimization_utils import load_safetensors_with_fp8_optimization
-from library.utils import MemoryEfficientSafeOpen, setup_logging
+from library.safetensors_utils import MemoryEfficientSafeOpen
+from library.utils import setup_logging
 
 setup_logging()
 import logging

@@ -9,7 +9,8 @@ import logging
 from tqdm import tqdm
 
 from library.device_utils import clean_memory_on_device
-from library.utils import MemoryEfficientSafeOpen, setup_logging
+from library.safetensors_utils import MemoryEfficientSafeOpen
+from library.utils import setup_logging
 
 setup_logging()
 import logging

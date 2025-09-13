@@ -14,8 +14,8 @@ from transformers import (
 from transformers.models.t5.modeling_t5 import T5Stack
 from accelerate import init_empty_weights
 
-from library import model_util
-from library.utils import load_safetensors, setup_logging
+from library.safetensors_utils import load_safetensors
+from library.utils import  setup_logging
 
 setup_logging()
 import logging

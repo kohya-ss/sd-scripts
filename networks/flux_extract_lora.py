@@ -10,9 +10,8 @@ import torch
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from tqdm import tqdm
-from library import flux_utils, sai_model_spec, model_util, sdxl_model_util
-import lora
-from library.utils import MemoryEfficientSafeOpen
+from library import flux_utils, sai_model_spec
+from library.safetensors_utils import MemoryEfficientSafeOpen
 from library.utils import setup_logging
 from networks import lora_flux
 

@@ -22,6 +22,7 @@ from library import hunyuan_image_models, hunyuan_image_text_encoder, hunyuan_im
 from library import hunyuan_image_vae
 from library.hunyuan_image_vae import HunyuanVAE2D
 from library.device_utils import clean_memory_on_device, synchronize_device
+from library.safetensors_utils import mem_eff_save_file
 from networks import lora_hunyuan_image
 
 
@@ -29,7 +30,7 @@ lycoris_available = find_spec("lycoris") is not None
 if lycoris_available:
     from lycoris.kohya import create_network_from_weights
 
-from library.utils import mem_eff_save_file, setup_logging
+from library.utils import setup_logging
 
 setup_logging()
 import logging

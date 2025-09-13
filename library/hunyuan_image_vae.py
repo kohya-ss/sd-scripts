@@ -7,7 +7,8 @@ from torch import Tensor, nn
 from torch.nn import Conv2d
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
-from library.utils import load_safetensors, setup_logging
+from library.safetensors_utils import load_safetensors
+from library.utils import setup_logging
 
 setup_logging()
 import logging
