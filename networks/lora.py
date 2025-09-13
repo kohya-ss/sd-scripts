@@ -109,6 +109,10 @@ class LoRAModule(torch.nn.Module):
         self.register_buffer("_ema_min", None, persistent=False)
         self.register_buffer("_ema_max", None, persistent=False)
         self.register_buffer("_ema_std", None, persistent=False)
+        # Performance tuning knobs for ema_* stats (default keeps backward compatibility)
+        self.ema_update_every: int = 1  # update ema_* every N forwards (>=1)
+        self.ema_pool_stride: int = 1   # avg-pool squared activations spatially before reduction (>=1)
+        self._ema_update_ctr: int = 0
 
     def _ensure_ema_buffers(self, delta: torch.Tensor):
         # Initialize EMA buffers to current stats with per-channel shape
@@ -163,18 +167,43 @@ class LoRAModule(torch.nn.Module):
 
         delta = lx * self.multiplier * scale
         # Apply fake quantization to delta only (training-time, when enabled)
-        # Update EMA stats every step (even if quantization not enabled yet)
-        if self.training and self.delta_q_granularity == "channel" and self.delta_q_stat in ("ema_minmax", "ema_std"):
+        # Update EMA stats (optionally thinned and after begin)
+        if (
+            self.training
+            and self.delta_q_enabled
+            and self.delta_q_granularity == "channel"
+            and self.delta_q_stat in ("ema_minmax", "ema_std")
+        ):
+            # thin update frequency
+            if self.ema_update_every > 1:
+                self._ema_update_ctr = (self._ema_update_ctr + 1) % int(self.ema_update_every)
+                if self._ema_update_ctr != 0:
+                    # ensure buffers are initialized then skip heavy compute
+                    self._ensure_ema_buffers(delta)
+                    pass
+                else:
+                    pass
+
             reduce_dims, shape = self._ensure_ema_buffers(delta)
             if reduce_dims is not None:
                 decay = float(self.delta_q_ema_decay)
+                d32 = delta.to(torch.float32)
                 if self.delta_q_stat == "ema_minmax":
-                    cur_min = torch.amin(delta.to(torch.float32), dim=reduce_dims)
-                    cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
+                    cur_min = torch.amin(d32, dim=reduce_dims)
+                    cur_max = torch.amax(d32, dim=reduce_dims)
                     self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
                     self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
                 else:
-                    cur_std = torch.sqrt(torch.mean(delta.to(torch.float32) ** 2, dim=reduce_dims) + 1e-8)
+                    if self.ema_pool_stride > 1 and d32.dim() == 4:
+                        sq = d32 * d32
+                        sq = torch.nn.functional.avg_pool2d(sq, kernel_size=self.ema_pool_stride, stride=self.ema_pool_stride)
+                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
+                    elif self.ema_pool_stride > 1 and d32.dim() == 3:
+                        sq = d32 * d32
+                        sq = sq[:, :: int(self.ema_pool_stride), :]
+                        cur_std = torch.sqrt(torch.mean(sq, dim=reduce_dims) + 1e-8)
+                    else:
+                        cur_std = torch.sqrt(torch.mean(d32 * d32, dim=reduce_dims) + 1e-8)
                     self._ema_std = decay * self._ema_std + (1.0 - decay) * cur_std
 
         if self.training and self.delta_q_enabled:
