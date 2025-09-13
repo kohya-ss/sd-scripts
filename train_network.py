@@ -378,19 +378,7 @@ class NetworkTrainer:
                 bits=getattr(args, "dq_delta_bits", None),
                 range_mul=getattr(args, "dq_delta_range_mul", None),
             )
-            # propagate EMA decay if supported
-            if hasattr(unwrapped, "text_encoder_loras"):
-                for l in unwrapped.text_encoder_loras:
-                    if hasattr(l, "delta_q_ema_decay"):
-                        l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
-                    if hasattr(l, "ema_update_every"):
-                        l.ema_update_every = max(1, int(getattr(args, "dq_delta_ema_every", 1)))
-            if hasattr(unwrapped, "unet_loras"):
-                for l in unwrapped.unet_loras:
-                    if hasattr(l, "delta_q_ema_decay"):
-                        l.delta_q_ema_decay = getattr(args, "dq_delta_ema_decay", 0.99)
-                    if hasattr(l, "ema_update_every"):
-                        l.ema_update_every = max(1, int(getattr(args, "dq_delta_ema_every", 1)))
+            # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
             scope = getattr(args, "dq_delta_scope", "both")
             if scope == "unet" and hasattr(unwrapped, "text_encoder_loras"):
@@ -1676,14 +1664,8 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_stat",
         type=str,
         default="rms",
-        choices=["rms", "absmax", "none", "ema_minmax"],
-        help="Statistic for scale/step: rms/absmax/none or EMA variant ema_minmax. Channel-wise when granularity=channel. / スケール/ステップの統計：rms/absmax/none または EMA 版 ema_minmax（granularity=channelでチャネル別）",
-    )
-    parser.add_argument(
-        "--dq_delta_ema_decay",
-        type=float,
-        default=0.99,
-        help="EMA decay for ema_minmax statistics (0-1, closer to 1 = slower). / ema_minmax 用の EMA 係数",
+        choices=["rms", "absmax", "none"],
+        help="Statistic for scale/step: rms/absmax/none. Channel-wise when granularity=channel. / スケール/ステップの統計：rms/absmax/none（granularity=channelでチャネル別）",
     )
     parser.add_argument(
         "--dq_delta_bits",
@@ -1703,12 +1685,7 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="Schedule bits by progress fraction, e.g. '0.0:6,0.5:8,0.8:10' / 学習進行率に応じたビット数スケジュール（例: '0.0:6,0.5:8,0.8:10'）",
     )
-    parser.add_argument(
-        "--dq_delta_ema_every",
-        type=int,
-        default=1,
-        help="Update ema_* stats every N forwards (>=1). Larger N reduces overhead. / ema_*統計の更新をNステップ毎に間引く（>=1）",
-    )
+    # ema_* options removed
     # LoRA rounding options
     parser.add_argument(
         "--round_lora_step",

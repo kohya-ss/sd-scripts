@@ -105,24 +105,8 @@ class LoRAModule(torch.nn.Module):
         self.delta_q_bits = delta_q_bits
         self.delta_q_range_mul = delta_q_range_mul
         self.delta_q_ema_decay = delta_q_ema_decay
-        # EMA buffers (initialized lazily per channel)
-        self.register_buffer("_ema_min", None, persistent=False)
-        self.register_buffer("_ema_max", None, persistent=False)
-        # Performance tuning knobs for ema_* stats (default keeps backward compatibility)
-        self.ema_update_every: int = 1  # update ema_* every N forwards (>=1)
-        self._ema_update_ctr: int = 0
 
-    def _ensure_ema_buffers(self, delta: torch.Tensor):
-        # Initialize EMA buffers to current stats with per-channel shape
-        reduce_dims, shape = _reduce_dims_and_shape(delta)
-        if reduce_dims is None:
-            return None, None
-        if self._ema_min is None and (self.delta_q_stat == "ema_minmax"):
-            cur_min = torch.amin(delta.to(torch.float32), dim=reduce_dims)
-            cur_max = torch.amax(delta.to(torch.float32), dim=reduce_dims)
-            self._ema_min = cur_min.detach()
-            self._ema_max = cur_max.detach()
-        return reduce_dims, shape
+    # no EMA buffers/statistics for delta quantization (ema_* removed)
 
     def apply_to(self):
         self.org_forward = self.org_module.forward
@@ -162,71 +146,23 @@ class LoRAModule(torch.nn.Module):
 
         delta = lx * self.multiplier * scale
         # Apply fake quantization to delta only (training-time, when enabled)
-        # Update EMA stats (optionally thinned and after begin)
-        if (
-            self.training
-            and self.delta_q_enabled
-            and self.delta_q_granularity == "channel"
-            and self.delta_q_stat == "ema_minmax"
-        ):
-            # thin update frequency
-            if self.ema_update_every > 1:
-                self._ema_update_ctr = (self._ema_update_ctr + 1) % int(self.ema_update_every)
-                if self._ema_update_ctr != 0:
-                    # ensure buffers are initialized then skip heavy compute
-                    self._ensure_ema_buffers(delta)
-                    pass
-                else:
-                    pass
-
-            reduce_dims, shape = self._ensure_ema_buffers(delta)
-            if reduce_dims is not None:
-                decay = float(self.delta_q_ema_decay)
-                d32 = delta.to(torch.float32)
-                cur_min = torch.amin(d32, dim=reduce_dims)
-                cur_max = torch.amax(d32, dim=reduce_dims)
-                self._ema_min = decay * self._ema_min + (1.0 - decay) * cur_min
-                self._ema_max = decay * self._ema_max + (1.0 - decay) * cur_max
+        # EMA-based stats were removed to simplify and speed up training
 
         if self.training and self.delta_q_enabled:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                # bits mode: compute scale per setting (supports EMA stats)
-                if self.delta_q_granularity == "channel" and self.delta_q_stat == "ema_minmax":
-                    reduce_dims, shape = _reduce_dims_and_shape(delta)
-                    if reduce_dims is None:
-                        scale = compute_scale_bits(
-                            delta,
-                            bits=self.delta_q_bits,
-                            granularity=self.delta_q_granularity,
-                            stat="rms",
-                            range_mul=self.delta_q_range_mul,
-                        )
-                    else:
-                        max_abs = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                        rng = max_abs
-                        qmax = (1 << (self.delta_q_bits - 1)) - 1
-                        scale = (rng / qmax).to(torch.float32)
-                else:
-                    scale = compute_scale_bits(
-                        delta,
-                        bits=self.delta_q_bits,
-                        granularity=self.delta_q_granularity,
-                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
-                        range_mul=self.delta_q_range_mul,
-                    )
+                # bits mode: compute scale per setting (tensor or per-channel)
+                scale = compute_scale_bits(
+                    delta,
+                    bits=self.delta_q_bits,
+                    granularity=self.delta_q_granularity,
+                    stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                    range_mul=self.delta_q_range_mul,
+                )
                 qmax = (1 << (self.delta_q_bits - 1)) - 1
                 delta = fake_quantize_levels(delta, scale=scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
-                    if self.delta_q_stat == "ema_minmax":
-                        reduce_dims, shape = _reduce_dims_and_shape(delta)
-                        if reduce_dims is None:
-                            step_t = self.delta_q_step
-                        else:
-                            stat_val = torch.maximum(self._ema_min.abs(), self._ema_max.abs()).view(shape)
-                            step_t = (float(self.delta_q_step) * stat_val).to(torch.float32)
-                    else:
-                        step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
+                    step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
                 else:
                     step_t = self.delta_q_step
                 delta = fake_quantize(delta, step=step_t, mode=self.delta_q_mode)
