@@ -52,6 +52,7 @@ class LoRAModule(torch.nn.Module):
         delta_q_bits: Optional[int] = None,
         delta_q_range_mul: float = 3.0,
         delta_q_ema_decay: float = 0.99,
+        delta_q_on_z: bool = False,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -109,6 +110,7 @@ class LoRAModule(torch.nn.Module):
         self.delta_q_bits = delta_q_bits
         self.delta_q_range_mul = delta_q_range_mul
         self.delta_q_ema_decay = delta_q_ema_decay
+        self.delta_q_on_z = bool(delta_q_on_z)
 
     # no EMA buffers/statistics for delta quantization (ema_* removed)
 
@@ -159,14 +161,32 @@ class LoRAModule(torch.nn.Module):
         else:
             scale = self.scale
 
+        # Optionally quantize z (=A(x)) before up-projection
+        if self.training and self.delta_q_enabled and self.delta_q_on_z:
+            if self.delta_q_bits is not None and self.delta_q_bits > 0:
+                z_scale = compute_scale_bits(
+                    lx,
+                    bits=self.delta_q_bits,
+                    granularity=self.delta_q_granularity,
+                    stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                    range_mul=self.delta_q_range_mul,
+                )
+                qmax = (1 << (self.delta_q_bits - 1)) - 1
+                lx = fake_quantize_levels(lx, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+            elif self.delta_q_step is not None and self.delta_q_step > 0:
+                if self.delta_q_granularity == "channel":
+                    step_t = compute_per_channel_step(lx, self.delta_q_step, stat=self.delta_q_stat)
+                else:
+                    step_t = self.delta_q_step
+                lx = fake_quantize(lx, step=step_t, mode=self.delta_q_mode)
+
         lx = self.lora_up(lx)
 
         delta = lx * self.multiplier * scale
-        # EMA-based stats were removed to simplify and speed up training
-
-        if self.training and self.delta_q_enabled:
+        # Apply fake-quant to delta when not quantizing on z
+        if self.training and self.delta_q_enabled and not self.delta_q_on_z:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                scale = compute_scale_bits(
+                d_scale = compute_scale_bits(
                     delta,
                     bits=self.delta_q_bits,
                     granularity=self.delta_q_granularity,
@@ -174,7 +194,7 @@ class LoRAModule(torch.nn.Module):
                     range_mul=self.delta_q_range_mul,
                 )
                 qmax = (1 << (self.delta_q_bits - 1)) - 1
-                delta = fake_quantize_levels(delta, scale=scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+                delta = fake_quantize_levels(delta, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
                     step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
@@ -1006,6 +1026,7 @@ class LoRANetwork(torch.nn.Module):
         stat: Optional[str] = None,
         bits: Optional[int] = None,
         range_mul: Optional[float] = None,
+        on_z: Optional[bool] = None,
     ):
         for l in self.text_encoder_loras + self.unet_loras:
             l.delta_q_step = step
@@ -1018,6 +1039,8 @@ class LoRANetwork(torch.nn.Module):
                 l.delta_q_bits = bits
             if range_mul is not None:
                 l.delta_q_range_mul = range_mul
+            if on_z is not None:
+                l.delta_q_on_z = bool(on_z)
 
     def set_delta_quant_enabled(self, enabled: bool):
         for l in self.text_encoder_loras + self.unet_loras:

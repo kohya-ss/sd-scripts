@@ -182,7 +182,8 @@ class NetworkTrainer:
         if ((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step and args.dq_delta_step > 0)
             or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched):
             logger.info(
-                f"lora delta fake-quant: step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
+                f"lora fake-quant: target={'z' if getattr(args,'dq_quantize_z', False) else 'delta'}, "
+                f"step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
                 f"mode={args.dq_delta_mode}, begin={args.dq_delta_begin}, granularity={getattr(args,'dq_delta_granularity',None)}, "
                 f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, bits_sched={dq_bits_sched}"
             )
@@ -377,6 +378,7 @@ class NetworkTrainer:
                 stat=args.dq_delta_stat,
                 bits=getattr(args, "dq_delta_bits", None),
                 range_mul=getattr(args, "dq_delta_range_mul", None),
+                on_z=getattr(args, "dq_quantize_z", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -1208,6 +1210,7 @@ class NetworkTrainer:
                                         stat=args.dq_delta_stat,
                                         bits=cur_bits,
                                         range_mul=getattr(args, "dq_delta_range_mul", None),
+                                        on_z=getattr(args, "dq_quantize_z", False),
                                     )
                                     last_applied_bits = cur_bits
 
@@ -1652,6 +1655,11 @@ def setup_parser() -> argparse.ArgumentParser:
         default="both",
         choices=["unet", "te", "both"],
         help="Apply delta fake-quant to: unet, te, or both / Δのフェイク量子化の適用範囲（unet/te/both）",
+    )
+    parser.add_argument(
+        "--dq_quantize_z",
+        action="store_true",
+        help="Quantize z=A(x) instead of delta: apply B(Q(z)) / Δではなくz=A(x)を量子化してB(Q(z))を適用する",
     )
     parser.add_argument(
         "--dq_delta_granularity",
