@@ -164,21 +164,25 @@ class LoRAModule(torch.nn.Module):
         # Optionally quantize z (=A(x)) before up-projection
         if self.training and self.delta_q_enabled and self.delta_q_on_z:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                z_scale = compute_scale_bits(
-                    lx,
-                    bits=self.delta_q_bits,
-                    granularity=self.delta_q_granularity,
-                    stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
-                    range_mul=self.delta_q_range_mul,
-                )
-                qmax = (1 << (self.delta_q_bits - 1)) - 1
+                with torch.no_grad():
+                    z_scale = compute_scale_bits(
+                        lx,
+                        bits=self.delta_q_bits,
+                        granularity=self.delta_q_granularity,
+                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                        range_mul=self.delta_q_range_mul,
+                    )
+                    qmax = (1 << (self.delta_q_bits - 1)) - 1
                 lx = fake_quantize_levels(lx, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
-                    step_t = compute_per_channel_step(lx, self.delta_q_step, stat=self.delta_q_stat)
+                    with torch.no_grad():
+                        step_t = compute_per_channel_step(lx, self.delta_q_step, stat=self.delta_q_stat)
                 else:
                     step_t = self.delta_q_step
                 lx = fake_quantize(lx, step=step_t, mode=self.delta_q_mode)
+            # ensure memory contiguity for faster lora_up
+            lx = lx.contiguous()
 
         lx = self.lora_up(lx)
 
@@ -186,18 +190,20 @@ class LoRAModule(torch.nn.Module):
         # Apply fake-quant to delta when not quantizing on z
         if self.training and self.delta_q_enabled and not self.delta_q_on_z:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                d_scale = compute_scale_bits(
-                    delta,
-                    bits=self.delta_q_bits,
-                    granularity=self.delta_q_granularity,
-                    stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
-                    range_mul=self.delta_q_range_mul,
-                )
-                qmax = (1 << (self.delta_q_bits - 1)) - 1
+                with torch.no_grad():
+                    d_scale = compute_scale_bits(
+                        delta,
+                        bits=self.delta_q_bits,
+                        granularity=self.delta_q_granularity,
+                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                        range_mul=self.delta_q_range_mul,
+                    )
+                    qmax = (1 << (self.delta_q_bits - 1)) - 1
                 delta = fake_quantize_levels(delta, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
-                    step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
+                    with torch.no_grad():
+                        step_t = compute_per_channel_step(delta, self.delta_q_step, stat=self.delta_q_stat)
                 else:
                     step_t = self.delta_q_step
                 delta = fake_quantize(delta, step=step_t, mode=self.delta_q_mode)
