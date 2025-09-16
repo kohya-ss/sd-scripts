@@ -67,12 +67,12 @@ def parse_args() -> argparse.Namespace:
 
     # inference
     parser.add_argument(
-        "--guidance_scale", type=float, default=5.0, help="Guidance scale for classifier free guidance. Default is 5.0."
+        "--guidance_scale", type=float, default=3.5, help="Guidance scale for classifier free guidance. Default is 3.5."
     )
     parser.add_argument("--prompt", type=str, default=None, help="prompt for generation")
     parser.add_argument("--negative_prompt", type=str, default="", help="negative prompt for generation, default is empty string")
-    parser.add_argument("--image_size", type=int, nargs=2, default=[256, 256], help="image size, height and width")
-    parser.add_argument("--infer_steps", type=int, default=25, help="number of inference steps, default is 25")
+    parser.add_argument("--image_size", type=int, nargs=2, default=[2048, 2048], help="image size, height and width")
+    parser.add_argument("--infer_steps", type=int, default=50, help="number of inference steps, default is 50")
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated video")
     parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
 
@@ -80,8 +80,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flow_shift",
         type=float,
-        default=None,
-        help="Shift factor for flow matching schedulers. Default is None (default).",
+        default=5.0,
+        help="Shift factor for flow matching schedulers. Default is 5.0.",
     )
 
     parser.add_argument("--fp8", action="store_true", help="use fp8 for DiT model")
