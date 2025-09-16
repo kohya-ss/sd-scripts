@@ -461,12 +461,28 @@ python hunyuan_image_minimal_inference.py \
 
 ## 9. Related Tools / 関連ツール
 
-- **`hunyuan_image_minimal_inference.py`**: Simple inference script for generating images with trained LoRA models.
+### `networks/convert_hunyuan_image_lora_to_comfy.py`
+
+A script to convert LoRA models to ComfyUI-compatible format. The formats differ slightly, so conversion is necessary. You can convert from the sd-scripts format to ComfyUI format with:
+
+```bash
+python networks/convert_hunyuan_image_lora_to_comfy.py path/to/source.safetensors path/to/destination.safetensors
+```
+
+Using the `--reverse` option allows conversion in the opposite direction (ComfyUI format to sd-scripts format). However, reverse conversion is only possible for LoRAs converted by this script. LoRAs created with other training tools cannot be converted.
 
 <details>
 <summary>日本語</summary>
 
-- **`hunyuan_image_minimal_inference.py`**: 学習した LoRA モデルを適用して画像を生成するシンプルな推論スクリプト。
+**`networks/convert_hunyuan_image_lora_to_comfy.py`**
+
+LoRAモデルをComfyUI互換形式に変換するスクリプト。わずかに形式が異なるため、変換が必要です。以下の指定で、sd-scriptsの形式からComfyUI形式に変換できます。
+
+```bash
+python networks/convert_hunyuan_image_lora_to_comfy.py path/to/source.safetensors path/to/destination.safetensors
+```
+
+`--reverse`オプションを付けると、逆変換（ComfyUI形式からsd-scripts形式）も可能です。ただし、逆変換ができるのはこのスクリプトで変換したLoRAに限ります。他の学習ツールで作成したLoRAは変換できません。
 
 </details>
 
