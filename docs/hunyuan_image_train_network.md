@@ -73,7 +73,13 @@ Before starting training you need:
 
 ### Downloading Required Models
 
-You need to download the model files from the official Hugging Face repositories (e.g., `Tencent-Hunyuan/HunyuanDiT`). Ensure you download the `.safetensors` files, not the Diffusers format directories.
+To train HunyuanImage-2.1 models, you need to download the following model files:
+
+- **DiT Model**: Download from the [Tencent HunyuanImage-2.1](https://huggingface.co/tencent/HunyuanImage-2.1/) repository. Use `dit/hunyuanimage2.1.safetensors`.
+- **Text Encoders and VAE**: Download from the [Comfy-Org/HunyuanImage_2.1_ComfyUI](https://huggingface.co/Comfy-Org/HunyuanImage_2.1_ComfyUI) repository:
+  - Qwen2.5-VL: `split_files/text_encoders/qwen_2.5_vl_7b.safetensors`
+  - byT5: `split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors`
+  - VAE: `split_files/vae/hunyuan_image_2.1_vae_fp16.safetensors`
 
 <details>
 <summary>日本語</summary>
@@ -90,7 +96,13 @@ You need to download the model files from the official Hugging Face repositories
 
 **必要なモデルのダウンロード**
 
-公式のHugging Faceリポジトリ（例: `Tencent-Hunyuan/HunyuanDiT`）からモデルファイルをダウンロードする必要があります。Diffusers形式のディレクトリではなく、`.safetensors`形式のファイルをダウンロードしてください。
+HunyuanImage-2.1モデルを学習するためには、以下のモデルファイルをダウンロードする必要があります：
+
+- **DiTモデル**: [Tencent HunyuanImage-2.1](https://huggingface.co/tencent/HunyuanImage-2.1/) リポジトリから `dit/hunyuanimage2.1.safetensors` をダウンロードします。
+- **Text EncoderとVAE**: [Comfy-Org/HunyuanImage_2.1_ComfyUI](https://huggingface.co/Comfy-Org/HunyuanImage_2.1_ComfyUI) リポジトリから以下をダウンロードします：
+  - Qwen2.5-VL: `split_files/text_encoders/qwen_2.5_vl_7b.safetensors`
+  - byT5: `split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors`
+  - VAE: `split_files/vae/hunyuan_image_2.1_vae_fp16.safetensors`
 
 </details>
 
@@ -164,7 +176,7 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 #### Memory/Speed Related
 
 * `--fp8_scaled`
-  - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage, but the training results may vary.
+  - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage (can run with as little as 8GB VRAM when combined with `--blocks_to_swap`), but the training results may vary. This is a newer alternative to the unsupported `--fp8_base` option.
 * `--fp8_vl`
   - Use FP8 for the VLM (Qwen2.5-VL) text encoder.
 * `--blocks_to_swap=<integer>` **[Experimental Feature]**
@@ -202,11 +214,22 @@ After training, a LoRA model file is saved in `output_dir` and can be used in in
 
 HunyuanImage-2.1 is a large model, so GPUs without sufficient VRAM require optimization.
 
+#### Recommended Settings by GPU Memory
+
+Based on testing with the pull request, here are recommended VRAM optimization settings:
+
+| GPU Memory | Recommended Settings |
+|------------|---------------------|
+| 40GB+ VRAM | Standard settings (no special optimization needed) |
+| 24GB VRAM  | `--fp8_scaled --blocks_to_swap 9` |
+| 12GB VRAM  | `--fp8_scaled --blocks_to_swap 32` |
+| 8GB VRAM   | `--fp8_scaled --blocks_to_swap 37` |
+
 #### Key VRAM Reduction Options
 
-- **`--fp8_scaled`**: Enables training the DiT in scaled FP8 format.
-- **`--fp8_vl`**: Use FP8 for the VLM text encoder.
-- **`--blocks_to_swap <number>`**: Swaps blocks between CPU and GPU to reduce VRAM usage. Higher numbers save more VRAM but reduce training speed.
+- **`--fp8_scaled`**: Enables training the DiT in scaled FP8 format. This is the recommended FP8 option for HunyuanImage-2.1, replacing the unsupported `--fp8_base` option. Essential for <40GB VRAM environments.
+- **`--fp8_vl`**: Use FP8 for the VLM (Qwen2.5-VL) text encoder.
+- **`--blocks_to_swap <number>`**: Swaps blocks between CPU and GPU to reduce VRAM usage. Higher numbers save more VRAM but reduce training speed. Up to 37 blocks can be swapped for HunyuanImage-2.1.
 - **`--cpu_offload_checkpointing`**: Offloads gradient checkpoints to CPU. Can reduce VRAM usage but decreases training speed. Cannot be used with `--blocks_to_swap`.
 - **Using Adafactor optimizer**: Can reduce VRAM usage more than 8bit AdamW:
   ```
@@ -216,12 +239,23 @@ HunyuanImage-2.1 is a large model, so GPUs without sufficient VRAM require optim
 <details>
 <summary>日本語</summary>
 
-HunyuanImage-2.1は大きなモデルであるため、十分なVRAMを持たないGPUでは工夫が必要です。VRAM使用量を削減するための設定の詳細は英語のドキュメントを参照してください。
+HunyuanImage-2.1は大きなモデルであるため、十分なVRAMを持たないGPUでは工夫が必要です。
+
+#### GPU別推奨設定
+
+Pull Requestのテスト結果に基づく推奨VRAM最適化設定：
+
+| GPU Memory | 推奨設定 |
+|------------|---------|
+| 40GB+ VRAM | 標準設定（特別な最適化不要） |
+| 24GB VRAM  | `--fp8_scaled --blocks_to_swap 9` |
+| 12GB VRAM  | `--fp8_scaled --blocks_to_swap 32` |
+| 8GB VRAM   | `--fp8_scaled --blocks_to_swap 37` |
 
 主要なVRAM削減オプション：
-- `--fp8_scaled`: DiTをスケールされたFP8形式で学習
+- `--fp8_scaled`: DiTをスケールされたFP8形式で学習（推奨されるFP8オプション、40GB VRAM未満の環境では必須）
 - `--fp8_vl`: VLMテキストエンコーダにFP8を使用
-- `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
+- `--blocks_to_swap`: CPUとGPU間でブロックをスワップ（最大37ブロック）
 - `--cpu_offload_checkpointing`: 勾配チェックポイントをCPUにオフロード
 - Adafactorオプティマイザの使用
 
@@ -383,7 +417,49 @@ You can calculate validation loss during training using a validation dataset to 
 
 </details>
 
-## 8. Related Tools / 関連ツール
+## 8. Using the Inference Script / 推論スクリプトの使用法
+
+The `hunyuan_image_minimal_inference.py` script allows you to generate images using trained LoRA models. Here's a basic usage example:
+
+```bash
+python hunyuan_image_minimal_inference.py \
+  --dit "<path to hunyuanimage2.1.safetensors>" \
+  --text_encoder "<path to qwen_2.5_vl_7b.safetensors>" \
+  --byt5 "<path to byt5_small_glyphxl_fp16.safetensors>" \
+  --vae "<path to hunyuan_image_2.1_vae_fp16.safetensors>" \
+  --lora_weight "<path to your trained LoRA>" \
+  --lora_multiplier 1.0 \
+  --prompt "A cute cartoon penguin in a snowy landscape" \
+  --image_size 2048 2048 \
+  --infer_steps 50 \
+  --guidance_scale 3.5 \
+  --flow_shift 5.0 \
+  --seed 542017 \
+  --save_path "output_image.png"
+```
+
+**Key Options:**
+- `--fp8_scaled`: Use scaled FP8 format for reduced VRAM usage during inference
+- `--blocks_to_swap`: Swap blocks to CPU to reduce VRAM usage
+- `--image_size`: Resolution (inference is most stable at 2048x2048)
+- `--guidance_scale`: CFG scale (default: 3.5)
+- `--flow_shift`: Flow matching shift parameter (default: 5.0)
+
+<details>
+<summary>日本語</summary>
+
+`hunyuan_image_minimal_inference.py`スクリプトを使用して、学習したLoRAモデルで画像を生成できます。基本的な使用例は英語のドキュメントを参照してください。
+
+**主要なオプション:**
+- `--fp8_scaled`: VRAM使用量削減のためのスケールFP8形式
+- `--blocks_to_swap`: VRAM使用量削減のためのブロックスワップ
+- `--image_size`: 解像度（2048x2048で最も安定）
+- `--guidance_scale`: CFGスケール（推奨: 3.5）
+- `--flow_shift`: Flow Matchingシフトパラメータ（デフォルト: 5.0）
+
+</details>
+
+## 9. Related Tools / 関連ツール
 
 - **`hunyuan_image_minimal_inference.py`**: Simple inference script for generating images with trained LoRA models.
 
@@ -394,7 +470,7 @@ You can calculate validation loss during training using a validation dataset to 
 
 </details>
 
-## 9. Others / その他
+## 10. Others / その他
 
 `hunyuan_image_train_network.py` includes many features common with `train_network.py`, such as sample image generation (`--sample_prompts`, etc.) and detailed optimizer settings. For these features, refer to the [`train_network.py` guide](train_network.md#5-other-features--その他の機能) or the script help (`python hunyuan_image_train_network.py --help`).
 
