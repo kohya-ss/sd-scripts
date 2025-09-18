@@ -497,7 +497,9 @@ class RMSNorm(nn.Module):
         """
         output = self._norm(x.float()).type_as(x)
         del x
-        output = output * self.weight
+        # output = output * self.weight
+        # fp8 support
+        output = output * self.weight.to(output.dtype)
         return output
 
 
@@ -689,7 +691,7 @@ class MMDoubleStreamBlock(nn.Module):
         del qkv
 
         # Split attention outputs back to separate streams
-        img_attn, txt_attn = (attn[:, : img_seq_len].contiguous(), attn[:, img_seq_len :].contiguous())
+        img_attn, txt_attn = (attn[:, :img_seq_len].contiguous(), attn[:, img_seq_len:].contiguous())
         del attn
 
         # Apply attention projection and residual connection for image stream

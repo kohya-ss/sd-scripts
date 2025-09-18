@@ -30,7 +30,12 @@ from library.hunyuan_image_modules import (
 from library.hunyuan_image_utils import get_nd_rotary_pos_embed
 
 FP8_OPTIMIZATION_TARGET_KEYS = ["double_blocks", "single_blocks"]
-FP8_OPTIMIZATION_EXCLUDE_KEYS = ["norm", "_mod", "modulation", "_emb"]
+# FP8_OPTIMIZATION_EXCLUDE_KEYS = ["norm", "_mod", "_emb"]  # , "modulation"
+FP8_OPTIMIZATION_EXCLUDE_KEYS = ["norm", "_emb"]  # , "modulation", "_mod"
+
+# full exclude 24.2GB
+# norm and _emb 19.7GB
+# fp8 cast 19.7GB
 
 
 # region DiT Model
