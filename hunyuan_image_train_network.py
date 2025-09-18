@@ -250,7 +250,7 @@ def sample_image_inference(
         arg_c_null = None
 
     gen_args = SimpleNamespace(
-        image_size=(height, width), infer_steps=sample_steps, flow_shift=flow_shift, guidance_scale=cfg_scale
+        image_size=(height, width), infer_steps=sample_steps, flow_shift=flow_shift, guidance_scale=cfg_scale, fp8=args.fp8_scaled
     )
 
     from hunyuan_image_minimal_inference import generate_body  # import here to avoid circular import
