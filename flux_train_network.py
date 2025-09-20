@@ -162,22 +162,28 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def get_tokenize_strategy(self, args):
         # This method is called before `assert_extra_args`, so we cannot use `self.is_schnell` here.
         # Instead, we analyze the checkpoint state to determine if it is schnell.
-        if args.model_type != "chroma":
-            _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
-        else:
+        if args.model_type == "chroma":
             is_schnell = False
-        self.is_schnell = is_schnell
-
-        if args.t5xxl_max_token_length is None:
-            if self.is_schnell:
-                t5xxl_max_token_length = 256
-            else:
-                t5xxl_max_token_length = 512
+            self.is_schnell = is_schnell
+            t5xxl_max_token_length = args.t5xxl_max_token_length or 512
+            logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
+            # Chroma doesn't use CLIP-L
+            return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir, use_clip_l=False)
         else:
-            t5xxl_max_token_length = args.t5xxl_max_token_length
+            _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
+            self.is_schnell = is_schnell
 
-        logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
-        return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir)
+            if args.t5xxl_max_token_length is None:
+                if self.is_schnell:
+                    t5xxl_max_token_length = 256
+                else:
+                    t5xxl_max_token_length = 512
+            else:
+                t5xxl_max_token_length = args.t5xxl_max_token_length
+
+            logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
+            # FLUX models use both CLIP-L and T5
+            return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir, use_clip_l=True)
 
     def get_tokenizers(self, tokenize_strategy: strategy_flux.FluxTokenizeStrategy):
         return [tokenize_strategy.clip_l, tokenize_strategy.t5xxl]

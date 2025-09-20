@@ -427,7 +427,11 @@ class NetworkTrainer:
                         weights_list,
                     )
                 else:
-                    input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
+                    # Handle Chroma case where CLIP-L tokens might be None
+                    input_ids = []
+                    for ids in batch["input_ids_list"]:
+                        if ids is not None:  # Skip None values (CLIP-L tokens for Chroma)
+                            input_ids.append(ids.to(accelerator.device))
                     encoded_text_encoder_conds = text_encoding_strategy.encode_tokens(
                         tokenize_strategy,
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
