@@ -47,6 +47,7 @@ from library.avg_ckpt_util import (
     load_lora_state_dict,
 )
 from library.utils import setup_logging, add_logging_arguments
+from library.rounding_util import round_parameters
 from accelerate.utils import broadcast
 
 setup_logging()
@@ -154,6 +155,38 @@ class NetworkTrainer:
             f"avg_cp: {args.avg_cp}, avg_window: {args.avg_window}, avg_begin: {args.avg_begin}, "
             f"avg_mode: {args.avg_mode}, avg_reset_stats: {args.avg_reset_stats}"
         )
+        if args.round_lora_step is not None and args.round_lora_step > 0:
+            logger.info(
+                f"lora rounding: step={args.round_lora_step}, mode={args.round_lora_mode}, "
+                f"every={args.round_lora_every}, begin={args.round_lora_begin}"
+            )
+        # parse bits schedule if provided
+        def _parse_bits_sched(spec: str):
+            items = []
+            if not spec:
+                return items
+            for part in spec.split(","):
+                if not part:
+                    continue
+                k, v = part.split(":")
+                p = float(k)
+                b = int(v)
+                assert 0.0 <= p <= 1.0, "progress must be in [0,1]"
+                assert b > 0, "bits must be > 0"
+                items.append((p, b))
+            items.sort(key=lambda x: x[0])
+            return items
+
+        dq_bits_sched = _parse_bits_sched(getattr(args, "dq_delta_bits_sched", None))
+
+        if ((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step and args.dq_delta_step > 0)
+            or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched):
+            logger.info(
+                f"lora fake-quant: target={'z' if getattr(args,'dq_quantize_z', False) else 'delta'}, "
+                f"step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
+                f"mode={args.dq_delta_mode}, begin={args.dq_delta_begin}, granularity={getattr(args,'dq_delta_granularity',None)}, "
+                f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, bits_sched={dq_bits_sched}"
+            )
 
         cache_latents = args.cache_latents
         use_dreambooth_method = args.in_json is None
@@ -334,6 +367,32 @@ class NetworkTrainer:
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
+
+        # Configure LoRA delta fake-quantization if available
+        if (((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step) or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched) and hasattr(network, "set_delta_fake_quant")):
+            unwrapped = accelerator.unwrap_model(network)
+            unwrapped.set_delta_fake_quant(
+                getattr(args, "dq_delta_step", None),
+                args.dq_delta_mode,
+                granularity=args.dq_delta_granularity,
+                stat=args.dq_delta_stat,
+                bits=getattr(args, "dq_delta_bits", None),
+                range_mul=getattr(args, "dq_delta_range_mul", None),
+                on_z=getattr(args, "dq_quantize_z", False),
+            )
+            # no EMA-based stats to propagate (ema_* removed)
+            # Scope control: unet / te / both
+            scope = getattr(args, "dq_delta_scope", "both")
+            if scope == "unet" and hasattr(unwrapped, "text_encoder_loras"):
+                for l in unwrapped.text_encoder_loras:
+                    l.delta_q_enabled = False
+                for l in unwrapped.unet_loras:
+                    l.delta_q_enabled = True
+            elif scope == "te" and hasattr(unwrapped, "unet_loras"):
+                for l in unwrapped.unet_loras:
+                    l.delta_q_enabled = False
+                for l in unwrapped.text_encoder_loras:
+                    l.delta_q_enabled = True
 
         if args.network_weights is not None:
             # FIXME consider alpha of weights
@@ -918,53 +977,67 @@ class NetworkTrainer:
 
             trigger_count = 0
             cap_release_counter = 0
-            prev_grad_vector = None
+            # For cosine logging, keep previous gradients as per-parameter tensors to avoid huge concat each step
+            prev_grad_list = None
+            prev_grad_norm = None
             idle_counter = 0
             idle_free_counter = 0
             in_idle_free = False
 
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 nonlocal trigger_count, cap_release_counter
-                nonlocal prev_grad_vector, idle_counter, idle_free_counter, in_idle_free
+                nonlocal prev_grad_list, prev_grad_norm, idle_counter, idle_free_counter, in_idle_free
                 device = next(model.parameters()).device
-                gradient_norm = torch.tensor(0.0, device=device)
-                grad_vector = [] if log_grad_cosine else None
+                grad_norm_sqr = torch.tensor(0.0, device=device)
+                # accumulate dot product with previous grads without concatenation
+                dot_sum = torch.tensor(0.0, device=device) if (log_grad_cosine and prev_grad_list is not None) else None
+                cur_grads = [] if log_grad_cosine else None
 
                 # 各パラメータの勾配ノルムの二乗を加算
                 with torch.no_grad():
+                    idx = 0
                     for param in model.parameters():
                         if param.grad is not None:
                             grad = param.grad
-                            gradient_norm += grad.norm() ** 2
+                            # sum of squares
+                            grad_norm_sqr += (grad.detach() * grad.detach()).sum()
                             if log_grad_cosine:
-                                grad_vector.append(grad.detach().view(-1))
-                gradient_norm = gradient_norm.sqrt().item()
+                                if prev_grad_list is not None and idx < len(prev_grad_list):
+                                    # accumulate dot product per-parameter to avoid giant torch.cat
+                                    dot_sum += (grad.detach() * prev_grad_list[idx]).sum()
+                                cur_grads.append(grad.detach().clone())
+                                idx += 1
+                current_grad_norm = torch.sqrt(grad_norm_sqr).item()
 
                 cosine_sim = None
                 if log_grad_cosine:
-                    current_grad = torch.cat(grad_vector) if len(grad_vector) > 0 else None
-                    if prev_grad_vector is not None and current_grad is not None:
-                        cosine_sim = torch.nn.functional.cosine_similarity(
-                            current_grad, prev_grad_vector, dim=0, eps=1e-8
-                        ).item()
+                    if prev_grad_list is not None and dot_sum is not None and prev_grad_norm is not None:
+                        denom = (current_grad_norm * (prev_grad_norm + 1e-12))
+                        # avoid divide-by-zero
+                        if denom == 0.0:
+                            cosine_sim = float("nan")
+                        else:
+                            cosine_sim = (dot_sum / denom).item()
                     else:
                         cosine_sim = float("nan")
-                    prev_grad_vector = current_grad
+                    # store for next step
+                    prev_grad_list = cur_grads
+                    prev_grad_norm = current_grad_norm
 
                 # 勾配ノルムが NaN / Inf かどうかを判定
-                is_nan = math.isnan(gradient_norm)
-                is_inf = math.isinf(gradient_norm)
+                is_nan = math.isnan(current_grad_norm)
+                is_inf = math.isinf(current_grad_norm)
 
                 appended = False
                 if not is_nan and not is_inf:
-                    moving_avg_window.append(gradient_norm)
+                    moving_avg_window.append(current_grad_norm)
                 else:
                     # 設定に応じて NaN / Inf も移動平均窓へ入れる
                     if is_nan and nan_to_window:
-                        moving_avg_window.append(gradient_norm)
+                        moving_avg_window.append(current_grad_norm)
                         appended = True
                     if is_inf and inf_to_window:
-                        moving_avg_window.append(gradient_norm)
+                        moving_avg_window.append(current_grad_norm)
                         appended = True
 
                 if in_idle_free:
@@ -1022,7 +1095,7 @@ class NetworkTrainer:
                 if log_grad_norm:
                     scale_val = scaler_for_log.get_scale() if log_grad_scale else None
                     flag = 2 if in_idle_free else (1 if math.isnan(dynamic_threshold) else 0)
-                    log_line = f"{epoch},{step},{gradient_norm},{dynamic_threshold},{loss_val},{flag}"
+                    log_line = f"{epoch},{step},{current_grad_norm},{dynamic_threshold},{loss_val},{flag}"
                     if log_grad_scale:
                         log_line += f",{scale_val}"
                     if log_grad_cosine:
@@ -1042,7 +1115,7 @@ class NetworkTrainer:
                 if in_idle_free:
                     return False
 
-                return gradient_norm > dynamic_threshold
+                return current_grad_norm > dynamic_threshold
         else:
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 return False
@@ -1100,6 +1173,9 @@ class NetworkTrainer:
                 skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
                 initial_step = 1
 
+            # track last applied bits to avoid redundant updates
+            last_applied_bits = getattr(args, "dq_delta_bits", None)
+
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
                 current_step.value = global_step
                 if initial_step > 0:
@@ -1107,6 +1183,37 @@ class NetworkTrainer:
                     continue
 
                 with accelerator.accumulate(training_model):
+                    # Toggle delta fake-quantization based on training progress
+                    if hasattr(accelerator.unwrap_model(network), "set_delta_quant_enabled"):
+                        dq_configured = (
+                            (getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step)
+                            or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits)
+                            or bool(dq_bits_sched)
+                        )
+                        if dq_configured:
+                            progress_frac = (global_step / float(args.max_train_steps)) if args.max_train_steps > 0 else 1.0
+                            accelerator.unwrap_model(network).set_delta_quant_enabled(progress_frac >= args.dq_delta_begin)
+
+                            # Apply bits scheduling if specified
+                            if dq_bits_sched:
+                                cur_bits = last_applied_bits
+                                for p, b in dq_bits_sched:
+                                    if progress_frac >= p:
+                                        cur_bits = b
+                                    else:
+                                        break
+                                if cur_bits != last_applied_bits:
+                                    accelerator.unwrap_model(network).set_delta_fake_quant(
+                                        getattr(args, "dq_delta_step", None),
+                                        args.dq_delta_mode,
+                                        granularity=args.dq_delta_granularity,
+                                        stat=args.dq_delta_stat,
+                                        bits=cur_bits,
+                                        range_mul=getattr(args, "dq_delta_range_mul", None),
+                                        on_z=getattr(args, "dq_quantize_z", False),
+                                    )
+                                    last_applied_bits = cur_bits
+
                     on_step_start(text_encoder, unet)
 
                     if "latents" in batch and batch["latents"] is not None:
@@ -1230,6 +1337,23 @@ class NetworkTrainer:
                         optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad(set_to_none=True)
+
+                        # Optional: quantize/round LoRA trainable parameters after each optimizer step
+                        if (
+                            args.round_lora_step is not None
+                            and args.round_lora_step > 0
+                            and accelerator.sync_gradients
+                        ):
+                            # step index after this update
+                            next_step_idx = global_step + 1
+                            # respect warmup for rounding based on overall training progress
+                            progress_frac = next_step_idx / float(args.max_train_steps)
+                            if progress_frac >= args.round_lora_begin and (next_step_idx % max(1, args.round_lora_every) == 0):
+                                round_parameters(
+                                    accelerator.unwrap_model(network).get_trainable_params(),
+                                    step=args.round_lora_step,
+                                    mode=args.round_lora_mode,
+                                )
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -1504,6 +1628,97 @@ def setup_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="reset optimizer stats after averaging / 平均化後にOptimizer統計をリセットする",
+    )
+    # LoRA delta fake-quantization (on forward only)
+    parser.add_argument(
+        "--dq_delta_step",
+        type=float,
+        default=None,
+        help="Fake-quantize only LoRA delta output per forward with this step (STE). None/<=0 to disable / LoRAの差分出力のみをこの刻みでフェイク量子化（STE）。Noneまたは<=0で無効",
+    )
+    parser.add_argument(
+        "--dq_delta_mode",
+        type=str,
+        default="det",
+        choices=["det", "stoch"],
+        help="Fake-quant mode: det or stoch / フェイク量子化モード：det=最近傍、stoch=確率的",
+    )
+    parser.add_argument(
+        "--dq_delta_begin",
+        type=float,
+        default=0.0,
+        help="Enable fake-quant after this fraction of total steps [0-1] / 学習進行率がこの割合を超えてから有効化 [0-1]",
+    )
+    parser.add_argument(
+        "--dq_delta_scope",
+        type=str,
+        default="both",
+        choices=["unet", "te", "both"],
+        help="Apply delta fake-quant to: unet, te, or both / Δのフェイク量子化の適用範囲（unet/te/both）",
+    )
+    parser.add_argument(
+        "--dq_quantize_z",
+        action="store_true",
+        help="Quantize z=A(x) instead of delta: apply B(Q(z)) / Δではなくz=A(x)を量子化してB(Q(z))を適用する",
+    )
+    parser.add_argument(
+        "--dq_delta_granularity",
+        type=str,
+        default="tensor",
+        choices=["tensor", "channel"],
+        help="Granularity of delta fake-quant: whole tensor or per-channel / Δのフェイク量子化の粒度（テンソル全体/チャネル別）",
+    )
+    parser.add_argument(
+        "--dq_delta_stat",
+        type=str,
+        default="rms",
+        choices=["rms", "absmax", "none"],
+        help="Statistic for scale/step: rms/absmax/none. Channel-wise when granularity=channel. / スケール/ステップの統計：rms/absmax/none（granularity=channelでチャネル別）",
+    )
+    parser.add_argument(
+        "--dq_delta_bits",
+        type=int,
+        default=None,
+        help="If set, use N-bit symmetric fake-quant (overrides step path). Recommended: 8 / Nビット対称フェイク量子化（step指定より優先）。推奨: 8",
+    )
+    parser.add_argument(
+        "--dq_delta_range_mul",
+        type=float,
+        default=3.0,
+        help="When bits mode with stat=rms, dynamic range = range_mul * RMS. / bitsモードかつstat=rms時の有効レンジ倍率（range=倍率×RMS）",
+    )
+    parser.add_argument(
+        "--dq_delta_bits_sched",
+        type=str,
+        default=None,
+        help="Schedule bits by progress fraction, e.g. '0.0:6,0.5:8,0.8:10' / 学習進行率に応じたビット数スケジュール（例: '0.0:6,0.5:8,0.8:10'）",
+    )
+    # ema_* options removed
+    # LoRA rounding options
+    parser.add_argument(
+        "--round_lora_step",
+        type=float,
+        default=None,
+        help="Round LoRA trainable weights to multiples of this step after optimizer step (disabled if None or <= 0) / Optimizer更新後にLoRAの学習パラメータをこの刻みに丸める（Noneまたは<=0で無効）",
+    )
+    parser.add_argument(
+        "--round_lora_mode",
+        type=str,
+        default="det",
+        choices=["det", "stoch"],
+        help="Rounding mode: det (deterministic) or stoch (stochastic) / 丸めモード：det=最近傍、stoch=確率的",
+    )
+    parser.add_argument(
+        "--round_lora_every",
+        type=int,
+        default=1,
+        help="Apply rounding every N optimizer steps (only when gradients sync) / 丸めを適用するステップ間隔（同期更新時のみ）",
+    )
+    parser.add_argument(
+        "--round_lora_begin",
+        type=float,
+        default=0.0,
+        help="Begin rounding after this fraction of total steps [0-1] / 学習全体のこの進行率以降で丸めを開始 [0-1]",
     )
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")
