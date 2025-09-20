@@ -8,6 +8,7 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 
 from library import custom_offloading_utils
+from library.attention import AttentionParams
 from library.fp8_optimization_utils import apply_fp8_monkey_patch
 from library.lora_utils import load_safetensors_with_lora_and_fp8
 from library.utils import setup_logging
@@ -50,7 +51,7 @@ class HYImageDiffusionTransformer(nn.Module):
         attn_mode: Attention implementation mode ("torch" or "sageattn").
     """
 
-    def __init__(self, attn_mode: str = "torch"):
+    def __init__(self, attn_mode: str = "torch", split_attn: bool = False):
         super().__init__()
 
         # Fixed architecture parameters for HunyuanImage-2.1
@@ -80,6 +81,7 @@ class HYImageDiffusionTransformer(nn.Module):
         qk_norm_type: str = "rms"  # RMS normalization type
 
         self.attn_mode = attn_mode
+        self.split_attn = split_attn
 
         # ByT5 character-level text encoder mapping
         self.byt5_in = ByT5Mapper(in_dim=1472, out_dim=2048, hidden_dim=2048, out_dim1=self.hidden_size, use_residual=False)
@@ -88,7 +90,7 @@ class HYImageDiffusionTransformer(nn.Module):
         self.img_in = PatchEmbed2D(self.patch_size, self.in_channels, self.hidden_size)
 
         # Text token refinement with cross-attention
-        self.txt_in = SingleTokenRefiner(text_states_dim, self.hidden_size, self.heads_num, depth=2, attn_mode=self.attn_mode)
+        self.txt_in = SingleTokenRefiner(text_states_dim, self.hidden_size, self.heads_num, depth=2)
 
         # Timestep embedding for diffusion process
         self.time_in = TimestepEmbedder(self.hidden_size, nn.SiLU)
@@ -110,7 +112,6 @@ class HYImageDiffusionTransformer(nn.Module):
                     qk_norm=qk_norm,
                     qk_norm_type=qk_norm_type,
                     qkv_bias=qkv_bias,
-                    attn_mode=self.attn_mode,
                 )
                 for _ in range(mm_double_blocks_depth)
             ]
@@ -126,7 +127,6 @@ class HYImageDiffusionTransformer(nn.Module):
                     mlp_act_type=mlp_act_type,
                     qk_norm=qk_norm,
                     qk_norm_type=qk_norm_type,
-                    attn_mode=self.attn_mode,
                 )
                 for _ in range(mm_single_blocks_depth)
             ]
@@ -339,22 +339,21 @@ class HYImageDiffusionTransformer(nn.Module):
         # MeanFlow and guidance embedding not used in this configuration
 
         # Process text tokens through refinement layers
-        txt_lens = text_mask.to(torch.bool).sum(dim=1).tolist()
-        txt = self.txt_in(txt, t, txt_lens)
+        txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, text_mask)
+        txt = self.txt_in(txt, t, txt_attn_params)
 
         # Integrate character-level ByT5 features with word-level tokens
         # Use variable length sequences with sequence lengths
         byt5_txt = self.byt5_in(byt5_text_states)
-        txt, _, txt_lens = self.reorder_txt_token(byt5_txt, txt, byt5_text_mask, text_mask)
+        txt, text_mask, txt_lens = self.reorder_txt_token(byt5_txt, txt, byt5_text_mask, text_mask)
 
         # Trim sequences to maximum length in the batch
         img_seq_len = img.shape[1]
-        # print(f"img_seq_len: {img_seq_len}, txt_lens: {txt_lens}")
-        seq_lens = [img_seq_len + l for l in txt_lens]
         max_txt_len = max(txt_lens)
-        # print(f"max_txt_len: {max_txt_len}, seq_lens: {seq_lens}, txt.shape: {txt.shape}")
         txt = txt[:, :max_txt_len, :]
-        txt_seq_len = txt.shape[1]
+        text_mask = text_mask[:, :max_txt_len]
+
+        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, img_seq_len, text_mask)
 
         input_device = img.device
 
@@ -362,7 +361,7 @@ class HYImageDiffusionTransformer(nn.Module):
         for index, block in enumerate(self.double_blocks):
             if self.blocks_to_swap:
                 self.offloader_double.wait_for_block(index)
-            img, txt = block(img, txt, vec, freqs_cis, seq_lens)
+            img, txt = block(img, txt, vec, freqs_cis, attn_params)
             if self.blocks_to_swap:
                 self.offloader_double.submit_move_blocks(self.double_blocks, index)
 
@@ -373,7 +372,7 @@ class HYImageDiffusionTransformer(nn.Module):
         for index, block in enumerate(self.single_blocks):
             if self.blocks_to_swap:
                 self.offloader_single.wait_for_block(index)
-            x = block(x, vec, txt_seq_len, freqs_cis, seq_lens)
+            x = block(x, vec, freqs_cis, attn_params)
             if self.blocks_to_swap:
                 self.offloader_single.submit_move_blocks(self.single_blocks, index)
 
@@ -417,7 +416,7 @@ class HYImageDiffusionTransformer(nn.Module):
 
 def create_model(attn_mode: str, split_attn: bool, dtype: Optional[torch.dtype]) -> HYImageDiffusionTransformer:
     with init_empty_weights():
-        model = HYImageDiffusionTransformer(attn_mode=attn_mode)
+        model = HYImageDiffusionTransformer(attn_mode=attn_mode, split_attn=split_attn)
         if dtype is not None:
             model.to(dtype)
     return model

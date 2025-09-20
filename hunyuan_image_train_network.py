@@ -379,18 +379,19 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
         loading_dtype = None if args.fp8_scaled else weight_dtype
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
-        split_attn = True
 
         attn_mode = "torch"
         if args.xformers:
             attn_mode = "xformers"
-            logger.info("xformers is enabled for attention")
+        if args.attn_mode is not None:
+            attn_mode = args.attn_mode
 
+        logger.info(f"Loading DiT model with attn_mode: {attn_mode}, split_attn: {args.split_attn}, fp8_scaled: {args.fp8_scaled}")
         model = hunyuan_image_models.load_hunyuan_image_model(
             accelerator.device,
             args.pretrained_model_name_or_path,
             attn_mode,
-            split_attn,
+            args.split_attn,
             loading_device,
             loading_dtype,
             args.fp8_scaled,
@@ -674,6 +675,19 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Enable tiling for VAE decoding and encoding / VAEデコーディングとエンコーディングのタイルを有効にする",
     )
 
+    parser.add_argument(
+        "--attn_mode",
+        choices=["torch", "xformers", "flash", "sageattn", "sdpa"],  # "sdpa" is for backward compatibility
+        default=None,
+        help="Attention implementation to use. Default is None (torch). xformers requires --split_attn. sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
+        " / 使用するAttentionの実装。デフォルトはNone（torch）です。xformersは--split_attnの指定が必要です。sageattnはトレーニングをサポートしていません（推論のみ）。このオプションは--xformersまたは--sdpaを上書きします。",
+    )
+    parser.add_argument(
+        "--split_attn",
+        action="store_true",
+        help="split attention computation to reduce memory usage / メモリ使用量を減らすためにattention時にバッチを分割する",
+    )
+
     return parser
 
 
@@ -683,6 +697,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
+
+    if args.attn_mode == "sdpa":
+        args.attn_mode = "torch"  # backward compatibility
 
     trainer = HunyuanImageNetworkTrainer()
     trainer.train(args)

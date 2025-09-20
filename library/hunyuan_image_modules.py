@@ -7,7 +7,7 @@ import torch.nn as nn
 from einops import rearrange
 
 from library import custom_offloading_utils
-from library.attention import attention
+from library.attention import AttentionParams, attention
 from library.hunyuan_image_utils import timestep_embedding, apply_rotary_emb, _to_tuple, apply_gate, modulate
 from library.attention import attention
 
@@ -213,7 +213,6 @@ class IndividualTokenRefinerBlock(nn.Module):
         qk_norm: QK normalization flag (must be False).
         qk_norm_type: QK normalization type (only "layer" supported).
         qkv_bias: Use bias in QKV projections.
-        attn_mode: Attention implementation mode.
     """
 
     def __init__(
@@ -226,14 +225,11 @@ class IndividualTokenRefinerBlock(nn.Module):
         qk_norm: bool = False,
         qk_norm_type: str = "layer",
         qkv_bias: bool = True,
-        attn_mode: str = "torch",
     ):
         super().__init__()
         assert qk_norm_type == "layer", "Only layer normalization supported for QK norm."
         assert act_type == "silu", "Only SiLU activation supported."
         assert not qk_norm, "QK normalization must be disabled."
-
-        self.attn_mode = attn_mode
 
         self.heads_num = heads_num
         mlp_hidden_dim = int(hidden_size * mlp_width_ratio)
@@ -253,19 +249,14 @@ class IndividualTokenRefinerBlock(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True),
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        c: torch.Tensor,  # Combined timestep and context conditioning
-        txt_lens: list[int],
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, c: torch.Tensor, attn_params: AttentionParams) -> torch.Tensor:
         """
         Apply self-attention and MLP with adaptive conditioning.
 
         Args:
             x: Input token embeddings [B, L, C].
             c: Combined conditioning vector [B, C].
-            txt_lens: Valid sequence lengths for each batch element.
+            attn_params: Attention parameters including sequence lengths.
 
         Returns:
             Refined token embeddings [B, L, C].
@@ -273,10 +264,14 @@ class IndividualTokenRefinerBlock(nn.Module):
         gate_msa, gate_mlp = self.adaLN_modulation(c).chunk(2, dim=1)
         norm_x = self.norm1(x)
         qkv = self.self_attn_qkv(norm_x)
+        del norm_x
         q, k, v = rearrange(qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num)
+        del qkv
         q = self.self_attn_q_norm(q).to(v)
         k = self.self_attn_k_norm(k).to(v)
-        attn = attention(q, k, v, seq_lens=txt_lens, attn_mode=self.attn_mode)
+        qkv = [q, k, v]
+        del q, k, v
+        attn = attention(qkv, attn_params=attn_params)
 
         x = x + apply_gate(self.self_attn_proj(attn), gate_msa)
         x = x + apply_gate(self.mlp(self.norm2(x)), gate_mlp)
@@ -299,7 +294,6 @@ class IndividualTokenRefiner(nn.Module):
         qk_norm: QK normalization flag.
         qk_norm_type: QK normalization type.
         qkv_bias: Use bias in QKV projections.
-        attn_mode: Attention implementation mode.
     """
 
     def __init__(
@@ -313,7 +307,6 @@ class IndividualTokenRefiner(nn.Module):
         qk_norm: bool = False,
         qk_norm_type: str = "layer",
         qkv_bias: bool = True,
-        attn_mode: str = "torch",
     ):
         super().__init__()
         self.blocks = nn.ModuleList(
@@ -327,26 +320,25 @@ class IndividualTokenRefiner(nn.Module):
                     qk_norm=qk_norm,
                     qk_norm_type=qk_norm_type,
                     qkv_bias=qkv_bias,
-                    attn_mode=attn_mode,
                 )
                 for _ in range(depth)
             ]
         )
 
-    def forward(self, x: torch.Tensor, c: torch.LongTensor, txt_lens: list[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, c: torch.LongTensor, attn_params: AttentionParams) -> torch.Tensor:
         """
         Apply sequential token refinement.
 
         Args:
             x: Input token embeddings [B, L, C].
             c: Combined conditioning vector [B, C].
-            txt_lens: Valid sequence lengths for each batch element.
+            attn_params: Attention parameters including sequence lengths.
 
         Returns:
             Refined token embeddings [B, L, C].
         """
         for block in self.blocks:
-            x = block(x, c, txt_lens)
+            x = block(x, c, attn_params)
         return x
 
 
@@ -362,10 +354,9 @@ class SingleTokenRefiner(nn.Module):
         hidden_size: Transformer hidden dimension.
         heads_num: Number of attention heads.
         depth: Number of refinement blocks.
-        attn_mode: Attention implementation mode.
     """
 
-    def __init__(self, in_channels: int, hidden_size: int, heads_num: int, depth: int, attn_mode: str = "torch"):
+    def __init__(self, in_channels: int, hidden_size: int, heads_num: int, depth: int):
         # Fixed architecture parameters for HunyuanImage-2.1
         mlp_drop_rate: float = 0.0  # No MLP dropout
         act_type: str = "silu"  # SiLU activation
@@ -389,17 +380,16 @@ class SingleTokenRefiner(nn.Module):
             qk_norm=qk_norm,
             qk_norm_type=qk_norm_type,
             qkv_bias=qkv_bias,
-            attn_mode=attn_mode,
         )
 
-    def forward(self, x: torch.Tensor, t: torch.LongTensor, txt_lens: list[int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.LongTensor, attn_params: AttentionParams) -> torch.Tensor:
         """
         Refine text embeddings with timestep conditioning.
 
         Args:
             x: Input text embeddings [B, L, in_channels].
             t: Diffusion timestep [B].
-            txt_lens: Valid sequence lengths for each batch element.
+            attn_params: Attention parameters including sequence lengths.
 
         Returns:
             Refined embeddings [B, L, hidden_size].
@@ -407,13 +397,14 @@ class SingleTokenRefiner(nn.Module):
         timestep_aware_representations = self.t_embedder(t)
 
         # Compute context-aware representations by averaging valid tokens
+        txt_lens = attn_params.seqlens  # img_len is not used for SingleTokenRefiner
         context_aware_representations = torch.stack([x[i, : txt_lens[i]].mean(dim=0) for i in range(x.shape[0])], dim=0)  # [B, C]
 
         context_aware_representations = self.c_embedder(context_aware_representations)
         c = timestep_aware_representations + context_aware_representations
         del timestep_aware_representations, context_aware_representations
         x = self.input_embedder(x)
-        x = self.individual_token_refiner(x, c, txt_lens)
+        x = self.individual_token_refiner(x, c, attn_params)
         return x
 
 
@@ -564,7 +555,6 @@ class MMDoubleStreamBlock(nn.Module):
         qk_norm: QK normalization flag (must be True).
         qk_norm_type: QK normalization type (only "rms" supported).
         qkv_bias: Use bias in QKV projections.
-        attn_mode: Attention implementation mode.
     """
 
     def __init__(
@@ -576,7 +566,6 @@ class MMDoubleStreamBlock(nn.Module):
         qk_norm: bool = True,
         qk_norm_type: str = "rms",
         qkv_bias: bool = False,
-        attn_mode: str = "torch",
     ):
         super().__init__()
 
@@ -584,7 +573,6 @@ class MMDoubleStreamBlock(nn.Module):
         assert qk_norm_type == "rms", "Only RMS normalization supported."
         assert qk_norm, "QK normalization must be enabled."
 
-        self.attn_mode = attn_mode
         self.heads_num = heads_num
         head_dim = hidden_size // heads_num
         mlp_hidden_dim = int(hidden_size * mlp_width_ratio)
@@ -626,7 +614,7 @@ class MMDoubleStreamBlock(nn.Module):
         self.cpu_offload_checkpointing = False
 
     def _forward(
-        self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, seq_lens: list[int] = None
+        self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, attn_params: AttentionParams = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Extract modulation parameters for image and text streams
         (img_mod1_shift, img_mod1_scale, img_mod1_gate, img_mod2_shift, img_mod2_scale, img_mod2_gate) = self.img_mod(vec).chunk(
@@ -687,7 +675,7 @@ class MMDoubleStreamBlock(nn.Module):
 
         qkv = [q, k, v]
         del q, k, v
-        attn = attention(qkv, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        attn = attention(qkv, attn_params=attn_params)
         del qkv
 
         # Split attention outputs back to separate streams
@@ -719,16 +707,16 @@ class MMDoubleStreamBlock(nn.Module):
         return img, txt
 
     def forward(
-        self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, seq_lens: list[int] = None
+        self, img: torch.Tensor, txt: torch.Tensor, vec: torch.Tensor, freqs_cis: tuple = None, attn_params: AttentionParams = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.gradient_checkpointing and self.training:
             forward_fn = self._forward
             if self.cpu_offload_checkpointing:
                 forward_fn = custom_offloading_utils.cpu_offload_wrapper(forward_fn, self.img_attn_qkv.weight.device)
 
-            return torch.utils.checkpoint.checkpoint(forward_fn, img, txt, vec, freqs_cis, seq_lens, use_reentrant=False)
+            return torch.utils.checkpoint.checkpoint(forward_fn, img, txt, vec, freqs_cis, attn_params, use_reentrant=False)
         else:
-            return self._forward(img, txt, vec, freqs_cis, seq_lens)
+            return self._forward(img, txt, vec, freqs_cis, attn_params)
 
 
 class MMSingleStreamBlock(nn.Module):
@@ -746,7 +734,6 @@ class MMSingleStreamBlock(nn.Module):
         qk_norm: QK normalization flag (must be True).
         qk_norm_type: QK normalization type (only "rms" supported).
         qk_scale: Attention scaling factor (computed automatically if None).
-        attn_mode: Attention implementation mode.
     """
 
     def __init__(
@@ -758,7 +745,6 @@ class MMSingleStreamBlock(nn.Module):
         qk_norm: bool = True,
         qk_norm_type: str = "rms",
         qk_scale: float = None,
-        attn_mode: str = "torch",
     ):
         super().__init__()
 
@@ -766,7 +752,6 @@ class MMSingleStreamBlock(nn.Module):
         assert qk_norm_type == "rms", "Only RMS normalization supported."
         assert qk_norm, "QK normalization must be enabled."
 
-        self.attn_mode = attn_mode
         self.hidden_size = hidden_size
         self.heads_num = heads_num
         head_dim = hidden_size // heads_num
@@ -805,9 +790,8 @@ class MMSingleStreamBlock(nn.Module):
         self,
         x: torch.Tensor,
         vec: torch.Tensor,
-        txt_len: int,
         freqs_cis: Tuple[torch.Tensor, torch.Tensor] = None,
-        seq_lens: list[int] = None,
+        attn_params: AttentionParams = None,
     ) -> torch.Tensor:
         # Extract modulation parameters
         mod_shift, mod_scale, mod_gate = self.modulation(vec).chunk(3, dim=-1)
@@ -828,12 +812,10 @@ class MMSingleStreamBlock(nn.Module):
         k = self.k_norm(k).to(v)
 
         # Separate image and text tokens
-        img_q, txt_q = q[:, :-txt_len, :, :], q[:, -txt_len:, :, :]
+        img_q, txt_q = q[:, : attn_params.img_len, :, :], q[:, attn_params.img_len :, :, :]
         del q
-        img_k, txt_k = k[:, :-txt_len, :, :], k[:, -txt_len:, :, :]
+        img_k, txt_k = k[:, : attn_params.img_len, :, :], k[:, attn_params.img_len :, :, :]
         del k
-        # img_v, txt_v = v[:, :-txt_len, :, :], v[:, -txt_len:, :, :]
-        # del v
 
         # Apply rotary position embeddings only to image tokens
         img_q, img_k = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
@@ -848,7 +830,7 @@ class MMSingleStreamBlock(nn.Module):
         # del img_v, txt_v
         qkv = [q, k, v]
         del q, k, v
-        attn = attention(qkv, seq_lens=seq_lens, attn_mode=self.attn_mode)
+        attn = attention(qkv, attn_params=attn_params)
         del qkv
 
         # Combine attention and MLP outputs, apply gating
@@ -865,18 +847,17 @@ class MMSingleStreamBlock(nn.Module):
         self,
         x: torch.Tensor,
         vec: torch.Tensor,
-        txt_len: int,
         freqs_cis: Tuple[torch.Tensor, torch.Tensor] = None,
-        seq_lens: list[int] = None,
+        attn_params: AttentionParams = None,
     ) -> torch.Tensor:
         if self.gradient_checkpointing and self.training:
             forward_fn = self._forward
             if self.cpu_offload_checkpointing:
                 forward_fn = custom_offloading_utils.create_cpu_offloading_wrapper(forward_fn, self.linear1.weight.device)
 
-            return torch.utils.checkpoint.checkpoint(forward_fn, x, vec, txt_len, freqs_cis, seq_lens, use_reentrant=False)
+            return torch.utils.checkpoint.checkpoint(forward_fn, x, vec, freqs_cis, attn_params, use_reentrant=False)
         else:
-            return self._forward(x, vec, txt_len, freqs_cis, seq_lens)
+            return self._forward(x, vec, freqs_cis, attn_params)
 
 
 # endregion

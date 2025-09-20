@@ -126,7 +126,8 @@ accelerate launch --num_cpu_threads_per_process 1 hunyuan_image_train_network.py
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
-  --sdpa \
+  --attn_mode="torch" \
+  --split_attn \
   --max_train_epochs=10 \
   --save_every_n_epochs=1 \
   --mixed_precision="bf16" \
@@ -175,6 +176,10 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 
 #### Memory/Speed Related
 
+* `--attn_mode=<choice>`
+  - Specifies the attention implementation to use. Options are `torch`, `xformers`, `flash`, `sageattn`. Default is `torch` (use scaled dot product attention). Each library must be installed separately other than `torch`. If using `xformers`, also specify `--split_attn` if the batch size is more than 1.
+* `--split_attn`
+  - Splits the batch during attention computation to process one item at a time, reducing VRAM usage by avoiding attention mask computation. Can improve speed when using `torch`. Required when using `xformers` with batch size greater than 1.
 * `--fp8_scaled`
   - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage (can run with as little as 8GB VRAM when combined with `--blocks_to_swap`), but the training results may vary. This is a newer alternative to the unsupported `--fp8_base` option.
 * `--fp8_vl`
@@ -429,6 +434,7 @@ python hunyuan_image_minimal_inference.py \
   --vae "<path to hunyuan_image_2.1_vae_fp16.safetensors>" \
   --lora_weight "<path to your trained LoRA>" \
   --lora_multiplier 1.0 \
+  --attn_mode "torch" \
   --prompt "A cute cartoon penguin in a snowy landscape" \
   --image_size 2048 2048 \
   --infer_steps 50 \
@@ -445,6 +451,8 @@ python hunyuan_image_minimal_inference.py \
 - `--guidance_scale`: CFG scale (default: 3.5)
 - `--flow_shift`: Flow matching shift parameter (default: 5.0)
 
+`--split_attn` is not supported (since inference is done one at a time).
+
 <details>
 <summary>日本語</summary>
 
@@ -456,6 +464,8 @@ python hunyuan_image_minimal_inference.py \
 - `--image_size`: 解像度（2048x2048で最も安定）
 - `--guidance_scale`: CFGスケール（推奨: 3.5）
 - `--flow_shift`: Flow Matchingシフトパラメータ（デフォルト: 5.0）
+
+`--split_attn`はサポートされていません（1件ずつ推論するため）。
 
 </details>
 
