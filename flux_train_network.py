@@ -36,6 +36,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
         self.model_type: Optional[str] = None
+        self.args = None
 
     def assert_extra_args(
         self,

@@ -480,6 +480,7 @@ class NetworkTrainer:
         return loss.mean()
 
     def train(self, args):
+        self.args = args  # store args for later use
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         train_util.verify_training_args(args)
