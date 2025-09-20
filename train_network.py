@@ -416,9 +416,6 @@ class NetworkTrainer:
         else:
             # For debugging
             logger.debug(f"text_encoder_outputs_list is None, batch keys: {list(batch.keys())}")
-        else:
-            # For debugging
-            print(f"text_encoder_outputs_list is None, batch keys: {list(batch.keys())}")
 
         # For Chroma, text_encoder_conds might be set up differently
         # Check if we need to encode text encoders
