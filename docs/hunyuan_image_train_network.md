@@ -184,6 +184,8 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
   - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage (can run with as little as 8GB VRAM when combined with `--blocks_to_swap`), but the training results may vary. This is a newer alternative to the unsupported `--fp8_base` option.
 * `--fp8_vl`
   - Use FP8 for the VLM (Qwen2.5-VL) text encoder.
+* `--text_encoder_cpu`
+  - Runs the text encoders on CPU to reduce VRAM usage. This is useful when VRAM is insufficient (less than 12GB). Encoding one text may take a few minutes (depending on CPU). It is highly recommended to use this option with `--cache_text_encoder_outputs_to_disk` to avoid repeated encoding every time training starts.
 * `--blocks_to_swap=<integer>` **[Experimental Feature]**
   - Setting to reduce VRAM usage by swapping parts of the model (Transformer blocks) between CPU and GPU. Specify the number of blocks to swap as an integer (e.g., `18`). Larger values reduce VRAM usage but decrease training speed. Adjust according to your GPU's VRAM capacity. Can be used with `gradient_checkpointing`.
 * `--cache_text_encoder_outputs`
@@ -450,8 +452,9 @@ python hunyuan_image_minimal_inference.py \
 - `--image_size`: Resolution (inference is most stable at 2048x2048)
 - `--guidance_scale`: CFG scale (default: 3.5)
 - `--flow_shift`: Flow matching shift parameter (default: 5.0)
+- `--text_encoder_cpu`: Run the text encoders on CPU to reduce VRAM usage
 
-`--split_attn` is not supported (since inference is done one at a time).
+`--split_attn` is not supported (since inference is done one at a time). `--fp8_vl` is not supported, please use CPU for the text encoder if VRAM is insufficient.
 
 <details>
 <summary>日本語</summary>
@@ -464,8 +467,9 @@ python hunyuan_image_minimal_inference.py \
 - `--image_size`: 解像度（2048x2048で最も安定）
 - `--guidance_scale`: CFGスケール（推奨: 3.5）
 - `--flow_shift`: Flow Matchingシフトパラメータ（デフォルト: 5.0）
+- `--text_encoder_cpu`: テキストエンコーダをCPUで実行してVRAM使用量削減
 
-`--split_attn`はサポートされていません（1件ずつ推論するため）。
+`--split_attn`はサポートされていません（1件ずつ推論するため）。`--fp8_vl`もサポートされていません。VRAMが不足する場合はテキストエンコーダをCPUで実行してください。
 
 </details>
 

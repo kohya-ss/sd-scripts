@@ -350,7 +350,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
 
         vl_dtype = torch.float8_e4m3fn if args.fp8_vl else torch.bfloat16
-        vl_device = "cpu"
+        vl_device = "cpu"  # loading to cpu and move to gpu later in cache_text_encoder_outputs_if_needed
         _, text_encoder_vlm = hunyuan_image_text_encoder.load_qwen2_5_vl(
             args.text_encoder, dtype=vl_dtype, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
         )
@@ -440,6 +440,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
     ):
+        vlm_device = "cpu" if args.text_encoder_cpu else accelerator.device
         if args.cache_text_encoder_outputs:
             if not args.lowram:
                 # メモリ消費を減らす
@@ -448,9 +449,9 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
                 vae.to("cpu")
                 clean_memory_on_device(accelerator.device)
 
-            logger.info("move text encoders to gpu")
-            text_encoders[0].to(accelerator.device)
-            text_encoders[1].to(accelerator.device)
+            logger.info(f"move text encoders to {vlm_device} to encode and cache text encoder outputs")
+            text_encoders[0].to(vlm_device)
+            text_encoders[1].to(vlm_device)
 
             # VLM (bf16) and byT5 (fp16) are used for encoding, so we cannot use autocast here
             dataset.new_cache_text_encoder_outputs(text_encoders, accelerator)
@@ -491,8 +492,8 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
                 vae.to(org_vae_device)
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
-            text_encoders[0].to(accelerator.device)
-            text_encoders[1].to(accelerator.device)
+            text_encoders[0].to(vlm_device)
+            text_encoders[1].to(vlm_device)
 
     def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux):
         text_encoders = text_encoder  # for compatibility
@@ -667,8 +668,11 @@ def setup_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Discrete flow shift for the Euler Discrete Scheduler, default is 5.0. / Euler Discrete Schedulerの離散フローシフト、デフォルトは5.0。",
     )
-    parser.add_argument("--fp8_scaled", action="store_true", help="use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
-    parser.add_argument("--fp8_vl", action="store_true", help="use fp8 for VLM text encoder / VLMテキストエンコーダにfp8を使用する")
+    parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
+    parser.add_argument("--fp8_vl", action="store_true", help="Use fp8 for VLM text encoder / VLMテキストエンコーダにfp8を使用する")
+    parser.add_argument(
+        "--text_encoder_cpu", action="store_true", help="Inference on CPU for Text Encoders / テキストエンコーダをCPUで推論する"
+    )
     parser.add_argument(
         "--vae_enable_tiling",
         action="store_true",
