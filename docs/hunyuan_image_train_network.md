@@ -192,8 +192,8 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
   - Caches the outputs of Qwen2.5-VL and byT5. This reduces memory usage.
 * `--cache_latents`, `--cache_latents_to_disk`
   - Caches the outputs of VAE. Similar functionality to [sdxl_train_network.py](sdxl_train_network.md).
-* `--vae_enable_tiling`
-  - Enables tiling for VAE encoding and decoding to reduce VRAM usage.
+* `--vae_chunk_size=<integer>`
+  - Enables chunked processing in the VAE to reduce VRAM usage during encoding and decoding. Specify the chunk size as an integer (e.g., `16`). Larger values use more VRAM but are faster. Default is `None` (no chunking). This option is useful when VRAM is limited (e.g., 8GB or 12GB).
 
 <details>
 <summary>日本語</summary>
@@ -453,6 +453,7 @@ python hunyuan_image_minimal_inference.py \
 - `--guidance_scale`: CFG scale (default: 3.5)
 - `--flow_shift`: Flow matching shift parameter (default: 5.0)
 - `--text_encoder_cpu`: Run the text encoders on CPU to reduce VRAM usage
+- `--vae_chunk_size`: Chunk size for VAE decoding to reduce memory usage (default: None, no chunking). 16 is recommended if enabled.
 
 `--split_attn` is not supported (since inference is done one at a time). `--fp8_vl` is not supported, please use CPU for the text encoder if VRAM is insufficient.
 
@@ -468,6 +469,7 @@ python hunyuan_image_minimal_inference.py \
 - `--guidance_scale`: CFGスケール（推奨: 3.5）
 - `--flow_shift`: Flow Matchingシフトパラメータ（デフォルト: 5.0）
 - `--text_encoder_cpu`: テキストエンコーダをCPUで実行してVRAM使用量削減
+- `--vae_chunk_size`: VAEデコーディングのチャンクサイズ（デフォルト: None、チャンク処理なし）。有効にする場合は16を推奨。
 
 `--split_attn`はサポートされていません（1件ずつ推論するため）。`--fp8_vl`もサポートされていません。VRAMが不足する場合はテキストエンコーダをCPUで実行してください。
 
