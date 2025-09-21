@@ -358,12 +358,11 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
             args.byt5, dtype=torch.float16, device=vl_device, disable_mmap=args.disable_mmap_load_safetensors
         )
 
-        vae = hunyuan_image_vae.load_vae(args.vae, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
+        vae = hunyuan_image_vae.load_vae(
+            args.vae, "cpu", disable_mmap=args.disable_mmap_load_safetensors, chunk_size=args.vae_chunk_size
+        )
         vae.to(dtype=torch.float16)  # VAE is always fp16
         vae.eval()
-        if args.vae_enable_tiling:
-            vae.enable_tiling()
-            logger.info("VAE tiling is enabled")
 
         model_version = hunyuan_image_utils.MODEL_VERSION_2_1
         return model_version, [text_encoder_vlm, text_encoder_byt5], vae, None  # unet will be loaded later
@@ -674,9 +673,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--text_encoder_cpu", action="store_true", help="Inference on CPU for Text Encoders / テキストエンコーダをCPUで推論する"
     )
     parser.add_argument(
-        "--vae_enable_tiling",
-        action="store_true",
-        help="Enable tiling for VAE decoding and encoding / VAEデコーディングとエンコーディングのタイルを有効にする",
+        "--vae_chunk_size",
+        type=int,
+        default=None,  # default is None (no chunking)
+        help="Chunk size for VAE decoding to reduce memory usage. Default is None (no chunking). 16 is recommended if enabled"
+        " / メモリ使用量を減らすためのVAEデコードのチャンクサイズ。デフォルトはNone（チャンクなし）。有効にする場合は16程度を推奨。",
     )
 
     parser.add_argument(
