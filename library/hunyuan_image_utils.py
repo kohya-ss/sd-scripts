@@ -424,7 +424,6 @@ class AdaptiveProjectedGuidance:
         )
 
         if self.guidance_rescale > 0.0:
-            print(f"Applying guidance rescale with factor {self.guidance_rescale} at step {step}")
             pred = rescale_noise_cfg(pred, pred_cond, self.guidance_rescale)
 
         return pred
