@@ -264,10 +264,8 @@ class ModelOffloader(Offloader):
 
         block_idx_to_cpu = block_idx
         block_idx_to_cuda = self.num_blocks - self.blocks_to_swap + block_idx
-        
         # this works for forward-only offloading. move upstream blocks to cuda
         block_idx_to_cuda = block_idx_to_cuda % self.num_blocks
-        
         self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
 
 
