@@ -69,6 +69,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--guidance_scale", type=float, default=3.5, help="Guidance scale for classifier free guidance. Default is 3.5."
     )
+    parser.add_argument(
+        "--apg_start_step_ocr",
+        type=int,
+        default=38,
+        help="Starting step for Adaptive Projected Guidance (APG) for image with text. Default is 38. Should be less than infer_steps, usually near the end.",
+    )
+    parser.add_argument(
+        "--apg_start_step_general",
+        type=int,
+        default=5,
+        help="Starting step for Adaptive Projected Guidance (APG) for general image. Default is 5. Should be less than infer_steps, usually near the beginning.",
+    )
+    parser.add_argument(
+        "--guidance_rescale",
+        type=float,
+        default=0.0,
+        help="Guidance rescale factor for steps without APG, 0.0 to 1.0. Default is 0.0 (no rescale)."
+    )
     parser.add_argument("--prompt", type=str, default=None, help="prompt for generation")
     parser.add_argument("--negative_prompt", type=str, default="", help="negative prompt for generation, default is empty string")
     parser.add_argument("--image_size", type=int, nargs=2, default=[2048, 2048], help="image size, height and width")
@@ -715,8 +733,11 @@ def generate_body(
                     ocr_mask[0],
                     args.guidance_scale,
                     i,
+                    apg_start_step_ocr=args.apg_start_step_ocr,
+                    apg_start_step_general=args.apg_start_step_general,
                     cfg_guider_ocr=cfg_guider_ocr,
                     cfg_guider_general=cfg_guider_general,
+                    guidance_rescale=args.guidance_rescale,
                 )
 
             # ensure latents dtype is consistent
