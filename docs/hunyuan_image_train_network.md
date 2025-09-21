@@ -454,6 +454,9 @@ python hunyuan_image_minimal_inference.py \
 - `--flow_shift`: Flow matching shift parameter (default: 5.0)
 - `--text_encoder_cpu`: Run the text encoders on CPU to reduce VRAM usage
 - `--vae_chunk_size`: Chunk size for VAE decoding to reduce memory usage (default: None, no chunking). 16 is recommended if enabled.
+- `--apg_start_step_general` and `--apg_start_step_ocr`: Start steps for APG (Adaptive Projected Guidance) if using APG during inference. `5` and `38` are the official recommended values for 50 steps. If this value exceeds `--infer_steps`, APG will not be applied.
+- `--guidance_rescale`: Rescales the guidance for steps before APG starts. Default is `0.0` (no rescaling). If you use this option, a value around `0.5` might be good starting point.
+- `--guidance_rescale_apg`: Rescales the guidance for APG. Default is `0.0` (no rescaling). This option doesn't seem to have a large effect, but if you use it, a value around `0.5` might be a good starting point.
 
 `--split_attn` is not supported (since inference is done one at a time). `--fp8_vl` is not supported, please use CPU for the text encoder if VRAM is insufficient.
 
@@ -470,6 +473,9 @@ python hunyuan_image_minimal_inference.py \
 - `--flow_shift`: Flow Matchingシフトパラメータ（デフォルト: 5.0）
 - `--text_encoder_cpu`: テキストエンコーダをCPUで実行してVRAM使用量削減
 - `--vae_chunk_size`: VAEデコーディングのチャンクサイズ（デフォルト: None、チャンク処理なし）。有効にする場合は16を推奨。
+- `--apg_start_step_general` と `--apg_start_step_ocr`: 推論中にAPGを使用する場合の開始ステップ。50ステップの場合、公式推奨値はそれぞれ5と38です。この値が`--infer_steps`を超えると、APGは適用されません。
+- `--guidance_rescale`: APG開始前のステップに対するガイダンスのリスケーリング。デフォルトは0.0（リスケーリングなし）。使用する場合、0.5程度から始めて調整してください。
+- `--guidance_rescale_apg`: APGに対するガイダンスのリスケーリング。デフォルトは0.0（リスケーリングなし）。このオプションは大きな効果はないようですが、使用する場合は0.5程度から始めて調整してください。
 
 `--split_attn`はサポートされていません（1件ずつ推論するため）。`--fp8_vl`もサポートされていません。VRAMが不足する場合はテキストエンコーダをCPUで実行してください。
 

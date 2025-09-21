@@ -401,8 +401,6 @@ class AdaptiveProjectedGuidance:
         guidance_rescale: float = 0.0,
         use_original_formulation: bool = False,
     ):
-        assert guidance_rescale == 0.0, "guidance_rescale > 0.0 not supported."
-
         self.guidance_scale = guidance_scale
         self.adaptive_projected_guidance_momentum = adaptive_projected_guidance_momentum
         self.adaptive_projected_guidance_rescale = adaptive_projected_guidance_rescale
@@ -424,6 +422,10 @@ class AdaptiveProjectedGuidance:
             self.adaptive_projected_guidance_rescale,
             self.use_original_formulation,
         )
+
+        if self.guidance_rescale > 0.0:
+            print(f"Applying guidance rescale with factor {self.guidance_rescale} at step {step}")
+            pred = rescale_noise_cfg(pred, pred_cond, self.guidance_rescale)
 
         return pred
 

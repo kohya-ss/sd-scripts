@@ -85,7 +85,13 @@ def parse_args() -> argparse.Namespace:
         "--guidance_rescale",
         type=float,
         default=0.0,
-        help="Guidance rescale factor for steps without APG, 0.0 to 1.0. Default is 0.0 (no rescale)."
+        help="Guidance rescale factor for steps without APG, 0.0 to 1.0. Default is 0.0 (no rescale).",
+    )
+    parser.add_argument(
+        "--guidance_rescale_apg",
+        type=float,
+        default=0.0,
+        help="Guidance rescale factor for steps with APG, 0.0 to 1.0. Default is 0.0 (no rescale).",
     )
     parser.add_argument("--prompt", type=str, default=None, help="prompt for generation")
     parser.add_argument("--negative_prompt", type=str, default="", help="negative prompt for generation, default is empty string")
@@ -695,10 +701,18 @@ def generate_body(
 
     # Prepare Guider
     cfg_guider_ocr = hunyuan_image_utils.AdaptiveProjectedGuidance(
-        guidance_scale=10.0, eta=0.0, adaptive_projected_guidance_rescale=10.0, adaptive_projected_guidance_momentum=-0.5
+        guidance_scale=10.0,
+        eta=0.0,
+        adaptive_projected_guidance_rescale=10.0,
+        adaptive_projected_guidance_momentum=-0.5,
+        guidance_rescale=args.guidance_rescale_apg,
     )
     cfg_guider_general = hunyuan_image_utils.AdaptiveProjectedGuidance(
-        guidance_scale=10.0, eta=0.0, adaptive_projected_guidance_rescale=10.0, adaptive_projected_guidance_momentum=-0.5
+        guidance_scale=10.0,
+        eta=0.0,
+        adaptive_projected_guidance_rescale=10.0,
+        adaptive_projected_guidance_momentum=-0.5,
+        guidance_rescale=args.guidance_rescale_apg,
     )
 
     # Denoising loop
