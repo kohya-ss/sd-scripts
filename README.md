@@ -15,6 +15,13 @@ If you are using DeepSpeed, please install DeepSpeed with `pip install deepspeed
 
 ### Recent Updates
 
+Sep 23, 2025:
+- HunyuanImage-2.1 LoRA training is supported. [PR #2198](https://github.com/kohya-ss/sd-scripts/pull/2198) for details.
+  - Please see [HunyuanImage-2.1 Training](./docs/hunyuan_image_train_network.md) for details.
+  - __HunyuanImage-2.1 training does not support LoRA modules for Text Encoders, so `--network_train_unet_only` is required.__
+  - The training script is `hunyuan_image_train_network.py`.
+  - This includes changes to `train_network.py`, the base of the training script. Please let us know if you encounter any issues.
+
 Sep 13, 2025:
 - The loading speed of `.safetensors` files has been improved for SD3, FLUX.1 and Lumina. See [PR #2200](https://github.com/kohya-ss/sd-scripts/pull/2200) for more details.
     - Model loading can be up to 1.5 times faster.

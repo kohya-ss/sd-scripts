@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import gc
 import time
-from typing import Optional, Union, Callable, Tuple
+from typing import Any, Optional, Union, Callable, Tuple
 import torch
 import torch.nn as nn
 
@@ -136,7 +136,7 @@ class Offloader:
             self.swap_weight_devices(block_to_cpu, block_to_cuda)
 
             if self.debug:
-                print(f"Moved blocks {bidx_to_cpu} and {bidx_to_cuda} in {time.perf_counter()-start_time:.2f}s")
+                print(f"Moved blocks {bidx_to_cpu} and {bidx_to_cuda} in {time.perf_counter() - start_time:.2f}s")
             return bidx_to_cpu, bidx_to_cuda  # , event
 
         block_to_cpu = blocks[block_idx_to_cpu]
@@ -160,7 +160,7 @@ class Offloader:
         assert block_idx == bidx_to_cuda, f"Block index mismatch: {block_idx} != {bidx_to_cuda}"
 
         if self.debug:
-            print(f"Waited for block {block_idx}: {time.perf_counter()-start_time:.2f}s")
+            print(f"Waited for block {block_idx}: {time.perf_counter() - start_time:.2f}s")
 
 
 # Gradient tensors
@@ -173,21 +173,34 @@ class ModelOffloader(Offloader):
     """
 
     def __init__(
-        self, blocks: Union[list[nn.Module], nn.ModuleList], blocks_to_swap: int, device: torch.device, debug: bool = False
+        self,
+        blocks: Union[list[nn.Module], nn.ModuleList],
+        blocks_to_swap: int,
+        device: torch.device,
+        supports_backward: bool = True,
+        debug: bool = False,
     ):
         super().__init__(len(blocks), blocks_to_swap, device, debug)
 
-        # register backward hooks
-        self.remove_handles = []
-        for i, block in enumerate(blocks):
-            hook = self.create_backward_hook(blocks, i)
-            if hook is not None:
-                handle = block.register_full_backward_hook(hook)
-                self.remove_handles.append(handle)
+        self.supports_backward = supports_backward
+        self.forward_only = not supports_backward  # forward only offloading: can be changed to True for inference
+
+        if self.supports_backward:
+            # register backward hooks
+            self.remove_handles = []
+            for i, block in enumerate(blocks):
+                hook = self.create_backward_hook(blocks, i)
+                if hook is not None:
+                    handle = block.register_full_backward_hook(hook)
+                    self.remove_handles.append(handle)
+
+    def set_forward_only(self, forward_only: bool):
+        self.forward_only = forward_only
 
     def __del__(self):
-        for handle in self.remove_handles:
-            handle.remove()
+        if self.supports_backward:
+            for handle in self.remove_handles:
+                handle.remove()
 
     def create_backward_hook(
         self, blocks: Union[list[nn.Module], nn.ModuleList], block_index: int
@@ -222,14 +235,14 @@ class ModelOffloader(Offloader):
             return
 
         if self.debug:
-            print("Prepare block devices before forward")
+            print(f"Prepare block devices before forward")
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
             b.to(self.device)
             weighs_to_device(b, self.device)  # make sure weights are on device
 
         for b in blocks[self.num_blocks - self.blocks_to_swap :]:
-            b.to(self.device)  # move block to device first
+            b.to(self.device)  # move block to device first. this makes sure that buffers (non weights) are on the device
             weighs_to_device(b, torch.device("cpu"))  # make sure weights are on cpu
 
         _synchronize_device(self.device)
@@ -241,10 +254,85 @@ class ModelOffloader(Offloader):
         self._wait_blocks_move(block_idx)
 
     def submit_move_blocks(self, blocks: Union[list[nn.Module], nn.ModuleList], block_idx: int):
+        # check if blocks_to_swap is enabled
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
-        if block_idx >= self.blocks_to_swap:
+
+        # if backward is enabled, we do not swap blocks in forward pass more than blocks_to_swap, because it should be on GPU
+        if not self.forward_only and block_idx >= self.blocks_to_swap:
             return
+
         block_idx_to_cpu = block_idx
         block_idx_to_cuda = self.num_blocks - self.blocks_to_swap + block_idx
+        # this works for forward-only offloading. move upstream blocks to cuda
+        block_idx_to_cuda = block_idx_to_cuda % self.num_blocks
         self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
+
+
+# endregion
+
+# region cpu offload utils
+
+
+def to_device(x: Any, device: torch.device) -> Any:
+    if isinstance(x, torch.Tensor):
+        return x.to(device)
+    elif isinstance(x, list):
+        return [to_device(elem, device) for elem in x]
+    elif isinstance(x, tuple):
+        return tuple(to_device(elem, device) for elem in x)
+    elif isinstance(x, dict):
+        return {k: to_device(v, device) for k, v in x.items()}
+    else:
+        return x
+
+
+def to_cpu(x: Any) -> Any:
+    """
+    Recursively moves torch.Tensor objects (and containers thereof) to CPU.
+
+    Args:
+        x: A torch.Tensor, or a (possibly nested) list, tuple, or dict containing tensors.
+
+    Returns:
+        The same structure as x, with all torch.Tensor objects moved to CPU.
+        Non-tensor objects are returned unchanged.
+    """
+    if isinstance(x, torch.Tensor):
+        return x.cpu()
+    elif isinstance(x, list):
+        return [to_cpu(elem) for elem in x]
+    elif isinstance(x, tuple):
+        return tuple(to_cpu(elem) for elem in x)
+    elif isinstance(x, dict):
+        return {k: to_cpu(v) for k, v in x.items()}
+    else:
+        return x
+
+
+def create_cpu_offloading_wrapper(func: Callable, device: torch.device) -> Callable:
+    """
+    Create a wrapper function that offloads inputs to CPU before calling the original function
+    and moves outputs back to the specified device.
+
+    Args:
+        func: The original function to wrap.
+        device: The device to move outputs back to.
+
+    Returns:
+        A wrapped function that offloads inputs to CPU and moves outputs back to the specified device.
+    """
+
+    def wrapper(orig_func: Callable) -> Callable:
+        def custom_forward(*inputs):
+            nonlocal device, orig_func
+            cuda_inputs = to_device(inputs, device)
+            outputs = orig_func(*cuda_inputs)
+            return to_cpu(outputs)
+
+        return custom_forward
+
+    return wrapper(func)
+
+
+# endregion

@@ -626,6 +626,7 @@ class LatentsCachingStrategy:
             for key in npz.files:
                 kwargs[key] = npz[key]
 
+        # TODO float() is needed if vae is in bfloat16. Remove it if vae is float16.
         kwargs["latents" + key_reso_suffix] = latents_tensor.float().cpu().numpy()
         kwargs["original_size" + key_reso_suffix] = np.array(original_size)
         kwargs["crop_ltrb" + key_reso_suffix] = np.array(crop_ltrb)

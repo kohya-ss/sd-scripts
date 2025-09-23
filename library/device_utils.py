@@ -4,6 +4,7 @@ from typing import Optional, Union
 
 import torch
 
+
 try:
     # intel gpu support for pytorch older than 2.5
     # ipex is not needed after pytorch 2.5
