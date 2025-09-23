@@ -123,6 +123,7 @@ accelerate launch --num_cpu_threads_per_process 1 hunyuan_image_train_network.py
   --network_module=networks.lora_hunyuan_image \
   --network_dim=16 \
   --network_alpha=1 \
+  --network_train_unet_only \
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
@@ -138,6 +139,8 @@ accelerate launch --num_cpu_threads_per_process 1 hunyuan_image_train_network.py
   --cache_text_encoder_outputs \
   --cache_latents
 ```
+
+**HunyuanImage-2.1 training does not support LoRA modules for Text Encoders, so `--network_train_unet_only` is required.**
 
 <details>
 <summary>日本語</summary>
@@ -165,6 +168,8 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 
 #### HunyuanImage-2.1 Training Parameters
 
+* `--network_train_unet_only` **[Required]**
+  - Specifies that only the DiT model will be trained. LoRA modules for Text Encoders are not supported.
 * `--discrete_flow_shift=<float>`
   - Specifies the shift value for the scheduler used in Flow Matching. Default is `5.0`.
 * `--model_prediction_type=<choice>`
@@ -181,7 +186,7 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 * `--split_attn`
   - Splits the batch during attention computation to process one item at a time, reducing VRAM usage by avoiding attention mask computation. Can improve speed when using `torch`. Required when using `xformers` with batch size greater than 1.
 * `--fp8_scaled`
-  - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage (can run with as little as 8GB VRAM when combined with `--blocks_to_swap`), but the training results may vary. This is a newer alternative to the unsupported `--fp8_base` option.
+  - Enables training the DiT model in scaled FP8 format. This can significantly reduce VRAM usage (can run with as little as 8GB VRAM when combined with `--blocks_to_swap`), but the training results may vary. This is a newer alternative to the unsupported `--fp8_base` option. See [Musubi Tuner's documentation](https://github.com/kohya-ss/musubi-tuner/blob/main/docs/advanced_config.md#fp8-weight-optimization-for-models--%E3%83%A2%E3%83%87%E3%83%AB%E3%81%AE%E9%87%8D%E3%81%BF%E3%81%AEfp8%E3%81%B8%E3%81%AE%E6%9C%80%E9%81%A9%E5%8C%96) for details.
 * `--fp8_vl`
   - Use FP8 for the VLM (Qwen2.5-VL) text encoder.
 * `--text_encoder_cpu`
@@ -449,7 +454,7 @@ python hunyuan_image_minimal_inference.py \
 **Key Options:**
 - `--fp8_scaled`: Use scaled FP8 format for reduced VRAM usage during inference
 - `--blocks_to_swap`: Swap blocks to CPU to reduce VRAM usage
-- `--image_size`: Resolution (inference is most stable at 2048x2048)
+- `--image_size`: Resolution in **height width**  (inference is most stable at 2560x1536, 2304x1792, 2048x2048, 1792x2304, 1536x2560 according to the official repo)
 - `--guidance_scale`: CFG scale (default: 3.5)
 - `--flow_shift`: Flow matching shift parameter (default: 5.0)
 - `--text_encoder_cpu`: Run the text encoders on CPU to reduce VRAM usage
