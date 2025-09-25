@@ -824,27 +824,31 @@ class NetworkTrainer:
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
 
-        unet_weight_dtype = te_weight_dtype = weight_dtype
+        unet_weight_dtype = weight_dtype
+        te_weight_dtype = weight_dtype if self.cast_text_encoder(args) else None
         # Experimental Feature: Put base model into fp8 to save vram
         if args.fp8_base or args.fp8_base_unet:
             assert torch.__version__ >= "2.1.0", "fp8_base requires torch>=2.1.0 / fp8を使う場合はtorch>=2.1.0が必要です。"
             assert (
                 args.mixed_precision != "no"
             ), "fp8_base requires mixed precision='fp16' or 'bf16' / fp8を使う場合はmixed_precision='fp16'または'bf16'が必要です。"
-            accelerator.print("enable fp8 training for U-Net.")
-            unet_weight_dtype = torch.float8_e4m3fn
+            if self.cast_unet(args):
+                accelerator.print("enable fp8 training for U-Net.")
+                unet_weight_dtype = torch.float8_e4m3fn
 
-            if not args.fp8_base_unet:
-                accelerator.print("enable fp8 training for Text Encoder.")
-            te_weight_dtype = weight_dtype if args.fp8_base_unet else torch.float8_e4m3fn
+            if self.cast_text_encoder(args):
+                if not args.fp8_base_unet:
+                    accelerator.print("enable fp8 training for Text Encoder.")
+                te_weight_dtype = weight_dtype if args.fp8_base_unet else torch.float8_e4m3fn
 
             # unet.to(accelerator.device)  # this makes faster `to(dtype)` below, but consumes 23 GB VRAM
             # unet.to(dtype=unet_weight_dtype)  # without moving to gpu, this takes a lot of time and main memory
 
             # logger.info(f"set U-Net weight dtype to {unet_weight_dtype}, device to {accelerator.device}")
             # unet.to(accelerator.device, dtype=unet_weight_dtype)  # this seems to be safer than above
-            logger.info(f"set U-Net weight dtype to {unet_weight_dtype}")
-            unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
+            if self.cast_unet(args):
+                logger.info(f"set U-Net weight dtype to {unet_weight_dtype}")
+                unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
 
         unet.requires_grad_(False)
         if self.cast_unet(args):

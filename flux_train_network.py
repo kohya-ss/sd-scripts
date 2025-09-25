@@ -51,7 +51,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             self.use_clip_l = True
         else:
             self.use_clip_l = False  # Chroma does not use CLIP-L
-            assert args.apply_t5_attn_mask, "apply_t5_attn_mask must be True for Chroma / Chromaではapply_t5_attn_maskを指定する必要があります"
+            assert (
+                args.apply_t5_attn_mask
+            ), "apply_t5_attn_mask must be True for Chroma / Chromaではapply_t5_attn_maskを指定する必要があります"
 
         if args.fp8_base_unet:
             args.fp8_base = True  # if fp8_base_unet is enabled, fp8_base is also enabled for FLUX.1
@@ -100,17 +102,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         # currently offload to cpu for some models
 
         # if the file is fp8 and we are using fp8_base, we can load it as is (fp8)
-        loading_dtype = None if args.fp8_base else weight_dtype
+        loading_dtype = None if args.fp8_base or args.fp8_scaled else weight_dtype
+        loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
 
-        # if we load to cpu, flux.to(fp8) takes a long time, so we should load to gpu in future
+        # load with quantization if needed
         _, model = flux_utils.load_flow_model(
-            args.pretrained_model_name_or_path,
-            loading_dtype,
-            "cpu",
-            disable_mmap=args.disable_mmap_load_safetensors,
-            model_type=self.model_type,
+            accelerator.device, args.pretrained_model_name_or_path, loading_dtype, loading_device, self.model_type, args.fp8_scaled
         )
-        if args.fp8_base:
+
+        if args.fp8_base and not args.fp8_scaled:
             # check dtype of model
             if model.dtype == torch.float8_e4m3fnuz or model.dtype == torch.float8_e5m2 or model.dtype == torch.float8_e5m2fnuz:
                 raise ValueError(f"Unsupported fp8 model dtype: {model.dtype}")
@@ -130,7 +130,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         if self.is_swapping_blocks:
             # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
             logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device)
+            model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
 
         if self.use_clip_l:
             clip_l = flux_utils.load_clip_l(args.clip_l, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
@@ -308,6 +308,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
     def shift_scale_latents(self, args, latents):
         return latents
+
+    def cast_unet(self, args):
+        return not args.fp8_scaled
 
     def get_noise_pred_and_target(
         self,
@@ -525,6 +528,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
 
+    parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
     parser.add_argument(
         "--split_mode",
         action="store_true",

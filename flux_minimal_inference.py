@@ -18,6 +18,7 @@ from safetensors.torch import load_file
 
 from library import device_utils
 from library.device_utils import init_ipex, get_preferred_device
+from library.safetensors_utils import MemoryEfficientSafeOpen
 from networks import oft_flux
 
 init_ipex()
@@ -325,7 +326,8 @@ def generate_image(
 
     # generate image
     logger.info("Generating image...")
-    model = model.to(device)
+    if args.offload and not (args.blocks_to_swap is not None and args.blocks_to_swap > 0):
+        model = model.to(device)
     if steps is None:
         steps = 4 if is_schnell else 50
 
@@ -411,12 +413,16 @@ if __name__ == "__main__":
     parser.add_argument("--ae_dtype", type=str, default=None, help="dtype for ae")
     parser.add_argument("--t5xxl_dtype", type=str, default=None, help="dtype for t5xxl")
     parser.add_argument("--flux_dtype", type=str, default=None, help="dtype for flux")
+    parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for flux model")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--steps", type=int, default=None, help="Number of steps. Default is 4 for schnell, 50 for dev")
     parser.add_argument("--guidance", type=float, default=3.5)
     parser.add_argument("--negative_prompt", type=str, default=None)
     parser.add_argument("--cfg_scale", type=float, default=1.0)
     parser.add_argument("--offload", action="store_true", help="Offload to CPU")
+    parser.add_argument(
+        "--blocks_to_swap", type=int, default=None, help="Number of blocks to swap between CPU and GPU to reduce memory usage"
+    )
     parser.add_argument(
         "--lora_weights",
         type=str,
@@ -442,6 +448,8 @@ if __name__ == "__main__":
     t5xxl_dtype = str_to_dtype(args.t5xxl_dtype, dtype)
     ae_dtype = str_to_dtype(args.ae_dtype, dtype)
     flux_dtype = str_to_dtype(args.flux_dtype, dtype)
+    if args.fp8_scaled and flux_dtype.itemsize == 1:
+        raise ValueError("fp8_scaled is not supported for fp8 flux_dtype")
 
     logger.info(f"Dtypes for clip_l, t5xxl, ae, flux: {clip_l_dtype}, {t5xxl_dtype}, {ae_dtype}, {flux_dtype}")
 
@@ -470,13 +478,68 @@ if __name__ == "__main__":
     # if is_fp8(t5xxl_dtype):
     #     t5xxl = accelerator.prepare(t5xxl)
 
+    # check LoRA and OFT weights can be mergeable
+    mergeable_lora_weights = None
+    mergeable_lora_multipliers = None
+    if args.fp8_scaled and args.lora_weights:
+        assert args.merge_lora_weights, "LoRA weights must be merged when using fp8_scaled"
+
+        mergeable_lora_weights = []
+        mergeable_lora_multipliers = []
+
+        for weights_file in args.lora_weights:
+            if ";" in weights_file:
+                weights_file, multiplier = weights_file.split(";")
+                multiplier = float(multiplier)
+            else:
+                multiplier = 1.0
+
+            with MemoryEfficientSafeOpen(weights_file) as f:
+                keys = list(f.keys())
+
+            is_lora = is_oft = False
+            includes_text_encoder = False
+            for key in keys:
+                if key.startswith("lora"):
+                    is_lora = True
+                if key.startswith("oft"):
+                    is_oft = True
+                if key.startswith("lora_te") or key.startswith("oft_te"):
+                    includes_text_encoder = True
+                if (is_lora or is_oft) and includes_text_encoder:
+                    break
+
+            if includes_text_encoder or is_oft:
+                raise ValueError(
+                    f"LoRA weights {weights_file} that includes text encoder or OFT weights cannot be merged when using fp8_scaled"
+                )
+
+            mergeable_lora_weights.append(weights_file)
+            mergeable_lora_multipliers.append(multiplier)
+
     # DiT
+    loading_dtype = None if args.fp8_scaled else flux_dtype
+    loading_device = "cpu" if args.blocks_to_swap or args.offload else device
+
     is_schnell, model = flux_utils.load_flow_model(
-        args.ckpt_path, None, loading_device, disable_mmap=True, model_type=args.model_type
+        device,
+        args.ckpt_path,
+        loading_dtype,
+        loading_device,
+        args.model_type,
+        args.fp8_scaled,
+        lora_weights_list=mergeable_lora_weights,
+        lora_multipliers=mergeable_lora_multipliers,
     )
     model.eval()
-    logger.info(f"Casting model to {flux_dtype}")
-    model.to(flux_dtype)  # make sure model is dtype
+
+    if args.blocks_to_swap is not None and args.blocks_to_swap > 0:
+        model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=False)
+        model.move_to_device_except_swap_blocks(device)
+        model.prepare_block_swap_before_forward()
+
+    # logger.info(f"Casting model to {flux_dtype}")
+    # model.to(flux_dtype)  # make sure model is dtype
     # if is_fp8(flux_dtype):
     #     model = accelerator.prepare(model)
     #     if args.offload:
@@ -494,36 +557,37 @@ if __name__ == "__main__":
 
     # LoRA
     lora_models: List[lora_flux.LoRANetwork] = []
-    for weights_file in args.lora_weights:
-        if ";" in weights_file:
-            weights_file, multiplier = weights_file.split(";")
-            multiplier = float(multiplier)
-        else:
-            multiplier = 1.0
+    if not args.fp8_scaled:  # LoRA cannot be applied after fp8 scaling and quantization
+        for weights_file in args.lora_weights:
+            if ";" in weights_file:
+                weights_file, multiplier = weights_file.split(";")
+                multiplier = float(multiplier)
+            else:
+                multiplier = 1.0
 
-        weights_sd = load_file(weights_file)
-        is_lora = is_oft = False
-        for key in weights_sd.keys():
-            if key.startswith("lora"):
-                is_lora = True
-            if key.startswith("oft"):
-                is_oft = True
-            if is_lora or is_oft:
-                break
+            weights_sd = load_file(weights_file)
+            is_lora = is_oft = False
+            for key in weights_sd.keys():
+                if key.startswith("lora"):
+                    is_lora = True
+                if key.startswith("oft"):
+                    is_oft = True
+                if is_lora or is_oft:
+                    break
 
-        module = lora_flux if is_lora else oft_flux
-        lora_model, _ = module.create_network_from_weights(multiplier, None, ae, [clip_l, t5xxl], model, weights_sd, True)
+            module = lora_flux if is_lora else oft_flux
+            lora_model, _ = module.create_network_from_weights(multiplier, None, ae, [clip_l, t5xxl], model, weights_sd, True)
 
-        if args.merge_lora_weights:
-            lora_model.merge_to([clip_l, t5xxl], model, weights_sd)
-        else:
-            lora_model.apply_to([clip_l, t5xxl], model)
-            info = lora_model.load_state_dict(weights_sd, strict=True)
-            logger.info(f"Loaded LoRA weights from {weights_file}: {info}")
-            lora_model.eval()
-            lora_model.to(device)
+            if args.merge_lora_weights:
+                lora_model.merge_to([clip_l, t5xxl], model, weights_sd)
+            else:
+                lora_model.apply_to([clip_l, t5xxl], model)
+                info = lora_model.load_state_dict(weights_sd, strict=True)
+                logger.info(f"Loaded LoRA weights from {weights_file}: {info}")
+                lora_model.eval()
+                lora_model.to(device)
 
-        lora_models.append(lora_model)
+            lora_models.append(lora_model)
 
     if not args.interactive:
         generate_image(
