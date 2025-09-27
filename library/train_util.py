@@ -66,7 +66,7 @@ from library import custom_train_functions
 from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageCms
 import imagesize
 import cv2
 import safetensors.torch
@@ -2490,10 +2490,34 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 def load_image(image_path, alpha=False):
     try:
         with Image.open(image_path) as image:
+            if getattr(image, "is_animated", False):
+                raise Exception("Image is animated")
+            
+            # Convert image to sRGB
+            icc = image.info.get('icc_profile', '')
+            if icc:
+                src_profile = ImageCms.ImageCmsProfile( BytesIO(icc) )
+                srgb_profile = ImageCms.createProfile("sRGB")
+                try:
+                    ImageCms.profileToProfile(image, src_profile, srgb_profile, inPlace=True)
+                    image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
+                except Exception as e:
+                    raise Exception( f"Could not convert to sRGB: {src_profile.profile.model} {src_profile.profile.profile_description}\n{e}" )
+            
             if alpha:
                 if not image.mode == "RGBA":
                     image = image.convert("RGBA")
             else:
+                if image.mode == "P":
+                    # Palette images with alpha are easier to handle as RGBA.
+                    image = image.convert('RGBA')
+                
+                if "A" in  image.getbands():
+                    # Replace transparency with white background.
+                    bg = Image.new("RGBA", image.size, (255, 255, 255, 255) )
+                    bg.paste(image, mask=alpha)
+                    image = bg.convert('RGB')
+                    
                 if not image.mode == "RGB":
                     image = image.convert("RGB")
             img = np.array(image, np.uint8)
