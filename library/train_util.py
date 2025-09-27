@@ -2491,7 +2491,7 @@ def load_image(image_path, alpha=False):
     try:
         with Image.open(image_path) as image:
             if getattr(image, "is_animated", False):
-                raise Exception("Image is animated")
+                raise Exception( f"{image_path} is animated" )
             
             # Convert image to sRGB
             icc = image.info.get('icc_profile', '')
@@ -2502,7 +2502,7 @@ def load_image(image_path, alpha=False):
                     ImageCms.profileToProfile(image, src_profile, srgb_profile, inPlace=True)
                     image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
                 except Exception as e:
-                    raise Exception( f"Could not convert to sRGB: {src_profile.profile.model} {src_profile.profile.profile_description}\n{e}" )
+                    raise Exception( f"Could not convert {image_path} to sRGB: {src_profile.profile.model} {src_profile.profile.profile_description}\n{e}" )
             
             if alpha:
                 if not image.mode == "RGBA":
