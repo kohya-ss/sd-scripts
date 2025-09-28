@@ -66,7 +66,12 @@ from library import custom_train_functions
 from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
-from PIL import Image, ImageCms
+import sys
+from PIL import Image
+try:
+    from PIL import ImageCms
+except:
+    print( "ImageCms not available. Images will not be converted to sRGB. Colours may be handled incorrectly." )
 import imagesize
 import cv2
 import safetensors.torch
@@ -2494,15 +2499,16 @@ def load_image(image_path, alpha=False):
                 raise Exception( f"{image_path} is animated" )
             
             # Convert image to sRGB
-            icc = image.info.get('icc_profile', '')
-            if icc:
-                try:
-                    src_profile = ImageCms.ImageCmsProfile( BytesIO(icc) )
-                    srgb_profile = ImageCms.createProfile("sRGB")
-                    ImageCms.profileToProfile(image, src_profile, srgb_profile, inPlace=True)
-                    image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
-                except Exception as e:
-                    raise Exception( f"Could not convert {image_path} to sRGB: {src_profile.profile.model} {src_profile.profile.profile_description}\n{e}" )
+            if "PIL.ImageCms" in sys.modules:
+                icc = image.info.get('icc_profile', '')
+                if icc:
+                    try:
+                        src_profile = ImageCms.ImageCmsProfile( BytesIO(icc) )
+                        srgb_profile = ImageCms.createProfile("sRGB")
+                        ImageCms.profileToProfile(image, src_profile, srgb_profile, inPlace=True)
+                        image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
+                    except Exception as e:
+                        raise Exception( f"Could not convert {image_path} to sRGB: {src_profile.profile.model} {src_profile.profile.profile_description}\n{e}" )
             
             if alpha:
                 if not image.mode == "RGBA":
