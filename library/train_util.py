@@ -2496,9 +2496,9 @@ def load_image(image_path, alpha=False):
             # Convert image to sRGB
             icc = image.info.get('icc_profile', '')
             if icc:
-                src_profile = ImageCms.ImageCmsProfile( BytesIO(icc) )
-                srgb_profile = ImageCms.createProfile("sRGB")
                 try:
+                    src_profile = ImageCms.ImageCmsProfile( BytesIO(icc) )
+                    srgb_profile = ImageCms.createProfile("sRGB")
                     ImageCms.profileToProfile(image, src_profile, srgb_profile, inPlace=True)
                     image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
                 except Exception as e:
