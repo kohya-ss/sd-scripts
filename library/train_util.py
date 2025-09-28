@@ -2514,8 +2514,9 @@ def load_image(image_path, alpha=False):
                 
                 if "A" in  image.getbands():
                     # Replace transparency with white background.
+                    alpha_layer = image.convert('RGBA').split()[-1]
                     bg = Image.new("RGBA", image.size, (255, 255, 255, 255) )
-                    bg.paste(image, mask=alpha)
+                    bg.paste( image, mask=alpha_layer )
                     image = bg.convert('RGB')
                     
                 if not image.mode == "RGB":
