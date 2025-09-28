@@ -454,6 +454,13 @@ def train(args):
         ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
         accelerator.print("enable full bf16 training.")
         flux.to(weight_dtype)
+
+        # Experimental: some layers have very few weights, and training quality seems
+        # to increase significantly if these are left in f32 format while training.
+        if args.fused_backward_pass:
+            flux.final_layer.linear.to(dtype=torch.float32)  # Loses lower bits from some saved files,
+            flux.img_in            .to(dtype=torch.float32)  # but most saved models aren't f32/f16 anyway.
+
         if clip_l is not None:
             clip_l.to(weight_dtype)
             t5xxl.to(weight_dtype)
