@@ -430,9 +430,9 @@ def train(args):
     _, _, optimizer = train_util.get_optimizer(
             args, trainable_params=params_to_optimize
         )
-        optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(
-            optimizer, args
-        )
+    optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(
+        optimizer, args
+    )
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
