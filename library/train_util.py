@@ -5525,6 +5525,9 @@ def prepare_accelerator(args: argparse.Namespace):
             if args.ddp_gradient_as_bucket_view or args.ddp_static_graph
             else None
         ),
+        (
+            DistributedDataParallelKwargs(find_unused_parameters=True)
+        ),
     ]
     kwargs_handlers = [i for i in kwargs_handlers if i is not None]
     deepspeed_plugin = deepspeed_utils.prepare_deepspeed_plugin(args)
