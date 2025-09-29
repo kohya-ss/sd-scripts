@@ -8,7 +8,6 @@ from typing import Callable, Dict, List, Optional, Tuple, Any, Union, Generator
 
 import torch
 from torch import Tensor
-from torch.distributions import LogNormal
 from accelerate import Accelerator, PartialState
 from transformers import Gemma2Model
 from tqdm import tqdm
@@ -858,13 +857,6 @@ def get_noisy_model_input_and_timesteps(
         timesteps = 1 - t * 1000.0
         t = t.view(-1, 1, 1, 1)
         noisy_model_input = (1 - t) * noise + t * latents
-    elif args.timestep_sampling == "lognorm":
-        lognormal = LogNormal(loc=0, scale=0.333)
-        t = lognormal.sample((int(timesteps * args.lognorm_alpha),)).to(device)
-        
-        t = ((1 - t/t.max()) * 1000)
-        t = t.view(-1, 1, 1, 1)
-        noisy_model_input = (1 - t) * noise + t * latents
     else:
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
@@ -1057,10 +1049,10 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "lognorm", "sigmoid", "shift", "nextdit_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "nextdit_shift"],
         default="shift",
-        help="Method to sample timesteps: sigma-based, uniform random, lognorm, sigmoid of random normal, shift of sigmoid and NextDIT.1 shifting. Default is 'shift'."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、lognorm、random normalのsigmoid、sigmoidのシフト、NextDIT.1のシフト。デフォルトは'shift'です。",
+        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and NextDIT.1 shifting. Default is 'shift'."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、NextDIT.1のシフト。デフォルトは'shift'です。",
     )
     parser.add_argument(
         "--sigmoid_scale",
@@ -1069,12 +1061,6 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
         help='Scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid"). / sigmoidタイムステップサンプリングの倍率（timestep-samplingが"sigmoid"の場合のみ有効）。',
     )
 
-    parser.add_argument(
-        "--lognorm_alpha",
-        type=float,
-        default=0.75,
-        help='Alpha factor for distribute timestep to the center/early (only used when timestep-sampling is "lognorm"). / 中心／早期へのタイムステップ分配のアルファ係数（timestep-samplingが"lognorm"の場合のみ有効）。',
-    )
     parser.add_argument(
         "--model_prediction_type",
         choices=["raw", "additive", "sigma_scaled"],
