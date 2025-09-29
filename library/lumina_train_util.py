@@ -1057,10 +1057,10 @@ def add_lumina_train_arguments(parser: argparse.ArgumentParser):
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "lognorm", "nextdit_shift"],
+        choices=["sigma", "uniform", "lognorm", "sigmoid", "shift", "nextdit_shift"],
         default="shift",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, lognorm, shift of sigmoid and NextDIT.1 shifting. Default is 'shift'."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid, lognorm、sigmoidのシフト、NextDIT.1のシフト。デフォルトは'shift'です。",
+        help="Method to sample timesteps: sigma-based, uniform random, lognorm, sigmoid of random normal, shift of sigmoid and NextDIT.1 shifting. Default is 'shift'."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、lognorm、random normalのsigmoid、sigmoidのシフト、NextDIT.1のシフト。デフォルトは'shift'です。",
     )
     parser.add_argument(
         "--sigmoid_scale",
