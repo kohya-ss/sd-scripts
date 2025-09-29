@@ -5,6 +5,7 @@ import regex
 
 import torch
 from library.device_utils import init_ipex
+
 init_ipex()
 
 from library import sdxl_model_util, sdxl_train_util, train_util
@@ -19,8 +20,8 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
         self.is_sdxl = True
 
     def assert_extra_args(self, args, train_dataset_group):
-        super().assert_extra_args(args, train_dataset_group)
-        sdxl_train_util.verify_sdxl_training_args(args, supportTextEncoderCaching=False)
+        # super().assert_extra_args(args, train_dataset_group) # do not call parent because it checks reso steps with 64
+        sdxl_train_util.verify_sdxl_training_args(args, support_text_encoder_caching=False)
 
         train_dataset_group.verify_bucket_reso_steps(32)
 
@@ -122,8 +123,7 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_textual_inversion.setup_parser()
-    # don't add sdxl_train_util.add_sdxl_training_arguments(parser): because it only adds text encoder caching
-    # sdxl_train_util.add_sdxl_training_arguments(parser)
+    sdxl_train_util.add_sdxl_training_arguments(parser, support_text_encoder_caching=False)
     return parser
 
 
