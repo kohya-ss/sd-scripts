@@ -12,6 +12,7 @@ from tqdm import tqdm
 from library import config_util
 from library import train_util
 from library import sdxl_train_util
+from library import deepspeed_utils
 from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
@@ -181,6 +182,7 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_sd_models_arguments(parser)
     train_util.add_training_arguments(parser, True)
     train_util.add_dataset_arguments(parser, True, True, True)
+    deepspeed_utils.add_deepspeed_arguments(parser)
     config_util.add_config_arguments(parser)
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
     parser.add_argument(

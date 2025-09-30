@@ -137,6 +137,20 @@ def _load_target_model(
 def load_tokenizers(args: argparse.Namespace):
     logger.info("prepare tokenizers")
 
+    # load diffusers tokenizers if available
+    name_or_path = args.pretrained_model_name_or_path
+    if os.path.isdir(name_or_path):
+        tokenizer_path = os.path.join(name_or_path, "tokenizer")
+        tokenizer_2_path = os.path.join(name_or_path, "tokenizer_2")
+        if os.path.exists(tokenizer_path) \
+        and os.path.exists(tokenizer_2_path):
+            logger.info(f"load tokenizers from pretrained_model_name_or_path: {name_or_path}")
+            tokeniers = [
+                CLIPTokenizer.from_pretrained(tokenizer_path),
+                CLIPTokenizer.from_pretrained(tokenizer_2_path),
+            ]
+            return tokeniers
+
     original_paths = [TOKENIZER1_PATH, TOKENIZER2_PATH]
     tokeniers = []
     for i, original_path in enumerate(original_paths):
