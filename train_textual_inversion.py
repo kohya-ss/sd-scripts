@@ -122,9 +122,9 @@ class TextualInversionTrainer:
         noise_pred = unet(noisy_latents, timesteps, text_conds).sample
         return noise_pred
 
-    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacement):
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, example_tuple=None, prompt_replacement):
         train_util.sample_images(
-            accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, prompt_replacement
+            accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet, example_tuple, prompt_replacement
         )
 
     def save_weights(self, file, updated_embs, save_dtype, metadata):
@@ -627,6 +627,7 @@ class TextualInversionTrainer:
                                 index_no_updates
                             ]
 
+                example_tuple = (latents, captions)
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
@@ -642,6 +643,7 @@ class TextualInversionTrainer:
                         tokenizer_or_list,
                         text_encoder_or_list,
                         unet,
+                        example_tuple,
                         prompt_replacement,
                     )
 
@@ -714,7 +716,6 @@ class TextualInversionTrainer:
 
                     if args.save_state:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
-
             self.sample_images(
                 accelerator,
                 args,
@@ -725,6 +726,7 @@ class TextualInversionTrainer:
                 tokenizer_or_list,
                 text_encoder_or_list,
                 unet,
+                example_tuple,
                 prompt_replacement,
             )
 

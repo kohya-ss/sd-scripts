@@ -67,7 +67,7 @@ def setup_logging(args=None, log_level=None, reset=False):
 
         if handler is None:
             handler = logging.StreamHandler(sys.stdout)  # same as print
-            handler.propagate = False
+            handler.propagate = True
 
     formatter = logging.Formatter(
         fmt="%(message)s",

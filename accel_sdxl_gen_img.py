@@ -14,12 +14,14 @@ import os
 import random
 import re
 import gc
+from accelerate import PartialState
+from accelerate.utils import gather_object
 
 import diffusers
 import numpy as np
 
 import torch
-from library.device_utils import init_ipex, clean_memory, get_preferred_device
+from library.device_utils import init_ipex, clean_memory, get_preferred_device, clean_memory_on_device
 init_ipex()
 
 import torchvision
@@ -80,7 +82,17 @@ CLIP_VISION_MODEL = "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k"
 高速化のためのモジュール入れ替え
 """
 
+def get_batches(items, batch_size):
+    num_batches = (len(items) + batch_size - 1) // batch_size
+    batches = []
 
+    for i in range(num_batches):
+        start_index = i * batch_size
+        end_index = min((i + 1) * batch_size, len(items))
+        batch = items[start_index:end_index]
+        batches.append(batch)
+
+    return batches
 def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
@@ -1470,6 +1482,7 @@ class BatchDataExt(NamedTuple):
 
 class BatchData(NamedTuple):
     return_latents: bool
+    global_count: int
     base: BatchDataBase
     ext: BatchDataExt
 
@@ -1486,20 +1499,29 @@ def main(args):
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
     # モデルを読み込む
+    logger.info("preparing pipes")
+    #accelerator = train_util.prepare_accelerator(args)
+    #is_main_process = accelerator.is_main_process
+    distributed_state = PartialState()
+    device = distributed_state.device
+
     if not os.path.isfile(args.ckpt):  # ファイルがないならパターンで探し、一つだけ該当すればそれを使う
         files = glob.glob(args.ckpt)
         if len(files) == 1:
             args.ckpt = files[0]
-    device = get_preferred_device()
-    logger.info(f"preferred device: {device}")
+    #device = get_preferred_device()
+    logger.info(f"preferred device: {device}, {distributed_state.is_main_process}")
+    clean_memory_on_device(device)
     model_dtype = sdxl_train_util.match_mixed_precision(args, dtype)
-    (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
-        args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype, device, model_dtype
-    )
+    for pi in range(distributed_state.num_processes):
+        if pi == distributed_state.local_process_index:
+            logger.info(f"loading model for process {distributed_state.local_process_index+1}/{distributed_state.num_processes}")
+            (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
+                args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype, device if args.lowram else "cpu", model_dtype
+            )
     unet: InferSdxlUNet2DConditionModel = InferSdxlUNet2DConditionModel(unet)
-    text_encoder1.to(dtype).to(device)
-    text_encoder2.to(dtype).to(device)
-    unet.to(dtype).to(device)
+    distributed_state.wait_for_everyone()
+
     # xformers、Hypernetwork対応
     if not args.diffusers_xformers:
         mem_eff = not (args.xformers or args.sdpa)
@@ -1656,6 +1678,9 @@ def main(args):
     vae.to(vae_dtype).to(device)
     vae.eval()
 
+    text_encoder1.to(dtype).to(device)
+    text_encoder2.to(dtype).to(device)
+    unet.to(dtype).to(device)
     text_encoder1.eval()
     text_encoder2.eval()
     unet.eval()
@@ -1819,7 +1844,10 @@ def main(args):
         args.clip_skip,
     )
     pipe.set_control_nets(control_nets)
-    logger.info("pipeline is ready.")
+    logger.info(f"pipeline on {device} is ready.")
+    distributed_state.wait_for_everyone()
+    #pipes = gather_object([pipe])
+    #unets = gather_object([unet])
 
     if args.diffusers_xformers:
         pipe.enable_xformers_memory_efficient_attention()
@@ -2092,7 +2120,7 @@ def main(args):
         iter_seed = random.randint(0, 0x7FFFFFFF)
 
         # バッチ処理の関数
-        def process_batch(batch: List[BatchData], highres_fix, highres_1st=False):
+        def process_batch(batch: List[BatchData], distributed_state, highres_fix, highres_1st=False):
             batch_size = len(batch)
 
             # highres_fixの処理
@@ -2102,7 +2130,7 @@ def main(args):
 
                 logger.info("process 1st stage")
                 batch_1st = []
-                for _, base, ext in batch:
+                for _, global_count, base, ext in batch:
 
                     def scale_and_round(x):
                         if x is None:
@@ -2139,10 +2167,10 @@ def main(args):
                         ext.network_muls,
                         ext.num_sub_prompts,
                     )
-                    batch_1st.append(BatchData(is_1st_latent, base, ext_1st))
+                    batch_1st.append(BatchData(is_1st_latent, global_count, base, ext_1st))
 
                 pipe.set_enable_control_net(True)  # 1st stageではControlNetを有効にする
-                images_1st = process_batch(batch_1st, True, True)
+                images_1st, _, _ = process_batch(batch_1st, distributed_state, True, True)
 
                 # 2nd stageのバッチを作成して以下処理する
                 logger.info("process 2nd stage")
@@ -2181,7 +2209,7 @@ def main(args):
 
                 batch_2nd = []
                 for i, (bd, image) in enumerate(zip(batch, images_1st)):
-                    bd_2nd = BatchData(False, BatchDataBase(*bd.base[0:3], bd.base.seed + 1, image, None, *bd.base[6:]), bd.ext)
+                    bd_2nd = BatchData(False, bd.global_count, BatchDataBase(*bd.base[0:3], bd.base.seed + 1, image, None, *bd.base[6:]), bd.ext)
                     batch_2nd.append(bd_2nd)
                 batch = batch_2nd
 
@@ -2191,6 +2219,7 @@ def main(args):
             # このバッチの情報を取り出す
             (
                 return_latents,
+                _,
                 (step_first, _, _, _, init_image, mask_image, _, guide_image, _),
                 (
                     width,
@@ -2211,6 +2240,7 @@ def main(args):
             ) = batch[0]
             noise_shape = (LATENT_CHANNELS, height // DOWNSAMPLING_FACTOR, width // DOWNSAMPLING_FACTOR)
 
+            global_counter = []
             prompts = []
             negative_prompts = []
             raw_prompts = []
@@ -2246,9 +2276,11 @@ def main(args):
             all_guide_images_are_same = True
             for i, (
                 _,
+                globalcount,
                 (_, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt),
                 _,
             ) in enumerate(batch):
+                global_counter.append(globalcount)
                 prompts.append(prompt)
                 negative_prompts.append(negative_prompt)
                 seeds.append(seed)
@@ -2346,13 +2378,31 @@ def main(args):
                 clip_guide_images=guide_images,
             )
             if highres_1st and not args.highres_fix_save_1st:  # return images or latents
-                return images
+                return images, None, None
 
             # save image
+            '''
+            distributed_state.wait_for_everyone()
+            all_images=gather_object(images)
+            all_global_counter = gather_object(global_counter)
+            all_prompts = gather_object(prompts)
+            all_negative_prompts = gather_object(negative_prompts)
+            all_seeds = gather_object(seeds)
+            all_clip_prompts = gather_object(clip_prompts)
+            all_raw_prompts = gather_object(raw_prompts)
+            if init_images is not None:
+                all_init_images = gather_object(init_images)
+            else:
+                all_init_images = None
+            if distributed_state.is_main_process:
+            '''
             highres_prefix = ("0" if highres_1st else "1") if highres_fix else ""
-            ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-            for i, (image, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
-                zip(images, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
+            ds_str = time.strftime("%Y%m%d", time.localtime())
+            ts_str = time.strftime("%H%M%S", time.localtime())
+            metadatas = []
+            filenames = []
+            for i, (image, globalcount, prompt, negative_prompts, seed, clip_prompt, raw_prompt) in enumerate(
+                zip(images, global_counter, prompts, negative_prompts, seeds, clip_prompts, raw_prompts)
             ):
                 if highres_fix:
                     seed -= 1  # record original seed
@@ -2383,11 +2433,13 @@ def main(args):
                     else:
                         fln = os.path.splitext(os.path.basename(init_images.filename))[0] + ".png"
                 elif args.sequential_file_name:
-                    fln = f"im_{highres_prefix}{step_first + i + 1:06d}.png"
+                    fln = f"im_{globalcount:02d}_{highres_prefix}{step_first + i + 1:06d}.png"
                 else:
-                    fln = f"im_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
-
+                    fln = f"im_{globalcount:02d}_{ds_str}_{ts_str}_{highres_prefix}{i:03d}_{seed}.png"
+                logger.info(f"Saving image {globalcount}: {fln}\nPrompt: {prompt} on process {distributed_state.local_process_index}")
                 image.save(os.path.join(args.outdir, fln), pnginfo=metadata)
+                metadatas.append(metadata)
+                filenames.append("test_"+fln)
 
             if not args.no_preview and not highres_1st and args.interactive:
                 try:
@@ -2402,13 +2454,16 @@ def main(args):
                         "opencv-python is not installed, cannot preview / opencv-pythonがインストールされていないためプレビューできません"
                     )
 
-            return images
+            #distributed_state.wait_for_everyone()
+            #logger.info(f"images: {len(images)} metadatas: {len(metadatas)} filenames: {len(filenames)} in process: {distributed_state.local_process_index}")
+            return images, metadatas, filenames
 
         # 画像生成のプロンプトが一周するまでのループ
         prompt_index = 0
         global_step = 0
-        batch_data = []
-        while args.interactive or prompt_index < len(prompt_list):
+        prompt_data_list = []
+        extinfo = []
+        while args.interactive or (prompt_index < len(prompt_list) and distributed_state.is_main_process):
             if len(prompt_list) == 0:
                 # interactive
                 valid = False
@@ -2433,9 +2488,26 @@ def main(args):
             # repeat prompt
             for pi in range(args.images_per_prompt if len(raw_prompts) == 1 else len(raw_prompts)):
                 raw_prompt = raw_prompts[pi] if len(raw_prompts) > 1 else raw_prompts[0]
-
+                prompt_args = raw_prompt.strip().split(" --")
+                prompt = prompt_args[0]
                 if pi == 0 or len(raw_prompts) > 1:
-                    # parse prompt: if prompt is not changed, skip parsing
+                    logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
+                for parg in prompt_args[1:]:
+
+                    try:
+                        m = re.match(r"n (.+)", parg, re.IGNORECASE)
+                        if m:  # negative prompt
+                            negative_prompt = m.group(1)
+                            logger.info(f"negative prompt: {negative_prompt}")
+                            break
+
+                    except ValueError as ex:
+                        logger.error(f"Exception in parsing / 解析エラー: {parg}")
+                        logger.error(f"{ex}")
+                
+                
+                if pi == 0:
+                        # parse prompt: if prompt is not changed, skip parsing
                     width = args.W
                     height = args.H
                     original_width = args.original_width
@@ -2448,20 +2520,21 @@ def main(args):
                     negative_scale = args.negative_scale
                     steps = args.steps
                     seed = None
-                    seeds = None
+                    if pi == 0:
+                        seeds = None
                     strength = 0.8 if args.strength is None else args.strength
                     negative_prompt = ""
                     clip_prompt = None
                     network_muls = None
 
-                    # Deep Shrink
+                        # Deep Shrink
                     ds_depth_1 = None  # means no override
                     ds_timesteps_1 = args.ds_timesteps_1
                     ds_depth_2 = args.ds_depth_2
                     ds_timesteps_2 = args.ds_timesteps_2
                     ds_ratio = args.ds_ratio
 
-                    # Gradual Latent
+                        # Gradual Latent
                     gl_timesteps = None  # means no override
                     gl_ratio = args.gradual_latent_ratio
                     gl_every_n_steps = args.gradual_latent_every_n_steps
@@ -2469,11 +2542,8 @@ def main(args):
                     gl_s_noise = args.gradual_latent_s_noise
                     gl_unsharp_params = args.gradual_latent_unsharp_params
 
-                    prompt_args = raw_prompt.strip().split(" --")
-                    prompt = prompt_args[0]
-                    logger.info(f"prompt {prompt_index+1}/{len(prompt_list)}: {prompt}")
-
                     for parg in prompt_args[1:]:
+
                         try:
                             m = re.match(r"w (\d+)", parg, re.IGNORECASE)
                             if m:
@@ -2529,9 +2599,12 @@ def main(args):
                                 logger.info(f"steps: {steps}")
                                 continue
 
-                            m = re.match(r"d ([\d,]+)", parg, re.IGNORECASE)
+                            m = re.match(r"d ([-?\d,]+)", parg, re.IGNORECASE)
                             if m:  # seed
-                                seeds = [int(d) for d in m.group(1).split(",")]
+                                if pi > 0 and len(raw_prompts) > 1: #Bypass on 2nd loop for dynamic prompts
+                                    continue
+                                seeds = m.group(1).split(",")
+                                seeds = [int(d) for d in seeds]
                                 logger.info(f"seeds: {seeds}")
                                 continue
 
@@ -2554,12 +2627,6 @@ def main(args):
                             if m:  # strength
                                 strength = float(m.group(1))
                                 logger.info(f"strength: {strength}")
-                                continue
-
-                            m = re.match(r"n (.+)", parg, re.IGNORECASE)
-                            if m:  # negative prompt
-                                negative_prompt = m.group(1)
-                                logger.info(f"negative prompt: {negative_prompt}")
                                 continue
 
                             m = re.match(r"c (.+)", parg, re.IGNORECASE)
@@ -2732,8 +2799,17 @@ def main(args):
                 # prepare seed
                 if seeds is not None:  # given in prompt
                     # 数が足りないなら前のをそのまま使う
-                    if len(seeds) > 0:
-                        seed = seeds.pop(0)
+                    if len(seeds) > 1:
+                        seed = abs(seeds.pop(0))
+                    elif len(seeds) == 1:
+                        if seeds[0] == -1:
+                            logger.error("predefined seeds in prompt are exhausted")
+                            seeds = None
+                            seed = None
+                        else:
+                            seed = abs(seeds.pop(0))
+                        
+                        
                 else:
                     if predefined_seeds is not None:
                         if len(predefined_seeds) > 0:
@@ -2748,8 +2824,7 @@ def main(args):
 
                 if seed is None:
                     seed = random.randint(0, 0x7FFFFFFF)
-                if args.interactive:
-                    logger.info(f"seed: {seed}")
+                logger.info(f"seed: {seed}")
 
                 # prepare init image, guide image and mask
                 init_image = mask_image = guide_image = None
@@ -2790,6 +2865,7 @@ def main(args):
 
                 b1 = BatchData(
                     False,
+                    global_step,
                     BatchDataBase(
                         global_step, prompt, negative_prompt, seed, init_image, mask_image, clip_prompt, guide_image, raw_prompt
                     ),
@@ -2810,32 +2886,99 @@ def main(args):
                         num_sub_prompts,
                     ),
                 )
-                
-                if len(batch_data) > 0 and batch_data[-1].ext != b1.ext:  # バッチ分割必要？
-                    logger.info("Does this run? When number of prompts less than batch?")
-                    process_batch(batch_data, highres_fix)
-                    batch_data.clear()
-
-                batch_data.append(b1)
-                if len(batch_data) == args.batch_size:
-                    prev_image = process_batch(batch_data, highres_fix)[0]
-                    batch_data.clear()
-                logger.info(f"Global Step: {global_step}")
+                prompt_data_list.append(b1)
+                extinfo.append(b1.ext)
                 global_step += 1
-                
 
             prompt_index += 1
+        prompt_data_list = gather_object(prompt_data_list)
+        extinfo = gather_object(extinfo)
+        
+        ext_separated_list_of_batches = []
+        if len(prompt_data_list) > 0 and distributed_state.is_main_process:
+            unique_extinfo = list(set(extinfo))
+            # splits list of prompts into sublists where BatchDataExt ext is identical
+            for i in range(len(unique_extinfo)):
+                templist = []
+                res = [j for j, val in enumerate(prompt_data_list) if val.ext == unique_extinfo[i]]
+                for index in res:
+                    templist.append(prompt_data_list[index])
+                
+                if distributed_state.num_processes > 1:
+                    resorted_list = []
+                    for i in range(distributed_state.num_processes):
+                        resorted_list.append(templist[i :: distributed_state.num_processes])
+                    templist = []
+                    for list_of_prompts in resorted_list:      
+                        templist.extend(get_batches(items=list_of_prompts, batch_size=args.batch_size).copy())
+                    split_into_batches = templist
+                else:
+                    split_into_batches = get_batches(items=templist, batch_size=args.batch_size).copy()
 
-        if len(batch_data) > 0:
-            process_batch(batch_data, highres_fix)
-            batch_data.clear()
+                ext_separated_list_of_batches.append(split_into_batches)
 
+        if distributed_state.is_main_process:
+            '''
+            batchlogstr = "Running through ext_separated_list_of_batches Before Gather:\n"
+            for x in range(len(ext_separated_list_of_batches)):
+                batchlogstr += f"Batch_ext {x} of {len(ext_separated_list_of_batches)} break:\n"
+                for y in range(len(ext_separated_list_of_batches[x])):
+                    batchlogstr += f"    Batch {y} of {len(ext_separated_list_of_batches[x])} break:\n"
+                    for z in range(len(ext_separated_list_of_batches[x][y])):
+                        batchlogstr += f"        Image {z} of {len(ext_separated_list_of_batches[x][y])} break: {ext_separated_list_of_batches[x][y][z].global_count}\n"
+            logger.info(batchlogstr)
+            '''
+        distributed_state.wait_for_everyone()
+        ext_separated_list_of_batches = gather_object(ext_separated_list_of_batches)
+        del extinfo
+        #logger.info(f"\nDevice {distributed_state.device}: {ext_separated_list_of_batches}")
+        if len(ext_separated_list_of_batches) > 0:
+            for batch_list in ext_separated_list_of_batches:
+                with torch.no_grad():
+                    with distributed_state.split_between_processes(batch_list) as batches:
+                        for batch in batches:
+                            #batchlogstr=f"\nLoading batch of {len(batches)} of {len(batch)} prompts onto device {distributed_state.local_process_index}:\nbatch_list:"
+                            #for i in range(len(batch)):
+                            #    batchlogstr += f"\nImage: {batch[i].global_count}\nDevice {distributed_state.device}: Prompt {i+1}: {batch[i].base.prompt}\nNegative Prompt: {batch[i].base.negative_prompt}\nSeed: {batch[i].base.seed}"
+                            #logger.info(batchlogstr)
+                            coll_image, coll_metadata, coll_filename = process_batch(batch, distributed_state, highres_fix)
+                            #logger.info(f"coll_image: {len(coll_image)}")
+                            #logger.info(f"coll_metadata: {len(coll_metadata)}")
+                            #logger.info(f"coll_filename: {len(coll_filename)}")
+                            distributed_state.wait_for_everyone()
+                            
+                            all_images = gather_object(coll_image)
+                            all_metadatas = gather_object(coll_metadata)
+                            all_filenames = gather_object(coll_filename)
+                            prev_image = all_images[0]
+                            '''
+                            if distributed_state.is_main_process:
+                                for image, metadata, filename in zip(all_images, all_metadatas, all_filenames):
+                                    logger.info(f"Saving image: {filename}")
+                                    image.save(os.path.join(args.outdir, filename), pnginfo=metadata)
+                            '''
+                            distributed_state.wait_for_everyone()
+                            
+            #for i in range(len(data_loader)):
+            #    logger.info(f"Loading Batch {i+1} of {len(data_loader)}")
+            #    prompt_data_list_split.append(data_loader[i])
+            #    if (i+1) % distributed_state.num_processes != 0 and (i+1) != len(data_loader):
+            #        continue
+            #    with torch.no_grad():
+            #        with distributed_state.split_between_processes(prompt_data_list_split) as batch_list:
+            #            logger.info(f"Loading batch of {len(batch_list[0])} prompts onto device {distributed_state.local_process_index}:")
+            #            logger.info(f"batch_list:")
+            #            for i in range(len(batch_list[0])):
+            #                logger.info(f"Device {distributed_state.device}: Prompt {i+1}: {batch_list[0][i].base.prompt}")
+            #            prev_image = process_batch(batch_list[0], highres_fix)[0]
+            #        prompt_data_list_split.clear()
+            #        distributed_state.wait_for_everyone()
     logger.info("done!")
 
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-
+    #sdxl_train_util.add_sdxl_training_arguments(parser)
     add_logging_arguments(parser)
 
     parser.add_argument("--prompt", type=str, default=None, help="prompt / プロンプト")
@@ -3202,7 +3345,11 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--full_bf16", action="store_true", help="Loading model in bf16"
     )
-
+    parser.add_argument(
+        "--lowram",
+        action="store_true",
+        help="enable low RAM optimization. e.g. load models to VRAM instead of RAM (for machines which have bigger VRAM than RAM such as Colab and Kaggle) / メインメモリが少ない環境向け最適化を有効にする。たとえばVRAMにモデルを読み込む等（ColabやKaggleなどRAMに比べてVRAMが多い環境向け）",
+    )
     # # parser.add_argument(
     #     "--control_net_image_path", type=str, default=None, nargs="*", help="image for ControlNet guidance / ControlNetでガイドに使う画像"
     # )

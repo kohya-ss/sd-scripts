@@ -28,6 +28,7 @@ import random
 import hashlib
 import subprocess
 from io import BytesIO
+from accelerate.utils import gather_object
 import toml
 
 from tqdm import tqdm
@@ -1724,7 +1725,10 @@ class DreamBoothDataset(BaseDataset):
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
-                    reg_infos.append((info, subset))
+                    if subset.num_repeats > 1:
+                        info.num_repeats = 1
+                    for i in range(subset.num_repeats):
+                        reg_infos.append((info, subset))
                 else:
                     self.register_image(info, subset)
 
@@ -1735,6 +1739,7 @@ class DreamBoothDataset(BaseDataset):
         self.num_train_images = num_train_images
 
         logger.info(f"{num_reg_images} reg images.")
+        random.shuffle(reg_infos)
         if num_train_images < num_reg_images:
             logger.warning("some of reg images are not used / 正則化画像の数が多いので、一部使用されない正則化画像があります")
 
@@ -1748,13 +1753,16 @@ class DreamBoothDataset(BaseDataset):
                 for info, subset in reg_infos:
                     if first_loop:
                         self.register_image(info, subset)
+                        logger.info(f"Registering image: {info.absolute_path}")
                         n += info.num_repeats
                     else:
                         info.num_repeats += 1  # rewrite registered info
+                        logger.info(f"Registering image: {info.absolute_path}")
                         n += 1
                     if n >= num_train_images:
                         break
                 first_loop = False
+                random.shuffle(reg_infos)
 
         self.num_reg_images = num_reg_images
 
@@ -4720,7 +4728,7 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
-            logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
+            logger.info(f"loading model for process {accelerator.state.local_process_index+1}/{accelerator.state.num_processes}")
 
             text_encoder, vae, unet, load_stable_diffusion_format = _load_target_model(
                 args,
@@ -5426,7 +5434,7 @@ def line_to_prompt_dict(line: str) -> dict:
 
     return prompt_dict
 
-
+RE_CAPTION_PROMPT = re.compile(r"(?i)__caption((\|)(.+?)?)?__")
 def sample_images_common(
     pipe_class,
     accelerator: Accelerator,
@@ -5438,6 +5446,7 @@ def sample_images_common(
     tokenizer,
     text_encoder,
     unet,
+    example_tuple=None,
     prompt_replacement=None,
     controlnet=None,
 ):
@@ -5468,7 +5477,7 @@ def sample_images_common(
     distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
 
     org_vae_device = vae.device  # CPUにいるはず
-    vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
+    vae.to(device)  # distributed_state.device is same as accelerator.device
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet)
@@ -5478,18 +5487,23 @@ def sample_images_common(
         text_encoder = accelerator.unwrap_model(text_encoder)
 
     # read prompts
-    if args.sample_prompts.endswith(".txt"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
-    elif args.sample_prompts.endswith(".toml"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            data = toml.load(f)
-        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
-    elif args.sample_prompts.endswith(".json"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            prompts = json.load(f)
-
+    
+    if distributed_state.is_main_process:
+        # Load prompts into prompts list on main process only
+        if args.sample_prompts.endswith(".txt"):
+            with open(args.sample_prompts, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+        elif args.sample_prompts.endswith(".toml"):
+            with open(args.sample_prompts, "r", encoding="utf-8") as f:
+                data = toml.load(f)
+            prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
+        elif args.sample_prompts.endswith(".json"):
+            with open(args.sample_prompts, "r", encoding="utf-8") as f:
+                prompts = json.load(f)
+    else:
+        prompts = [] # Init empty prompts list for sub processes.
+            
     # schedulers: dict = {}  cannot find where this is used
     default_scheduler = get_my_scheduler(
         sample_sampler=args.sample_sampler,
@@ -5507,21 +5521,65 @@ def sample_images_common(
         requires_safety_checker=False,
         clip_skip=args.clip_skip,
     )
-    pipeline.to(distributed_state.device)
-    save_dir = args.output_dir + "/sample"
-    os.makedirs(save_dir, exist_ok=True)
+    pipeline.to(device)
+    
 
     # preprocess prompts
-    for i in range(len(prompts)):
-        prompt_dict = prompts[i]
-        if isinstance(prompt_dict, str):
-            prompt_dict = line_to_prompt_dict(prompt_dict)
+    if example_tuple:
+        latents_list = []
+        for idx in range(len(example_tuple[1])):
+        	latent_dict = {}
+        	latent_dict["prompt"] = example_tuple[1][idx]
+        	latent_dict["height"] = example_tuple[0].shape[2] * 8
+        	latent_dict["width"] = example_tuple[0].shape[3] * 8
+        	latent_dict["original_lantent"] = example_tuple[0][idx].unsqueeze(0)
+        	latents_list.append(latent_dict)
+        distributed_state.wait_for_everyone()
+        latents_list = gather_object(latents_list)
+    save_dir = args.output_dir + "/sample"
+    if distributed_state.is_main_process:
+        #Create output folder and preprocess prompts on main process only.
+        os.makedirs(save_dir, exist_ok=True)
+        idx = 0
+       
+        for i in range(len(prompts)):
+            prompt_dict = prompts[i]
+            if isinstance(prompt_dict, str):
+                prompt_dict = line_to_prompt_dict(prompt_dict)
+                prompts[i] = prompt_dict
+            assert isinstance(prompt_dict, dict)
+            selected = ""
+            if '__caption' in prompt_dict.get("prompt"):
+                match_caption = RE_CAPTION_PROMPT.search(prompt_dict.get("prompt"))
+                if match_caption is not None:
+                    if not example_tuple:
+                        
+                        if match_caption.group(3) is not None:
+                            caption_list = match_caption.group(3).split("|")
+                            selected = random.choice(caption_list)
+                        prompt_dict["prompt"] = prompt_dict.get("prompt").replace(match_caption.group(0), selected if selected else f'Astronaut riding a horse on the moon')
+                        logger.info(f"Backup prompt: {prompt_dict.get('prompt')}")
+                    else:
+                        while latents_list[idx]["prompt"] == '':
+                                idx = (idx + 1) % len(latents_list)
+                                if idx == 0:
+                                    break
+                        prompt_dict["prompt"] = prompt_dict.get("prompt").replace(match_caption.group(0), f'{latents_list[idx]["prompt"]}')
+                        #logger.info(f"Replacement prompt: {prompt_dict.get('prompt')}")
+                        prompt_dict["height"] = latents_list[idx]["height"]
+                        #logger.info(f"Original Image Height: {prompt_dict['height']}")
+                        prompt_dict["width"] = latents_list[idx]["width"]
+                        #logger.info(f"Original Image Width: {prompt_dict['width']}")
+                        prompt_dict["original_lantent"] = latents_list[idx]["original_lantent"]
+                        idx = (idx + 1) % len(latents_list)
+    
+            prompt_dict["enum"] = i
+            prompt_dict.pop("subset", None)
             prompts[i] = prompt_dict
-        assert isinstance(prompt_dict, dict)
+            logger.info(f"Current prompt: {prompts[i].get('prompt')}")
+        
+    # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
 
-        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
-        prompt_dict["enum"] = i
-        prompt_dict.pop("subset", None)
 
     # save random state to restore later
     rng_state = torch.get_rng_state()
@@ -5531,26 +5589,25 @@ def sample_images_common(
     except Exception:
         pass
 
-    if distributed_state.num_processes <= 1:
-        # If only one device is available, just use the original prompt list. We don't need to care about the distribution of prompts.
-        with torch.no_grad():
-            for prompt_dict in prompts:
+    if distributed_state.num_processes > 1 and distributed_state.is_main_process:
+        per_process_prompts = []  # list of lists
+        # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
+        # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
+        for i in range(distributed_state.num_processes):
+            per_process_prompts.append(prompts[i :: distributed_state.num_processes])
+        prompts = []
+        # Flattening prompts for simplicity
+        for prompt in per_process_prompts:
+            prompts.extend(prompt)
+    distributed_state.wait_for_everyone()
+    prompts = gather_object(prompts)
+               
+    with torch.no_grad():
+        with distributed_state.split_between_processes(prompts) as prompt_dict_lists:
+            for prompt_dict in prompt_dict_lists:
                 sample_image_inference(
                     accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
                 )
-    else:
-        # Creating list with N elements, where each element is a list of prompt_dicts, and N is the number of processes available (number of devices available)
-        # prompt_dicts are assigned to lists based on order of processes, to attempt to time the image creation time to match enum order. Probably only works when steps and sampler are identical.
-        per_process_prompts = []  # list of lists
-        for i in range(distributed_state.num_processes):
-            per_process_prompts.append(prompts[i :: distributed_state.num_processes])
-
-        with torch.no_grad():
-            with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
-                for prompt_dict in prompt_dict_lists[0]:
-                    sample_image_inference(
-                        accelerator, args, pipeline, save_dir, prompt_dict, epoch, steps, prompt_replacement, controlnet=controlnet
-                    )
 
     # clear pipeline and cache to reduce vram usage
     del pipeline
@@ -5564,6 +5621,42 @@ def sample_images_common(
     if torch.cuda.is_available() and cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
     vae.to(org_vae_device)
+
+def draw_text_on_image(text, max_width, text_color="black"):
+    from PIL import ImageDraw, ImageFont, Image
+    import textwrap
+
+    font = ImageFont.load_default()
+    space_width = font.getbbox(' ')[2]
+    font_size = 20
+    
+    def wrap_text(text, font, max_width):
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        for word in words:
+            test_line = current_line + word + " "
+            if font.getbbox(test_line)[2] <= max_width:
+                current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = word + " "
+        lines.append(current_line)
+        return lines
+
+    lines = wrap_text(text, font, max_width - 10)
+    text_height = sum([font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines]) + 20
+    text_image = Image.new('RGB', (max_width, text_height), 'white')
+    text_draw = ImageDraw.Draw(text_image)
+
+    y_text = 10
+    for line in lines:
+        bbox = text_draw.textbbox((0, 0), line, font=font)
+        height = bbox[3] - bbox[1]
+        text_draw.text((10, y_text), line, font=font, fill=text_color)
+        y_text += font_size
+
+    return text_image
 
 
 def sample_image_inference(
@@ -5635,13 +5728,23 @@ def sample_image_inference(
             controlnet=controlnet,
             controlnet_image=controlnet_image,
         )
-
-    if torch.cuda.is_available():
-        with torch.cuda.device(torch.cuda.current_device()):
-            torch.cuda.empty_cache()
-
+    clean_memory_on_device(accelerator.device)
+    
     image = pipeline.latents_to_image(latents)[0]
-
+    if "original_lantent" in prompt_dict:
+        #Prevent out of VRAM error
+        
+        clean_memory_on_device(accelerator.device)
+        
+        original_latent = prompt_dict.get("original_lantent").to(device=accelerator.device)
+        original_image = pipeline.latents_to_image(original_latent)[0]
+        text_image = draw_text_on_image(f"caption: {prompt}", image.width * 2)
+        new_image = Image.new('RGB', (original_image.width + image.width, original_image.height + text_image.height))
+        new_image.paste(original_image, (0, text_image.height))
+        new_image.paste(image, (original_image.width, text_image.height))
+        new_image.paste(text_image, (0, 0))
+        image = new_image
+        
     # adding accelerator.wait_for_everyone() here should sync up and ensure that sample images are saved in the same order as the original prompt list
     # but adding 'enum' to the filename should be enough
 

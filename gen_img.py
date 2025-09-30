@@ -1485,6 +1485,7 @@ class ListPrompter:
 
 
 def main(args):
+    
     if args.fp16:
         dtype = torch.float16
     elif args.bf16:
@@ -1492,6 +1493,8 @@ def main(args):
     else:
         dtype = torch.float32
 
+    device = get_preferred_device()
+    
     highres_fix = args.highres_fix_scale is not None
     # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
 
@@ -1521,9 +1524,10 @@ def main(args):
     if is_sdxl:
         if args.clip_skip is None:
             args.clip_skip = 2
-
+            
+        model_dtype = sdxl_train_util.match_mixed_precision(args, dtype)
         (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
-            args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype
+            args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype, device, model_dtype
         )
         unet: InferSdxlUNet2DConditionModel = InferSdxlUNet2DConditionModel(unet)
         text_encoders = [text_encoder1, text_encoder2]
@@ -1748,7 +1752,7 @@ def main(args):
         logger.info(f"network_merge: {network_merge}")
 
         for i, network_module in enumerate(args.network_module):
-            logger.info("import network module: {network_module}")
+            logger.info(f"import network module: {network_module}")
             imported_module = importlib.import_module(network_module)
 
             network_mul = 1.0 if args.network_mul is None or len(args.network_mul) <= i else args.network_mul[i]
@@ -2508,7 +2512,7 @@ def main(args):
                     metadata.add_text("crop-left", str(crop_left))
 
                 if filename is not None:
-                    fln = filename
+                    fln = first_available_filename(args.outdir, filename) #Checks to make sure is not existing file, else returns first available sequential filename
                 else:
                     if args.use_original_file_name and init_images is not None:
                         if type(init_images) is list:
@@ -2586,7 +2590,8 @@ def main(args):
                     negative_scale = args.negative_scale
                     steps = args.steps
                     seed = None
-                    seeds = None
+                    if pi == 0:
+                        seeds = None
                     strength = 0.8 if args.strength is None else args.strength
                     negative_prompt = ""
                     clip_prompt = None
@@ -2670,7 +2675,11 @@ def main(args):
 
                             m = re.match(r"d ([\d,]+)", parg, re.IGNORECASE)
                             if m:  # seed
-                                seeds = [int(d) for d in m.group(1).split(",")]
+                                if pi > 0 and len(raw_prompts) > 1: #Bypass od 2nd loop for dynamic prompts
+                                    continue
+                                logger.info(f"{m}")
+                                seeds = m.group(1).split(",")
+                                seeds = [int(d.strip()) for d in seeds]
                                 logger.info(f"seeds: {seeds}")
                                 continue
 
@@ -2795,14 +2804,19 @@ def main(args):
                             m = re.match(r"f (.+)", parg, re.IGNORECASE)
                             if m:  # filename
                                 filename = m.group(1)
-                                logger.info(f"filename: {filename}")
                                 continue
 
                         except ValueError as ex:
                             logger.error(f"Exception in parsing / 解析エラー: {parg}")
                             logger.error(f"{ex}")
 
-                # override Deep Shrink
+                # override filename to add index number if more than one image per prompt
+                if filename is not None and (args.images_per_prompt >  1 or len(raw_prompts) > 1):
+                    fileext = os.path.splitext(filename)
+                    filename = fileext[0] + "_%s" % pi + fileext[1]
+                    logger.info(f"filename: {filename}")
+                    
+                # override Deep Shrink    
                 if ds_depth_1 is not None:
                     if ds_depth_1 < 0:
                         ds_depth_1 = args.ds_depth_1 or 3
@@ -2835,8 +2849,16 @@ def main(args):
                 # prepare seed
                 if seeds is not None:  # given in prompt
                     # num_images_per_promptが多い場合は足りなくなるので、足りない分は前のを使う
-                    if len(seeds) > 0:
+                    # Previous implementation may result in unexpected behaviour when number of seeds is lesss than number of repeats. Last seed is taken for rest of repeated prompts. Add condition if last element is -1, to start randomizing seed.
+                    if len(seeds) > 1:
                         seed = seeds.pop(0)
+                    elif len(seeds)  == 1:
+                        if seeds[0] == -1:
+                            seeds = None
+                        else:
+                            seed = seeds.pop(0)
+                        
+                        
                 else:
                     if args.iter_same_seed:
                         seed = iter_seed
@@ -2847,6 +2869,7 @@ def main(args):
                     seed = seed_random.randint(0, 2**32 - 1)
                 if args.interactive:
                     logger.info(f"seed: {seed}")
+                # logger.info(f"seed: {seed}") #debugging logger. Uncomment to verify if expected seed is added correctly.
 
                 # prepare init image, guide image and mask
                 init_image = mask_image = guide_image = None
@@ -2935,7 +2958,35 @@ def main(args):
 
     logger.info("done!")
 
+def first_available_filename(path, filename):
+    """
+    Checks if filename is in use.
+    if filename is in use, appends a running number
+    e.g. filename = 'file.png':
 
+    file.png
+    file_1.png
+    file_2.png
+
+    Runs in log(n) time where n is the number of existing files in sequence
+    """
+    i = 1
+    if not os.path.exists(os.path.join(path, filename)):
+        return filename
+    fileext = os.path.splitext(filename)
+    filename = fileext[0] + "_%s" + fileext[1]
+    # First do an exponential search
+    while os.path.exists(os.path.join(path,filename % i)):
+        i = i * 2
+
+    # Result lies somewhere in the interval (i/2..i]
+    # We call this interval (a..b] and narrow it down until a + 1 = b
+    a, b = (i // 2, i)
+    while a + 1 < b:
+        c = (a + b) // 2 # interval midpoint
+        a, b = (c, b) if os.path.exists(os.path.join(path,filename % c)) else (a, c)
+
+    return filename % b
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
@@ -3342,6 +3393,10 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="unsharp mask parameters for Gradual Latent: ksize, sigma, strength, target-x (1 means True). `3,0.5,0.5,1` or `3,1.0,1.0,0` is recommended /"
         + " Gradual Latentのunsharp maskのパラメータ: ksize, sigma, strength, target-x. `3,0.5,0.5,1` または `3,1.0,1.0,0` が推奨",
+    )
+    parser.add_argument("--full_fp16", action="store_true", help="Loading model in fp16")
+    parser.add_argument(
+        "--full_bf16", action="store_true", help="Loading model in bf16"
     )
 
     # # parser.add_argument(
