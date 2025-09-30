@@ -767,6 +767,10 @@ class NetworkTrainer:
                 vae_name = os.path.basename(vae_name)
             metadata["ss_vae_name"] = vae_name
 
+        if args.todo_factor:
+            metadata["ss_todo_factor"] = args.todo_factor
+            metadata["ss_todo_max_depth"] = args.todo_max_depth
+
         metadata = {k: str(v) for k, v in metadata.items()}
 
         # make minimum metadata for filtering
