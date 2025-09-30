@@ -35,11 +35,6 @@ from library import custom_offloading_utils
 disable_selective_torch_compile = (
     os.getenv("SDSCRIPTS_SELECTIVE_TORCH_COMPILE", "0") == "0"
 )
-memory_budget = float(
-    os.getenv("SDSCRIPTS_TORCH_COMPILE_ACTIVATION_MEMORY_BUDGET", "0")
-)
-if memory_budget > 0:
-    torch._functorch.config.activation_memory_budget = memory_budget
 
 try:
     from flash_attn import flash_attn_varlen_func
