@@ -646,7 +646,7 @@ class TextualInversionTrainer:
                     )
 
                     # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0 and global_step >= args.save_every_n_steps_after_x:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             updated_embs_list = []
