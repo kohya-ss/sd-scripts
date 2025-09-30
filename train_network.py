@@ -8,6 +8,7 @@ import time
 import json
 from multiprocessing import Value
 import toml
+import copy
 
 from tqdm import tqdm
 
@@ -135,6 +136,11 @@ class NetworkTrainer:
         train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
 
     def train(self, args):
+        # acceleratorを準備する
+        logger.info("preparing accelerator")
+        accelerator = train_util.prepare_accelerator(args)
+        is_main_process = accelerator.is_main_process
+
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         train_util.verify_training_args(args)
@@ -202,8 +208,15 @@ class NetworkTrainer:
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
-        ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
-        collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+        
+        if args.incremental_reg_reload:
+            if args.persistent_data_loader_workers:
+                logger.warning("persistent_data_loader_workers has been set to False because incremental_reg_reload is enabled.")
+                args.persistent_data_loader_workers = False
+        if args.randomized_regularization_image:
+            # train_dataset_group.set_reg_randomize() triggers a reload to initial state with randomized regularization images. Ensure that this occurs before initial caching to prevent data mismatch
+            logger.info("Reloading sequentially loaded regularization images to replace with randomly selected regularization images...")
+            train_dataset_group.set_reg_randomize(args.randomized_regularization_image)
 
         if args.debug_dataset:
             train_util.debug_dataset(train_dataset_group)
@@ -220,11 +233,6 @@ class NetworkTrainer:
             ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
         self.assert_extra_args(args, train_dataset_group)
-
-        # acceleratorを準備する
-        logger.info("preparing accelerator")
-        accelerator = train_util.prepare_accelerator(args)
-        is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
@@ -263,23 +271,24 @@ class NetworkTrainer:
 
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
 
-        # 学習を準備する
-        if cache_latents:
-            vae.to(accelerator.device, dtype=vae_dtype)
-            vae.requires_grad_(False)
-            vae.eval()
-            with torch.no_grad():
-                train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
-            vae.to("cpu")
-            clean_memory_on_device(accelerator.device)
 
-            accelerator.wait_for_everyone()
-
-        # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
-        # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
-        self.cache_text_encoder_outputs_if_needed(
-            args, accelerator, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
-        )
+        '''
+        Replacing cache latents and cache text encoder outputs here with code to simulate running through self.cache_text_encoder_outputs_if_needed().
+        Reduces unnecessary caching by avoiding caching until data loaded into train_dataset_group has been finalized.
+        This step is required to ensure text_encoders are loaded onto the correct device for the training.
+        Possibly should replace with method that can be overridden for different handling of TE for different models.
+        '''
+        if args.cache_text_encoder_outputs and self.is_sdxl:
+            # When TE is not be trained, it will not be prepared so we need to use explicit autocast
+            for t_enc in text_encoders:
+                t_enc.to("cpu", dtype=torch.float32) # Text Encoder doesn't work with fp16 on CPU
+        else:
+            # Text Encoderから毎回出力を取得するので、GPUに乗せておく
+            if not self.is_sdxl:
+                accelerator.print("Text Encoder caching not supported. Overriding args.cache_text_encoder_output to False")
+                args.cache_text_encoder_outputs = False
+            for t_enc in text_encoders:
+                t_enc.to(accelerator.device, dtype=weight_dtype)
 
         # prepare network
         net_kwargs = {}
@@ -368,8 +377,12 @@ class NetworkTrainer:
 
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
+            
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
 
+        ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
+        collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+        
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset_group,
             batch_size=1,
@@ -845,7 +858,6 @@ class NetworkTrainer:
             )
 
         loss_recorder = train_util.LossRecorder()
-        del train_dataset_group
 
         # callback for step start
         if hasattr(accelerator.unwrap_model(network), "on_step_start"):
@@ -885,6 +897,8 @@ class NetworkTrainer:
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
                 initial_step -= len(train_dataloader)
+                if args.incremental_reg_reload:
+                    train_dataset_group.incremental_reg_load(True) # Updates the loaded dataset to the next epoch
             global_step = initial_step
 
         for epoch in range(epoch_to_start, num_train_epochs):
@@ -892,6 +906,39 @@ class NetworkTrainer:
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
+
+            if epoch == epoch_to_start or args.incremental_reg_reload:
+                if cache_latents:
+                    vae.to(accelerator.device, dtype=vae_dtype)
+                    vae.requires_grad_(False)
+                    vae.eval()
+                    with torch.no_grad():
+                        train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
+                    vae.to("cpu")
+                    clean_memory_on_device(accelerator.device)
+
+                    accelerator.wait_for_everyone()
+
+                    # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
+                    # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
+                self.cache_text_encoder_outputs_if_needed(
+                    args, accelerator, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
+                )
+                accelerator.wait_for_everyone() # Ensure all processes sync after potential dataset/cache changes in initial_step block
+
+                ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
+                collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+
+                train_dataloader = torch.utils.data.DataLoader(
+                    train_dataset_group, # This is the updated train_dataset_group
+                    batch_size=1, 
+                    shuffle=True, 
+                    collate_fn=collator,
+                    num_workers=n_workers, # Ensure n_workers is available
+                    persistent_workers=args.persistent_data_loader_workers,
+                )
+                accelerator.wait_for_everyone()
+                train_dataloader = accelerator.prepare(train_dataloader)
 
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
@@ -1091,6 +1138,9 @@ class NetworkTrainer:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
             self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+            # Load next batch of regularization images if necessary
+            if args.incremental_reg_reload and epoch + 1 < num_train_epochs:
+                train_dataset_group.incremental_reg_load(True)
 
             # end of epoch
 
