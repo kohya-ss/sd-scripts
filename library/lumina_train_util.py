@@ -479,7 +479,6 @@ def time_shift(mu: float, sigma: float, t: torch.Tensor):
     # Since we adopt the reverse, the 1-t operations are needed
     t = 1 - t
     t = math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
-    t = 1 - t
     return t
 
 
@@ -854,7 +853,7 @@ def get_noisy_model_input_and_timesteps(
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
         t = time_shift(mu, 1.0, t)
 
-        timesteps = 1 - t * 1000.0
+        timesteps = t * 1000.0
         t = t.view(-1, 1, 1, 1)
         noisy_model_input = (1 - t) * noise + t * latents
     else:
