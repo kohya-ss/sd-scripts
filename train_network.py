@@ -11,6 +11,8 @@ import toml
 from collections import deque
 import numpy as np
 
+from typing import Dict, List, Optional
+
 from tqdm import tqdm
 
 import torch
@@ -366,6 +368,52 @@ class NetworkTrainer:
 
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
+
+        num_text_encoders = len(text_encoders)
+        te_selection_indices: List[int] = []
+        te_targets_for_network: Optional[List[int]] = None
+        if train_text_encoder:
+            if args.network_te_train_targets:
+                idx_map = {"te1": 0, "te2": 1}
+                selected = []
+                for target in args.network_te_train_targets:
+                    target_lower = target.lower()
+                    if target_lower not in idx_map:
+                        raise ValueError(
+                            f"unsupported text encoder target '{target}' / 未対応のText Encoderターゲット'{target}'が指定されています"
+                        )
+                    idx = idx_map[target_lower]
+                    if idx >= num_text_encoders:
+                        raise ValueError(
+                            f"text encoder target '{target}' is unavailable: this model provides {num_text_encoders} text encoder(s) / Text Encoderターゲット'{target}'は無効です。このモデルには{num_text_encoders}個のText Encoderしかありません"
+                        )
+                    if idx not in selected:
+                        selected.append(idx)
+
+                if len(selected) == 0:
+                    te_selection_indices = []
+                    te_targets_for_network = []
+                else:
+                    te_selection_indices = selected
+                    te_targets_for_network = selected
+            else:
+                te_selection_indices = list(range(num_text_encoders))
+                te_targets_for_network = None
+        else:
+            te_selection_indices = []
+            te_targets_for_network = []
+
+        if train_text_encoder and args.network_te_train_targets:
+            logger.info(
+                "enable LoRA training for Text Encoder target(s): %s",
+                ", ".join(f"TE{idx + 1}" for idx in te_selection_indices) if te_selection_indices else "(none)",
+            )
+
+        train_text_encoder = train_text_encoder and len(te_selection_indices) > 0
+
+        if hasattr(network, "set_te_train_targets"):
+            network.set_te_train_targets(te_targets_for_network)
+
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         # Configure LoRA delta fake-quantization if available
@@ -409,22 +457,51 @@ class NetworkTrainer:
         # 学習に必要なクラスを準備する
         accelerator.print("prepare optimizer, data loader etc.")
 
-        # 後方互換性を確保するよ
+        te_lr_overrides: Dict[int, float] = {}
+        if train_text_encoder:
+            if args.text_encoder_lr1 is not None:
+                if 0 in te_selection_indices:
+                    te_lr_overrides[0] = args.text_encoder_lr1
+                else:
+                    logger.warning(
+                        "ignore text_encoder_lr1 because Text Encoder 1 is not selected / Text Encoder 1を学習対象にしていないためtext_encoder_lr1は無視されます"
+                    )
+            if args.text_encoder_lr2 is not None:
+                if 1 in te_selection_indices:
+                    te_lr_overrides[1] = args.text_encoder_lr2
+                else:
+                    logger.warning(
+                        "ignore text_encoder_lr2 because Text Encoder 2 is not selected / Text Encoder 2を学習対象にしていないためtext_encoder_lr2は無視されます"
+                    )
+        elif args.text_encoder_lr1 is not None or args.text_encoder_lr2 is not None:
+            logger.warning(
+                "ignore text_encoder_lr1/text_encoder_lr2 because text encoder training is disabled / Text Encoderを学習しないためtext_encoder_lr1とtext_encoder_lr2は無視されます"
+            )
+
+        lr_descriptions = None
         try:
-            results = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr, args.learning_rate)
-            if type(results) is tuple:
-                trainable_params = results[0]
-                lr_descriptions = results[1]
-            else:
-                trainable_params = results
-                lr_descriptions = None
-        except TypeError as e:
-            # logger.warning(f"{e}")
-            # accelerator.print(
-            #     "Deprecated: use prepare_optimizer_params(text_encoder_lr, unet_lr, learning_rate) instead of prepare_optimizer_params(text_encoder_lr, unet_lr)"
-            # )
-            trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
-            lr_descriptions = None
+            results = network.prepare_optimizer_params(
+                args.text_encoder_lr,
+                args.unet_lr,
+                args.learning_rate,
+                text_encoder_lrs=te_lr_overrides,
+                active_text_encoder_indices=te_selection_indices,
+            )
+        except TypeError:
+            if te_lr_overrides:
+                logger.warning(
+                    "network module does not support per-text-encoder learning rates; falling back to shared lr / ネットワークモジュールがText Encoderごとの学習率に対応していないため、共通の学習率を使用します"
+                )
+            try:
+                results = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr, args.learning_rate)
+            except TypeError:
+                results = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
+
+        if isinstance(results, tuple):
+            trainable_params = results[0]
+            lr_descriptions = results[1]
+        else:
+            trainable_params = results
 
         # if len(trainable_params) == 0:
         #     accelerator.print("no trainable parameters found / 学習可能なパラメータが見つかりませんでした")
@@ -1518,6 +1595,26 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--unet_lr", type=float, default=None, help="learning rate for U-Net / U-Netの学習率")
     parser.add_argument("--text_encoder_lr", type=float, default=None, help="learning rate for Text Encoder / Text Encoderの学習率")
+    parser.add_argument(
+        "--text_encoder_lr1",
+        type=float,
+        default=None,
+        help="learning rate for Text Encoder 1 (ViT-L) / Text Encoder 1 (ViT-L)の学習率",
+    )
+    parser.add_argument(
+        "--text_encoder_lr2",
+        type=float,
+        default=None,
+        help="learning rate for Text Encoder 2 (BiG-G) / Text Encoder 2 (BiG-G)の学習率",
+    )
+    parser.add_argument(
+        "--network_te_train_targets",
+        type=str,
+        nargs="+",
+        choices=["te1", "te2"],
+        default=None,
+        help="LoRA targets to train in SDXL text encoders (te1=ViT-L, te2=BiG-G). Omit to train both / SDXLのText Encoderで学習するLoRA対象 (te1=ViT-L, te2=BiG-G)。未指定時は両方を学習",
+    )
 
     parser.add_argument(
         "--network_weights", type=str, default=None, help="pretrained weights for network / 学習するネットワークの初期重み"

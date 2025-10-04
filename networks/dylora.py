@@ -12,7 +12,7 @@
 import math
 import os
 import random
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Type, Union
 from diffusers import AutoencoderKL
 from transformers import CLIPTextModel
 import torch
@@ -345,7 +345,7 @@ class DyLoRANetwork(torch.nn.Module):
 
         text_encoders = text_encoder if type(text_encoder) == list else [text_encoder]
 
-        self.text_encoder_loras = []
+        self._text_encoder_loras_by_encoder: List[List[DyLoRAModule]] = []
         for i, text_encoder in enumerate(text_encoders):
             if len(text_encoders) > 1:
                 index = i + 1
@@ -355,7 +355,18 @@ class DyLoRANetwork(torch.nn.Module):
                 logger.info("create LoRA for Text Encoder")
 
             text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
-            self.text_encoder_loras.extend(text_encoder_loras)
+            self._text_encoder_loras_by_encoder.append(text_encoder_loras)
+
+        self._has_multiple_text_encoders = len(self._text_encoder_loras_by_encoder) > 1
+        self._active_text_encoder_indices = [
+            idx for idx, group in enumerate(self._text_encoder_loras_by_encoder) if len(group) > 0
+        ]
+        self.text_encoder_loras = [
+            lora
+            for idx, group in enumerate(self._text_encoder_loras_by_encoder)
+            if idx in self._active_text_encoder_indices
+            for lora in group
+        ]
 
         # self.text_encoder_loras = create_modules(False, text_encoder, DyLoRANetwork.TEXT_ENCODER_TARGET_REPLACE_MODULE)
         logger.info(f"create LoRA for Text Encoder: {len(self.text_encoder_loras)} modules.")
@@ -375,6 +386,39 @@ class DyLoRANetwork(torch.nn.Module):
 
         logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
+
+    def set_te_train_targets(self, target_indices: Optional[Sequence[int]]):
+        if not hasattr(self, "_text_encoder_loras_by_encoder"):
+            return
+
+        if target_indices is None:
+            active = [idx for idx, group in enumerate(self._text_encoder_loras_by_encoder) if len(group) > 0]
+        else:
+            active = []
+            for idx in target_indices:
+                if not isinstance(idx, int):
+                    continue
+                if idx < 0 or idx >= len(self._text_encoder_loras_by_encoder):
+                    continue
+                if len(self._text_encoder_loras_by_encoder[idx]) == 0:
+                    continue
+                if idx not in active:
+                    active.append(idx)
+
+        disabled = sorted(i for i in range(len(self._text_encoder_loras_by_encoder)) if i not in active)
+        if getattr(self, "_has_multiple_text_encoders", False) and disabled:
+            logger.info(
+                "disable LoRA for Text Encoder target(s): %s",
+                ", ".join(f"TE{i + 1}" for i in disabled),
+            )
+
+        self._active_text_encoder_indices = active
+        self.text_encoder_loras = [
+            lora
+            for idx, group in enumerate(self._text_encoder_loras_by_encoder)
+            if idx in self._active_text_encoder_indices
+            for lora in group
+        ]
 
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
@@ -437,7 +481,7 @@ class DyLoRANetwork(torch.nn.Module):
     """
 
     # 二つのText Encoderに別々の学習率を設定できるようにするといいかも
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr):
+    def prepare_optimizer_params(self, text_encoder_lr, unet_lr, default_lr, **kwargs):
         self.requires_grad_(True)
         all_params = []
 
@@ -470,13 +514,23 @@ class DyLoRANetwork(torch.nn.Module):
 
             return params
 
-        if self.text_encoder_loras:
-            params = assemble_params(
-                self.text_encoder_loras,
-                text_encoder_lr if text_encoder_lr is not None else default_lr,
-                self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
-            )
-            all_params.extend(params)
+        te_lr_overrides: Dict[int, float] = kwargs.get("text_encoder_lrs", {}) or {}
+        active_indices = kwargs.get("active_text_encoder_indices")
+        if active_indices is None:
+            active_indices = getattr(self, "_active_text_encoder_indices", list(range(len(getattr(self, "_text_encoder_loras_by_encoder", [])))))
+
+        if getattr(self, "_text_encoder_loras_by_encoder", None):
+            for idx, loras in enumerate(self._text_encoder_loras_by_encoder):
+                if idx not in active_indices or len(loras) == 0:
+                    continue
+
+                lr = te_lr_overrides.get(idx, text_encoder_lr if text_encoder_lr is not None else default_lr)
+                params = assemble_params(
+                    loras,
+                    lr,
+                    self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio,
+                )
+                all_params.extend(params)
 
         if self.unet_loras:
             params = assemble_params(
