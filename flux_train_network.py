@@ -580,6 +580,12 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Force recompute CDC cache even if valid cache exists"
         " / 有効なCDCキャッシュが存在してもCDCキャッシュを再計算",
     )
+    parser.add_argument(
+        "--cdc_debug",
+        action="store_true",
+        help="Enable verbose CDC debug output showing bucket details"
+        " / CDCの詳細デバッグ出力を有効化（バケット詳細表示）",
+    )
 
     return parser
 

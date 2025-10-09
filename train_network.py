@@ -635,6 +635,7 @@ class NetworkTrainer:
                 gamma=args.cdc_gamma,
                 force_recache=args.force_recache_cdc,
                 accelerator=accelerator,
+                debug=getattr(args, 'cdc_debug', False),
             )
         else:
             self.cdc_cache_path = None
