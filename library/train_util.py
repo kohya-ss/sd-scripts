@@ -1569,10 +1569,18 @@ class BaseDataset(torch.utils.data.Dataset):
         flippeds = []  # 変数名が微妙
         text_encoder_outputs_list = []
         custom_attributes = []
+        indices = []  # CDC-FM: track global dataset indices
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
+
+            # CDC-FM: Get global index for this image
+            # Create a sorted list of keys to ensure deterministic indexing
+            if not hasattr(self, '_image_key_to_index'):
+                self._image_key_to_index = {key: idx for idx, key in enumerate(sorted(self.image_data.keys()))}
+            global_idx = self._image_key_to_index[image_key]
+            indices.append(global_idx)
 
             custom_attributes.append(subset.custom_attributes)
 
@@ -1818,6 +1826,9 @@ class BaseDataset(torch.utils.data.Dataset):
         example["flippeds"] = flippeds
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
+
+        # CDC-FM: Add global indices to batch
+        example["indices"] = torch.LongTensor(indices)
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
@@ -2689,6 +2700,127 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             logger.info(f"[Dataset {i}]")
             dataset.new_cache_text_encoder_outputs(models, accelerator)
         accelerator.wait_for_everyone()
+
+    def cache_cdc_gamma_b(
+        self,
+        cdc_output_path: str,
+        k_neighbors: int = 256,
+        k_bandwidth: int = 8,
+        d_cdc: int = 8,
+        gamma: float = 1.0,
+        force_recache: bool = False,
+        accelerator: Optional["Accelerator"] = None,
+    ) -> str:
+        """
+        Cache CDC Γ_b matrices for all latents in the dataset
+
+        Args:
+            cdc_output_path: Path to save cdc_gamma_b.safetensors
+            k_neighbors: k-NN neighbors
+            k_bandwidth: Bandwidth estimation neighbors
+            d_cdc: CDC subspace dimension
+            gamma: CDC strength
+            force_recache: Force recompute even if cache exists
+            accelerator: For multi-GPU support
+
+        Returns:
+            Path to cached CDC file
+        """
+        from pathlib import Path
+
+        cdc_path = Path(cdc_output_path)
+
+        # Check if valid cache exists
+        if cdc_path.exists() and not force_recache:
+            if self._is_cdc_cache_valid(cdc_path, k_neighbors, d_cdc, gamma):
+                logger.info(f"Valid CDC cache found at {cdc_path}, skipping preprocessing")
+                return str(cdc_path)
+            else:
+                logger.info(f"CDC cache found but invalid, will recompute")
+
+        # Only main process computes CDC
+        is_main = accelerator is None or accelerator.is_main_process
+        if not is_main:
+            if accelerator is not None:
+                accelerator.wait_for_everyone()
+            return str(cdc_path)
+
+        logger.info("=" * 60)
+        logger.info("Starting CDC-FM preprocessing")
+        logger.info(f"Parameters: k={k_neighbors}, k_bw={k_bandwidth}, d_cdc={d_cdc}, gamma={gamma}")
+        logger.info("=" * 60)
+
+        # Initialize CDC preprocessor
+        from library.cdc_fm import CDCPreprocessor
+
+        preprocessor = CDCPreprocessor(
+            k_neighbors=k_neighbors, k_bandwidth=k_bandwidth, d_cdc=d_cdc, gamma=gamma, device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        # Get caching strategy for loading latents
+        from library.strategy_base import LatentsCachingStrategy
+
+        caching_strategy = LatentsCachingStrategy.get_strategy()
+
+        # Collect all latents from all datasets
+        for dataset_idx, dataset in enumerate(self.datasets):
+            logger.info(f"Loading latents from dataset {dataset_idx}...")
+            image_infos = list(dataset.image_data.values())
+
+            for local_idx, info in enumerate(tqdm(image_infos, desc=f"Dataset {dataset_idx}")):
+                # Load latent from disk or memory
+                if info.latents is not None:
+                    latent = info.latents
+                elif info.latents_npz is not None:
+                    # Load from disk
+                    latent, _, _, _, _ = caching_strategy.load_latents_from_disk(info.latents_npz, info.bucket_reso)
+                    if latent is None:
+                        logger.warning(f"Failed to load latent from {info.latents_npz}, skipping")
+                        continue
+                else:
+                    logger.warning(f"No latent found for {info.absolute_path}, skipping")
+                    continue
+
+                # Add to preprocessor (with unique global index across all datasets)
+                actual_global_idx = sum(len(d.image_data) for d in self.datasets[:dataset_idx]) + local_idx
+                preprocessor.add_latent(latent=latent, global_idx=actual_global_idx, shape=latent.shape, metadata={"image_key": info.image_key})
+
+        # Compute and save
+        logger.info(f"\nComputing CDC Γ_b matrices for {len(preprocessor.batcher)} samples...")
+        preprocessor.compute_all(save_path=cdc_path)
+
+        if accelerator is not None:
+            accelerator.wait_for_everyone()
+
+        return str(cdc_path)
+
+    def _is_cdc_cache_valid(self, cdc_path: "pathlib.Path", k_neighbors: int, d_cdc: int, gamma: float) -> bool:
+        """Check if CDC cache has matching hyperparameters"""
+        try:
+            from safetensors import safe_open
+
+            with safe_open(str(cdc_path), framework="pt", device="cpu") as f:
+                cached_k = int(f.get_tensor("metadata/k_neighbors").item())
+                cached_d = int(f.get_tensor("metadata/d_cdc").item())
+                cached_gamma = float(f.get_tensor("metadata/gamma").item())
+                cached_num = int(f.get_tensor("metadata/num_samples").item())
+
+            expected_num = sum(len(d.image_data) for d in self.datasets)
+
+            valid = cached_k == k_neighbors and cached_d == d_cdc and abs(cached_gamma - gamma) < 1e-6 and cached_num == expected_num
+
+            if not valid:
+                logger.info(
+                    f"Cache mismatch: k={cached_k} (expected {k_neighbors}), "
+                    f"d_cdc={cached_d} (expected {d_cdc}), "
+                    f"gamma={cached_gamma} (expected {gamma}), "
+                    f"num={cached_num} (expected {expected_num})"
+                )
+
+            return valid
+        except Exception as e:
+            logger.warning(f"Error validating CDC cache: {e}")
+            return False
 
     def set_caching_mode(self, caching_mode):
         for dataset in self.datasets:

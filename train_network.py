@@ -622,6 +622,23 @@ class NetworkTrainer:
 
             accelerator.wait_for_everyone()
 
+        # CDC-FM preprocessing
+        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm:
+            logger.info("CDC-FM enabled, preprocessing Γ_b matrices...")
+            cdc_output_path = os.path.join(args.output_dir, "cdc_gamma_b.safetensors")
+
+            self.cdc_cache_path = train_dataset_group.cache_cdc_gamma_b(
+                cdc_output_path=cdc_output_path,
+                k_neighbors=args.cdc_k_neighbors,
+                k_bandwidth=args.cdc_k_bandwidth,
+                d_cdc=args.cdc_d_cdc,
+                gamma=args.cdc_gamma,
+                force_recache=args.force_recache_cdc,
+                accelerator=accelerator,
+            )
+        else:
+            self.cdc_cache_path = None
+
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
         # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
         text_encoding_strategy = self.get_text_encoding_strategy(args)
@@ -634,7 +651,7 @@ class NetworkTrainer:
         if val_dataset_group is not None:
             self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, val_dataset_group, weight_dtype)
 
-        if unet is None:
+        if unet is none:
             # lazy load unet if needed. text encoders may be freed or replaced with dummy models for saving memory
             unet, text_encoders = self.load_unet_lazily(args, weight_dtype, accelerator, text_encoders)
 
@@ -643,10 +660,10 @@ class NetworkTrainer:
         accelerator.print("import network module:", args.network_module)
         network_module = importlib.import_module(args.network_module)
 
-        if args.base_weights is not None:
+        if args.base_weights is not none:
             # base_weights が指定されている場合は、指定された重みを読み込みマージする
             for i, weight_path in enumerate(args.base_weights):
-                if args.base_weights_multiplier is None or len(args.base_weights_multiplier) <= i:
+                if args.base_weights_multiplier is none or len(args.base_weights_multiplier) <= i:
                     multiplier = 1.0
                 else:
                     multiplier = args.base_weights_multiplier[i]
@@ -659,6 +676,17 @@ class NetworkTrainer:
                 module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
 
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
+
+        # Load CDC-FM Γ_b dataset if enabled
+        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm and self.cdc_cache_path is not None:
+            from library.cdc_fm import GammaBDataset
+
+            logger.info(f"Loading CDC Γ_b dataset from {self.cdc_cache_path}")
+            self.gamma_b_dataset = GammaBDataset(
+                gamma_b_path=self.cdc_cache_path, device="cuda" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            self.gamma_b_dataset = None
 
         # prepare network
         net_kwargs = {}

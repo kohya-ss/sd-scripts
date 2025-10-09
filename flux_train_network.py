@@ -1,7 +1,5 @@
 import argparse
 import copy
-import math
-import random
 from typing import Any, Optional, Union
 
 import torch
@@ -36,6 +34,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
         self.model_type: Optional[str] = None
+        self.gamma_b_dataset = None  # CDC-FM Γ_b dataset
 
     def assert_extra_args(
         self,
@@ -327,9 +326,15 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         noise = torch.randn_like(latents)
         bsz = latents.shape[0]
 
-        # get noisy model input and timesteps
+        # Get CDC parameters if enabled
+        gamma_b_dataset = self.gamma_b_dataset if (self.gamma_b_dataset is not None and "indices" in batch) else None
+        batch_indices = batch.get("indices") if gamma_b_dataset is not None else None
+
+        # Get noisy model input and timesteps
+        # If CDC is enabled, this will transform the noise with geometry-aware covariance
         noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
-            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
+            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype,
+            gamma_b_dataset=gamma_b_dataset, batch_indices=batch_indices
         )
 
         # pack latents and get img_ids
@@ -494,7 +499,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                         module.forward = forward_hook(module)
 
             if flux_utils.get_t5xxl_actual_dtype(text_encoder) == torch.float8_e4m3fn and text_encoder.dtype == weight_dtype:
-                logger.info(f"T5XXL already prepared for fp8")
+                logger.info("T5XXL already prepared for fp8")
             else:
                 logger.info(f"prepare T5XXL for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}, add hooks")
                 text_encoder.to(te_weight_dtype)  # fp8
@@ -533,6 +538,49 @@ def setup_parser() -> argparse.ArgumentParser:
         help="[Deprecated] This option is deprecated. Please use `--blocks_to_swap` instead."
         " / このオプションは非推奨です。代わりに`--blocks_to_swap`を使用してください。",
     )
+
+    # CDC-FM arguments
+    parser.add_argument(
+        "--use_cdc_fm",
+        action="store_true",
+        help="Enable CDC-FM (Carré du Champ Flow Matching) for geometry-aware noise during training"
+        " / CDC-FM（Carré du Champ Flow Matching）を有効にして幾何学的ノイズを使用",
+    )
+    parser.add_argument(
+        "--cdc_k_neighbors",
+        type=int,
+        default=256,
+        help="Number of neighbors for k-NN graph in CDC-FM (default: 256)"
+        " / CDC-FMのk-NNグラフの近傍数（デフォルト: 256）",
+    )
+    parser.add_argument(
+        "--cdc_k_bandwidth",
+        type=int,
+        default=8,
+        help="Number of neighbors for bandwidth estimation in CDC-FM (default: 8)"
+        " / CDC-FMの帯域幅推定の近傍数（デフォルト: 8）",
+    )
+    parser.add_argument(
+        "--cdc_d_cdc",
+        type=int,
+        default=8,
+        help="Dimension of CDC subspace (default: 8)"
+        " / CDCサブ空間の次元（デフォルト: 8）",
+    )
+    parser.add_argument(
+        "--cdc_gamma",
+        type=float,
+        default=1.0,
+        help="CDC strength parameter (default: 1.0)"
+        " / CDC強度パラメータ（デフォルト: 1.0）",
+    )
+    parser.add_argument(
+        "--force_recache_cdc",
+        action="store_true",
+        help="Force recompute CDC cache even if valid cache exists"
+        " / 有効なCDCキャッシュが存在してもCDCキャッシュを再計算",
+    )
+
     return parser
 
 
