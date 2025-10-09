@@ -538,21 +538,24 @@ class CDCPreprocessor:
             'metadata/gamma': torch.tensor([self.computer.gamma]),
         }
         
-        # Add shape information for each sample
+        # Add shape information and CDC results for each sample
+        # Use image_key as the identifier
         for sample in self.batcher.samples:
-            idx = sample.global_idx
-            tensors_dict[f'shapes/{idx}'] = torch.tensor(sample.shape)
-        
-        # Add CDC results (convert numpy to torch tensors)
-        for global_idx, (eigvecs, eigvals) in all_results.items():
-            # Convert numpy arrays to torch tensors
-            if isinstance(eigvecs, np.ndarray):
-                eigvecs = torch.from_numpy(eigvecs)
-            if isinstance(eigvals, np.ndarray):
-                eigvals = torch.from_numpy(eigvals)
+            image_key = sample.metadata['image_key']
+            tensors_dict[f'shapes/{image_key}'] = torch.tensor(sample.shape)
 
-            tensors_dict[f'eigenvectors/{global_idx}'] = eigvecs
-            tensors_dict[f'eigenvalues/{global_idx}'] = eigvals
+            # Get CDC results for this sample
+            if sample.global_idx in all_results:
+                eigvecs, eigvals = all_results[sample.global_idx]
+
+                # Convert numpy arrays to torch tensors
+                if isinstance(eigvecs, np.ndarray):
+                    eigvecs = torch.from_numpy(eigvecs)
+                if isinstance(eigvals, np.ndarray):
+                    eigvals = torch.from_numpy(eigvals)
+
+                tensors_dict[f'eigenvectors/{image_key}'] = eigvecs
+                tensors_dict[f'eigenvalues/{image_key}'] = eigvals
         
         save_file(tensors_dict, save_path)
         
@@ -584,54 +587,51 @@ class GammaBDataset:
             # Cache all shapes in memory to avoid repeated I/O during training
             # Loading once at init is much faster than opening the file every training step
             self.shapes_cache = {}
-            for idx in range(self.num_samples):
-                shape_tensor = f.get_tensor(f'shapes/{idx}')
-                self.shapes_cache[idx] = tuple(shape_tensor.numpy().tolist())
+            # Get all shape keys (they're stored as shapes/{image_key})
+            all_keys = f.keys()
+            shape_keys = [k for k in all_keys if k.startswith('shapes/')]
+            for shape_key in shape_keys:
+                image_key = shape_key.replace('shapes/', '')
+                shape_tensor = f.get_tensor(shape_key)
+                self.shapes_cache[image_key] = tuple(shape_tensor.numpy().tolist())
 
         print(f"Loaded CDC data for {self.num_samples} samples (d_cdc={self.d_cdc})")
         print(f"Cached {len(self.shapes_cache)} shapes in memory")
     
     @torch.no_grad()
     def get_gamma_b_sqrt(
-        self, 
-        indices: Union[List[int], np.ndarray, torch.Tensor],
+        self,
+        image_keys: Union[List[str], List],
         device: Optional[str] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get Γ_b^(1/2) components for a batch of indices
-        
+        Get Γ_b^(1/2) components for a batch of image_keys
+
         Args:
-            indices: Sample indices
+            image_keys: List of image_key strings
             device: Device to load to (defaults to self.device)
-            
+
         Returns:
             eigenvectors: (B, d_cdc, d) - NOTE: d may vary per sample!
             eigenvalues: (B, d_cdc)
         """
         if device is None:
             device = self.device
-        
-        # Convert indices to list
-        if isinstance(indices, torch.Tensor):
-            indices = indices.cpu().numpy().tolist()
-        elif isinstance(indices, np.ndarray):
-            indices = indices.tolist()
 
         # Load from safetensors
         from safetensors import safe_open
-        
+
         eigenvectors_list = []
         eigenvalues_list = []
-        
+
         with safe_open(str(self.gamma_b_path), framework="pt", device=str(device)) as f:
-            for idx in indices:
-                idx = int(idx)
-                eigvecs = f.get_tensor(f'eigenvectors/{idx}').float()
-                eigvals = f.get_tensor(f'eigenvalues/{idx}').float()
-                
+            for image_key in image_keys:
+                eigvecs = f.get_tensor(f'eigenvectors/{image_key}').float()
+                eigvals = f.get_tensor(f'eigenvalues/{image_key}').float()
+
                 eigenvectors_list.append(eigvecs)
                 eigenvalues_list.append(eigvals)
-        
+
         # Stack - all should have same d_cdc and d within a batch (enforced by bucketing)
         # Check if all eigenvectors have the same dimension
         dims = [ev.shape[1] for ev in eigenvectors_list]
@@ -640,7 +640,7 @@ class GammaBDataset:
             # but can occur if batch contains mixed sizes
             raise RuntimeError(
                 f"CDC eigenvector dimension mismatch in batch: {set(dims)}. "
-                f"Batch indices: {indices}. "
+                f"Image keys: {image_keys}. "
                 f"This means the training batch contains images of different sizes, "
                 f"which violates CDC's requirement for uniform latent dimensions per batch. "
                 f"Check that your dataloader buckets are configured correctly."
@@ -651,9 +651,9 @@ class GammaBDataset:
 
         return eigenvectors, eigenvalues
     
-    def get_shape(self, idx: int) -> Tuple[int, ...]:
+    def get_shape(self, image_key: str) -> Tuple[int, ...]:
         """Get the original shape for a sample (cached in memory)"""
-        return self.shapes_cache[idx]
+        return self.shapes_cache[image_key]
     
     def compute_sigma_t_x(
         self,

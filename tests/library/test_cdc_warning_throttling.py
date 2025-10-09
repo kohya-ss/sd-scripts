@@ -34,7 +34,8 @@ class TestWarningThrottling:
         preprocessed_shape = (16, 32, 32)
         for i in range(10):
             latent = torch.randn(*preprocessed_shape, dtype=torch.float32)
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=preprocessed_shape)
+            metadata = {'image_key': f'test_image_{i}'}
+            preprocessor.add_latent(latent=latent, global_idx=i, shape=preprocessed_shape, metadata=metadata)
 
         cache_path = tmp_path / "test_throttle.safetensors"
         preprocessor.compute_all(save_path=cache_path)
@@ -51,7 +52,7 @@ class TestWarningThrottling:
         # Use different shape at runtime to trigger mismatch
         runtime_shape = (16, 64, 64)
         timesteps = torch.tensor([100.0], dtype=torch.float32)
-        batch_indices = torch.tensor([0], dtype=torch.long)  # Same sample index
+        image_keys = ['test_image_0']  # Same sample
 
         # First call - should warn
         with caplog.at_level(logging.WARNING):
@@ -62,7 +63,7 @@ class TestWarningThrottling:
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
@@ -80,7 +81,7 @@ class TestWarningThrottling:
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
@@ -97,7 +98,7 @@ class TestWarningThrottling:
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
@@ -119,14 +120,14 @@ class TestWarningThrottling:
         with caplog.at_level(logging.WARNING):
             caplog.clear()
             noise = torch.randn(3, *runtime_shape, dtype=torch.float32)
-            batch_indices = torch.tensor([0, 1, 2], dtype=torch.long)
+            image_keys = ['test_image_0', 'test_image_1', 'test_image_2']
 
             _ = apply_cdc_noise_transformation(
                 noise=noise,
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
@@ -138,14 +139,14 @@ class TestWarningThrottling:
         with caplog.at_level(logging.WARNING):
             caplog.clear()
             noise = torch.randn(3, *runtime_shape, dtype=torch.float32)
-            batch_indices = torch.tensor([0, 1, 2], dtype=torch.long)
+            image_keys = ['test_image_0', 'test_image_1', 'test_image_2']
 
             _ = apply_cdc_noise_transformation(
                 noise=noise,
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
@@ -157,7 +158,7 @@ class TestWarningThrottling:
         with caplog.at_level(logging.WARNING):
             caplog.clear()
             noise = torch.randn(2, *runtime_shape, dtype=torch.float32)
-            batch_indices = torch.tensor([3, 4], dtype=torch.long)
+            image_keys = ['test_image_3', 'test_image_4']
             timesteps = torch.tensor([100.0, 200.0], dtype=torch.float32)
 
             _ = apply_cdc_noise_transformation(
@@ -165,7 +166,7 @@ class TestWarningThrottling:
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                batch_indices=batch_indices,
+                image_keys=image_keys,
                 device="cpu"
             )
 
