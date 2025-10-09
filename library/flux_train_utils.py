@@ -493,8 +493,17 @@ def apply_cdc_noise_transformation(
     Returns:
         Transformed noise with geometry-aware covariance
     """
+    # Device consistency validation
+    noise_device = noise.device
+    if str(noise_device) != str(device):
+        logger.warning(
+            f"CDC device mismatch: noise on {noise_device} but CDC loading to {device}. "
+            f"Transferring noise to {device} to avoid errors."
+        )
+        noise = noise.to(device)
+
     # Normalize timesteps to [0, 1] for CDC-FM
-    t_normalized = timesteps / num_timesteps
+    t_normalized = timesteps.to(device) / num_timesteps
 
     B, C, H, W = noise.shape
     current_shape = (C, H, W)
