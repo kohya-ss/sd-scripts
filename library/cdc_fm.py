@@ -576,12 +576,20 @@ class GammaBDataset:
         # Load metadata
         print(f"Loading Γ_b from {gamma_b_path}...")
         from safetensors import safe_open
-        
+
         with safe_open(str(self.gamma_b_path), framework="pt", device="cpu") as f:
             self.num_samples = int(f.get_tensor('metadata/num_samples').item())
             self.d_cdc = int(f.get_tensor('metadata/d_cdc').item())
-        
+
+            # Cache all shapes in memory to avoid repeated I/O during training
+            # Loading once at init is much faster than opening the file every training step
+            self.shapes_cache = {}
+            for idx in range(self.num_samples):
+                shape_tensor = f.get_tensor(f'shapes/{idx}')
+                self.shapes_cache[idx] = tuple(shape_tensor.numpy().tolist())
+
         print(f"Loaded CDC data for {self.num_samples} samples (d_cdc={self.d_cdc})")
+        print(f"Cached {len(self.shapes_cache)} shapes in memory")
     
     @torch.no_grad()
     def get_gamma_b_sqrt(
@@ -644,12 +652,8 @@ class GammaBDataset:
         return eigenvectors, eigenvalues
     
     def get_shape(self, idx: int) -> Tuple[int, ...]:
-        """Get the original shape for a sample"""
-        from safetensors import safe_open
-        
-        with safe_open(str(self.gamma_b_path), framework="pt", device="cpu") as f:
-            shape_tensor = f.get_tensor(f'shapes/{idx}')
-            return tuple(shape_tensor.numpy().tolist())
+        """Get the original shape for a sample (cached in memory)"""
+        return self.shapes_cache[idx]
     
     @torch.no_grad()
     def compute_sigma_t_x(
