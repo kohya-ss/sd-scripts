@@ -655,7 +655,6 @@ class GammaBDataset:
         """Get the original shape for a sample (cached in memory)"""
         return self.shapes_cache[idx]
     
-    @torch.no_grad()
     def compute_sigma_t_x(
         self,
         eigenvectors: torch.Tensor,
@@ -674,6 +673,9 @@ class GammaBDataset:
 
         Returns:
             result: Same shape as input x
+
+        Note:
+            Gradients flow through this function for backprop during training.
         """
         # Store original shape to restore later
         orig_shape = x.shape
