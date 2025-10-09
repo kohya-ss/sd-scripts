@@ -466,6 +466,11 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
     return weighting
 
 
+# Global set to track samples that have already been warned about shape mismatches
+# This prevents log spam during training (warning once per sample is sufficient)
+_cdc_warned_samples = set()
+
+
 def apply_cdc_noise_transformation(
     noise: torch.Tensor,
     timesteps: torch.Tensor,
@@ -517,11 +522,14 @@ def apply_cdc_noise_transformation(
 
             if cached_shape != current_shape:
                 # Shape mismatch - use standard Gaussian noise for this sample
-                logger.warning(
-                    f"CDC shape mismatch for sample {idx}: "
-                    f"cached {cached_shape} vs current {current_shape}. "
-                    f"Using Gaussian noise (no CDC)."
-                )
+                # Only warn once per sample to avoid log spam
+                if idx not in _cdc_warned_samples:
+                    logger.warning(
+                        f"CDC shape mismatch for sample {idx}: "
+                        f"cached {cached_shape} vs current {current_shape}. "
+                        f"Using Gaussian noise (no CDC)."
+                    )
+                    _cdc_warned_samples.add(idx)
                 noise_transformed.append(noise[i].clone())
             else:
                 # Shapes match - apply CDC transformation
