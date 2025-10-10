@@ -1,12 +1,17 @@
 import logging
 import torch
 import numpy as np
-import faiss  # type: ignore
 from pathlib import Path
 from tqdm import tqdm
 from safetensors.torch import save_file
 from typing import List, Dict, Optional, Union, Tuple
 from dataclasses import dataclass
+
+try:
+    import faiss  # type: ignore
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +434,13 @@ class CDCPreprocessor:
         adaptive_k: bool = False,
         min_bucket_size: int = 16
     ):
+        if not FAISS_AVAILABLE:
+            raise ImportError(
+                "FAISS is required for CDC-FM but not installed. "
+                "Install with: pip install faiss-cpu (CPU) or faiss-gpu (GPU). "
+                "CDC-FM will be disabled."
+            )
+
         self.computer = CarreDuChampComputer(
             k_neighbors=k_neighbors,
             k_bandwidth=k_bandwidth,

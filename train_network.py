@@ -639,6 +639,9 @@ class NetworkTrainer:
                 adaptive_k=getattr(args, 'cdc_adaptive_k', False),
                 min_bucket_size=getattr(args, 'cdc_min_bucket_size', 16),
             )
+
+            if self.cdc_cache_path is None:
+                logger.warning("CDC-FM preprocessing failed (likely missing FAISS). Training will continue without CDC-FM.")
         else:
             self.cdc_cache_path = None
 

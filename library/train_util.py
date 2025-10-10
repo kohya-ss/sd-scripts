@@ -2748,9 +2748,16 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         logger.info("Starting CDC-FM preprocessing")
         logger.info(f"Parameters: k={k_neighbors}, k_bw={k_bandwidth}, d_cdc={d_cdc}, gamma={gamma}")
         logger.info("=" * 60)
-
         # Initialize CDC preprocessor
-        from library.cdc_fm import CDCPreprocessor
+        # Initialize CDC preprocessor
+        try:
+            from library.cdc_fm import CDCPreprocessor
+        except ImportError as e:
+            logger.warning(
+                "FAISS not installed. CDC-FM preprocessing skipped. "
+                "Install with: pip install faiss-cpu (CPU) or faiss-gpu (GPU)"
+            )
+            return None
 
         preprocessor = CDCPreprocessor(
             k_neighbors=k_neighbors, k_bandwidth=k_bandwidth, d_cdc=d_cdc, gamma=gamma, device="cuda" if torch.cuda.is_available() else "cpu", debug=debug, adaptive_k=adaptive_k, min_bucket_size=min_bucket_size
