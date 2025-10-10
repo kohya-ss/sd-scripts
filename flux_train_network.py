@@ -232,21 +232,21 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 logger.info("move vae and unet to cpu to save memory")
                 org_vae_device = vae.device
                 org_unet_device = unet.device
-                vae.to("cpu")
-                unet.to("cpu")
+                vae = vae.to("cpu")
+                unet = unet.to("cpu")
                 clean_memory_on_device(accelerator.device)
 
             # When TE is not be trained, it will not be prepared so we need to use explicit autocast
             logger.info("move text encoders to gpu")
-            text_encoders[0].to(accelerator.device, dtype=weight_dtype)  # always not fp8
-            text_encoders[1].to(accelerator.device)
+            text_encoders[0] = text_encoders[0].to(accelerator.device, dtype=weight_dtype, non_blocking=True)  # always not fp8
+            text_encoders[1] = text_encoders[1].to(accelerator.device, non_blocking=True)
 
             if text_encoders[1].dtype == torch.float8_e4m3fn:
                 # if we load fp8 weights, the model is already fp8, so we use it as is
                 self.prepare_text_encoder_fp8(1, text_encoders[1], text_encoders[1].dtype, weight_dtype)
             else:
                 # otherwise, we need to convert it to target dtype
-                text_encoders[1].to(weight_dtype)
+                text_encoders[1] = text_encoders[1].to(weight_dtype, non_blocking=True)
 
             with accelerator.autocast():
                 dataset.new_cache_text_encoder_outputs(text_encoders, accelerator)
@@ -276,19 +276,19 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             # move back to cpu
             if not self.is_train_text_encoder(args):
                 logger.info("move CLIP-L back to cpu")
-                text_encoders[0].to("cpu")
+                text_encoders[0] = text_encoders[0].to("cpu", non_blocking=True)
             logger.info("move t5XXL back to cpu")
-            text_encoders[1].to("cpu")
+            text_encoders[1] = text_encoders[1].to("cpu", non_blocking=True)
             clean_memory_on_device(accelerator.device)
 
             if not args.lowram:
                 logger.info("move vae and unet back to original device")
-                vae.to(org_vae_device)
-                unet.to(org_unet_device)
+                vae = vae.to(org_vae_device, non_blocking=True)
+                unet = unet.to(org_unet_device, non_blocking=True)
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
-            text_encoders[0].to(accelerator.device, dtype=weight_dtype)
-            text_encoders[1].to(accelerator.device)
+            text_encoders[0] = text_encoders[0].to(accelerator.device, dtype=weight_dtype, non_blocking=True)
+            text_encoders[1] = text_encoders[1].to(accelerator.device, non_blocking=True)
 
     def sample_images(self, accelerator, args, epoch, global_step, device, ae, tokenizer, text_encoder, flux):
         text_encoders = text_encoder  # for compatibility
@@ -429,7 +429,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                     noisy_model_input[diff_output_pr_indices],
                     sigmas[diff_output_pr_indices] if sigmas is not None else None,
                 )
-                target[diff_output_pr_indices] = model_pred_prior.to(target.dtype)
+                target[diff_output_pr_indices] = model_pred_prior.to(target.dtype, non_blocking=True)
 
         return model_pred, target, timesteps, weighting
 
@@ -468,8 +468,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
         if index == 0:  # CLIP-L
             logger.info(f"prepare CLIP-L for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}")
-            text_encoder.to(te_weight_dtype)  # fp8
-            text_encoder.text_model.embeddings.to(dtype=weight_dtype)
+            text_encoder = text_encoder.to(te_weight_dtype, non_blocking=True)  # fp8
+            text_encoder.text_model.embeddings = text_encoder.text_model.embeddings.to(dtype=weight_dtype)
         else:  # T5XXL
 
             def prepare_fp8(text_encoder, target_dtype):
@@ -488,7 +488,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 for module in text_encoder.modules():
                     if module.__class__.__name__ in ["T5LayerNorm", "Embedding"]:
                         # print("set", module.__class__.__name__, "to", target_dtype)
-                        module.to(target_dtype)
+                        module = module.to(target_dtype, non_blocking=True)
                     if module.__class__.__name__ in ["T5DenseGatedActDense"]:
                         # print("set", module.__class__.__name__, "hooks")
                         module.forward = forward_hook(module)
@@ -497,7 +497,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 logger.info(f"T5XXL already prepared for fp8")
             else:
                 logger.info(f"prepare T5XXL for fp8: set to {te_weight_dtype}, set embeddings to {weight_dtype}, add hooks")
-                text_encoder.to(te_weight_dtype)  # fp8
+                text_encoder = text_encoder.to(te_weight_dtype, non_blocking=True)  # fp8
                 prepare_fp8(text_encoder, weight_dtype)
 
     def on_validation_step_end(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
