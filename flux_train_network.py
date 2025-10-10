@@ -467,6 +467,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_cdc_k_bandwidth"] = getattr(args, "cdc_k_bandwidth", None)
         metadata["ss_cdc_d_cdc"] = getattr(args, "cdc_d_cdc", None)
         metadata["ss_cdc_gamma"] = getattr(args, "cdc_gamma", None)
+        metadata["ss_cdc_adaptive_k"] = getattr(args, "cdc_adaptive_k", None)
+        metadata["ss_cdc_min_bucket_size"] = getattr(args, "cdc_min_bucket_size", None)
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
@@ -592,6 +594,23 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose CDC debug output showing bucket details"
         " / CDCの詳細デバッグ出力を有効化（バケット詳細表示）",
+    )
+    parser.add_argument(
+        "--cdc_adaptive_k",
+        action="store_true",
+        help="Use adaptive k_neighbors based on bucket size. If enabled, buckets smaller than k_neighbors will use "
+        "k=bucket_size-1 instead of skipping CDC entirely. Buckets smaller than cdc_min_bucket_size are still skipped."
+        " / バケットサイズに基づいてk_neighborsを適応的に調整。有効にすると、k_neighbors未満のバケットは"
+        "CDCをスキップせずk=バケットサイズ-1を使用。cdc_min_bucket_size未満のバケットは引き続きスキップ。",
+    )
+    parser.add_argument(
+        "--cdc_min_bucket_size",
+        type=int,
+        default=16,
+        help="Minimum bucket size for CDC computation. Buckets with fewer samples will use standard Gaussian noise. "
+        "Only relevant when --cdc_adaptive_k is enabled (default: 16)"
+        " / CDC計算の最小バケットサイズ。これより少ないサンプルのバケットは標準ガウスノイズを使用。"
+        "--cdc_adaptive_k有効時のみ関連（デフォルト: 16）",
     )
 
     return parser

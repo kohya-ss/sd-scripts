@@ -2707,6 +2707,8 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         force_recache: bool = False,
         accelerator: Optional["Accelerator"] = None,
         debug: bool = False,
+        adaptive_k: bool = False,
+        min_bucket_size: int = 16,
     ) -> str:
         """
         Cache CDC Γ_b matrices for all latents in the dataset
@@ -2751,7 +2753,7 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         from library.cdc_fm import CDCPreprocessor
 
         preprocessor = CDCPreprocessor(
-            k_neighbors=k_neighbors, k_bandwidth=k_bandwidth, d_cdc=d_cdc, gamma=gamma, device="cuda" if torch.cuda.is_available() else "cpu", debug=debug
+            k_neighbors=k_neighbors, k_bandwidth=k_bandwidth, d_cdc=d_cdc, gamma=gamma, device="cuda" if torch.cuda.is_available() else "cpu", debug=debug, adaptive_k=adaptive_k, min_bucket_size=min_bucket_size
         )
 
         # Get caching strategy for loading latents

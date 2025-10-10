@@ -636,6 +636,8 @@ class NetworkTrainer:
                 force_recache=args.force_recache_cdc,
                 accelerator=accelerator,
                 debug=getattr(args, 'cdc_debug', False),
+                adaptive_k=getattr(args, 'cdc_adaptive_k', False),
+                min_bucket_size=getattr(args, 'cdc_min_bucket_size', 16),
             )
         else:
             self.cdc_cache_path = None
