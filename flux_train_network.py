@@ -461,6 +461,13 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_model_prediction_type"] = args.model_prediction_type
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
 
+        # CDC-FM metadata
+        metadata["ss_use_cdc_fm"] = getattr(args, "use_cdc_fm", False)
+        metadata["ss_cdc_k_neighbors"] = getattr(args, "cdc_k_neighbors", None)
+        metadata["ss_cdc_k_bandwidth"] = getattr(args, "cdc_k_bandwidth", None)
+        metadata["ss_cdc_d_cdc"] = getattr(args, "cdc_d_cdc", None)
+        metadata["ss_cdc_gamma"] = getattr(args, "cdc_gamma", None)
+
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
 

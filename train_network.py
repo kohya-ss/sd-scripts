@@ -652,7 +652,7 @@ class NetworkTrainer:
         if val_dataset_group is not None:
             self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, val_dataset_group, weight_dtype)
 
-        if unet is none:
+        if unet is None:
             # lazy load unet if needed. text encoders may be freed or replaced with dummy models for saving memory
             unet, text_encoders = self.load_unet_lazily(args, weight_dtype, accelerator, text_encoders)
 
@@ -661,10 +661,10 @@ class NetworkTrainer:
         accelerator.print("import network module:", args.network_module)
         network_module = importlib.import_module(args.network_module)
 
-        if args.base_weights is not none:
+        if args.base_weights is not None:
             # base_weights が指定されている場合は、指定された重みを読み込みマージする
             for i, weight_path in enumerate(args.base_weights):
-                if args.base_weights_multiplier is none or len(args.base_weights_multiplier) <= i:
+                if args.base_weights_multiplier is None or len(args.base_weights_multiplier) <= i:
                     multiplier = 1.0
                 else:
                     multiplier = args.base_weights_multiplier[i]
