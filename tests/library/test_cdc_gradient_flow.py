@@ -1,7 +1,11 @@
 """
-Test gradient flow through CDC noise transformation.
+CDC Gradient Flow Verification Tests
 
-Ensures that gradients propagate correctly through both fast and slow paths.
+This module provides testing of:
+1. Mock dataset gradient preservation
+2. Real dataset gradient flow
+3. Various time steps and computation paths
+4. Fallback and edge case scenarios
 """
 
 import pytest
@@ -11,40 +15,195 @@ from library.cdc_fm import CDCPreprocessor, GammaBDataset
 from library.flux_train_utils import apply_cdc_noise_transformation
 
 
-class TestCDCGradientFlow:
-    """Test gradient flow through CDC transformations"""
+class MockGammaBDataset:
+    """
+    Mock implementation of GammaBDataset for testing gradient flow
+    """
+    def __init__(self, *args, **kwargs):
+        """
+        Simple initialization that doesn't require file loading
+        """
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    @pytest.fixture
-    def cdc_cache(self, tmp_path):
-        """Create a test CDC cache"""
+    def compute_sigma_t_x(
+        self,
+        eigenvectors: torch.Tensor,
+        eigenvalues: torch.Tensor,
+        x: torch.Tensor,
+        t: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Simplified implementation of compute_sigma_t_x for testing
+        """
+        # Store original shape to restore later
+        orig_shape = x.shape
+
+        # Flatten x if it's 4D
+        if x.dim() == 4:
+            B, C, H, W = x.shape
+            x = x.reshape(B, -1)  # (B, C*H*W)
+
+        # Validate dimensions
+        assert eigenvectors.shape[0] == x.shape[0], "Batch size mismatch"
+        assert eigenvectors.shape[2] == x.shape[1], "Dimension mismatch"
+
+        # Early return for t=0 with gradient preservation
+        if torch.allclose(t, torch.zeros_like(t), atol=1e-8) and not t.requires_grad:
+            return x.reshape(orig_shape)
+
+        # Compute Σ_t @ x
+        # V^T x
+        Vt_x = torch.einsum('bkd,bd->bk', eigenvectors, x)
+
+        # sqrt(λ) * V^T x
+        sqrt_eigenvalues = torch.sqrt(eigenvalues.clamp(min=1e-10))
+        sqrt_lambda_Vt_x = sqrt_eigenvalues * Vt_x
+
+        # V @ (sqrt(λ) * V^T x)
+        gamma_sqrt_x = torch.einsum('bkd,bk->bd', eigenvectors, sqrt_lambda_Vt_x)
+
+        # Interpolate between original and noisy latent
+        result = (1 - t) * x + t * gamma_sqrt_x
+
+        # Restore original shape
+        result = result.reshape(orig_shape)
+
+        return result
+
+
+class TestCDCGradientFlow:
+    """
+    Gradient flow testing for CDC noise transformations
+    """
+
+    def setup_method(self):
+        """Prepare consistent test environment"""
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    def test_mock_gradient_flow_near_zero_time_step(self):
+        """
+        Verify gradient flow preservation for near-zero time steps
+        using mock dataset with learnable time embeddings
+        """
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+
+        # Create a learnable time embedding with small initial value
+        t = torch.tensor(0.001, requires_grad=True, device=self.device, dtype=torch.float32)
+
+        # Generate mock latent and CDC components
+        batch_size, latent_dim = 4, 64
+        latent = torch.randn(batch_size, latent_dim, device=self.device, requires_grad=True)
+
+        # Create mock eigenvectors and eigenvalues
+        eigenvectors = torch.randn(batch_size, 8, latent_dim, device=self.device)
+        eigenvalues = torch.rand(batch_size, 8, device=self.device)
+
+        # Ensure eigenvectors and eigenvalues are meaningful
+        eigenvectors /= torch.norm(eigenvectors, dim=-1, keepdim=True)
+        eigenvalues = torch.clamp(eigenvalues, min=1e-4, max=1.0)
+
+        # Use the mock dataset
+        mock_dataset = MockGammaBDataset()
+
+        # Compute noisy latent with gradient tracking
+        noisy_latent = mock_dataset.compute_sigma_t_x(
+            eigenvectors,
+            eigenvalues,
+            latent,
+            t
+        )
+
+        # Compute a dummy loss to check gradient flow
+        loss = noisy_latent.sum()
+
+        # Compute gradients
+        loss.backward()
+
+        # Assertions to verify gradient flow
+        assert t.grad is not None, "Time embedding gradient should be computed"
+        assert latent.grad is not None, "Input latent gradient should be computed"
+
+        # Check gradient magnitudes are non-zero
+        t_grad_magnitude = torch.abs(t.grad).sum()
+        latent_grad_magnitude = torch.abs(latent.grad).sum()
+
+        assert t_grad_magnitude > 0, f"Time embedding gradient is zero: {t_grad_magnitude}"
+        assert latent_grad_magnitude > 0, f"Input latent gradient is zero: {latent_grad_magnitude}"
+
+    def test_gradient_flow_with_multiple_time_steps(self):
+        """
+        Verify gradient flow across different time step values
+        """
+        # Test time steps
+        time_steps = [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0]
+
+        for time_val in time_steps:
+            # Create a learnable time embedding
+            t = torch.tensor(time_val, requires_grad=True, device=self.device, dtype=torch.float32)
+
+            # Generate mock latent and CDC components
+            batch_size, latent_dim = 4, 64
+            latent = torch.randn(batch_size, latent_dim, device=self.device, requires_grad=True)
+
+            # Create mock eigenvectors and eigenvalues
+            eigenvectors = torch.randn(batch_size, 8, latent_dim, device=self.device)
+            eigenvalues = torch.rand(batch_size, 8, device=self.device)
+
+            # Ensure eigenvectors and eigenvalues are meaningful
+            eigenvectors /= torch.norm(eigenvectors, dim=-1, keepdim=True)
+            eigenvalues = torch.clamp(eigenvalues, min=1e-4, max=1.0)
+
+            # Use the mock dataset
+            mock_dataset = MockGammaBDataset()
+
+            # Compute noisy latent with gradient tracking
+            noisy_latent = mock_dataset.compute_sigma_t_x(
+                eigenvectors,
+                eigenvalues,
+                latent,
+                t
+            )
+
+            # Compute a dummy loss to check gradient flow
+            loss = noisy_latent.sum()
+
+            # Compute gradients
+            loss.backward()
+
+            # Assertions to verify gradient flow
+            t_grad_magnitude = torch.abs(t.grad).sum()
+            latent_grad_magnitude = torch.abs(latent.grad).sum()
+
+            assert t_grad_magnitude > 0, f"Time embedding gradient is zero for t={time_val}"
+            assert latent_grad_magnitude > 0, f"Input latent gradient is zero for t={time_val}"
+
+            # Reset gradients for next iteration
+            t.grad.zero_() if t.grad is not None else None
+            latent.grad.zero_() if latent.grad is not None else None
+
+    def test_gradient_flow_with_real_dataset(self, tmp_path):
+        """
+        Test gradient flow with real CDC dataset
+        """
+        # Create cache with uniform shapes
         preprocessor = CDCPreprocessor(
             k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu"
         )
 
-        # Create samples with same shape for fast path testing
         shape = (16, 32, 32)
-        for i in range(20):
+        for i in range(10):
             latent = torch.randn(*shape, dtype=torch.float32)
             metadata = {'image_key': f'test_image_{i}'}
             preprocessor.add_latent(latent=latent, global_idx=i, shape=shape, metadata=metadata)
 
         cache_path = tmp_path / "test_gradient.safetensors"
         preprocessor.compute_all(save_path=cache_path)
-        return cache_path
+        dataset = GammaBDataset(gamma_b_path=cache_path, device="cpu")
 
-    def test_gradient_flow_fast_path(self, cdc_cache):
-        """
-        Test that gradients flow correctly through batch processing (fast path).
-
-        All samples have matching shapes, so CDC uses batch processing.
-        """
-        dataset = GammaBDataset(gamma_b_path=cdc_cache, device="cpu")
-
-        batch_size = 4
-        shape = (16, 32, 32)
-
-        # Create input noise with requires_grad
-        noise = torch.randn(batch_size, *shape, dtype=torch.float32, requires_grad=True)
+        # Prepare test noise
+        torch.manual_seed(42)
+        noise = torch.randn(4, *shape, dtype=torch.float32, requires_grad=True)
         timesteps = torch.tensor([100.0, 200.0, 300.0, 400.0], dtype=torch.float32)
         image_keys = ['test_image_0', 'test_image_1', 'test_image_2', 'test_image_3']
 
@@ -58,102 +217,23 @@ class TestCDCGradientFlow:
             device="cpu"
         )
 
-        # Ensure output requires grad
+        # Verify gradient flow
         assert noise_out.requires_grad, "Output should require gradients"
 
-        # Compute a simple loss and backprop
         loss = noise_out.sum()
         loss.backward()
 
-        # Verify gradients were computed for input
         assert noise.grad is not None, "Gradients should flow back to input noise"
         assert not torch.isnan(noise.grad).any(), "Gradients should not contain NaN"
         assert not torch.isinf(noise.grad).any(), "Gradients should not contain inf"
         assert (noise.grad != 0).any(), "Gradients should not be all zeros"
 
-    def test_gradient_flow_slow_path_all_match(self, cdc_cache):
+    def test_gradient_flow_with_fallback(self, tmp_path):
         """
-        Test gradient flow when slow path is taken but all shapes match.
+        Test gradient flow when using Gaussian fallback (shape mismatch)
 
-        This tests the per-sample loop with CDC transformation.
-        """
-        dataset = GammaBDataset(gamma_b_path=cdc_cache, device="cpu")
-
-        batch_size = 4
-        shape = (16, 32, 32)
-
-        noise = torch.randn(batch_size, *shape, dtype=torch.float32, requires_grad=True)
-        timesteps = torch.tensor([100.0, 200.0, 300.0, 400.0], dtype=torch.float32)
-        image_keys = ['test_image_0', 'test_image_1', 'test_image_2', 'test_image_3']
-
-        # Apply transformation
-        noise_out = apply_cdc_noise_transformation(
-            noise=noise,
-            timesteps=timesteps,
-            num_timesteps=1000,
-            gamma_b_dataset=dataset,
-            image_keys=image_keys,
-            device="cpu"
-        )
-
-        # Test gradient flow
-        loss = noise_out.sum()
-        loss.backward()
-
-        assert noise.grad is not None
-        assert not torch.isnan(noise.grad).any()
-        assert (noise.grad != 0).any()
-
-    def test_gradient_consistency_between_paths(self, tmp_path):
-        """
-        Test that fast path and slow path produce similar gradients.
-
-        When all shapes match, both paths should give consistent results.
-        """
-        # Create cache with uniform shapes
-        preprocessor = CDCPreprocessor(
-            k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu"
-        )
-
-        shape = (16, 32, 32)
-        for i in range(10):
-            latent = torch.randn(*shape, dtype=torch.float32)
-            metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=shape, metadata=metadata)
-
-        cache_path = tmp_path / "test_consistency.safetensors"
-        preprocessor.compute_all(save_path=cache_path)
-        dataset = GammaBDataset(gamma_b_path=cache_path, device="cpu")
-
-        # Same input for both tests
-        torch.manual_seed(42)
-        noise = torch.randn(4, *shape, dtype=torch.float32, requires_grad=True)
-        timesteps = torch.tensor([100.0, 200.0, 300.0, 400.0], dtype=torch.float32)
-        image_keys = ['test_image_0', 'test_image_1', 'test_image_2', 'test_image_3']
-
-        # Apply CDC (should use fast path)
-        noise_out = apply_cdc_noise_transformation(
-            noise=noise,
-            timesteps=timesteps,
-            num_timesteps=1000,
-            gamma_b_dataset=dataset,
-            image_keys=image_keys,
-            device="cpu"
-        )
-
-        # Compute gradients
-        loss = noise_out.sum()
-        loss.backward()
-
-        # Both paths should produce valid gradients
-        assert noise.grad is not None
-        assert not torch.isnan(noise.grad).any()
-
-    def test_fallback_gradient_flow(self, tmp_path):
-        """
-        Test gradient flow when using Gaussian fallback (shape mismatch).
-
-        Ensures that cloned tensors maintain gradient flow correctly.
+        Ensures that cloned tensors maintain gradient flow correctly
+        even when shape mismatch triggers Gaussian noise
         """
         # Create cache with one shape
         preprocessor = CDCPreprocessor(
@@ -165,7 +245,7 @@ class TestCDCGradientFlow:
         metadata = {'image_key': 'test_image_0'}
         preprocessor.add_latent(latent=latent, global_idx=0, shape=preprocessed_shape, metadata=metadata)
 
-        cache_path = tmp_path / "test_fallback.safetensors"
+        cache_path = tmp_path / "test_fallback_gradient.safetensors"
         preprocessor.compute_all(save_path=cache_path)
         dataset = GammaBDataset(gamma_b_path=cache_path, device="cpu")
 
@@ -176,7 +256,6 @@ class TestCDCGradientFlow:
         image_keys = ['test_image_0']
 
         # Apply transformation (should fallback to Gaussian for this sample)
-        # Note: This will log a warning but won't raise
         noise_out = apply_cdc_noise_transformation(
             noise=noise,
             timesteps=timesteps,
@@ -193,7 +272,25 @@ class TestCDCGradientFlow:
         loss.backward()
 
         assert noise.grad is not None, "Gradients should flow even in fallback case"
-        assert not torch.isnan(noise.grad).any()
+        assert not torch.isnan(noise.grad).any(), "Fallback gradients should not contain NaN"
+
+
+def pytest_configure(config):
+    """
+    Configure custom markers for CDC gradient flow tests
+    """
+    config.addinivalue_line(
+        "markers",
+        "gradient_flow: mark test to verify gradient preservation in CDC Flow Matching"
+    )
+    config.addinivalue_line(
+        "markers",
+        "mock_dataset: mark test using mock dataset for simplified gradient testing"
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_dataset: mark test using real dataset for comprehensive gradient testing"
+    )
 
 
 if __name__ == "__main__":
