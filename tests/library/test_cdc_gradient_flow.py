@@ -6,8 +6,6 @@ Ensures that gradients propagate correctly through both fast and slow paths.
 
 import pytest
 import torch
-import tempfile
-from pathlib import Path
 
 from library.cdc_fm import CDCPreprocessor, GammaBDataset
 from library.flux_train_utils import apply_cdc_noise_transformation

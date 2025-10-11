@@ -5,10 +5,8 @@ These tests focus on CDC-FM specific functionality without importing
 the full training infrastructure that has problematic dependencies.
 """
 
-import tempfile
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file

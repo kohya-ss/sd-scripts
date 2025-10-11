@@ -6,8 +6,6 @@ Verifies that adaptive k properly adjusts based on bucket sizes.
 
 import pytest
 import torch
-import numpy as np
-from pathlib import Path
 
 from library.cdc_fm import CDCPreprocessor, GammaBDataset
 

@@ -354,15 +354,26 @@ class LatentBatcher:
             Dict mapping exact_shape -> list of samples with that shape
         """
         batches = {}
+        shapes = set()
 
         for sample in self.samples:
             shape_key = sample.shape
+            shapes.add(shape_key)
 
             # Group by exact shape only - no aspect ratio grouping or resizing
             if shape_key not in batches:
                 batches[shape_key] = []
 
             batches[shape_key].append(sample)
+
+        # If more than one unique shape, log a warning
+        if len(shapes) > 1:
+            logger.warning(
+                "Dimension mismatch: %d unique shapes detected. "
+                "Shapes: %s. Using Gaussian fallback for these samples.",
+                len(shapes),
+                shapes
+            )
 
         return batches
 

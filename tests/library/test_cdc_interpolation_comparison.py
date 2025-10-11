@@ -4,7 +4,6 @@ Test comparing interpolation vs pad/truncate for CDC preprocessing.
 This test quantifies the difference between the two approaches.
 """
 
-import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -89,16 +88,16 @@ class TestInterpolationComparison:
         print("\n" + "=" * 60)
         print("Reconstruction Error Comparison")
         print("=" * 60)
-        print(f"\nSmall latent (16x4x4 -> 16x6x6 -> 16x4x4):")
+        print("\nSmall latent (16x4x4 -> 16x6x6 -> 16x4x4):")
         print(f"  Interpolation error: {interp_error_small:.6f}")
         print(f"  Pad/truncate error:  {pad_error_small:.6f}")
         if pad_error_small > 0:
             print(f"  Improvement:         {(pad_error_small - interp_error_small) / pad_error_small * 100:.2f}%")
         else:
-            print(f"  Note: Pad/truncate has 0 reconstruction error (perfect recovery)")
-            print(f"        BUT the intermediate representation is corrupted with zeros!")
+            print("  Note: Pad/truncate has 0 reconstruction error (perfect recovery)")
+            print("        BUT the intermediate representation is corrupted with zeros!")
 
-        print(f"\nLarge latent (16x8x8 -> 16x6x6 -> 16x8x8):")
+        print("\nLarge latent (16x8x8 -> 16x6x6 -> 16x8x8):")
         print(f"  Interpolation error: {interp_error_large:.6f}")
         print(f"  Pad/truncate error:  {truncate_error_large:.6f}")
         if truncate_error_large > 0:
@@ -151,7 +150,7 @@ class TestInterpolationComparison:
         print("\n" + "=" * 60)
         print("Spatial Structure Preservation")
         print("=" * 60)
-        print(f"\nGradient smoothness (lower is smoother):")
+        print("\nGradient smoothness (lower is smoother):")
         print(f"  Interpolation - X gradient: {grad_x_interp:.4f}, Y gradient: {grad_y_interp:.4f}")
         print(f"  Pad/truncate  - X gradient: {grad_x_pad:.4f}, Y gradient: {grad_y_pad:.4f}")
 
