@@ -150,7 +150,7 @@ class CarreDuChampComputer:
             centered = neighbor_points - m_star
             weighted_centered = np.sqrt(weights_uniform)[:, None] * centered
 
-        # Move to GPU for SVD (100x speedup!)
+        # Move to GPU for SVD
         weighted_centered_torch = torch.from_numpy(weighted_centered).to(
             self.device, dtype=torch.float32
         )
@@ -761,7 +761,7 @@ class GammaBDataset:
         t = t.view(-1, 1)
 
         # Early return for t=0 to avoid numerical errors
-        if torch.allclose(t, torch.zeros_like(t), atol=1e-8):
+        if not t.requires_grad and torch.allclose(t, torch.zeros_like(t), atol=1e-8):
             return x.reshape(orig_shape)
 
         # Check if CDC is disabled (all eigenvalues are zero)
