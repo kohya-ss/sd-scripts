@@ -330,7 +330,7 @@ def train(args):
     # 学習に必要なクラスを準備する
     accelerator.print("prepare optimizer, data loader etc.")
 
-    fused_optimizers_supported = ['adafactor', 'adamoffload', 'nadamoffload', 'adamwoffload', 'nadamwoffload']
+    fused_optimizers_supported = ['adafactor', 'adamoffload', 'nadamoffload', 'adamwoffload', 'nadamwoffload', 'adanoffload']
 
     if args.blockwise_fused_optimizers:
         # fused backward pass: https://pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
@@ -458,8 +458,23 @@ def train(args):
         # Experimental: some layers have very few weights, and training quality seems
         # to increase significantly if these are left in f32 format while training.
         if args.fused_backward_pass:
-            flux.final_layer.linear.to(dtype=torch.float32)  # Loses lower bits from some saved files,
-            flux.img_in            .to(dtype=torch.float32)  # but most saved models aren't f32/f16 anyway.
+
+            from library.flux_models import MixedLinear
+            from library.flux_models import RMSNorm
+
+            flux.final_layer.linear.to(dtype=torch.float32)
+            flux.img_in            .to(dtype=torch.float32)
+
+            for m in flux.modules():
+                num_params = sum(p.numel() for p in m.parameters())
+                
+                if isinstance(m, MixedLinear) and m.bias is not None:
+                    m.bias.data = m.bias.data.to(torch.float32)
+                    if m.weight.data.numel() < 20000000:  # Includes first Linear stage with 18m weights
+                        m.weight.data = m.weight.data.to(torch.float32)
+
+                if isinstance(m, RMSNorm):
+                    m.scale.data = m.scale.data.to(torch.float32)
 
         if clip_l is not None:
             clip_l.to(weight_dtype)
@@ -501,6 +516,7 @@ def train(args):
         # use fused optimizer for backward pass. Only some specific optimizers are supported.
         import library.adafactor_fused
         import library.adamw_fused
+        import library.adan_fused
 
         if args.optimizer_type.lower() == "adafactor":
             library.adafactor_fused.patch_adafactor_fused(optimizer)
@@ -508,6 +524,8 @@ def train(args):
             library.adamw_fused.patch_adamw_offload_fused(optimizer, False)
         elif args.optimizer_type.lower() == "nadamoffload" or args.optimizer_type.lower() == "nadamwoffload":
             library.adamw_fused.patch_adamw_offload_fused(optimizer, True)  # Nesterov
+        elif args.optimizer_type.lower() == "adanoffload":
+            library.adan_fused.patch_adan_offload_fused(optimizer, False)  # Adan
         else:
             logger.error(f"Optimizer '{args.optimizer_type}' does not have a --fused_backward_pass implementation available")
 

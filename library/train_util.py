@@ -5068,6 +5068,12 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         optimizer_class = torch.optim.AdamW  # default weight_decay seems to be 0.01
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type.lower() == "adanoffload":
+        logger.info(f"use AdanOffload optimizer | {optimizer_kwargs}")
+
+        optimizer_class = torch.optim.AdamW  # todo: can't set beta3 here yet, need a custom Adan class
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
     elif optimizer_type == "AdamW".lower():
         logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW

@@ -135,6 +135,12 @@ def adamw_offload_step_param(self, p, group):
 
     lr: float = group['lr']
     
+    # Implement 'cautious optimizer' from https://arxiv.org/pdf/2411.16085
+    # The scaling factor - dividing by m.mean() - does not seem to work with parameter
+    # groups, but it also appears to be an optional step, so it has been removed.
+    m = (update * grad >= 0).to(grad.dtype)
+    update = update * m #/ (m.mean() + eps)
+
     # Apply learning rate
     update.mul_(lr)
 
