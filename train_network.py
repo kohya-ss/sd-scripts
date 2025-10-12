@@ -477,7 +477,8 @@ class NetworkTrainer:
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
 
         if args.wavelet_loss:
-            def maybe_denoise_latents(denoise_latents: bool, noisy_latents, sigmas, noise_pred, noise):
+            def maybe_denoise_latents(denoise_latents: bool, noisy_latents, sigma, noise_pred, noise):
+                sigmas = sigma.expand(noise_pred.size(0), -1, -1, -1)
                 if denoise_latents:
                     if self.is_flow_matching:
                         # denoise latents to use for wavelet loss
