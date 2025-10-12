@@ -6,6 +6,7 @@ import sys
 import random
 import time
 import json
+from dataclasses import dataclass
 from multiprocessing import Value
 import toml
 from collections import deque
@@ -56,6 +57,193 @@ setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GradNormGuardianConfig:
+    skip_grad_norm: bool
+    log_grad_norm: bool
+    log_grad_scale: bool
+    log_grad_cosine: bool
+    skip_grad_norm_max: Optional[float]
+    nan_to_window: bool
+    inf_to_window: bool
+    skip_nan_immediate: bool
+    skip_inf_immediate: bool
+    auto_cap_release: bool
+    cap_release_trigger_ratio: float
+    cap_release_trigger_steps: int
+    cap_release_length: int
+    cap_release_scale: float
+    idle_free_phase: bool
+    idle_max_steps: int
+    idle_free_len: int
+    moving_avg_window: int = 200
+    log_flush_interval: int = 100
+    initial_threshold: float = 200_000.0
+
+
+class GradNormGuardian:
+    def __init__(
+        self,
+        config: GradNormGuardianConfig,
+        scaler_for_log=None,
+        log_file_path: Optional[str] = None,
+    ):
+        self.config = config
+        self.scaler_for_log = scaler_for_log if config.log_grad_scale else None
+        self.log_file_path = log_file_path if config.log_grad_norm else None
+
+        self.moving_avg_window = deque(maxlen=config.moving_avg_window)
+        self.log_buffer: List[str] = []
+        self.prev_grad_list = None
+        self.prev_grad_norm = None
+        self.trigger_count = 0
+        self.cap_release_counter = 0
+        self.idle_counter = 0
+        self.idle_free_counter = 0
+        self.in_idle_free = False
+
+        if self.config.log_grad_norm and self.log_file_path is not None:
+            with open(self.log_file_path, "w") as f:
+                header = "Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff"
+                if self.config.log_grad_scale:
+                    header += ",Scale"
+                if self.config.log_grad_cosine:
+                    header += ",CosineSim"
+                f.write(header + "\n")
+
+    def update_nan_inf_behavior(
+        self,
+        nan_to_window: Optional[bool] = None,
+        inf_to_window: Optional[bool] = None,
+        skip_nan_immediate: Optional[bool] = None,
+        skip_inf_immediate: Optional[bool] = None,
+    ):
+        if nan_to_window is not None:
+            self.config.nan_to_window = nan_to_window
+        if inf_to_window is not None:
+            self.config.inf_to_window = inf_to_window
+        if skip_nan_immediate is not None:
+            self.config.skip_nan_immediate = skip_nan_immediate
+        if skip_inf_immediate is not None:
+            self.config.skip_inf_immediate = skip_inf_immediate
+
+    def observe(self, model, epoch: int, step: int, loss_val: float) -> bool:
+        device = next(model.parameters()).device
+        grad_norm_sqr = torch.tensor(0.0, device=device)
+        use_cosine = self.config.log_grad_cosine
+        dot_sum = torch.tensor(0.0, device=device) if (use_cosine and self.prev_grad_list is not None) else None
+        cur_grads = [] if use_cosine else None
+
+        with torch.no_grad():
+            idx = 0
+            for param in model.parameters():
+                if param.grad is not None:
+                    grad = param.grad  # NOTE: keep scaler-applied grads (pre-unscale) to retain fp16 scaling behavior
+                    grad_norm_sqr += (grad.detach() * grad.detach()).sum()
+                    if use_cosine:
+                        if self.prev_grad_list is not None and idx < len(self.prev_grad_list):
+                            dot_sum += (grad.detach() * self.prev_grad_list[idx]).sum()
+                        cur_grads.append(grad.detach().clone())
+                        idx += 1
+
+        current_grad_norm = torch.sqrt(grad_norm_sqr).item()
+        cosine_sim = None
+        if use_cosine:
+            if self.prev_grad_list is not None and dot_sum is not None and self.prev_grad_norm is not None:
+                denom = current_grad_norm * (self.prev_grad_norm + 1e-12)
+                if denom == 0.0:
+                    cosine_sim = float("nan")
+                else:
+                    cosine_sim = (dot_sum / denom).item()
+            else:
+                cosine_sim = float("nan")
+            self.prev_grad_list = cur_grads
+            self.prev_grad_norm = current_grad_norm
+
+        is_nan = math.isnan(current_grad_norm)
+        is_inf = math.isinf(current_grad_norm)
+
+        appended = False
+        if not is_nan and not is_inf:
+            self.moving_avg_window.append(current_grad_norm)
+        else:
+            if is_nan and self.config.nan_to_window:
+                self.moving_avg_window.append(current_grad_norm)  # NOTE: intentionally poison the window so threshold stays NaN
+                appended = True
+            if is_inf and self.config.inf_to_window:
+                self.moving_avg_window.append(current_grad_norm)  # NOTE: same idea for Inf; keep threshold disabled until flushed out
+                appended = True
+
+        if self.in_idle_free:
+            self.idle_free_counter += 1
+            if self.idle_free_counter >= self.config.idle_free_len:
+                self.in_idle_free = False
+                self.idle_free_counter = 0
+        else:
+            if appended:
+                self.idle_counter = 0
+            else:
+                self.idle_counter += 1
+                if self.config.idle_free_phase and self.idle_counter >= self.config.idle_max_steps:
+                    self.in_idle_free = True
+                    self.idle_counter = 0
+                    self.idle_free_counter = 0
+
+        if len(self.moving_avg_window) == self.moving_avg_window.maxlen:
+            mean_norm = np.mean(self.moving_avg_window)
+            std_norm = np.std(self.moving_avg_window)
+            dynamic_threshold_pre_cap = mean_norm + 2.5 * std_norm
+        else:
+            dynamic_threshold_pre_cap = self.config.initial_threshold
+
+        effective_max = self.config.skip_grad_norm_max
+        if self.config.auto_cap_release and self.config.skip_grad_norm_max is not None:
+            if self.cap_release_counter > 0:
+                effective_max = self.config.skip_grad_norm_max * self.config.cap_release_scale
+                dynamic_threshold_pre_cap = effective_max
+                self.cap_release_counter -= 1
+            else:
+                trigger_threshold = self.config.cap_release_trigger_ratio * self.config.skip_grad_norm_max
+                if not math.isnan(dynamic_threshold_pre_cap) and dynamic_threshold_pre_cap >= trigger_threshold:
+                    self.trigger_count += 1
+                    if self.trigger_count >= self.config.cap_release_trigger_steps:
+                        self.cap_release_counter = self.config.cap_release_length
+                        self.trigger_count = 0
+                else:
+                    self.trigger_count = 0
+
+        dynamic_threshold = dynamic_threshold_pre_cap
+        if effective_max is not None and dynamic_threshold > effective_max:
+            dynamic_threshold = effective_max
+        if len(self.moving_avg_window) < self.moving_avg_window.maxlen:
+            dynamic_threshold = dynamic_threshold_pre_cap
+
+        if self.config.log_grad_norm:
+            scale_val = self.scaler_for_log.get_scale() if self.config.log_grad_scale and self.scaler_for_log else None
+            flag = 2 if self.in_idle_free else (1 if math.isnan(dynamic_threshold) else 0)
+            log_line = f"{epoch},{step},{current_grad_norm},{dynamic_threshold},{loss_val},{flag}"
+            if self.config.log_grad_scale:
+                log_line += f",{scale_val}"
+            if self.config.log_grad_cosine:
+                log_line += f",{cosine_sim}"
+            self.log_buffer.append(log_line + "\n")
+            if step % self.config.log_flush_interval == 0 and self.log_file_path is not None:
+                with open(self.log_file_path, "a") as f:
+                    f.writelines(self.log_buffer)
+                self.log_buffer.clear()
+
+        if not self.config.skip_grad_norm:
+            return False
+
+        if (is_nan and self.config.skip_nan_immediate) or (is_inf and self.config.skip_inf_immediate):
+            return True
+
+        if self.in_idle_free:
+            return False
+
+        return current_grad_norm > dynamic_threshold
 
 
 class NetworkTrainer:
@@ -1035,164 +1223,37 @@ class NetworkTrainer:
             f"idle_free_phase: {idle_free_phase}, idle_max_steps: {idle_max_steps}, idle_free_len: {idle_free_len}"
         )
         use_grad_norm = skip_grad_norm or log_grad_norm
+        grad_norm_guardian: Optional[GradNormGuardian] = None
         if use_grad_norm:
-            # 勾配ノルムの履歴を保持するキュー
-            moving_avg_window = deque(maxlen=200)
-            log_buffer = []
             model_name = train_util.default_if_none(args.output_name, train_util.DEFAULT_LAST_OUTPUT_NAME)
             log_file_path = f"gradient_logs+{model_name}.txt"
-
-            # ログ用のヘッダーを書き出す
-            if log_grad_norm:
-                with open(log_file_path, "w") as f:
-                    header = "Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff"
-                    if log_grad_scale:
-                        header += ",Scale"
-                    if log_grad_cosine:
-                        header += ",CosineSim"
-                    f.write(header + "\n")
-
-            trigger_count = 0
-            cap_release_counter = 0
-            # For cosine logging, keep previous gradients as per-parameter tensors to avoid huge concat each step
-            prev_grad_list = None
-            prev_grad_norm = None
-            idle_counter = 0
-            idle_free_counter = 0
-            in_idle_free = False
+            guardian_config = GradNormGuardianConfig(
+                skip_grad_norm=skip_grad_norm,
+                log_grad_norm=log_grad_norm,
+                log_grad_scale=log_grad_scale,
+                log_grad_cosine=log_grad_cosine,
+                skip_grad_norm_max=skip_grad_norm_max,
+                nan_to_window=nan_to_window,
+                inf_to_window=inf_to_window,
+                skip_nan_immediate=skip_nan_immediate,
+                skip_inf_immediate=skip_inf_immediate,
+                auto_cap_release=auto_cap_release,
+                cap_release_trigger_ratio=cap_release_trigger_ratio,
+                cap_release_trigger_steps=cap_release_trigger_steps,
+                cap_release_length=cap_release_length,
+                cap_release_scale=cap_release_scale,
+                idle_free_phase=idle_free_phase,
+                idle_max_steps=idle_max_steps,
+                idle_free_len=idle_free_len,
+            )
+            grad_norm_guardian = GradNormGuardian(
+                config=guardian_config,
+                scaler_for_log=scaler_for_log if log_grad_scale else None,
+                log_file_path=log_file_path if log_grad_norm else None,
+            )
 
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
-                nonlocal trigger_count, cap_release_counter
-                nonlocal prev_grad_list, prev_grad_norm, idle_counter, idle_free_counter, in_idle_free
-                device = next(model.parameters()).device
-                grad_norm_sqr = torch.tensor(0.0, device=device)
-                # accumulate dot product with previous grads without concatenation
-                dot_sum = torch.tensor(0.0, device=device) if (log_grad_cosine and prev_grad_list is not None) else None
-                cur_grads = [] if log_grad_cosine else None
-
-                # 各パラメータの勾配ノルムの二乗を加算
-                with torch.no_grad():
-                    idx = 0
-                    for param in model.parameters():
-                        if param.grad is not None:
-                            grad = param.grad
-                            # sum of squares
-                            grad_norm_sqr += (grad.detach() * grad.detach()).sum()
-                            if log_grad_cosine:
-                                if prev_grad_list is not None and idx < len(prev_grad_list):
-                                    # accumulate dot product per-parameter to avoid giant torch.cat
-                                    dot_sum += (grad.detach() * prev_grad_list[idx]).sum()
-                                cur_grads.append(grad.detach().clone())
-                                idx += 1
-                current_grad_norm = torch.sqrt(grad_norm_sqr).item()
-
-                cosine_sim = None
-                if log_grad_cosine:
-                    if prev_grad_list is not None and dot_sum is not None and prev_grad_norm is not None:
-                        denom = (current_grad_norm * (prev_grad_norm + 1e-12))
-                        # avoid divide-by-zero
-                        if denom == 0.0:
-                            cosine_sim = float("nan")
-                        else:
-                            cosine_sim = (dot_sum / denom).item()
-                    else:
-                        cosine_sim = float("nan")
-                    # store for next step
-                    prev_grad_list = cur_grads
-                    prev_grad_norm = current_grad_norm
-
-                # 勾配ノルムが NaN / Inf かどうかを判定
-                is_nan = math.isnan(current_grad_norm)
-                is_inf = math.isinf(current_grad_norm)
-
-                appended = False
-                if not is_nan and not is_inf:
-                    moving_avg_window.append(current_grad_norm)
-                else:
-                    # 設定に応じて NaN / Inf も移動平均窓へ入れる
-                    if is_nan and nan_to_window:
-                        moving_avg_window.append(current_grad_norm)
-                        appended = True
-                    if is_inf and inf_to_window:
-                        moving_avg_window.append(current_grad_norm)
-                        appended = True
-
-                if in_idle_free:
-                    idle_free_counter += 1
-                    if idle_free_counter >= idle_free_len:
-                        in_idle_free = False
-                        idle_free_counter = 0
-                else:
-                    if appended:
-                        idle_counter = 0
-                    else:
-                        idle_counter += 1
-                        if idle_free_phase and idle_counter >= idle_max_steps:
-                            in_idle_free = True
-                            idle_counter = 0
-                            idle_free_counter = 0
-
-                # 窓がいっぱいになったら平均+2.5σを計算
-                if len(moving_avg_window) == moving_avg_window.maxlen:
-                    mean_norm = np.mean(moving_avg_window)
-                    std_norm = np.std(moving_avg_window)
-                    # 移動平均 + 2.5σ で動的閾値を算出
-                    dynamic_threshold_pre_cap = mean_norm + 2.5 * std_norm
-                else:
-                    # 窓が埋まるまでは十分大きな閾値を与える
-                    dynamic_threshold_pre_cap = 200_000
-
-                # auto_cap_release の処理：連続して閾値を超えている場合に一時的に上限を緩和
-                effective_max = skip_grad_norm_max
-                if auto_cap_release and skip_grad_norm_max is not None:
-                    if cap_release_counter > 0:
-                        # キャップ解放中は閾値を強制的に拡大した値にする
-                        effective_max = skip_grad_norm_max * cap_release_scale
-                        dynamic_threshold_pre_cap = effective_max
-                        cap_release_counter -= 1
-                    else:
-                        # 閾値超過が一定回数続いたらキャップ開放を開始
-                        if not math.isnan(dynamic_threshold_pre_cap) and dynamic_threshold_pre_cap >= cap_release_trigger_ratio * skip_grad_norm_max:
-                            trigger_count += 1
-                            if trigger_count >= cap_release_trigger_steps:
-                                cap_release_counter = cap_release_length
-                                trigger_count = 0
-                        else:
-                            trigger_count = 0
-
-                # 有効な上限値を反映した実際の閾値を求める
-                dynamic_threshold = dynamic_threshold_pre_cap
-                if effective_max is not None and dynamic_threshold > effective_max:
-                    dynamic_threshold = effective_max
-                # 窓が埋まるまでは計算値をそのまま使用する
-                if len(moving_avg_window) < moving_avg_window.maxlen:
-                    dynamic_threshold = dynamic_threshold_pre_cap
-
-                # ログをファイルに出力
-                if log_grad_norm:
-                    scale_val = scaler_for_log.get_scale() if log_grad_scale else None
-                    flag = 2 if in_idle_free else (1 if math.isnan(dynamic_threshold) else 0)
-                    log_line = f"{epoch},{step},{current_grad_norm},{dynamic_threshold},{loss_val},{flag}"
-                    if log_grad_scale:
-                        log_line += f",{scale_val}"
-                    if log_grad_cosine:
-                        log_line += f",{cosine_sim}"
-                    log_buffer.append(log_line + "\n")
-                    if step % 100 == 0:
-                        with open(log_file_path, "a") as f:
-                            f.writelines(log_buffer)
-                        log_buffer.clear()
-
-                if not skip_grad_norm:
-                    return False
-
-                if (is_nan and skip_nan_immediate) or (is_inf and skip_inf_immediate):
-                    return True
-
-                if in_idle_free:
-                    return False
-
-                return current_grad_norm > dynamic_threshold
+                return grad_norm_guardian.observe(model, epoch, step, loss_val)
         else:
             def check_gradients_and_skip_update(model, epoch, step, loss_val):
                 return False
@@ -1453,6 +1514,13 @@ class NetworkTrainer:
                         inf_to_window = False
                         skip_nan_immediate = True
                         skip_inf_immediate = True
+                        if grad_norm_guardian is not None:
+                            grad_norm_guardian.update_nan_inf_behavior(
+                                nan_to_window=nan_to_window,
+                                inf_to_window=inf_to_window,
+                                skip_nan_immediate=skip_nan_immediate,
+                                skip_inf_immediate=skip_inf_immediate,
+                            )
                         nan_inf_switched = True
                         accelerator.print(
                             f"nan_inf switched at step {global_step}: nan_to_window={nan_to_window}, inf_to_window={inf_to_window}, "
