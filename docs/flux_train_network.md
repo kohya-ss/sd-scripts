@@ -550,24 +550,34 @@ You can calculate validation loss during training using a validation dataset to 
 To set up validation, add a `validation_split` and optionally `validation_seed` to your dataset configuration TOML file. 
 
 ```toml
-[[datasets]]
+validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
 enable_bucket = true
 resolution = [1024, 1024]
-validation_seed = 42 # [Optional] Validation seed, otherwise uses training seed for validation split .
 
+[[datasets]]
   [[datasets.subsets]]
+  # This directory will use 100% of the images for training
   image_dir = "path/to/image/directory"
-  validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
+
+[[datasets]]
+validation_split = 0.1 # Split between 0.0 and 1.0 where 1.0 will use the full subset as a validation dataset
 
   [[datasets.subsets]]
+  # This directory will split 10% to validation and 90% to training
+  image_dir = "path/to/image/second-directory"
+
+[[datasets]]
+validation_split = 1.0 # Will use this full subset as a validation subset. 
+
+  [[datasets.subsets]]
+  # This directory will use the 100% to validation and 0% to training
   image_dir = "path/to/image/full_validation"
-  validation_split = 1.0 # Will use this full subset as a validation subset. 
 ```
 
 **Notes:**
 
 * Validation loss calculation uses fixed timestep sampling and random seeds to reduce loss variation due to randomness for more stable evaluation.
-* Currently, validation loss is not supported when using `--blocks_to_swap` or Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
+* Currently, validation loss is not supported when using Schedule-Free optimizers (`AdamWScheduleFree`, `RAdamScheduleFree`, `ProdigyScheduleFree`).
 
 <details>
 <summary>日本語</summary>
@@ -628,6 +638,40 @@ interpolation_type = "lanczos" # Example: Use Lanczos interpolation
 データセットの画像を学習解像度にリサイズする際の補間方法を指定できます。
 
 設定方法とオプションの詳細は英語のドキュメントを参照してください。
+
+</details>
+
+### 7.3. Other Training Options / その他の学習オプション
+
+- **`--controlnet_model_name_or_path`**: Specifies the path to a ControlNet model compatible with FLUX.1. This allows for training a LoRA that works in conjunction with ControlNet. This is an advanced feature and requires a compatible ControlNet model.
+
+- **`--loss_type`**: Specifies the loss function for training. The default is `l2`.
+  - `l1`: L1 loss.
+  - `l2`: L2 loss (mean squared error).
+  - `huber`: Huber loss.
+  - `smooth_l1`: Smooth L1 loss.
+
+- **`--huber_schedule`**, **`--huber_c`**, **`--huber_scale`**: These are parameters for Huber loss. They are used when `--loss_type` is set to `huber` or `smooth_l1`.
+
+- **`--t5xxl_max_token_length`**: Specifies the maximum token length for the T5-XXL text encoder. For details, refer to the [`sd3_train_network.md` guide](sd3_train_network.md).
+
+- **`--weighting_scheme`**, **`--logit_mean`**, **`--logit_std`**, **`--mode_scale`**: These options allow you to adjust the loss weighting for each timestep. For details, refer to the [`sd3_train_network.md` guide](sd3_train_network.md).
+
+- **`--fused_backward_pass`**: Fuses the backward pass and optimizer step to reduce VRAM usage. For details, refer to the [`sdxl_train_network.md` guide](sdxl_train_network.md).
+
+<details>
+<summary>日本語</summary>
+
+- **`--controlnet_model_name_or_path`**: FLUX.1互換のControlNetモデルへのパスを指定します。これにより、ControlNetと連携して動作するLoRAを学習できます。これは高度な機能であり、互換性のあるControlNetモデルが必要です。
+- **`--loss_type`**: 学習に用いる損失関数を指定します。デフォルトは `l2` です。
+  - `l1`: L1損失。
+  - `l2`: L2損失（平均二乗誤差）。
+  - `huber`: Huber損失。
+  - `smooth_l1`: Smooth L1損失。
+- **`--huber_schedule`**, **`--huber_c`**, **`--huber_scale`**: これらはHuber損失のパラメータです。`--loss_type` が `huber` または `smooth_l1` の場合に使用されます。
+- **`--t5xxl_max_token_length`**: T5-XXLテキストエンコーダの最大トークン長を指定します。詳細は [`sd3_train_network.md` ガイド](sd3_train_network.md) を参照してください。
+- **`--weighting_scheme`**, **`--logit_mean`**, **`--logit_std`**, **`--mode_scale`**: これらのオプションは、各タイムステップの損失の重み付けを調整するために使用されます。詳細は [`sd3_train_network.md` ガイド](sd3_train_network.md) を参照してください。
+- **`--fused_backward_pass`**: バックワードパスとオプティマイザステップを融合してVRAM使用量を削減します。詳細は [`sdxl_train_network.md` ガイド](sdxl_train_network.md) を参照してください。
 
 </details>
 

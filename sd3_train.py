@@ -14,6 +14,7 @@ from tqdm import tqdm
 import torch
 from library import utils
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.safetensors_utils import load_safetensors
 
 init_ipex()
 
@@ -206,7 +207,7 @@ def train(args):
     # t5xxl_dtype = weight_dtype
     model_dtype = match_mixed_precision(args, weight_dtype)  # None (default) or fp16/bf16 (full_xxxx)
     if args.clip_l is None:
-        sd3_state_dict = utils.load_safetensors(
+        sd3_state_dict = load_safetensors(
             args.pretrained_model_name_or_path, "cpu", args.disable_mmap_load_safetensors, model_dtype
         )
     else:
@@ -322,7 +323,7 @@ def train(args):
     # load VAE for caching latents
     if sd3_state_dict is None:
         logger.info(f"load state dict for MMDiT and VAE from {args.pretrained_model_name_or_path}")
-        sd3_state_dict = utils.load_safetensors(
+        sd3_state_dict = load_safetensors(
             args.pretrained_model_name_or_path, "cpu", args.disable_mmap_load_safetensors, model_dtype
         )
 

@@ -18,10 +18,11 @@ from library import lumina_models, strategy_base, strategy_lumina, train_util
 from library.flux_models import AutoEncoder
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
+from library.safetensors_utils import mem_eff_save_file
 
 init_ipex()
 
-from .utils import setup_logging, mem_eff_save_file
+from .utils import setup_logging
 
 setup_logging()
 import logging

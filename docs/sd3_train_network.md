@@ -1,5 +1,3 @@
-Status: reviewed
-
 # LoRA Training Guide for Stable Diffusion 3/3.5 using `sd3_train_network.py` / `sd3_train_network.py` を用いたStable Diffusion 3/3.5モデルのLoRA学習ガイド
 
 This document explains how to train LoRA (Low-Rank Adaptation) models for Stable Diffusion 3 (SD3) and Stable Diffusion 3.5 (SD3.5) using `sd3_train_network.py` in the `sd-scripts` repository.
@@ -18,7 +16,6 @@ This guide assumes you already understand the basics of LoRA training. For commo
 
 <details>
 <summary>日本語</summary>
-ステータス：内容を一通り確認した
 
 `sd3_train_network.py`は、Stable Diffusion 3/3.5モデルに対してLoRAなどの追加ネットワークを学習させるためのスクリプトです。SD3は、MMDiT (Multi-Modal Diffusion Transformer) と呼ばれる新しいアーキテクチャを採用しており、従来のStable Diffusionモデルとは構造が異なります。このスクリプトを使用することで、SD3/3.5モデルに特化したLoRAモデルを作成できます。
 
@@ -106,6 +103,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py \
 
 <details>
 <summary>日本語</summary>
+
 学習は、ターミナルから`sd3_train_network.py`を実行することで開始します。基本的なコマンドラインの構造は`train_network.py`と同様ですが、SD3/3.5特有の引数を指定する必要があります。
 
 以下に、基本的なコマンドライン実行例を示します。
@@ -136,6 +134,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
 ```
 
 ※実際には1行で書くか、適切な改行文字（`\` または `^`）を使用してください。
+
 </details>
 
 ### 4.1. Explanation of Key Options / 主要なコマンドライン引数の解説
@@ -157,11 +156,19 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--enable_scaled_pos_embed` **[SD3.5][experimental]** – Scale positional embeddings when training with multiple resolutions.
 * `--training_shift=<float>` – Shift applied to the timestep distribution. Default `1.0`.
 * `--weighting_scheme=<choice>` – Weighting method for loss by timestep. Default `uniform`.
-* `--logit_mean`, `--logit_std`, `--mode_scale` – Parameters for `logit_normal` or `mode` weighting.
+* `--logit_mean=<float>` – Mean value for `logit_normal` weighting scheme. Default `0.0`.
+* `--logit_std=<float>` – Standard deviation for `logit_normal` weighting scheme. Default `1.0`.
+* `--mode_scale=<float>` – Scale factor for `mode` weighting scheme. Default `1.29`.
 
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>` **[experimental]** – Swap a number of Transformer blocks between CPU and GPU. More blocks reduce VRAM but slow training. Cannot be used with `--cpu_offload_checkpointing`.
+* `--cache_text_encoder_outputs` – Caches the outputs of the text encoders to reduce VRAM usage and speed up training. This is particularly effective for SD3, which uses three text encoders. Recommended when not training the text encoder LoRA. For more details, see the [`sdxl_train_network.py` guide](sdxl_train_network.md).
+* `--cache_text_encoder_outputs_to_disk` – Caches the text encoder outputs to disk when the above option is enabled.
+* `--t5xxl_device=<device>` **[not supported yet]** – Specifies the device for T5-XXL model. If not specified, uses accelerator's device.
+* `--t5xxl_dtype=<dtype>` **[not supported yet]** – Specifies the dtype for T5-XXL model. If not specified, uses default dtype from mixed precision.
+* `--save_clip` **[not supported yet]** – Saves CLIP models to checkpoint (unified checkpoint format not yet supported).
+* `--save_t5xxl` **[not supported yet]** – Saves T5-XXL model to checkpoint (unified checkpoint format not yet supported).
 
 #### Incompatible or Deprecated Options / 非互換・非推奨の引数
 
@@ -169,6 +176,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 
 <details>
 <summary>日本語</summary>
+
 [`train_network.py`のガイド](train_network.md)で説明されている引数に加え、以下のSD3/3.5特有の引数を指定します。共通の引数については、上記ガイドを参照してください。
 
 #### モデル関連
@@ -189,34 +197,159 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 *   `--enable_scaled_pos_embed` **[SD3.5向け][実験的機能]** – マルチ解像度学習時に解像度に応じてPositional Embeddingをスケーリングします。
 *   `--training_shift=<float>` – タイムステップ分布を調整するためのシフト値です。デフォルトは`1.0`です。
 *   `--weighting_scheme=<choice>` – タイムステップに応じた損失の重み付け方法を指定します。デフォルトは`uniform`です。
-*   `--logit_mean`, `--logit_std`, `--mode_scale` – `logit_normal`または`mode`使用時のパラメータです。
+*   `--logit_mean=<float>` – `logit_normal`重み付けスキームの平均値です。デフォルトは`0.0`です。
+*   `--logit_std=<float>` – `logit_normal`重み付けスキームの標準偏差です。デフォルトは`1.0`です。
+*   `--mode_scale=<float>` – `mode`重み付けスキームのスケール係数です。デフォルトは`1.29`です。
 
 #### メモリ・速度関連
 
 *   `--blocks_to_swap=<integer>` **[実験的機能]** – TransformerブロックをCPUとGPUでスワップしてVRAMを節約します。`--cpu_offload_checkpointing`とは併用できません。
+*   `--cache_text_encoder_outputs` – Text Encoderの出力をキャッシュし、VRAM使用量削減と学習高速化を図ります。SD3は3つのText Encoderを持つため特に効果的です。Text EncoderのLoRAを学習しない場合に推奨されます。詳細は[`sdxl_train_network.py`のガイド](sdxl_train_network.md)を参照してください。
+*   `--cache_text_encoder_outputs_to_disk` – 上記オプションと併用し、Text Encoderの出力をディスクにキャッシュします。
+*   `--t5xxl_device=<device>` **[未サポート]** – T5-XXLモデルのデバイスを指定します。指定しない場合はacceleratorのデバイスを使用します。
+*   `--t5xxl_dtype=<dtype>` **[未サポート]** – T5-XXLモデルのdtypeを指定します。指定しない場合はデフォルトのdtype（mixed precisionから）を使用します。
+*   `--save_clip` **[未サポート]** – CLIPモデルをチェックポイントに保存します（統合チェックポイント形式は未サポート）。
+*   `--save_t5xxl` **[未サポート]** – T5-XXLモデルをチェックポイントに保存します（統合チェックポイント形式は未サポート）。
 
 #### 非互換・非推奨の引数
 
 *   `--v2`, `--v_parameterization`, `--clip_skip` – Stable Diffusion v1/v2向けの引数のため、SD3/3.5学習では使用されません。
+
 </details>
 
 ### 4.2. Starting Training / 学習の開始
 
 After setting the required arguments, run the command to begin training. The overall flow and how to check logs are the same as in the [train_network.py guide](train_network.md#32-starting-the-training--学習の開始).
 
-## 5. Using the Trained Model / 学習済みモデルの利用
+<details>
+<summary>日本語</summary>
+
+必要な引数を設定したら、コマンドを実行して学習を開始します。全体の流れやログの確認方法は、[train_network.pyのガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
+
+</details>
+
+## 5. LoRA Target Modules / LoRAの学習対象モジュール
+
+When training LoRA with `sd3_train_network.py`, the following modules are targeted by default:
+
+*   **MMDiT (replaces U-Net)**:
+    *   `qkv` (Query, Key, Value) matrices and `proj_out` (output projection) in the attention blocks.
+*   **final_layer**:
+    *   The output layer at the end of MMDiT.
+
+By using `--network_args`, you can apply more detailed controls, such as setting different ranks (dimensions) for each module.
+
+### Specify rank for each layer in SD3 LoRA / 各層のランクを指定する
+
+You can specify the rank for each layer in SD3 by specifying the following network_args. If you specify `0`, LoRA will not be applied to that layer.
+
+When network_args is not specified, the default value (`network_dim`) is applied, same as before.
+
+|network_args|target layer|
+|---|---|
+|context_attn_dim|attn in context_block|
+|context_mlp_dim|mlp in context_block|
+|context_mod_dim|adaLN_modulation in context_block|
+|x_attn_dim|attn in x_block|
+|x_mlp_dim|mlp in x_block|
+|x_mod_dim|adaLN_modulation in x_block|
+
+`"verbose=True"` is also available for debugging. It shows the rank of each layer.
+
+example: 
+```
+--network_args "context_attn_dim=2" "context_mlp_dim=3" "context_mod_dim=4" "x_attn_dim=5" "x_mlp_dim=6" "x_mod_dim=7" "verbose=True"
+```
+
+You can apply LoRA to the conditioning layers of SD3 by specifying `emb_dims` in network_args. When specifying, be sure to specify 6 numbers in `[]` as a comma-separated list.
+
+example: 
+```
+--network_args "emb_dims=[2,3,4,5,6,7]"
+```
+
+Each number corresponds to `context_embedder`, `t_embedder`, `x_embedder`, `y_embedder`, `final_layer_adaLN_modulation`, `final_layer_linear`. The above example applies LoRA to all conditioning layers, with rank 2 for `context_embedder`, 3 for `t_embedder`, 4 for `context_embedder`, 5 for `y_embedder`, 6 for `final_layer_adaLN_modulation`, and 7 for `final_layer_linear`.
+
+If you specify `0`, LoRA will not be applied to that layer. For example, `[4,0,0,4,0,0]` applies LoRA only to `context_embedder` and `y_embedder`.
+
+### Specify blocks to train in SD3 LoRA training
+
+You can specify the blocks to train in SD3 LoRA training by specifying `train_block_indices` in network_args. The indices are 0-based. The default (when omitted) is to train all blocks. The indices are specified as a list of integers or a range of integers, like `0,1,5,8` or `0,1,4-5,7`. 
+
+The number of blocks depends on the model. The valid range is 0-(the number of blocks - 1). `all` is also available to train all blocks, `none` is also available to train no blocks.
+
+example: 
+```
+--network_args "train_block_indices=1,2,6-8" 
+```
+
+<details>
+<summary>日本語</summary>
+
+`sd3_train_network.py`でLoRAを学習させる場合、デフォルトでは以下のモジュールが対象となります。
+
+*   **MMDiT (U-Netの代替)**:
+    *   Attentionブロック内の`qkv`（Query, Key, Value）行列と、`proj_out`（出力Projection）。
+*   **final_layer**:
+    *   MMDiTの最後にある出力層。
+
+`--network_args` を使用することで、モジュールごとに異なるランク（次元数）を設定するなど、より詳細な制御が可能です。
+
+### SD3 LoRAで各層のランクを指定する
+
+各層のランクを指定するには、`--network_args`オプションを使用します。`0`を指定すると、その層にはLoRAが適用されません。
+
+network_argsが指定されない場合、デフォルト値（`network_dim`）が適用されます。
+
+|network_args|target layer|
+|---|---|
+|context_attn_dim|attn in context_block|
+|context_mlp_dim|mlp in context_block|
+|context_mod_dim|adaLN_modulation in context_block|
+|x_attn_dim|attn in x_block|
+|x_mlp_dim|mlp in x_block|
+|x_mod_dim|adaLN_modulation in x_block|
+
+`"verbose=True"`を指定すると、各層のランクが表示されます。
+
+例：
+
+```bash
+--network_args "context_attn_dim=2" "context_mlp_dim=3" "context_mod_dim=4" "x_attn_dim=5" "x_mlp_dim=6" "x_mod_dim=7" "verbose=True"
+```
+
+また、`emb_dims`を指定することで、SD3の条件付け層にLoRAを適用することもできます。指定する際は、必ず`[]`内にカンマ区切りで6つの数字を指定してください。
+
+```bash
+--network_args "emb_dims=[2,3,4,5,6,7]"
+```
+
+各数字は、`context_embedder`、`t_embedder`、`x_embedder`、`y_embedder`、`final_layer_adaLN_modulation`、`final_layer_linear`に対応しています。上記の例では、すべての条件付け層にLoRAを適用し、`context_embedder`に2、`t_embedder`に3、`x_embedder`に4、`y_embedder`に5、`final_layer_adaLN_modulation`に6、`final_layer_linear`に7のランクを設定しています。
+
+`0`を指定すると、その層にはLoRAが適用されません。例えば、`[4,0,0,4,0,0]`と指定すると、`context_embedder`と`y_embedder`のみにLoRAが適用されます。
+
+</details>
+
+
+## 6. Using the Trained Model / 学習済みモデルの利用
 
 When training finishes, a LoRA model file (e.g. `my_sd3_lora.safetensors`) is saved in the directory specified by `output_dir`. Use this file with inference environments that support SD3/3.5, such as ComfyUI.
 
-## 6. Others / その他
+<details>
+<summary>日本語</summary>
+
+学習が完了すると、指定した`output_dir`にLoRAモデルファイル（例: `my_sd3_lora.safetensors`）が保存されます。このファイルは、SD3/3.5モデルに対応した推論環境（例: ComfyUIなど）で使用できます。
+
+</details>
+
+
+## 7. Others / その他
 
 `sd3_train_network.py` shares many features with `train_network.py`, such as sample image generation (`--sample_prompts`, etc.) and detailed optimizer settings. For these, see the [train_network.py guide](train_network.md#5-other-features--その他の機能) or run `python sd3_train_network.py --help`.
 
 <details>
 <summary>日本語</summary>
-必要な引数を設定し、コマンドを実行すると学習が開始されます。基本的な流れやログの確認方法は[`train_network.py`のガイド](train_network.md#32-starting-the-training--学習の開始)と同様です。
-
-学習が完了すると、指定した`output_dir`にLoRAモデルファイル（例: `my_sd3_lora.safetensors`）が保存されます。このファイルは、SD3/3.5モデルに対応した推論環境（例: ComfyUIなど）で使用できます。
 
 `sd3_train_network.py`には、サンプル画像の生成 (`--sample_prompts`など) や詳細なオプティマイザ設定など、`train_network.py`と共通の機能も多く存在します。これらについては、[`train_network.py`のガイド](train_network.md#5-other-features--その他の機能)やスクリプトのヘルプ (`python sd3_train_network.py --help`) を参照してください。
+
 </details>

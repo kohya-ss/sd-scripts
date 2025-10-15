@@ -29,7 +29,9 @@ koo="koo"
 yos="yos"
 wn="wn"
 hime="hime"
-
+OT="OT"
+byt="byt"
+tak="tak"
 
 [files]
 extend-exclude = ["_typos.toml", "venv"]

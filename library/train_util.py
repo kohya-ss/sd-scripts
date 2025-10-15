@@ -1747,7 +1747,39 @@ class BaseDataset(torch.utils.data.Dataset):
             # [[clip_l, clip_g, t5xxl], [clip_l, clip_g, t5xxl], ...] -> [torch.stack(clip_l), torch.stack(clip_g), torch.stack(t5xxl)]
             if len(tensors_list) == 0 or tensors_list[0] == None or len(tensors_list[0]) == 0 or tensors_list[0][0] is None:
                 return None
-            return [torch.stack([converter(x[i]) for x in tensors_list]) for i in range(len(tensors_list[0]))]
+
+            # old implementation without padding: all elements must have same length
+            # return [torch.stack([converter(x[i]) for x in tensors_list]) for i in range(len(tensors_list[0]))]
+
+            # new implementation with padding support
+            result = []
+            for i in range(len(tensors_list[0])):
+                tensors = [x[i] for x in tensors_list]
+                if tensors[0].ndim == 0:
+                    # scalar value: e.g. ocr mask
+                    result.append(torch.stack([converter(x[i]) for x in tensors_list]))
+                    continue
+
+                min_len = min([len(x) for x in tensors])
+                max_len = max([len(x) for x in tensors])
+
+                if min_len == max_len:
+                    # no padding
+                    result.append(torch.stack([converter(x) for x in tensors]))
+                else:
+                    # padding
+                    tensors = [converter(x) for x in tensors]
+                    if tensors[0].ndim == 1:
+                        # input_ids or mask
+                        result.append(
+                            torch.stack([(torch.nn.functional.pad(x, (0, max_len - x.shape[0]))) for x in tensors])
+                        )
+                    else:
+                        # text encoder outputs
+                        result.append(
+                            torch.stack([(torch.nn.functional.pad(x, (0, 0, 0, max_len - x.shape[0]))) for x in tensors])
+                        )
+            return result
 
         # set example
         example = {}
@@ -3549,6 +3581,7 @@ def get_sai_model_spec_dataclass(
     sd3: str = None,
     flux: str = None,
     lumina: str = None,
+    hunyuan_image: str = None,
     optional_metadata: dict[str, str] | None = None,
 ) -> sai_model_spec.ModelSpecMetadata:
     """
@@ -3578,6 +3611,8 @@ def get_sai_model_spec_dataclass(
         model_config["flux"] = flux
     if lumina is not None:
         model_config["lumina"] = lumina
+    if hunyuan_image is not None:
+        model_config["hunyuan_image"] = hunyuan_image
 
     # Use the dataclass function directly
     return sai_model_spec.build_metadata_dataclass(
@@ -3948,11 +3983,21 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         choices=["no", "fp16", "bf16"],
         help="use mixed precision / 混合精度を使う場合、その精度",
     )
-    parser.add_argument("--full_fp16", action="store_true", help="fp16 training including gradients / 勾配も含めてfp16で学習する")
     parser.add_argument(
-        "--full_bf16", action="store_true", help="bf16 training including gradients / 勾配も含めてbf16で学習する"
+        "--full_fp16",
+        action="store_true",
+        help="fp16 training including gradients, some models are not supported / 勾配も含めてfp16で学習する、一部のモデルではサポートされていません",
+    )
+    parser.add_argument(
+        "--full_bf16",
+        action="store_true",
+        help="bf16 training including gradients, some models are not supported / 勾配も含めてbf16で学習する、一部のモデルではサポートされていません",
     )  # TODO move to SDXL training, because it is not supported by SD1/2
-    parser.add_argument("--fp8_base", action="store_true", help="use fp8 for base model / base modelにfp8を使う")
+    parser.add_argument(
+        "--fp8_base",
+        action="store_true",
+        help="use fp8 for base model, some models are not supported / base modelにfp8を使う、一部のモデルではサポートされていません",
+    )
 
     parser.add_argument(
         "--ddp_timeout",
@@ -6264,6 +6309,11 @@ def line_to_prompt_dict(line: str) -> dict:
             m = re.match(r"rcfg (.+)", parg, re.IGNORECASE)
             if m:
                 prompt_dict["renorm_cfg"] = float(m.group(1))
+                continue
+
+            m = re.match(r"fs (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["flow_shift"] = m.group(1)
                 continue
 
         except ValueError as ex:

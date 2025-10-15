@@ -12,7 +12,7 @@ from transformers import Gemma2Config, Gemma2Model
 
 from library.utils import setup_logging
 from library import lumina_models, flux_models
-from library.utils import load_safetensors
+from library.safetensors_utils import load_safetensors
 import logging
 
 setup_logging()
