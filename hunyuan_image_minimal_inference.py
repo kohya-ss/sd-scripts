@@ -1001,7 +1001,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         all_precomputed_text_data.append(text_data)
 
     # Models should be removed from device after prepare_text_inputs
-    del tokenizer_batch, text_encoder_batch, temp_shared_models_txt, conds_cache_batch
+    del tokenizer_vlm, text_encoder_vlm_batch, tokenizer_byt5, text_encoder_byt5_batch, temp_shared_models_txt, conds_cache_batch
     gc.collect()  # Force cleanup of Text Encoder from GPU memory
     clean_memory_on_device(device)
 
@@ -1075,7 +1075,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
             # save_output expects latent to be [BCTHW] or [CTHW]. generate returns [BCTHW] (batch size 1).
             # latent[0] is correct if generate returns it with batch dim.
             # The latent from generate is (1, C, T, H, W)
-            save_output(current_args, vae_for_batch, latent[0], device)  # Pass vae_for_batch
+            save_output(current_args, vae_for_batch, latent, device)  # Pass vae_for_batch
 
         vae_for_batch.to("cpu")  # Move VAE back to CPU
 
