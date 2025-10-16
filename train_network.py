@@ -1617,10 +1617,10 @@ class NetworkTrainer:
         # metadata["ss_epoch"] = str(num_train_epochs)
         metadata["ss_training_finished_at"] = str(time.time())
 
-        if log_grad_norm and len(log_buffer) > 0:
+        if log_grad_norm and grad_norm_guardian is not None and len(grad_norm_guardian.log_buffer) > 0:
             with open(log_file_path, "a") as f:
-                f.writelines(log_buffer)
-            log_buffer.clear()
+                f.writelines(grad_norm_guardian.log_buffer)
+            grad_norm_guardian.log_buffer.clear()
 
         if is_main_process:
             network = accelerator.unwrap_model(network)
