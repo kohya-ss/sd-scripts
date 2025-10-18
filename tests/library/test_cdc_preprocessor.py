@@ -29,7 +29,8 @@ class TestCDCPreprocessorIntegration:
         Test basic CDC preprocessing with small dataset
         """
         preprocessor = CDCPreprocessor(
-            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu"
+            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]  # Add dataset_dirs for hash
         )
 
         # Add 10 small latents
@@ -51,8 +52,9 @@ class TestCDCPreprocessorIntegration:
         # Verify files were created
         assert files_saved == 10
 
-        # Verify first CDC file structure
-        cdc_path = tmp_path / "test_image_0_0004x0004_flux_cdc.npz"
+        # Verify first CDC file structure (with config hash)
+        latents_npz_path = str(tmp_path / "test_image_0_0004x0004_flux.npz")
+        cdc_path = Path(CDCPreprocessor.get_cdc_npz_path(latents_npz_path, preprocessor.config_hash))
         assert cdc_path.exists()
 
         import numpy as np
@@ -73,7 +75,8 @@ class TestCDCPreprocessorIntegration:
         Test CDC preprocessing with variable-size latents (bucketing)
         """
         preprocessor = CDCPreprocessor(
-            k_neighbors=3, k_bandwidth=2, d_cdc=2, gamma=1.0, device="cpu"
+            k_neighbors=3, k_bandwidth=2, d_cdc=2, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]  # Add dataset_dirs for hash
         )
 
         # Add 5 latents of shape (16, 4, 4)
@@ -109,9 +112,15 @@ class TestCDCPreprocessorIntegration:
         assert files_saved == 10
 
         import numpy as np
-        # Check shapes are stored in individual files
-        data_0 = np.load(tmp_path / "test_image_0_0004x0004_flux_cdc.npz")
-        data_5 = np.load(tmp_path / "test_image_5_0008x0008_flux_cdc.npz")
+        # Check shapes are stored in individual files (with config hash)
+        cdc_path_0 = CDCPreprocessor.get_cdc_npz_path(
+            str(tmp_path / "test_image_0_0004x0004_flux.npz"), preprocessor.config_hash
+        )
+        cdc_path_5 = CDCPreprocessor.get_cdc_npz_path(
+            str(tmp_path / "test_image_5_0008x0008_flux.npz"), preprocessor.config_hash
+        )
+        data_0 = np.load(cdc_path_0)
+        data_5 = np.load(cdc_path_5)
 
         assert tuple(data_0['shape']) == (16, 4, 4)
         assert tuple(data_5['shape']) == (16, 8, 8)
@@ -128,7 +137,8 @@ class TestDeviceConsistency:
         """
         # Create CDC cache on CPU
         preprocessor = CDCPreprocessor(
-            k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu"
+            k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]  # Add dataset_dirs for hash
         )
 
         shape = (16, 32, 32)
@@ -148,7 +158,7 @@ class TestDeviceConsistency:
 
         preprocessor.compute_all()
 
-        dataset = GammaBDataset(device="cpu")
+        dataset = GammaBDataset(device="cpu", config_hash=preprocessor.config_hash)
 
         noise = torch.randn(2, *shape, dtype=torch.float32, device="cpu")
         timesteps = torch.tensor([100.0, 200.0], dtype=torch.float32, device="cpu")
@@ -175,7 +185,8 @@ class TestDeviceConsistency:
         """
         # Create CDC cache on CPU
         preprocessor = CDCPreprocessor(
-            k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu"
+            k_neighbors=8, k_bandwidth=3, d_cdc=8, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]  # Add dataset_dirs for hash
         )
 
         shape = (16, 32, 32)
@@ -195,7 +206,7 @@ class TestDeviceConsistency:
 
         preprocessor.compute_all()
 
-        dataset = GammaBDataset(device="cpu")
+        dataset = GammaBDataset(device="cpu", config_hash=preprocessor.config_hash)
 
         # Create noise and timesteps
         noise = torch.randn(2, *shape, dtype=torch.float32, device="cpu", requires_grad=True)
@@ -236,7 +247,8 @@ class TestCDCEndToEnd:
         """
         # Step 1: Preprocess latents
         preprocessor = CDCPreprocessor(
-            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu"
+            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]  # Add dataset_dirs for hash
         )
 
         num_samples = 10
@@ -257,8 +269,8 @@ class TestCDCEndToEnd:
         files_saved = preprocessor.compute_all()
         assert files_saved == num_samples
 
-        # Step 2: Load with GammaBDataset
-        gamma_b_dataset = GammaBDataset(device="cpu")
+        # Step 2: Load with GammaBDataset (use config hash)
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=preprocessor.config_hash)
 
         # Step 3: Use in mock training scenario
         batch_size = 3

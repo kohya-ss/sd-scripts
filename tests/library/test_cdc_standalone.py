@@ -1,132 +1,176 @@
 """
-Standalone tests for CDC-FM integration.
+Standalone tests for CDC-FM per-file caching.
 
-These tests focus on CDC-FM specific functionality without importing
-the full training infrastructure that has problematic dependencies.
+These tests focus on the current CDC-FM per-file caching implementation
+with hash-based cache validation.
 """
 
 from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file
+import numpy as np
 
 from library.cdc_fm import CDCPreprocessor, GammaBDataset
 
 
 class TestCDCPreprocessor:
-    """Test CDC preprocessing functionality"""
+    """Test CDC preprocessing functionality with per-file caching"""
 
     def test_cdc_preprocessor_basic_workflow(self, tmp_path):
         """Test basic CDC preprocessing with small dataset"""
         preprocessor = CDCPreprocessor(
-            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu"
+            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]
         )
 
         # Add 10 small latents
         for i in range(10):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)  # C, H, W
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
-        # Compute and save
-        output_path = tmp_path / "test_gamma_b.safetensors"
-        result_path = preprocessor.compute_all(save_path=output_path)
+        # Compute and save (creates per-file CDC caches)
+        files_saved = preprocessor.compute_all()
 
-        # Verify file was created
-        assert Path(result_path).exists()
+        # Verify files were created
+        assert files_saved == 10
 
-        # Verify structure
-        from safetensors import safe_open
+        # Verify first CDC file structure
+        latents_npz_path = str(tmp_path / "test_image_0_0004x0004_flux.npz")
+        cdc_path = Path(CDCPreprocessor.get_cdc_npz_path(latents_npz_path, preprocessor.config_hash))
+        assert cdc_path.exists()
 
-        with safe_open(str(result_path), framework="pt", device="cpu") as f:
-            assert f.get_tensor("metadata/num_samples").item() == 10
-            assert f.get_tensor("metadata/k_neighbors").item() == 5
-            assert f.get_tensor("metadata/d_cdc").item() == 4
+        data = np.load(cdc_path)
+        assert data['k_neighbors'] == 5
+        assert data['d_cdc'] == 4
 
-            # Check first sample
-            eigvecs = f.get_tensor("eigenvectors/test_image_0")
-            eigvals = f.get_tensor("eigenvalues/test_image_0")
+        # Check eigenvectors and eigenvalues
+        eigvecs = data['eigenvectors']
+        eigvals = data['eigenvalues']
 
-            assert eigvecs.shape[0] == 4  # d_cdc
-            assert eigvals.shape[0] == 4  # d_cdc
+        assert eigvecs.shape[0] == 4  # d_cdc
+        assert eigvals.shape[0] == 4  # d_cdc
 
     def test_cdc_preprocessor_different_shapes(self, tmp_path):
         """Test CDC preprocessing with variable-size latents (bucketing)"""
         preprocessor = CDCPreprocessor(
-            k_neighbors=3, k_bandwidth=2, d_cdc=2, gamma=1.0, device="cpu"
+            k_neighbors=3, k_bandwidth=2, d_cdc=2, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]
         )
 
         # Add 5 latents of shape (16, 4, 4)
         for i in range(5):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
         # Add 5 latents of different shape (16, 8, 8)
         for i in range(5, 10):
             latent = torch.randn(16, 8, 8, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0008x0008_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
         # Compute and save
-        output_path = tmp_path / "test_gamma_b_multi.safetensors"
-        result_path = preprocessor.compute_all(save_path=output_path)
+        files_saved = preprocessor.compute_all()
 
         # Verify both shape groups were processed
-        from safetensors import safe_open
+        assert files_saved == 10
 
-        with safe_open(str(result_path), framework="pt", device="cpu") as f:
-            # Check shapes are stored
-            shape_0 = f.get_tensor("shapes/test_image_0")
-            shape_5 = f.get_tensor("shapes/test_image_5")
+        # Check shapes are stored in individual files
+        cdc_path_0 = CDCPreprocessor.get_cdc_npz_path(
+            str(tmp_path / "test_image_0_0004x0004_flux.npz"), preprocessor.config_hash
+        )
+        cdc_path_5 = CDCPreprocessor.get_cdc_npz_path(
+            str(tmp_path / "test_image_5_0008x0008_flux.npz"), preprocessor.config_hash
+        )
 
-            assert tuple(shape_0.tolist()) == (16, 4, 4)
-            assert tuple(shape_5.tolist()) == (16, 8, 8)
+        data_0 = np.load(cdc_path_0)
+        data_5 = np.load(cdc_path_5)
+
+        assert tuple(data_0['shape']) == (16, 4, 4)
+        assert tuple(data_5['shape']) == (16, 8, 8)
 
 
 class TestGammaBDataset:
-    """Test GammaBDataset loading and retrieval"""
+    """Test GammaBDataset loading and retrieval with per-file caching"""
 
     @pytest.fixture
     def sample_cdc_cache(self, tmp_path):
-        """Create a sample CDC cache file for testing"""
-        cache_path = tmp_path / "test_gamma_b.safetensors"
+        """Create sample CDC cache files for testing"""
+        # Use 20 samples to ensure proper k-NN computation
+        # (minimum 256 neighbors recommended, but 20 samples with k=5 is sufficient for testing)
+        preprocessor = CDCPreprocessor(
+            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)],
+            adaptive_k=True,  # Enable adaptive k for small dataset
+            min_bucket_size=5
+        )
 
-        # Create mock Γ_b data for 5 samples
-        tensors = {
-            "metadata/num_samples": torch.tensor([5]),
-            "metadata/k_neighbors": torch.tensor([10]),
-            "metadata/d_cdc": torch.tensor([4]),
-            "metadata/gamma": torch.tensor([1.0]),
-        }
+        # Create 20 samples
+        latents_npz_paths = []
+        for i in range(20):
+            latent = torch.randn(16, 8, 8, dtype=torch.float32)  # C=16, d=1024 when flattened
+            latents_npz_path = str(tmp_path / f"test_{i}_0008x0008_flux.npz")
+            latents_npz_paths.append(latents_npz_path)
+            metadata = {'image_key': f'test_{i}'}
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
-        # Add shape and CDC data for each sample
-        for i in range(5):
-            tensors[f"shapes/{i}"] = torch.tensor([16, 8, 8])  # C, H, W
-            tensors[f"eigenvectors/{i}"] = torch.randn(4, 1024, dtype=torch.float32)  # d_cdc x d
-            tensors[f"eigenvalues/{i}"] = torch.rand(4, dtype=torch.float32) + 0.1  # positive
-
-        save_file(tensors, str(cache_path))
-        return cache_path
+        preprocessor.compute_all()
+        return tmp_path, latents_npz_paths, preprocessor.config_hash
 
     def test_gamma_b_dataset_loads_metadata(self, sample_cdc_cache):
-        """Test that GammaBDataset loads metadata correctly"""
-        gamma_b_dataset = GammaBDataset(gamma_b_path=sample_cdc_cache, device="cpu")
+        """Test that GammaBDataset loads CDC files correctly"""
+        tmp_path, latents_npz_paths, config_hash = sample_cdc_cache
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
-        assert gamma_b_dataset.num_samples == 5
-        assert gamma_b_dataset.d_cdc == 4
+        # Get components for first sample
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([latents_npz_paths[0]], device="cpu")
+
+        # Check shapes
+        assert eigvecs.shape[0] == 1  # batch size
+        assert eigvecs.shape[1] == 4  # d_cdc
+        assert eigvals.shape == (1, 4)  # batch, d_cdc
 
     def test_gamma_b_dataset_get_gamma_b_sqrt(self, sample_cdc_cache):
         """Test retrieving Γ_b^(1/2) components"""
-        gamma_b_dataset = GammaBDataset(gamma_b_path=sample_cdc_cache, device="cpu")
+        tmp_path, latents_npz_paths, config_hash = sample_cdc_cache
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
-        # Get Γ_b for indices [0, 2, 4]
-        indices = [0, 2, 4]
-        eigenvectors, eigenvalues = gamma_b_dataset.get_gamma_b_sqrt(indices, device="cpu")
+        # Get Γ_b for paths [0, 2, 4]
+        paths = [latents_npz_paths[0], latents_npz_paths[2], latents_npz_paths[4]]
+        eigenvectors, eigenvalues = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
 
         # Check shapes
-        assert eigenvectors.shape == (3, 4, 1024)  # (batch, d_cdc, d)
+        assert eigenvectors.shape[0] == 3  # batch
+        assert eigenvectors.shape[1] == 4  # d_cdc
         assert eigenvalues.shape == (3, 4)  # (batch, d_cdc)
 
         # Check values are positive
@@ -134,14 +178,16 @@ class TestGammaBDataset:
 
     def test_gamma_b_dataset_compute_sigma_t_x_at_t0(self, sample_cdc_cache):
         """Test compute_sigma_t_x returns x unchanged at t=0"""
-        gamma_b_dataset = GammaBDataset(gamma_b_path=sample_cdc_cache, device="cpu")
+        tmp_path, latents_npz_paths, config_hash = sample_cdc_cache
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
         # Create test latents (batch of 3, matching d=1024 flattened)
         x = torch.randn(3, 1024)  # B, d (flattened)
         t = torch.zeros(3)  # t = 0 for all samples
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([0, 1, 2], device="cpu")
+        paths = [latents_npz_paths[0], latents_npz_paths[1], latents_npz_paths[2]]
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -150,13 +196,15 @@ class TestGammaBDataset:
 
     def test_gamma_b_dataset_compute_sigma_t_x_shape(self, sample_cdc_cache):
         """Test compute_sigma_t_x returns correct shape"""
-        gamma_b_dataset = GammaBDataset(gamma_b_path=sample_cdc_cache, device="cpu")
+        tmp_path, latents_npz_paths, config_hash = sample_cdc_cache
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
         x = torch.randn(2, 1024)  # B, d (flattened)
         t = torch.tensor([0.3, 0.7])
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([1, 3], device="cpu")
+        paths = [latents_npz_paths[1], latents_npz_paths[3]]
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -165,13 +213,15 @@ class TestGammaBDataset:
 
     def test_gamma_b_dataset_compute_sigma_t_x_no_nans(self, sample_cdc_cache):
         """Test compute_sigma_t_x produces finite values"""
-        gamma_b_dataset = GammaBDataset(gamma_b_path=sample_cdc_cache, device="cpu")
+        tmp_path, latents_npz_paths, config_hash = sample_cdc_cache
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
         x = torch.randn(3, 1024)  # B, d (flattened)
         t = torch.rand(3)  # Random timesteps in [0, 1]
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([0, 2, 4], device="cpu")
+        paths = [latents_npz_paths[0], latents_npz_paths[2], latents_npz_paths[4]]
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -187,31 +237,39 @@ class TestCDCEndToEnd:
         """Test complete workflow: preprocess -> save -> load -> use"""
         # Step 1: Preprocess latents
         preprocessor = CDCPreprocessor(
-            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu"
+            k_neighbors=5, k_bandwidth=3, d_cdc=4, gamma=1.0, device="cpu",
+            dataset_dirs=[str(tmp_path)]
         )
 
         num_samples = 10
+        latents_npz_paths = []
         for i in range(num_samples):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
+            latents_npz_paths.append(latents_npz_path)
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
-        output_path = tmp_path / "cdc_gamma_b.safetensors"
-        cdc_path = preprocessor.compute_all(save_path=output_path)
+        files_saved = preprocessor.compute_all()
+        assert files_saved == num_samples
 
         # Step 2: Load with GammaBDataset
-        gamma_b_dataset = GammaBDataset(gamma_b_path=cdc_path, device="cpu")
-
-        assert gamma_b_dataset.num_samples == num_samples
+        gamma_b_dataset = GammaBDataset(device="cpu", config_hash=preprocessor.config_hash)
 
         # Step 3: Use in mock training scenario
         batch_size = 3
         batch_latents_flat = torch.randn(batch_size, 256)  # B, d (flattened 16*4*4=256)
         batch_t = torch.rand(batch_size)
-        image_keys = ['test_image_0', 'test_image_5', 'test_image_9']
+        paths_batch = [latents_npz_paths[0], latents_npz_paths[5], latents_npz_paths[9]]
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(image_keys, device="cpu")
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths_batch, device="cpu")
 
         # Compute geometry-aware noise
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, batch_latents_flat, batch_t)
