@@ -687,9 +687,16 @@ class NetworkTrainer:
         if hasattr(args, "use_cdc_fm") and args.use_cdc_fm and self.cdc_cache_path is not None:
             from library.cdc_fm import GammaBDataset
 
-            logger.info(f"Loading CDC Γ_b dataset from {self.cdc_cache_path}")
+            # cdc_cache_path now contains the config hash
+            config_hash = self.cdc_cache_path if self.cdc_cache_path != "per_file" else None
+            if config_hash:
+                logger.info(f"CDC Γ_b dataset ready (hash: {config_hash})")
+            else:
+                logger.info("CDC Γ_b dataset ready (no hash, backward compatibility)")
+
             self.gamma_b_dataset = GammaBDataset(
-                gamma_b_path=self.cdc_cache_path, device="cuda" if torch.cuda.is_available() else "cpu"
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                config_hash=config_hash
             )
         else:
             self.gamma_b_dataset = None

@@ -35,28 +35,38 @@ class TestCDCPreprocessorIntegration:
         # Add 10 small latents
         for i in range(10):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)  # C, H, W
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
         # Compute and save
-        output_path = tmp_path / "test_gamma_b.safetensors"
-        result_path = preprocessor.compute_all(save_path=output_path)
+        files_saved = preprocessor.compute_all()
 
-        # Verify file was created
-        assert Path(result_path).exists()
+        # Verify files were created
+        assert files_saved == 10
 
-        # Verify structure
-        with safe_open(str(result_path), framework="pt", device="cpu") as f:
-            assert f.get_tensor("metadata/num_samples").item() == 10
-            assert f.get_tensor("metadata/k_neighbors").item() == 5
-            assert f.get_tensor("metadata/d_cdc").item() == 4
+        # Verify first CDC file structure
+        cdc_path = tmp_path / "test_image_0_0004x0004_flux_cdc.npz"
+        assert cdc_path.exists()
 
-            # Check first sample
-            eigvecs = f.get_tensor("eigenvectors/test_image_0")
-            eigvals = f.get_tensor("eigenvalues/test_image_0")
+        import numpy as np
+        data = np.load(cdc_path)
 
-            assert eigvecs.shape[0] == 4  # d_cdc
-            assert eigvals.shape[0] == 4  # d_cdc
+        assert data['k_neighbors'] == 5
+        assert data['d_cdc'] == 4
+
+        # Check eigenvectors and eigenvalues
+        eigvecs = data['eigenvectors']
+        eigvals = data['eigenvalues']
+
+        assert eigvecs.shape[0] == 4  # d_cdc
+        assert eigvals.shape[0] == 4  # d_cdc
 
     def test_preprocessor_with_different_shapes(self, tmp_path):
         """
@@ -69,27 +79,42 @@ class TestCDCPreprocessorIntegration:
         # Add 5 latents of shape (16, 4, 4)
         for i in range(5):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
         # Add 5 latents of different shape (16, 8, 8)
         for i in range(5, 10):
             latent = torch.randn(16, 8, 8, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0008x0008_flux.npz")
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
         # Compute and save
-        output_path = tmp_path / "test_gamma_b_multi.safetensors"
-        result_path = preprocessor.compute_all(save_path=output_path)
+        files_saved = preprocessor.compute_all()
 
         # Verify both shape groups were processed
-        with safe_open(str(result_path), framework="pt", device="cpu") as f:
-            # Check shapes are stored
-            shape_0 = f.get_tensor("shapes/test_image_0")
-            shape_5 = f.get_tensor("shapes/test_image_5")
+        assert files_saved == 10
 
-            assert tuple(shape_0.tolist()) == (16, 4, 4)
-            assert tuple(shape_5.tolist()) == (16, 8, 8)
+        import numpy as np
+        # Check shapes are stored in individual files
+        data_0 = np.load(tmp_path / "test_image_0_0004x0004_flux_cdc.npz")
+        data_5 = np.load(tmp_path / "test_image_5_0008x0008_flux_cdc.npz")
+
+        assert tuple(data_0['shape']) == (16, 4, 4)
+        assert tuple(data_5['shape']) == (16, 8, 8)
 
 
 class TestDeviceConsistency:
@@ -107,19 +132,27 @@ class TestDeviceConsistency:
         )
 
         shape = (16, 32, 32)
+        latents_npz_paths = []
         for i in range(10):
             latent = torch.randn(*shape, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0032x0032_flux.npz")
+            latents_npz_paths.append(latents_npz_path)
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=shape,
+                metadata=metadata
+            )
 
-        cache_path = tmp_path / "test_device.safetensors"
-        preprocessor.compute_all(save_path=cache_path)
+        preprocessor.compute_all()
 
-        dataset = GammaBDataset(gamma_b_path=cache_path, device="cpu")
+        dataset = GammaBDataset(device="cpu")
 
         noise = torch.randn(2, *shape, dtype=torch.float32, device="cpu")
         timesteps = torch.tensor([100.0, 200.0], dtype=torch.float32, device="cpu")
-        image_keys = ['test_image_0', 'test_image_1']
+        latents_npz_paths_batch = latents_npz_paths[:2]
 
         with caplog.at_level(logging.WARNING):
             caplog.clear()
@@ -128,7 +161,7 @@ class TestDeviceConsistency:
                 timesteps=timesteps,
                 num_timesteps=1000,
                 gamma_b_dataset=dataset,
-                image_keys=image_keys,
+                latents_npz_paths=latents_npz_paths_batch,
                 device="cpu"
             )
 
@@ -146,20 +179,28 @@ class TestDeviceConsistency:
         )
 
         shape = (16, 32, 32)
+        latents_npz_paths = []
         for i in range(10):
             latent = torch.randn(*shape, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0032x0032_flux.npz")
+            latents_npz_paths.append(latents_npz_path)
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=shape,
+                metadata=metadata
+            )
 
-        cache_path = tmp_path / "test_device_mismatch.safetensors"
-        preprocessor.compute_all(save_path=cache_path)
+        preprocessor.compute_all()
 
-        dataset = GammaBDataset(gamma_b_path=cache_path, device="cpu")
+        dataset = GammaBDataset(device="cpu")
 
         # Create noise and timesteps
         noise = torch.randn(2, *shape, dtype=torch.float32, device="cpu", requires_grad=True)
         timesteps = torch.tensor([100.0, 200.0], dtype=torch.float32, device="cpu")
-        image_keys = ['test_image_0', 'test_image_1']
+        latents_npz_paths_batch = latents_npz_paths[:2]
 
         # Perform CDC transformation
         result = apply_cdc_noise_transformation(
@@ -167,7 +208,7 @@ class TestDeviceConsistency:
             timesteps=timesteps,
             num_timesteps=1000,
             gamma_b_dataset=dataset,
-            image_keys=image_keys,
+            latents_npz_paths=latents_npz_paths_batch,
             device="cpu"
         )
 
@@ -199,27 +240,34 @@ class TestCDCEndToEnd:
         )
 
         num_samples = 10
+        latents_npz_paths = []
         for i in range(num_samples):
             latent = torch.randn(16, 4, 4, dtype=torch.float32)
+            latents_npz_path = str(tmp_path / f"test_image_{i}_0004x0004_flux.npz")
+            latents_npz_paths.append(latents_npz_path)
             metadata = {'image_key': f'test_image_{i}'}
-            preprocessor.add_latent(latent=latent, global_idx=i, shape=latent.shape, metadata=metadata)
+            preprocessor.add_latent(
+                latent=latent,
+                global_idx=i,
+                latents_npz_path=latents_npz_path,
+                shape=latent.shape,
+                metadata=metadata
+            )
 
-        output_path = tmp_path / "cdc_gamma_b.safetensors"
-        cdc_path = preprocessor.compute_all(save_path=output_path)
+        files_saved = preprocessor.compute_all()
+        assert files_saved == num_samples
 
         # Step 2: Load with GammaBDataset
-        gamma_b_dataset = GammaBDataset(gamma_b_path=cdc_path, device="cpu")
-
-        assert gamma_b_dataset.num_samples == num_samples
+        gamma_b_dataset = GammaBDataset(device="cpu")
 
         # Step 3: Use in mock training scenario
         batch_size = 3
         batch_latents_flat = torch.randn(batch_size, 256)  # B, d (flattened 16*4*4=256)
         batch_t = torch.rand(batch_size)
-        image_keys = ['test_image_0', 'test_image_5', 'test_image_9']
+        latents_npz_paths_batch = [latents_npz_paths[0], latents_npz_paths[5], latents_npz_paths[9]]
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(image_keys, device="cpu")
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(latents_npz_paths_batch, device="cpu")
 
         # Compute geometry-aware noise
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, batch_latents_flat, batch_t)

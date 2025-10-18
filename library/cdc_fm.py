@@ -7,12 +7,6 @@ from safetensors.torch import save_file
 from typing import List, Dict, Optional, Union, Tuple
 from dataclasses import dataclass
 
-try:
-    import faiss  # type: ignore
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +18,7 @@ class LatentSample:
     latent: np.ndarray  # (d,) flattened latent vector
     global_idx: int  # Global index in dataset
     shape: Tuple[int, ...]  # Original shape before flattening (C, H, W)
+    latents_npz_path: str  # Path to the latent cache file
     metadata: Optional[Dict] = None  # Any extra info (prompt, filename, etc.)
 
 
@@ -49,7 +44,7 @@ class CarreDuChampComputer:
 
     def compute_knn_graph(self, latents_np: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Build k-NN graph using FAISS
+        Build k-NN graph using pure PyTorch
 
         Args:
             latents_np: (N, d) numpy array of same-dimensional latents
@@ -63,19 +58,48 @@ class CarreDuChampComputer:
         # Clamp k to available neighbors (can't have more neighbors than samples)
         k_actual = min(self.k, N - 1)
 
-        # Ensure float32
-        if latents_np.dtype != np.float32:
-            latents_np = latents_np.astype(np.float32)
+        # Convert to torch tensor
+        latents_tensor = torch.from_numpy(latents_np).to(self.device)
 
-        # Build FAISS index
-        index = faiss.IndexFlatL2(d)
+        # Compute pairwise L2 distances efficiently
+        # ||a - b||^2 = ||a||^2 + ||b||^2 - 2<a, b>
+        # This is more memory efficient than computing all pairwise differences
+        # For large batches, we'll chunk the computation
+        chunk_size = 1000  # Process 1000 queries at a time to manage memory
 
-        if torch.cuda.is_available():
-            res = faiss.StandardGpuResources()
-            index = faiss.index_cpu_to_gpu(res, 0, index)
+        if N <= chunk_size:
+            # Small batch: compute all at once
+            distances_sq = torch.cdist(latents_tensor, latents_tensor, p=2) ** 2
+            distances_k_sq, indices_k = torch.topk(
+                distances_sq, k=k_actual + 1, dim=1, largest=False
+            )
+            distances = torch.sqrt(distances_k_sq).cpu().numpy()
+            indices = indices_k.cpu().numpy()
+        else:
+            # Large batch: chunk to avoid OOM
+            distances_list = []
+            indices_list = []
 
-        index.add(latents_np)  # type: ignore
-        distances, indices = index.search(latents_np, k_actual + 1)  # type: ignore
+            for i in range(0, N, chunk_size):
+                end_i = min(i + chunk_size, N)
+                chunk = latents_tensor[i:end_i]
+
+                # Compute distances for this chunk
+                distances_sq = torch.cdist(chunk, latents_tensor, p=2) ** 2
+                distances_k_sq, indices_k = torch.topk(
+                    distances_sq, k=k_actual + 1, dim=1, largest=False
+                )
+
+                distances_list.append(torch.sqrt(distances_k_sq).cpu().numpy())
+                indices_list.append(indices_k.cpu().numpy())
+
+                # Free memory
+                del distances_sq, distances_k_sq, indices_k
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            distances = np.concatenate(distances_list, axis=0)
+            indices = np.concatenate(indices_list, axis=0)
 
         return distances, indices
 
@@ -312,15 +336,17 @@ class LatentBatcher:
         self,
         latent: Union[np.ndarray, torch.Tensor],
         global_idx: int,
+        latents_npz_path: str,
         shape: Optional[Tuple[int, ...]] = None,
         metadata: Optional[Dict] = None
     ):
         """
         Add a latent vector with automatic shape tracking
-        
+
         Args:
             latent: Latent vector (any shape, will be flattened)
             global_idx: Global index in dataset
+            latents_npz_path: Path to the latent cache file (e.g., "image_0512x0768_flux.npz")
             shape: Original shape (if None, uses latent.shape)
             metadata: Optional metadata dict
         """
@@ -337,6 +363,7 @@ class LatentBatcher:
             latent=latent_flat,
             global_idx=global_idx,
             shape=original_shape,
+            latents_npz_path=latents_npz_path,
             metadata=metadata
         )
 
@@ -443,15 +470,9 @@ class CDCPreprocessor:
         size_tolerance: float = 0.0,
         debug: bool = False,
         adaptive_k: bool = False,
-        min_bucket_size: int = 16
+        min_bucket_size: int = 16,
+        dataset_dirs: Optional[List[str]] = None
     ):
-        if not FAISS_AVAILABLE:
-            raise ImportError(
-                "FAISS is required for CDC-FM but not installed. "
-                "Install with: pip install faiss-cpu (CPU) or faiss-gpu (GPU). "
-                "CDC-FM will be disabled."
-            )
-
         self.computer = CarreDuChampComputer(
             k_neighbors=k_neighbors,
             k_bandwidth=k_bandwidth,
@@ -463,37 +484,88 @@ class CDCPreprocessor:
         self.debug = debug
         self.adaptive_k = adaptive_k
         self.min_bucket_size = min_bucket_size
+        self.dataset_dirs = dataset_dirs or []
+        self.config_hash = self._compute_config_hash()
+
+    def _compute_config_hash(self) -> str:
+        """
+        Compute a short hash of CDC configuration for filename uniqueness.
+
+        Hash includes:
+        - Sorted dataset/subset directory paths
+        - CDC parameters (k_neighbors, d_cdc, gamma)
+
+        This ensures CDC files are invalidated when:
+        - Dataset composition changes (different dirs)
+        - CDC parameters change
+
+        Returns:
+            8-character hex hash
+        """
+        import hashlib
+
+        # Sort dataset dirs for consistent hashing
+        dirs_str = "|".join(sorted(self.dataset_dirs))
+
+        # Include CDC parameters
+        config_str = f"{dirs_str}|k={self.computer.k}|d={self.computer.d_cdc}|gamma={self.computer.gamma}"
+
+        # Create short hash (8 chars is enough for uniqueness in this context)
+        hash_obj = hashlib.sha256(config_str.encode())
+        return hash_obj.hexdigest()[:8]
 
     def add_latent(
         self,
         latent: Union[np.ndarray, torch.Tensor],
         global_idx: int,
+        latents_npz_path: str,
         shape: Optional[Tuple[int, ...]] = None,
         metadata: Optional[Dict] = None
     ):
         """
         Add a single latent to the preprocessing queue
-        
+
         Args:
             latent: Latent vector (will be flattened)
             global_idx: Global dataset index
+            latents_npz_path: Path to the latent cache file
             shape: Original shape (C, H, W)
             metadata: Optional metadata
         """
-        self.batcher.add_latent(latent, global_idx, shape, metadata)
+        self.batcher.add_latent(latent, global_idx, latents_npz_path, shape, metadata)
 
-    def compute_all(self, save_path: Union[str, Path]) -> Path:
+    @staticmethod
+    def get_cdc_npz_path(latents_npz_path: str, config_hash: Optional[str] = None) -> str:
         """
-        Compute Γ_b for all added latents and save to safetensors
-        
+        Get CDC cache path from latents cache path
+
+        Includes optional config_hash to ensure CDC files are unique to dataset/subset
+        configuration and CDC parameters. This prevents using stale CDC files when
+        the dataset composition or CDC settings change.
+
         Args:
-            save_path: Path to save the results
-            
+            latents_npz_path: Path to latent cache (e.g., "image_0512x0768_flux.npz")
+            config_hash: Optional 8-char hash of (dataset_dirs + CDC params)
+                        If None, returns path without hash (for backward compatibility)
+
         Returns:
-            Path to saved file
+            CDC cache path:
+            - With hash: "image_0512x0768_flux_cdc_a1b2c3d4.npz"
+            - Without: "image_0512x0768_flux_cdc.npz"
         """
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
+        path = Path(latents_npz_path)
+        if config_hash:
+            return str(path.with_stem(f"{path.stem}_cdc_{config_hash}"))
+        else:
+            return str(path.with_stem(f"{path.stem}_cdc"))
+
+    def compute_all(self) -> int:
+        """
+        Compute Γ_b for all added latents and save individual CDC files next to each latent cache
+
+        Returns:
+            Number of CDC files saved
+        """
 
         # Get batches by exact size (no resizing)
         batches = self.batcher.get_batches()
@@ -603,90 +675,86 @@ class CDCPreprocessor:
             # Merge into overall results
             all_results.update(batch_results)
 
-        # Save to safetensors
+        # Save individual CDC files next to each latent cache
         if self.debug:
             print(f"\n{'='*60}")
-            print("Saving results...")
+            print("Saving individual CDC files...")
             print(f"{'='*60}")
 
-        tensors_dict = {
-            'metadata/num_samples': torch.tensor([len(all_results)]),
-            'metadata/k_neighbors': torch.tensor([self.computer.k]),
-            'metadata/d_cdc': torch.tensor([self.computer.d_cdc]),
-            'metadata/gamma': torch.tensor([self.computer.gamma]),
-        }
+        files_saved = 0
+        total_size = 0
 
-        # Add shape information and CDC results for each sample
-        # Use image_key as the identifier
-        for sample in self.batcher.samples:
-            image_key = sample.metadata['image_key']
-            tensors_dict[f'shapes/{image_key}'] = torch.tensor(sample.shape)
+        save_iter = tqdm(self.batcher.samples, desc="Saving CDC files", disable=self.debug) if not self.debug else self.batcher.samples
+
+        for sample in save_iter:
+            # Get CDC cache path with config hash
+            cdc_path = self.get_cdc_npz_path(sample.latents_npz_path, self.config_hash)
 
             # Get CDC results for this sample
             if sample.global_idx in all_results:
                 eigvecs, eigvals = all_results[sample.global_idx]
 
-                # Convert numpy arrays to torch tensors
-                if isinstance(eigvecs, np.ndarray):
-                    eigvecs = torch.from_numpy(eigvecs)
-                if isinstance(eigvals, np.ndarray):
-                    eigvals = torch.from_numpy(eigvals)
+                # Convert to numpy if needed
+                if isinstance(eigvecs, torch.Tensor):
+                    eigvecs = eigvecs.numpy()
+                if isinstance(eigvals, torch.Tensor):
+                    eigvals = eigvals.numpy()
 
-                tensors_dict[f'eigenvectors/{image_key}'] = eigvecs
-                tensors_dict[f'eigenvalues/{image_key}'] = eigvals
+                # Save metadata and CDC results
+                np.savez(
+                    cdc_path,
+                    eigenvectors=eigvecs,
+                    eigenvalues=eigvals,
+                    shape=np.array(sample.shape),
+                    k_neighbors=self.computer.k,
+                    d_cdc=self.computer.d_cdc,
+                    gamma=self.computer.gamma
+                )
 
-        save_file(tensors_dict, save_path)
+                files_saved += 1
+                total_size += Path(cdc_path).stat().st_size
 
-        file_size_gb = save_path.stat().st_size / 1024 / 1024 / 1024
-        logger.info(f"Saved to {save_path}")
-        logger.info(f"File size: {file_size_gb:.2f} GB")
+                logger.debug(f"Saved CDC file: {cdc_path}")
 
-        return save_path
+        total_size_mb = total_size / 1024 / 1024
+        logger.info(f"Saved {files_saved} CDC files, total size: {total_size_mb:.2f} MB")
+
+        return files_saved
 
 
 class GammaBDataset:
     """
     Efficient loader for Γ_b matrices during training
-    Handles variable-size latents
+    Loads from individual CDC cache files next to latent caches
     """
 
-    def __init__(self, gamma_b_path: Union[str, Path], device: str = 'cuda'):
+    def __init__(self, device: str = 'cuda', config_hash: Optional[str] = None):
+        """
+        Initialize CDC dataset loader
+
+        Args:
+            device: Device for loading tensors
+            config_hash: Optional config hash to use for CDC file lookup.
+                        If None, uses default naming without hash.
+        """
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        self.gamma_b_path = Path(gamma_b_path)
-
-        # Load metadata
-        logger.info(f"Loading Γ_b from {gamma_b_path}...")
-        from safetensors import safe_open
-
-        with safe_open(str(self.gamma_b_path), framework="pt", device="cpu") as f:
-            self.num_samples = int(f.get_tensor('metadata/num_samples').item())
-            self.d_cdc = int(f.get_tensor('metadata/d_cdc').item())
-
-            # Cache all shapes in memory to avoid repeated I/O during training
-            # Loading once at init is much faster than opening the file every training step
-            self.shapes_cache = {}
-            # Get all shape keys (they're stored as shapes/{image_key})
-            all_keys = f.keys()
-            shape_keys = [k for k in all_keys if k.startswith('shapes/')]
-            for shape_key in shape_keys:
-                image_key = shape_key.replace('shapes/', '')
-                shape_tensor = f.get_tensor(shape_key)
-                self.shapes_cache[image_key] = tuple(shape_tensor.numpy().tolist())
-
-        logger.info(f"Loaded CDC data for {self.num_samples} samples (d_cdc={self.d_cdc})")
-        logger.info(f"Cached {len(self.shapes_cache)} shapes in memory")
+        self.config_hash = config_hash
+        if config_hash:
+            logger.info(f"CDC loader initialized (hash: {config_hash})")
+        else:
+            logger.info("CDC loader initialized (no hash, backward compatibility mode)")
 
     @torch.no_grad()
     def get_gamma_b_sqrt(
         self,
-        image_keys: Union[List[str], List],
+        latents_npz_paths: List[str],
         device: Optional[str] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get Γ_b^(1/2) components for a batch of image_keys
+        Get Γ_b^(1/2) components for a batch of latents
 
         Args:
-            image_keys: List of image_key strings
+            latents_npz_paths: List of latent cache paths (e.g., ["image_0512x0768_flux.npz", ...])
             device: Device to load to (defaults to self.device)
 
         Returns:
@@ -696,19 +764,26 @@ class GammaBDataset:
         if device is None:
             device = self.device
 
-        # Load from safetensors
-        from safetensors import safe_open
-
         eigenvectors_list = []
         eigenvalues_list = []
 
-        with safe_open(str(self.gamma_b_path), framework="pt", device=str(device)) as f:
-            for image_key in image_keys:
-                eigvecs = f.get_tensor(f'eigenvectors/{image_key}').float()
-                eigvals = f.get_tensor(f'eigenvalues/{image_key}').float()
+        for latents_npz_path in latents_npz_paths:
+            # Get CDC cache path with config hash
+            cdc_path = CDCPreprocessor.get_cdc_npz_path(latents_npz_path, self.config_hash)
 
-                eigenvectors_list.append(eigvecs)
-                eigenvalues_list.append(eigvals)
+            # Load CDC data
+            if not Path(cdc_path).exists():
+                raise FileNotFoundError(
+                    f"CDC cache file not found: {cdc_path}. "
+                    f"Make sure to run CDC preprocessing before training."
+                )
+
+            data = np.load(cdc_path)
+            eigvecs = torch.from_numpy(data['eigenvectors']).to(device).float()
+            eigvals = torch.from_numpy(data['eigenvalues']).to(device).float()
+
+            eigenvectors_list.append(eigvecs)
+            eigenvalues_list.append(eigvals)
 
         # Stack - all should have same d_cdc and d within a batch (enforced by bucketing)
         # Check if all eigenvectors have the same dimension
@@ -718,7 +793,7 @@ class GammaBDataset:
             # but can occur if batch contains mixed sizes
             raise RuntimeError(
                 f"CDC eigenvector dimension mismatch in batch: {set(dims)}. "
-                f"Image keys: {image_keys}. "
+                f"Latent paths: {latents_npz_paths}. "
                 f"This means the training batch contains images of different sizes, "
                 f"which violates CDC's requirement for uniform latent dimensions per batch. "
                 f"Check that your dataloader buckets are configured correctly."
@@ -728,10 +803,6 @@ class GammaBDataset:
         eigenvalues = torch.stack(eigenvalues_list, dim=0)
 
         return eigenvectors, eigenvalues
-
-    def get_shape(self, image_key: str) -> Tuple[int, ...]:
-        """Get the original shape for a sample (cached in memory)"""
-        return self.shapes_cache[image_key]
 
     def compute_sigma_t_x(
         self,

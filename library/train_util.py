@@ -40,6 +40,8 @@ from torch.optim import Optimizer
 from torchvision import transforms
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 import transformers
+
+from library.cdc_fm import CDCPreprocessor
 from diffusers.optimization import (
     SchedulerType as DiffusersSchedulerType,
     TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
@@ -1570,13 +1572,15 @@ class BaseDataset(torch.utils.data.Dataset):
         text_encoder_outputs_list = []
         custom_attributes = []
         image_keys = []  # CDC-FM: track image keys for CDC lookup
+        latents_npz_paths = []  # CDC-FM: track latents_npz paths for CDC lookup
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
 
-            # CDC-FM: Store image_key for CDC lookup
+            # CDC-FM: Store image_key and latents_npz path for CDC lookup
             image_keys.append(image_key)
+            latents_npz_paths.append(image_info.latents_npz)
 
             custom_attributes.append(subset.custom_attributes)
 
@@ -1823,8 +1827,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
 
-        # CDC-FM: Add image keys to batch for CDC lookup
-        example["image_keys"] = image_keys
+        # CDC-FM: Add latents_npz paths to batch for CDC lookup
+        example["latents_npz"] = latents_npz_paths
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
@@ -2709,12 +2713,15 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         debug: bool = False,
         adaptive_k: bool = False,
         min_bucket_size: int = 16,
-    ) -> str:
+    ) -> Optional[str]:
         """
         Cache CDC Γ_b matrices for all latents in the dataset
 
+        CDC files are saved as individual .npz files next to each latent cache file.
+        For example: image_0512x0768_flux.npz → image_0512x0768_flux_cdc.npz
+
         Args:
-            cdc_output_path: Path to save cdc_gamma_b.safetensors
+            cdc_output_path: Deprecated (CDC uses per-file caching now)
             k_neighbors: k-NN neighbors
             k_bandwidth: Bandwidth estimation neighbors
             d_cdc: CDC subspace dimension
@@ -2723,45 +2730,54 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             accelerator: For multi-GPU support
 
         Returns:
-            Path to cached CDC file
+            "per_file" to indicate per-file caching is used, or None on error
         """
         from pathlib import Path
 
-        cdc_path = Path(cdc_output_path)
+        # Collect dataset/subset directories for config hash
+        dataset_dirs = []
+        for dataset in self.datasets:
+            # Get the directory containing the images
+            if hasattr(dataset, 'image_dir'):
+                dataset_dirs.append(str(dataset.image_dir))
+            # Fallback: use first image's parent directory
+            elif dataset.image_data:
+                first_image = next(iter(dataset.image_data.values()))
+                dataset_dirs.append(str(Path(first_image.absolute_path).parent))
 
-        # Check if valid cache exists
-        if cdc_path.exists() and not force_recache:
-            if self._is_cdc_cache_valid(cdc_path, k_neighbors, d_cdc, gamma):
-                logger.info(f"Valid CDC cache found at {cdc_path}, skipping preprocessing")
-                return str(cdc_path)
+        # Create preprocessor to get config hash
+        preprocessor = CDCPreprocessor(
+            k_neighbors=k_neighbors,
+            k_bandwidth=k_bandwidth,
+            d_cdc=d_cdc,
+            gamma=gamma,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            debug=debug,
+            adaptive_k=adaptive_k,
+            min_bucket_size=min_bucket_size,
+            dataset_dirs=dataset_dirs
+        )
+
+        logger.info(f"CDC config hash: {preprocessor.config_hash}")
+
+        # Check if CDC caches already exist (unless force_recache)
+        if not force_recache:
+            all_cached = self._check_cdc_caches_exist(preprocessor.config_hash)
+            if all_cached:
+                logger.info("All CDC cache files found, skipping preprocessing")
+                return preprocessor.config_hash
             else:
-                logger.info(f"CDC cache found but invalid, will recompute")
+                logger.info("Some CDC cache files missing, will compute")
 
         # Only main process computes CDC
         is_main = accelerator is None or accelerator.is_main_process
         if not is_main:
             if accelerator is not None:
                 accelerator.wait_for_everyone()
-            return str(cdc_path)
+            return preprocessor.config_hash
 
-        logger.info("=" * 60)
         logger.info("Starting CDC-FM preprocessing")
         logger.info(f"Parameters: k={k_neighbors}, k_bw={k_bandwidth}, d_cdc={d_cdc}, gamma={gamma}")
-        logger.info("=" * 60)
-        # Initialize CDC preprocessor
-        # Initialize CDC preprocessor
-        try:
-            from library.cdc_fm import CDCPreprocessor
-        except ImportError as e:
-            logger.warning(
-                "FAISS not installed. CDC-FM preprocessing skipped. "
-                "Install with: pip install faiss-cpu (CPU) or faiss-gpu (GPU)"
-            )
-            return None
-
-        preprocessor = CDCPreprocessor(
-            k_neighbors=k_neighbors, k_bandwidth=k_bandwidth, d_cdc=d_cdc, gamma=gamma, device="cuda" if torch.cuda.is_available() else "cpu", debug=debug, adaptive_k=adaptive_k, min_bucket_size=min_bucket_size
-        )
 
         # Get caching strategy for loading latents
         from library.strategy_base import LatentsCachingStrategy
@@ -2789,44 +2805,60 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
 
                 # Add to preprocessor (with unique global index across all datasets)
                 actual_global_idx = sum(len(d.image_data) for d in self.datasets[:dataset_idx]) + local_idx
-                preprocessor.add_latent(latent=latent, global_idx=actual_global_idx, shape=latent.shape, metadata={"image_key": info.image_key})
 
-        # Compute and save
+                # Get latents_npz_path - will be set whether caching to disk or memory
+                if info.latents_npz is None:
+                    # If not set, generate the path from the caching strategy
+                    info.latents_npz = caching_strategy.get_latents_npz_path(info.absolute_path, info.bucket_reso)
+
+                preprocessor.add_latent(
+                    latent=latent,
+                    global_idx=actual_global_idx,
+                    latents_npz_path=info.latents_npz,
+                    shape=latent.shape,
+                    metadata={"image_key": info.image_key}
+                )
+
+        # Compute and save individual CDC files
         logger.info(f"\nComputing CDC Γ_b matrices for {len(preprocessor.batcher)} samples...")
-        preprocessor.compute_all(save_path=cdc_path)
+        files_saved = preprocessor.compute_all()
+        logger.info(f"Saved {files_saved} CDC cache files")
 
         if accelerator is not None:
             accelerator.wait_for_everyone()
 
-        return str(cdc_path)
+        # Return config hash so training can initialize GammaBDataset with it
+        return preprocessor.config_hash
 
-    def _is_cdc_cache_valid(self, cdc_path: "pathlib.Path", k_neighbors: int, d_cdc: int, gamma: float) -> bool:
-        """Check if CDC cache has matching hyperparameters"""
-        try:
-            from safetensors import safe_open
+    def _check_cdc_caches_exist(self, config_hash: str) -> bool:
+        """
+        Check if CDC cache files exist for all latents in the dataset
 
-            with safe_open(str(cdc_path), framework="pt", device="cpu") as f:
-                cached_k = int(f.get_tensor("metadata/k_neighbors").item())
-                cached_d = int(f.get_tensor("metadata/d_cdc").item())
-                cached_gamma = float(f.get_tensor("metadata/gamma").item())
-                cached_num = int(f.get_tensor("metadata/num_samples").item())
+        Args:
+            config_hash: The config hash to use for CDC filename lookup
+        """
+        from pathlib import Path
 
-            expected_num = sum(len(d.image_data) for d in self.datasets)
+        missing_count = 0
+        total_count = 0
 
-            valid = cached_k == k_neighbors and cached_d == d_cdc and abs(cached_gamma - gamma) < 1e-6 and cached_num == expected_num
+        for dataset in self.datasets:
+            for info in dataset.image_data.values():
+                total_count += 1
+                if info.latents_npz is None:
+                    # If latents_npz not set, we can't check for CDC cache
+                    continue
 
-            if not valid:
-                logger.info(
-                    f"Cache mismatch: k={cached_k} (expected {k_neighbors}), "
-                    f"d_cdc={cached_d} (expected {d_cdc}), "
-                    f"gamma={cached_gamma} (expected {gamma}), "
-                    f"num={cached_num} (expected {expected_num})"
-                )
+                cdc_path = CDCPreprocessor.get_cdc_npz_path(info.latents_npz, config_hash)
+                if not Path(cdc_path).exists():
+                    missing_count += 1
 
-            return valid
-        except Exception as e:
-            logger.warning(f"Error validating CDC cache: {e}")
+        if missing_count > 0:
+            logger.info(f"Found {missing_count}/{total_count} missing CDC cache files")
             return False
+
+        logger.debug(f"All {total_count} CDC cache files exist")
+        return True
 
     def set_caching_mode(self, caching_mode):
         for dataset in self.datasets:
