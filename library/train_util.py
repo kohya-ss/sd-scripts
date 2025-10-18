@@ -2703,7 +2703,6 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
 
     def cache_cdc_gamma_b(
         self,
-        cdc_output_path: str,
         k_neighbors: int = 256,
         k_bandwidth: int = 8,
         d_cdc: int = 8,
@@ -2718,19 +2717,22 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         Cache CDC Γ_b matrices for all latents in the dataset
 
         CDC files are saved as individual .npz files next to each latent cache file.
-        For example: image_0512x0768_flux.npz → image_0512x0768_flux_cdc.npz
+        For example: image_0512x0768_flux.npz → image_0512x0768_flux_cdc_a1b2c3d4.npz
+        where 'a1b2c3d4' is the config hash (dataset dirs + CDC params).
 
         Args:
-            cdc_output_path: Deprecated (CDC uses per-file caching now)
             k_neighbors: k-NN neighbors
             k_bandwidth: Bandwidth estimation neighbors
             d_cdc: CDC subspace dimension
             gamma: CDC strength
             force_recache: Force recompute even if cache exists
             accelerator: For multi-GPU support
+            debug: Enable debug logging
+            adaptive_k: Enable adaptive k selection for small buckets
+            min_bucket_size: Minimum bucket size for CDC computation
 
         Returns:
-            "per_file" to indicate per-file caching is used, or None on error
+            Config hash string for this CDC configuration, or None on error
         """
         from pathlib import Path
 
@@ -6277,8 +6279,19 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
 
 
 def get_noise_noisy_latents_and_timesteps(
-    args, noise_scheduler, latents: torch.FloatTensor
+    args, noise_scheduler, latents: torch.FloatTensor,
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
+    """
+    Sample noise and create noisy latents.
+    
+    Args:
+        args: Training arguments
+        noise_scheduler: The noise scheduler
+        latents: Clean latents
+        
+    Returns:
+        (noise, noisy_latents, timesteps)
+    """
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:

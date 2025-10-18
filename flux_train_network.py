@@ -332,9 +332,9 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         # Get noisy model input and timesteps
         # If CDC is enabled, this will transform the noise with geometry-aware covariance
-        noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
+        noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timestep(
             args, noise_scheduler, latents, noise, accelerator.device, weight_dtype,
-            gamma_b_dataset=gamma_b_dataset, latents_npz_paths=latents_npz_paths
+            gamma_b_dataset=gamma_b_dataset, latents_npz_paths=latents_npz_paths, timestep_index=timestep_index
         )
 
         # pack latents and get img_ids

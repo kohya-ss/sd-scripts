@@ -625,10 +625,8 @@ class NetworkTrainer:
         # CDC-FM preprocessing
         if hasattr(args, "use_cdc_fm") and args.use_cdc_fm:
             logger.info("CDC-FM enabled, preprocessing Γ_b matrices...")
-            cdc_output_path = os.path.join(args.output_dir, "cdc_gamma_b.safetensors")
 
-            self.cdc_cache_path = train_dataset_group.cache_cdc_gamma_b(
-                cdc_output_path=cdc_output_path,
+            self.cdc_config_hash = train_dataset_group.cache_cdc_gamma_b(
                 k_neighbors=args.cdc_k_neighbors,
                 k_bandwidth=args.cdc_k_bandwidth,
                 d_cdc=args.cdc_d_cdc,
@@ -640,10 +638,10 @@ class NetworkTrainer:
                 min_bucket_size=getattr(args, 'cdc_min_bucket_size', 16),
             )
 
-            if self.cdc_cache_path is None:
+            if self.cdc_config_hash is None:
                 logger.warning("CDC-FM preprocessing failed (likely missing FAISS). Training will continue without CDC-FM.")
         else:
-            self.cdc_cache_path = None
+            self.cdc_config_hash = None
 
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
         # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
@@ -684,19 +682,14 @@ class NetworkTrainer:
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
 
         # Load CDC-FM Γ_b dataset if enabled
-        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm and self.cdc_cache_path is not None:
+        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm and self.cdc_config_hash is not None:
             from library.cdc_fm import GammaBDataset
 
-            # cdc_cache_path now contains the config hash
-            config_hash = self.cdc_cache_path if self.cdc_cache_path != "per_file" else None
-            if config_hash:
-                logger.info(f"CDC Γ_b dataset ready (hash: {config_hash})")
-            else:
-                logger.info("CDC Γ_b dataset ready (no hash, backward compatibility)")
+            logger.info(f"CDC Γ_b dataset ready (hash: {self.cdc_config_hash})")
 
             self.gamma_b_dataset = GammaBDataset(
                 device="cuda" if torch.cuda.is_available() else "cpu",
-                config_hash=config_hash
+                config_hash=self.cdc_config_hash
             )
         else:
             self.gamma_b_dataset = None

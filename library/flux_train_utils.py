@@ -525,14 +525,27 @@ def apply_cdc_noise_transformation(
     return noise_cdc_flat.reshape(B, C, H, W)
 
 
-def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype,
-    gamma_b_dataset=None, latents_npz_paths=None
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def get_noisy_model_input_and_timestep(
+    args, 
+    noise_scheduler, 
+    latents: torch.Tensor, 
+    noise: torch.Tensor, 
+    device: torch.device, 
+    dtype: torch.dtype,
+    gamma_b_dataset=None, 
+    latents_npz_paths=None,
+    timestep_index: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Get noisy model input and timesteps for training.
-
+    Generate noisy model input and corresponding timesteps for training.
+    
     Args:
+        args: Configuration with sampling parameters
+        noise_scheduler: Scheduler for noise/timestep management
+        latents: Clean latent representations
+        noise: Random noise tensor
+        device: Target device
+        dtype: Target dtype
         gamma_b_dataset: Optional CDC-FM gamma_b dataset for geometry-aware noise
         latents_npz_paths: Optional list of latent cache file paths for CDC-FM (required if gamma_b_dataset provided)
     """
@@ -589,11 +602,10 @@ def get_noisy_model_input_and_timesteps(
             latents_npz_paths=latents_npz_paths,
             device=device
         )
-
-    # Add noise to the latents according to the noise magnitude at each timestep
-    # (this is the forward diffusion process)
+    
     if args.ip_noise_gamma:
         xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
+        
         if args.ip_noise_gamma_random_strength:
             ip_noise_gamma = torch.rand(1, device=latents.device, dtype=dtype) * args.ip_noise_gamma
         else:
