@@ -529,7 +529,7 @@ def setup_parser() -> argparse.ArgumentParser:
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
-    parser.add_argument("--fp8_scaled_fp8", action="store_true", help="Use scaled fp8 for AutoEncoder / AutoEncoderにスケーリングされたfp8を使う")
+    parser.add_argument("--fp8_scaled_ae", action="store_true", help="Use scaled fp8 for AutoEncoder / AutoEncoderにスケーリングされたfp8を使う")
     parser.add_argument(
         "--split_mode",
         action="store_true",
