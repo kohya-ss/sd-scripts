@@ -214,12 +214,6 @@ def load_ae(
         )
 
         apply_fp8_monkey_patch(ae, sd, use_scaled_mm=False)
-
-        # if loading_device.type != "cpu":  # in case of no block swapping
-        #     # make sure all the model weights are on the loading_device
-        #     logger.info(f"Moving weights to {loading_device}")
-        #     for key in sd.keys():
-        #         sd[key] = sd[key].to(loading_device)
     else:
         sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = ae.load_state_dict(sd, strict=False, assign=True)
