@@ -135,6 +135,96 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
         action="store_true",
         help="debiased estimation loss / debiased estimation loss",
     )
+<<<<<<< Updated upstream
+=======
+    parser.add_argument("--wavelet_loss", action="store_true", help="Activate wavelet loss. Default: False")
+    parser.add_argument("--wavelet_loss_primary", action="store_true", help="Use wavelet loss as the primary loss")
+    parser.add_argument("--wavelet_loss_alpha", type=float, default=1.0, help="Wavelet loss alpha. Default: 1.0")
+    parser.add_argument("--wavelet_loss_type", help="Wavelet loss type l1, l2, huber, smooth_l1. Default to --loss_type value.")
+    parser.add_argument("--wavelet_loss_transform", default="swt", help="Wavelet transform type of DWT or SWT. Default: swt")
+    parser.add_argument("--wavelet_loss_wavelet", default="sym7", help="Wavelet. Default: sym7")
+    parser.add_argument(
+        "--wavelet_loss_level",
+        type=int,
+        default=1,
+        help="Wavelet loss level 1 (main) or 2 (details). Higher levels are available for DWT for higher resolution training. Default: 1",
+    )
+    parser.add_argument(
+        "--wavelet_loss_rectified_flow", type=bool, default=True, help="Use rectified flow to estimate clean latents before wavelet loss"
+    )
+    parser.add_argument("--wavelet_pixel", action="store_true", help="Run wavelet loss in pixel space after decoding the latents")
+    import ast
+    import json
+
+    def parse_wavelet_weights(weights_str):
+        if weights_str is None:
+            return None
+
+        # Try parsing as a dictionary (for formats like "{'ll1':0.1,'lh1':0.01}")
+        if weights_str.strip().startswith("{"):
+            try:
+                return ast.literal_eval(weights_str)
+            except (ValueError, SyntaxError):
+                try:
+                    return json.loads(weights_str.replace("'", '"'))
+                except json.JSONDecodeError:
+                    pass
+
+        # Parse format like "ll1=0.1,lh1=0.01,hl1=0.01,hh1=0.05"
+        result = {}
+        for pair in weights_str.split(","):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                result[key.strip()] = float(value.strip())
+
+        return result
+
+    parser.add_argument(
+        "--wavelet_loss_band_level_weights",
+        type=parse_wavelet_weights,
+        default=None,
+        help="Wavelet loss band level weights. ll1=0.1,lh1=0.01,hl1=0.01,hh1=0.05. Default: None",
+    )
+    parser.add_argument(
+        "--wavelet_loss_band_weights",
+        type=parse_wavelet_weights,
+        default=None,
+        help="Wavelet loss band weights. ll=0.1,lh=0.01,hl=0.01,hh=0.05. Default: None",
+    )
+    parser.add_argument(
+        "--wavelet_loss_quaternion_component_weights",
+        type=parse_wavelet_weights,
+        default=None,
+        help="Quaternion Wavelet loss component weights r=1.0 real i=0.7 x-Hilbert j=0.7 y-Hilbert k=0.5 xy-Hilbert",
+    )
+    parser.add_argument(
+        "--wavelet_loss_ll_level_threshold",
+        default=None,
+        type=int,
+        help="Wavelet loss which level to calculate the loss for the low frequency (ll). -1 means last n level. Default: None",
+    )
+    parser.add_argument(
+        "--wavelet_loss_energy_loss_ratio",
+        type=float,
+        help="Ratio for energy loss ratio between pattern loss differences in wavelets. ",
+    )
+    parser.add_argument(
+        "--wavelet_loss_energy_scale_factor",
+        type=float,
+        help="Scale for energy loss",
+    )
+    parser.add_argument(
+        "--wavelet_loss_normalize_bands",
+        default=None,
+        action="store_true",
+        help="Normalize wavelet bands before calculating the loss.",
+    )
+    parser.add_argument(
+        "--wavelet_loss_metrics",
+        action="store_true",
+        help="Create and log wavelet metrics.",
+    )
+>>>>>>> Stashed changes
     if support_weighted_captions:
         parser.add_argument(
             "--weighted_captions",

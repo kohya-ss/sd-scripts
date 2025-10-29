@@ -346,14 +346,74 @@ class AutoEncoder(nn.Module):
         return next(self.parameters()).dtype
 
     def encode(self, x: Tensor) -> Tensor:
-        z = self.reg(self.encoder(x))
+        if hasattr(self, 'use_gradient_checkpointing') and self.use_gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            
+            z = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.encoder),
+                x,
+                use_reentrant=False
+            )
+        else:
+            z = self.encoder(x)
+        
+        z = self.reg(z)
         z = self.scale_factor * (z - self.shift_factor)
         return z
 
     def decode(self, z: Tensor) -> Tensor:
         z = z / self.scale_factor + self.shift_factor
-        return self.decoder(z)
+        
+        if hasattr(self, 'use_gradient_checkpointing') and self.use_gradient_checkpointing:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            
+            return torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.decoder),
+                z,
+                use_reentrant=False
+            )
+        else:
+            return self.decoder(z)
 
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing at the block level for memory efficiency"""
+        self.use_gradient_checkpointing = True
+        
+        # Checkpoint each ResNet block individually in decoder
+        for up_block in self.decoder.up:
+            for i, resnet_block in enumerate(up_block.block):
+                original_forward = resnet_block.forward
+                
+                def make_checkpointed_forward(orig_fwd):
+                    def checkpointed_forward(x):
+                        return torch.utils.checkpoint.checkpoint(
+                            orig_fwd,
+                            x,
+                            use_reentrant=False
+                        )
+                    return checkpointed_forward
+                
+                resnet_block.forward = make_checkpointed_forward(original_forward)
+        
+        # Checkpoint decoder middle blocks
+        self.decoder.mid.block_1.forward = self._make_checkpointed(self.decoder.mid.block_1.forward)
+        self.decoder.mid.block_2.forward = self._make_checkpointed(self.decoder.mid.block_2.forward)
+
+    def _make_checkpointed(self, original_forward):
+        def checkpointed_forward(x):
+            return torch.utils.checkpoint.checkpoint(
+                original_forward,
+                x,
+                use_reentrant=False
+            )
+        return checkpointed_forward
+    
     def forward(self, x: Tensor) -> Tensor:
         return self.decode(self.encode(x))
 

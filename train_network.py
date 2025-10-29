@@ -466,6 +466,95 @@ class NetworkTrainer:
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+<<<<<<< Updated upstream
+=======
+
+        if args.wavelet_loss:
+
+            def maybe_denoise_latents(denoise_latents: bool, noisy_latents, sigma, noise_pred, noise):
+                sigmas = sigma.view(-1, 1, 1, 1).expand(noise_pred.size(0), -1, -1, -1)
+
+                if denoise_latents:
+                    if self.is_flow_matching:
+                        # denoise latents to use for wavelet loss
+                        wavelet_predicted = (noisy_latents - sigmas * noise_pred) / (1.0 - sigmas)
+                        wavelet_target = (noisy_latents - sigmas * noise) / (1.0 - sigmas)
+
+                    else:
+                        # Get alpha values from scheduler
+                        alphas_cumprod = noise_scheduler.alphas_cumprod.to(noisy_latents.device)
+                        alpha_t = alphas_cumprod[timesteps].reshape(-1, 1, 1, 1)
+                        sqrt_alpha_t = torch.sqrt(alpha_t)
+                        sqrt_one_minus_alpha_t = torch.sqrt(1.0 - alpha_t)
+
+                        # Predict x0 (clean latents) from noise prediction
+                        wavelet_predicted = (noisy_latents - sqrt_one_minus_alpha_t * noise_pred) / sqrt_alpha_t
+                        wavelet_target = (noisy_latents - sqrt_one_minus_alpha_t * noise) / sqrt_alpha_t
+
+                    return wavelet_predicted, wavelet_target
+                else:
+                    return noise_pred, target
+
+            def wavelet_loss_fn(args):
+                loss_type = args.wavelet_loss_type if args.wavelet_loss_type is not None else args.loss_type
+
+                def loss_fn(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
+                    return train_util.conditional_loss(input, target, loss_type, reduction, huber_c)
+
+                return loss_fn
+
+            self.wavelet_loss.set_loss_fn(wavelet_loss_fn(args))
+
+            wavelet_predicted, wavelet_target = maybe_denoise_latents(
+                args.wavelet_loss_rectified_flow, noisy_latents, sigmas, noise_pred, noise
+            )
+
+            if args.wavelet_pixel:
+                with accelerator.autocast():
+                    torch.cuda.empty_cache()
+                    with torch.no_grad():
+                        target_decoded = vae.decode(wavelet_target).detach()
+
+                        # assert target_decoded.requires_grad, "Target decoded has no gradient"
+
+                    predicted_decoded = vae.decode(wavelet_predicted)
+                    assert predicted_decoded.requires_grad, "Predicted decoded has no gradient"
+
+                wav_losses, metrics_wavelet = self.wavelet_loss(predicted_decoded.float(), target_decoded.float(), timesteps)
+
+
+                wav_loss = torch.stack(wav_losses).mean(dim=0)  # Average across levels
+                wav_loss = args.wavelet_loss_alpha * wav_loss
+                combined_loss = wav_loss.mean([1, 2, 3])
+                loss = loss.mean([1, 2, 3]) + wav_loss
+            else:
+                wav_losses, metrics_wavelet = self.wavelet_loss(wavelet_predicted.float(), wavelet_target.float(), timesteps)
+
+                current_losses = []
+                for i, wav_loss in enumerate(wav_losses):
+                    # Downsample loss to wavelet size
+                    downsampled_loss = torch.nn.functional.adaptive_avg_pool2d(loss, wav_loss.shape[-2:])
+
+                    # Combine with wavelet loss
+                    combined_loss = downsampled_loss + args.wavelet_loss_alpha * wav_loss
+
+                    # Upsample back to original latent size
+                    upsampled_loss = torch.nn.functional.interpolate(
+                        combined_loss,
+                        size=loss.shape[-2:],  # Original latent size
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+
+                    current_losses.append(upsampled_loss)
+
+                # Now combine all levels at original latent resolution
+                loss = torch.stack(current_losses).mean(dim=0)  # Average across levels
+
+            metrics_wavelet = {f"wavelet_loss/{k}": v for k, v in metrics_wavelet.items()}
+            metrics.update(metrics_wavelet)
+
+>>>>>>> Stashed changes
         if weighting is not None:
             loss = loss * weighting
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
@@ -579,13 +668,13 @@ class NetworkTrainer:
             return
 
         if cache_latents:
-            assert (
-                train_dataset_group.is_latent_cacheable()
-            ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
+            assert train_dataset_group.is_latent_cacheable(), (
+                "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
+            )
             if val_dataset_group is not None:
-                assert (
-                    val_dataset_group.is_latent_cacheable()
-                ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
+                assert val_dataset_group.is_latent_cacheable(), (
+                    "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
+                )
 
         self.assert_extra_args(args, train_dataset_group, val_dataset_group)  # may change some args
 
@@ -812,15 +901,15 @@ class NetworkTrainer:
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.full_fp16:
-            assert (
-                args.mixed_precision == "fp16"
-            ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
+            assert args.mixed_precision == "fp16", (
+                "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
+            )
             accelerator.print("enable full fp16 training.")
             network.to(weight_dtype)
         elif args.full_bf16:
-            assert (
-                args.mixed_precision == "bf16"
-            ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            assert args.mixed_precision == "bf16", (
+                "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            )
             accelerator.print("enable full bf16 training.")
             network.to(weight_dtype)
 
@@ -947,7 +1036,7 @@ class NetworkTrainer:
             # save current ecpoch and step
             train_state_file = os.path.join(output_dir, "train_state.json")
             # +1 is needed because the state is saved before current_step is set from global_step
-            logger.info(f"save train state to {train_state_file} at epoch {current_epoch.value} step {current_step.value+1}")
+            logger.info(f"save train state to {train_state_file} at epoch {current_epoch.value} step {current_step.value + 1}")
             with open(train_state_file, "w", encoding="utf-8") as f:
                 json.dump({"current_epoch": current_epoch.value, "current_step": current_step.value + 1}, f)
 
@@ -1066,6 +1155,42 @@ class NetworkTrainer:
             "ss_validate_every_n_epochs": args.validate_every_n_epochs,
             "ss_validate_every_n_steps": args.validate_every_n_steps,
             "ss_resize_interpolation": args.resize_interpolation,
+<<<<<<< Updated upstream
+=======
+            "ss_wavelet_loss": args.wavelet_loss,
+            "ss_wavelet_loss_alpha": args.wavelet_loss_alpha,
+            "ss_wavelet_loss_type": args.wavelet_loss_type,
+            "ss_wavelet_loss_transform": args.wavelet_loss_transform,
+            "ss_wavelet_loss_wavelet": args.wavelet_loss_wavelet,
+            "ss_wavelet_loss_level": args.wavelet_loss_level,
+            "ss_wavelet_loss_band_weights": json.dumps(args.wavelet_loss_band_weights)
+            if args.wavelet_loss_band_weights is not None
+            else None,
+            "ss_wavelet_loss_band_level_weights": json.dumps(args.wavelet_loss_band_level_weights)
+            if args.wavelet_loss_band_weights is not None
+            else None,
+            "ss_wavelet_loss_quaternion_component_weights": json.dumps(args.wavelet_loss_quaternion_component_weights)
+            if args.wavelet_loss_quaternion_component_weights is not None
+            else None,
+            "ss_wavelet_loss_ll_level_threshold": args.wavelet_loss_ll_level_threshold,
+            "ss_wavelet_loss_rectified_flow": args.wavelet_loss_rectified_flow,
+            "ss_wavelet_loss_energy_ratio": args.wavelet_loss_energy_ratio,
+            "ss_wavelet_loss_energy_scale_factor": args.wavelet_loss_energy_scale_factor,
+            "ss_mapo_beta": args.mapo_beta,
+            "ss_cpo_beta": args.cpo_beta,
+            "ss_bpo_beta": args.bpo_beta,
+            "ss_bpo_lambda": args.bpo_lambda,
+            "ss_sdpo_beta": args.sdpo_beta,
+            "ss_ddo_beta": args.ddo_beta,
+            "ss_ddo_alpha": args.ddo_alpha,
+            "ss_dpo_beta": args.beta_dpo,
+            "ss_srpo_beta": args.srpo_beta,
+            "ss_srpo_positive_prompt": args.srpo_positive_prompt,
+            "ss_srpo_negative_prompt": args.srpo_negative_prompt,
+            "ss_srpo_use_inversion":   args.srpo_use_inversion,
+            "ss_srpo_reward_model":    args.srpo_reward_model,
+            "ss_srpo_delta_sigma":     args.srpo_delta_sigma,
+>>>>>>> Stashed changes
         }
 
         self.update_metadata(metadata, args)  # architecture specific metadata
@@ -1163,9 +1288,9 @@ class NetworkTrainer:
             metadata["ss_dataset_dirs"] = json.dumps(dataset_dirs_info)
         else:
             # conserving backward compatibility when using train_dataset_dir and reg_dataset_dir
-            assert (
-                len(train_dataset_group.datasets) == 1
-            ), f"There should be a single dataset but {len(train_dataset_group.datasets)} found. This seems to be a bug. / データセットは1個だけ存在するはずですが、実際には{len(train_dataset_group.datasets)}個でした。プログラムのバグかもしれません。"
+            assert len(train_dataset_group.datasets) == 1, (
+                f"There should be a single dataset but {len(train_dataset_group.datasets)} found. This seems to be a bug. / データセットは1個だけ存在するはずですが、実際には{len(train_dataset_group.datasets)}個でした。プログラムのバグかもしれません。"
+            )
 
             dataset = train_dataset_group.datasets[0]
 
@@ -1254,9 +1379,9 @@ class NetworkTrainer:
                 steps_from_state = None
 
         if initial_step > 0:
-            assert (
-                args.max_train_steps > initial_step
-            ), f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
+            assert args.max_train_steps > initial_step, (
+                f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
+            )
 
         epoch_to_start = 0
         if initial_step > 0:
@@ -1286,6 +1411,50 @@ class NetworkTrainer:
         val_step_loss_recorder = train_util.LossRecorder()
         val_epoch_loss_recorder = train_util.LossRecorder()
 
+<<<<<<< Updated upstream
+=======
+        if args.wavelet_loss:
+            self.wavelet_loss = WaveletLoss(
+                transform_type=args.wavelet_loss_transform,
+                wavelet=args.wavelet_loss_wavelet,
+                level=args.wavelet_loss_level,
+                band_weights=args.wavelet_loss_band_weights,
+                band_level_weights=args.wavelet_loss_band_level_weights,
+                quaternion_component_weights=args.wavelet_loss_quaternion_component_weights,
+                ll_level_threshold=args.wavelet_loss_ll_level_threshold,
+                metrics=args.wavelet_loss_metrics,
+                device=accelerator.device,
+            )
+
+            logger.info("Wavelet Loss:")
+            logger.info(f"\tLevel: {args.wavelet_loss_level}")
+            logger.info(f"\tAlpha: {args.wavelet_loss_alpha}")
+            logger.info(f"\tTransform: {args.wavelet_loss_transform}")
+            logger.info(f"\tWavelet: {args.wavelet_loss_wavelet}")
+            if args.wavelet_loss_ll_level_threshold is not None:
+                logger.info(f"\tLL level threshold: {args.wavelet_loss_ll_level_threshold}")
+            if args.wavelet_loss_band_weights is not None:
+                logger.info(f"\tBand weights: {args.wavelet_loss_band_weights}")
+            if args.wavelet_loss_band_level_weights is not None:
+                logger.info(f"\tBand level weights: {args.wavelet_loss_band_level_weights}")
+            if args.wavelet_loss_quaternion_component_weights is not None:
+                logger.info(f"\tQuaternion component weights: {args.wavelet_loss_quaternion_component_weights}")
+
+        self.po = PreferenceOptimization(args)
+
+        if self.po.is_po():
+            logger.info(f"Preference optimization activated: {self.po.algo}")
+
+        # Initialize reward model for reward-based PO methods (e.g., SRPO)
+        if self.po.is_reward_based():
+            reward_model_name = getattr(args, 'srpo_reward_model', 'clip')
+            logger.info(f"Initializing reward model: {reward_model_name} (on CPU)")
+            self.clip_reward_model = self._init_reward_model(reward_model_name)
+            self.clip_reward_model.accelerator = accelerator
+        else:
+            self.clip_reward_model = None
+
+>>>>>>> Stashed changes
         del train_dataset_group
         if val_dataset_group is not None:
             del val_dataset_group
@@ -1343,7 +1512,7 @@ class NetworkTrainer:
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
             for skip_epoch in range(epoch_to_start):  # skip epochs
-                logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
+                logger.info(f"skipping epoch {skip_epoch + 1} because initial_step (multiplied) is {initial_step}")
                 initial_step -= len(train_dataloader)
             global_step = initial_step
 
@@ -1402,8 +1571,16 @@ class NetworkTrainer:
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
 
+        if args.wavelet_pixel:
+            vae = vae.eval()
+            vae.enable_gradient_checkpointing()
+            vae = accelerator.prepare(vae)
+            print(f"Enable gradient checkpointing {vae.use_gradient_checkpointing}, fp16: {vae.dtype}, accelerate")
+        else:
+            print("WAVELET_PIXEL DISABLED")
+
         for epoch in range(epoch_to_start, num_train_epochs):
-            accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
+            accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
