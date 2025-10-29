@@ -154,7 +154,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
             elif t5xxl.dtype == torch.float8_e4m3fn:
                 logger.info("Loaded fp8 T5XXL model")
 
-        ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
+        ae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors, fp8_scaled=args.fp8_scaled_ae)
 
         model_version = flux_utils.MODEL_VERSION_FLUX_V1 if self.model_type != "chroma" else flux_utils.MODEL_VERSION_CHROMA
         return model_version, [clip_l, t5xxl], ae, model
@@ -529,6 +529,7 @@ def setup_parser() -> argparse.ArgumentParser:
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
+    parser.add_argument("--fp8_scaled_ae", action="store_true", help="Use scaled fp8 for AutoEncoder / AutoEncoderにスケーリングされたfp8を使う")
     parser.add_argument(
         "--split_mode",
         action="store_true",

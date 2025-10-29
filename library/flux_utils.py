@@ -11,7 +11,7 @@ from safetensors.torch import load_file
 from transformers import CLIPConfig, CLIPTextModel, T5Config, T5EncoderModel
 
 from library.fp8_optimization_utils import apply_fp8_monkey_patch
-from library.lora_utils import load_safetensors_with_lora_and_fp8
+from library.lora_utils import load_safetensors_with_lora_and_fp8, load_safetensors_with_fp8_optimization_and_hook
 from library.utils import setup_logging
 
 setup_logging()
@@ -29,6 +29,9 @@ MODEL_VERSION_CHROMA = "chroma"
 
 FP8_OPTIMIZATION_TARGET_KEYS = ["double_blocks", "single_blocks"]
 FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_mod", "norm", "modulation"]
+
+AE_FP8_OPTIMIZATION_TARGET_KEYS = ["encoder", "decoder"]
+AE_FP8_OPTIMIZATION_EXCLUDE_KEYS = ["norm"]
 
 
 def analyze_checkpoint_state(ckpt_path: str) -> Tuple[bool, bool, Tuple[int, int], List[str]]:
@@ -193,7 +196,7 @@ def load_flow_model(
 
 
 def load_ae(
-    ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+    ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False, fp8_scaled=False
 ) -> flux_models.AutoEncoder:
     logger.info("Building AutoEncoder")
     with torch.device("meta"):
@@ -201,7 +204,18 @@ def load_ae(
         ae = flux_models.AutoEncoder(flux_models.configs[MODEL_NAME_DEV].ae_params).to(dtype)
 
     logger.info(f"Loading state dict from {ckpt_path}")
-    sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+    if fp8_scaled:
+        sd = load_safetensors_with_fp8_optimization_and_hook(
+            [ckpt_path],
+            fp8_optimization=True,
+            calc_device=torch.device(device),
+            target_keys=AE_FP8_OPTIMIZATION_TARGET_KEYS,
+            exclude_keys=AE_FP8_OPTIMIZATION_EXCLUDE_KEYS,
+        )
+
+        apply_fp8_monkey_patch(ae, sd, use_scaled_mm=False)
+    else:
+        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
     info = ae.load_state_dict(sd, strict=False, assign=True)
     logger.info(f"Loaded AE: {info}")
     return ae
@@ -455,7 +469,6 @@ def pack_latents(x: torch.Tensor) -> torch.Tensor:
     """
     x = einops.rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
     return x
-
 
 # region Diffusers
 
