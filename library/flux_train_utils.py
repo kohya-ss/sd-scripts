@@ -519,7 +519,9 @@ def apply_cdc_noise_transformation(
     B, C, H, W = noise.shape
 
     # Batch processing: Get CDC data for all samples at once
-    eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(latents_npz_paths, device=device)
+    # Pass latent shape for multi-resolution CDC support
+    latent_shape = (C, H, W)
+    eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(latents_npz_paths, device=device, latent_shape=latent_shape)
     noise_flat = noise.reshape(B, -1)
     noise_cdc_flat = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, noise_flat, t_normalized)
     return noise_cdc_flat.reshape(B, C, H, W)

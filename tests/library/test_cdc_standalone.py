@@ -45,7 +45,8 @@ class TestCDCPreprocessor:
 
         # Verify first CDC file structure
         latents_npz_path = str(tmp_path / "test_image_0_0004x0004_flux.npz")
-        cdc_path = Path(CDCPreprocessor.get_cdc_npz_path(latents_npz_path, preprocessor.config_hash))
+        latent_shape = (16, 4, 4)
+        cdc_path = Path(CDCPreprocessor.get_cdc_npz_path(latents_npz_path, preprocessor.config_hash, latent_shape))
         assert cdc_path.exists()
 
         data = np.load(cdc_path)
@@ -100,10 +101,10 @@ class TestCDCPreprocessor:
 
         # Check shapes are stored in individual files
         cdc_path_0 = CDCPreprocessor.get_cdc_npz_path(
-            str(tmp_path / "test_image_0_0004x0004_flux.npz"), preprocessor.config_hash
+            str(tmp_path / "test_image_0_0004x0004_flux.npz"), preprocessor.config_hash, latent_shape=(16, 4, 4)
         )
         cdc_path_5 = CDCPreprocessor.get_cdc_npz_path(
-            str(tmp_path / "test_image_5_0008x0008_flux.npz"), preprocessor.config_hash
+            str(tmp_path / "test_image_5_0008x0008_flux.npz"), preprocessor.config_hash, latent_shape=(16, 8, 8)
         )
 
         data_0 = np.load(cdc_path_0)
@@ -152,7 +153,8 @@ class TestGammaBDataset:
         gamma_b_dataset = GammaBDataset(device="cpu", config_hash=config_hash)
 
         # Get components for first sample
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([latents_npz_paths[0]], device="cpu")
+        latent_shape = (16, 8, 8)
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt([latents_npz_paths[0]], device="cpu", latent_shape=latent_shape)
 
         # Check shapes
         assert eigvecs.shape[0] == 1  # batch size
@@ -166,7 +168,8 @@ class TestGammaBDataset:
 
         # Get Γ_b for paths [0, 2, 4]
         paths = [latents_npz_paths[0], latents_npz_paths[2], latents_npz_paths[4]]
-        eigenvectors, eigenvalues = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
+        latent_shape = (16, 8, 8)
+        eigenvectors, eigenvalues = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu", latent_shape=latent_shape)
 
         # Check shapes
         assert eigenvectors.shape[0] == 3  # batch
@@ -187,7 +190,8 @@ class TestGammaBDataset:
 
         # Get Γ_b components
         paths = [latents_npz_paths[0], latents_npz_paths[1], latents_npz_paths[2]]
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
+        latent_shape = (16, 8, 8)
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu", latent_shape=latent_shape)
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -204,7 +208,8 @@ class TestGammaBDataset:
 
         # Get Γ_b components
         paths = [latents_npz_paths[1], latents_npz_paths[3]]
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
+        latent_shape = (16, 8, 8)
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu", latent_shape=latent_shape)
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -221,7 +226,8 @@ class TestGammaBDataset:
 
         # Get Γ_b components
         paths = [latents_npz_paths[0], latents_npz_paths[2], latents_npz_paths[4]]
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu")
+        latent_shape = (16, 8, 8)
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths, device="cpu", latent_shape=latent_shape)
 
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, x, t)
 
@@ -269,7 +275,8 @@ class TestCDCEndToEnd:
         paths_batch = [latents_npz_paths[0], latents_npz_paths[5], latents_npz_paths[9]]
 
         # Get Γ_b components
-        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths_batch, device="cpu")
+        latent_shape = (16, 4, 4)
+        eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(paths_batch, device="cpu", latent_shape=latent_shape)
 
         # Compute geometry-aware noise
         sigma_t_x = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, batch_latents_flat, batch_t)
