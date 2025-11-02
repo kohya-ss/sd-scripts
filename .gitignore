@@ -6,3 +6,4 @@ venv
 build
 .vscode
 wandb
+analyze_lora_result
