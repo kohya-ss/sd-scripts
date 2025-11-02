@@ -15,7 +15,7 @@
 | `--network_te_train_targets`,<br>`--text_encoder_lr1`,<br>`--text_encoder_lr2` | `None` | SDXLの2系統Text EncoderのLoRA学習対象と学習率を個別に制御。未指定時は従来通り両方を同じ学習率で更新。 | 詳細は [docs/sdxl_lora_te_options-ja.md](docs/sdxl_lora_te_options-ja.md) を参照。|
 | `--skip_grad_norm` | ― | 直近 *N = 200* step の **勾配 L2 ノルムの移動平均 + 2.5σ** を動的しきい値とし、超過 step の更新をスキップ。NaN/Inf も既定でスキップ。 | 破綻防止・fp16 の安定化補助。しきい値は `--skip_grad_norm_max` で上限可。|
 | `--skip_grad_norm_max` | 無制限 | `--skip_grad_norm` が計算する動的しきい値の**上限キャップ**。 | 例: `--skip_grad_norm_max 200000` |
-| `--grad_norm_log` | 無効 | 100 step ごとに **(epoch, step, norm, threshold, loss, ThreshOff)** を `gradient_logs+<LoRA名>.txt` へ追記。<br>ThreshOffは、0=閾値有効, 1=閾値がNaNで無効, 2=閾値が`--idle_free_phase`で無効 | スキップを *OFF* にすれば純ログモード。 |
+| `--grad_norm_log` | 無効 | 100 step ごとに **(epoch, step, norm, threshold, loss, ThreshOff)** を `--output_dir/gradient_logs+<LoRA名>.txt` へ追記。<br>ThreshOffは、0=閾値有効, 1=閾値がNaNで無効, 2=閾値が`--idle_free_phase`で無効 | スキップを *OFF* にすれば純ログモード。 |
 | `--grad_cosine_log` | 無効 | 直前 step との **勾配コサイン類似度** を `grad_norm_log` に追加。 | 経路探索の可視化用。 |
 | `--nan_to_window`, `--inf_to_window` | `False` | NaN / Inf を移動平均窓に**含める／含めない**を切替。含めると *threshold* が NaN となり、窓サイズ分だけスキップ判定が無効化＝“ブレーキ解除”。 | fp16 で意図的にスパイクを許容したい実験用。 |
 | `--skip_nan_immediate`, `--skip_inf_immediate`<br>`--no-skip_nan_immediate`, `--no-skip_inf_immediate` | `True` | NaN / Inf が出た step を **無条件でスキップするかどうか**。スキップしない場合は GradScaler に値が渡るため、fp16 で scale 自動調整が効く。 | |

@@ -1226,7 +1226,8 @@ class NetworkTrainer:
         grad_norm_guardian: Optional[GradNormGuardian] = None
         if use_grad_norm:
             model_name = train_util.default_if_none(args.output_name, train_util.DEFAULT_LAST_OUTPUT_NAME)
-            log_file_path = f"gradient_logs+{model_name}.txt"
+            os.makedirs(args.output_dir, exist_ok=True)
+            log_file_path = os.path.join(args.output_dir, f"gradient_logs+{model_name}.txt")
             guardian_config = GradNormGuardianConfig(
                 skip_grad_norm=skip_grad_norm,
                 log_grad_norm=log_grad_norm,

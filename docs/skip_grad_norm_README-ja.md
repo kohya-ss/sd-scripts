@@ -17,7 +17,7 @@
 ## 動的しきい値と関連オプション
 - **基本式**: `threshold = mean(window) + 2.5 * std(window)`（窓サイズ 200）。値は `numpy` 計算で、NaN が混入すると式全体が NaN になり、後続の比較は `False` 扱い。
 - **`--skip_grad_norm_max <float>`**: 動的しきい値の絶対上限。設定しない場合は無制限。`--auto_cap_release` が無効でも、窓が埋まる前は常に 200000 を使用する点に注意。
-- **`--grad_norm_log`**: `gradient_logs+<output_name>.txt` に CSV 形式で `Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff[,Scale][,CosineSim]` を出力。100 ステップごとに追記。`ThreshOff=1` は NaN 阻害、`2` は idle free フェーズを示す。
+- **`--grad_norm_log`**: `--output_dir/gradient_logs+<output_name>.txt` に CSV 形式で `Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff[,Scale][,CosineSim]` を出力。100 ステップごとに追記。`ThreshOff=1` は NaN 阻害、`2` は idle free フェーズを示す。
 - **`--grad_cosine_log`**: `--grad_norm_log` 併用時に有効。前ステップの勾配テンソルを複製保持し、コサイン類似度を計算・出力する。保持コストが掛かるが挙動には影響しない。
 - **GradScaler との関係**: スケール適用前の勾配に切り替えると学習結果が変わったため、仕様として「スケール適用済みの勾配ノルムで平均を作る」ことを前提にしている。スケールが変動した瞬間は窓の平均が追随するまでスキップ判定が遅れる。
 
@@ -44,7 +44,7 @@
 - fp16 前提で GradScaler に依存しているため、bf16 や fp32 では効果が薄い／挙動が変わる可能性が高い。
 
 ## ログファイルの読み方
-- ファイル名: `gradient_logs+<出力モデル名>.txt`（`--output_name` 未指定時は `last`）。
+- ファイル名: `--output_dir/gradient_logs+<出力モデル名>.txt`（`--output_name` 未指定時は `last`）。
 - 主な列:
   - `Gradient Norm`: そのステップの L2 ノルム（スケール適用済み）。
   - `Threshold`: 動的しきい値（NaN の場合は空欄になる）。
@@ -56,4 +56,3 @@
 - `skip_grad_norm` をオフにしても `--grad_norm_log` だけでログ記録が可能。その場合はステップスキップは一切行われない。
 - `--nan_to_window` で窓に NaN を入れると移動平均が NaN のまま残るが、窓から押し出されるまで自動で回復する。強制的にリセットする仕組みはない。
 - `idle_free_phase` 系オプションが残っているが、LoRA SDXL 学習では未調整のままであり、通常は無効化のまま使用することを想定している。
-
