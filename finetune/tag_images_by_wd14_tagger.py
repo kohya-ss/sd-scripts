@@ -303,6 +303,7 @@ def main(args):
                 "Meta",
                 "Model",
                 "Quality",
+                "Artist",
             ], f"unexpected category: {category}"
 
             if args.remove_underscore:
@@ -412,6 +413,7 @@ def main(args):
                     args.copyright_threshold,
                     args.meta_threshold,
                     args.model_threshold,
+                    args.artist_threshold,
                 )
                 prob_indices = np.where(prob >= min_thres)[0]
                 # for i, p in enumerate(prob):
@@ -454,6 +456,7 @@ def main(args):
                         (category == "Copyright" and p >= args.copyright_threshold)
                         or (category == "Meta" and p >= args.meta_threshold)
                         or (category == "Model" and p >= args.model_threshold)
+                        or (category == "Artist" and p >= args.artist_threshold)
                     ):
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
                         other_tag_text += f"{caption_separator}{tag_name} ({category})"
@@ -676,6 +679,13 @@ def setup_parser() -> argparse.ArgumentParser:
         " / copyrightカテゴリのタグを追加するための確信度の閾値、省略時は --thresh と同じ。1以上にするとcopyrightタグを無効化できる",
     )
     parser.add_argument(
+        "--artist_threshold",
+        type=float,
+        default=None,
+        help="threshold of confidence to add a tag for artist category, same as --thresh if omitted. set above 1 to disable artist tags"
+        " / artistカテゴリのタグを追加するための確信度の閾値、省略時は --thresh と同じ。1以上にするとartistタグを無効化できる",
+    )
+    parser.add_argument(
         "--recursive", action="store_true", help="search for images in subfolders recursively / サブフォルダを再帰的に検索する"
     )
     parser.add_argument(
@@ -771,5 +781,7 @@ if __name__ == "__main__":
         args.model_threshold = args.thresh
     if args.copyright_threshold is None:
         args.copyright_threshold = args.thresh
+    if args.artist_threshold is None:
+        args.artist_threshold = args.thresh
 
     main(args)
