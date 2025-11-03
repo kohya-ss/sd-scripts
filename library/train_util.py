@@ -2851,9 +2851,39 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
                     # If latents_npz not set, we can't check for CDC cache
                     continue
 
-                cdc_path = CDCPreprocessor.get_cdc_npz_path(info.latents_npz, config_hash)
+                # Compute expected latent shape from bucket_reso
+                # For multi-resolution CDC, we need to pass latent_shape to get the correct filename
+                latent_shape = None
+                if info.bucket_reso is not None:
+                    # Get latent shape efficiently without loading full data
+                    # First check if latent is already in memory
+                    if info.latents is not None:
+                        latent_shape = info.latents.shape
+                    else:
+                        # Load latent shape from npz file metadata
+                        # This is faster than loading the full latent data
+                        try:
+                            import numpy as np
+                            with np.load(info.latents_npz) as data:
+                                # Find the key for this bucket resolution
+                                # Multi-resolution format uses keys like "latents_104x80"
+                                h, w = info.bucket_reso[1] // 8, info.bucket_reso[0] // 8
+                                key = f"latents_{h}x{w}"
+                                if key in data:
+                                    latent_shape = data[key].shape
+                                elif 'latents' in data:
+                                    # Fallback for single-resolution cache
+                                    latent_shape = data['latents'].shape
+                        except Exception as e:
+                            logger.debug(f"Failed to read latent shape from {info.latents_npz}: {e}")
+                            # Fall back to checking without shape (backward compatibility)
+                            latent_shape = None
+
+                cdc_path = CDCPreprocessor.get_cdc_npz_path(info.latents_npz, config_hash, latent_shape)
                 if not Path(cdc_path).exists():
                     missing_count += 1
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Missing CDC cache: {cdc_path}")
 
         if missing_count > 0:
             logger.info(f"Found {missing_count}/{total_count} missing CDC cache files")
