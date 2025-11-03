@@ -525,20 +525,23 @@ class NetworkTrainer:
 
         resume_step = self._te_lr_after_resume_step
         threshold = cfg.get("threshold_step")
+        completed_step = None
+        if resume_step is not None:
+            completed_step = max(0, resume_step - 1)
         if (
             self._te_lr_after_resumed
-            and resume_step is not None
+            and completed_step is not None
             and threshold is not None
-            and resume_step > threshold
+            and completed_step > threshold
         ):
             cfg["applied"] = True
-            cfg["applied_step"] = resume_step
+            cfg["applied_step"] = completed_step
             logger.info(
-                "te_lr_after: resume step %d exceeded threshold %d; assuming multiplier already applied / "
-                "te_lr_after: 再開ステップ %d がしきい値 %d を超えているため、倍率適用済みと見なします",
-                resume_step,
+                "te_lr_after: last completed step %d exceeded threshold %d; assuming multiplier already applied / "
+                "te_lr_after: 再開時点の完了ステップ %d がしきい値 %d を超えているため、倍率適用済みと見なします",
+                completed_step,
                 threshold,
-                resume_step,
+                completed_step,
                 threshold,
             )
     def assert_extra_args(self, args, train_dataset_group):
