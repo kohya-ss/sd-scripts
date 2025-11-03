@@ -250,6 +250,10 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self._te_lr_after_cfg = None
+        self._te_lr_after_resume_state = None
+        self._te_lr_after_resumed = False
+        self._te_lr_after_resume_step = None
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -294,6 +298,249 @@ class NetworkTrainer:
 
         return logs
 
+    def _parse_te_lr_after_option(self, raw_option):
+        if raw_option is None:
+            return None
+
+        def _flatten(value):
+            if isinstance(value, (list, tuple)):
+                for v in value:
+                    yield from _flatten(v)
+            else:
+                yield value
+
+        tokens: List[str] = []
+        for item in _flatten(raw_option):
+            if isinstance(item, str):
+                pieces = item.replace(",", " ").split()
+                tokens.extend(pieces)
+            else:
+                tokens.append(str(item))
+
+        if len(tokens) not in (2, 3):
+            raise ValueError(
+                "--te-lr-after expects 2 or 3 values: <ratio> <multiplier> [target(both|te1|te2)] / "
+                "--te-lr-after には <割合> <倍率> [対象(both|te1|te2)] を指定してください"
+            )
+
+        try:
+            ratio = float(tokens[0])
+            multiplier = float(tokens[1])
+        except ValueError as exc:
+            raise ValueError(
+                "failed to parse --te-lr-after values as numbers / --te-lr-after の値を数値として解釈できませんでした"
+            ) from exc
+
+        if ratio < 0.0 or ratio > 1.0:
+            raise ValueError(
+                "--te-lr-after ratio must be between 0 and 1 / --te-lr-after の割合は0〜1の範囲で指定してください"
+            )
+        target_key = tokens[2].lower() if len(tokens) == 3 else "both"
+        target_map = {
+            "both": {0, 1},
+            "all": {0, 1},
+            "te": {0, 1},
+            "te12": {0, 1},
+            "12": {0, 1},
+            "te1": {0},
+            "1": {0},
+            "te2": {1},
+            "2": {1},
+        }
+        if target_key not in target_map:
+            raise ValueError(
+                f"unsupported --te-lr-after target '{target_key}' (use both|te1|te2) / "
+                f"--te-lr-after の対象 '{target_key}' は未対応です（both|te1|te2 を使用してください）"
+            )
+
+        return {
+            "ratio": ratio,
+            "mult": multiplier,
+            "target_indices": set(target_map[target_key]),
+            "target_label": target_key,
+            "threshold_step": None,
+            "group_indices": None,
+            "group_labels": [],
+            "applied": False,
+            "applied_step": None,
+        }
+
+    @staticmethod
+    def _te_group_matches_description(description: str, te_index: int) -> bool:
+        if not description:
+            return False
+        base = description.split()[0]
+        if not base.startswith("textencoder"):
+            return False
+        suffix = base[len("textencoder") :]
+        if not suffix:
+            return te_index == 0
+        digits = "".join(ch for ch in suffix if ch.isdigit())
+        if not digits:
+            return False
+        try:
+            return int(digits) - 1 == te_index
+        except ValueError:
+            return False
+
+    def _get_param_group_lr(self, optimizer, group_idx: int):
+        stack = [optimizer]
+        visited = set()
+        while stack:
+            opt = stack.pop()
+            if opt is None:
+                continue
+            if id(opt) in visited:
+                continue
+            visited.add(id(opt))
+            param_groups = getattr(opt, "param_groups", None)
+            if param_groups is not None and len(param_groups) > group_idx:
+                return param_groups[group_idx].get("lr")
+            if hasattr(opt, "optimizer"):
+                stack.append(getattr(opt, "optimizer"))
+            if hasattr(opt, "optimizers"):
+                inners = getattr(opt, "optimizers")
+                if inners:
+                    stack.extend(inners)
+        return None
+
+    def _update_optimizer_group_lr(self, optimizer, group_idx: int, new_lr: float):
+        if optimizer is None:
+            return
+        stack = [optimizer]
+        visited = set()
+        while stack:
+            opt = stack.pop()
+            if opt is None:
+                continue
+            if id(opt) in visited:
+                continue
+            visited.add(id(opt))
+            param_groups = getattr(opt, "param_groups", None)
+            if param_groups is not None and len(param_groups) > group_idx:
+                group = param_groups[group_idx]
+                group["lr"] = new_lr
+                if "initial_lr" in group:
+                    group["initial_lr"] = new_lr
+            if hasattr(opt, "optimizer"):
+                stack.append(getattr(opt, "optimizer"))
+            if hasattr(opt, "optimizers"):
+                inners = getattr(opt, "optimizers")
+                if inners:
+                    stack.extend(inners)
+
+    def _iter_schedulers(self, scheduler):
+        stack = [scheduler]
+        visited = set()
+        while stack:
+            sched = stack.pop()
+            if sched is None:
+                continue
+            if id(sched) in visited:
+                continue
+            visited.add(id(sched))
+            yield sched
+            for attr in ("scheduler", "_scheduler", "lr_scheduler"):
+                if hasattr(sched, attr):
+                    stack.append(getattr(sched, attr))
+            if hasattr(sched, "schedulers"):
+                nested = getattr(sched, "schedulers")
+                if nested:
+                    stack.extend(nested)
+
+    def _update_scheduler_state_after_lr_change(self, lr_scheduler, group_idx: int, multiplier: float, new_lr: float):
+        if lr_scheduler is None:
+            return
+        for sched in self._iter_schedulers(lr_scheduler):
+            base_lrs = getattr(sched, "base_lrs", None)
+            if base_lrs is not None and len(base_lrs) > group_idx:
+                base_lrs[group_idx] *= multiplier
+            last_lr = getattr(sched, "_last_lr", None)
+            if last_lr is not None and len(last_lr) > group_idx:
+                last_lr[group_idx] = new_lr
+            elif hasattr(sched, "last_lr") and isinstance(getattr(sched, "last_lr"), list):
+                lr_list = getattr(sched, "last_lr")
+                if len(lr_list) > group_idx:
+                    lr_list[group_idx] = new_lr
+            if hasattr(sched, "optimizers"):
+                optimizers = getattr(sched, "optimizers")
+                if optimizers:
+                    for opt in optimizers:
+                        self._update_optimizer_group_lr(opt, group_idx, new_lr)
+            elif hasattr(sched, "optimizer"):
+                self._update_optimizer_group_lr(getattr(sched, "optimizer"), group_idx, new_lr)
+
+    def _apply_te_lr_after_if_ready(self, optimizer, lr_scheduler, next_step_idx: int):
+        cfg = self._te_lr_after_cfg
+        if (
+            cfg is None
+            or cfg.get("applied")
+            or cfg.get("threshold_step") is None
+            or cfg.get("group_indices") is None
+        ):
+            return
+
+        if next_step_idx <= cfg["threshold_step"]:
+            return
+
+        multiplier = cfg["mult"]
+        for group_idx in cfg["group_indices"]:
+            current_lr = self._get_param_group_lr(optimizer, group_idx)
+            if current_lr is None:
+                continue
+            new_lr = current_lr * multiplier
+            self._update_optimizer_group_lr(optimizer, group_idx, new_lr)
+            self._update_scheduler_state_after_lr_change(lr_scheduler, group_idx, multiplier, new_lr)
+
+        cfg["applied"] = True
+        cfg["applied_step"] = next_step_idx
+        target_desc = cfg.get("group_labels") or [f"TE{idx + 1}" for idx in sorted(cfg["target_indices"])]
+        logger.info(
+            "applied te_lr_after at step %d: scaled %s lr by %.6f / te_lr_after: ステップ%d超で %s の学習率に倍率%.6fを適用しました",
+            next_step_idx,
+            ", ".join(target_desc),
+            multiplier,
+            next_step_idx,
+            ", ".join(target_desc),
+            multiplier,
+        )
+
+    def _handle_te_lr_after_resume(self):
+        cfg = self._te_lr_after_cfg
+        if not cfg:
+            return
+
+        resume_state = self._te_lr_after_resume_state
+        if resume_state is not None:
+            applied = bool(resume_state.get("applied", False))
+            cfg["applied"] = applied
+            cfg["applied_step"] = resume_state.get("applied_step")
+            if applied:
+                logger.info(
+                    "te_lr_after: restored applied state from checkpoint (step=%s) / te_lr_after: チェックポイントから適用済み状態を復元しました (ステップ=%s)",
+                    cfg["applied_step"],
+                    cfg["applied_step"],
+                )
+            return
+
+        resume_step = self._te_lr_after_resume_step
+        threshold = cfg.get("threshold_step")
+        if (
+            self._te_lr_after_resumed
+            and resume_step is not None
+            and threshold is not None
+            and resume_step > threshold
+        ):
+            cfg["applied"] = True
+            cfg["applied_step"] = resume_step
+            logger.info(
+                "te_lr_after: resume step %d exceeded threshold %d; assuming multiplier already applied / "
+                "te_lr_after: 再開ステップ %d がしきい値 %d を超えているため、倍率適用済みと見なします",
+                resume_step,
+                threshold,
+                resume_step,
+                threshold,
+            )
     def assert_extra_args(self, args, train_dataset_group):
         train_dataset_group.verify_bucket_reso_steps(64)
 
@@ -339,6 +586,12 @@ class NetworkTrainer:
         training_started_at = time.time()
         train_util.verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
+
+        # reset te-lr-after resume tracking state for each training run
+        self._te_lr_after_resume_state = None
+        self._te_lr_after_resumed = False
+        self._te_lr_after_resume_step = None
+
         deepspeed_utils.prepare_deepspeed_args(args)
         setup_logging(args, reset=True)
         logger.info(
@@ -350,6 +603,13 @@ class NetworkTrainer:
                 f"lora rounding: step={args.round_lora_step}, mode={args.round_lora_mode}, "
                 f"every={args.round_lora_every}, begin={args.round_lora_begin}"
             )
+
+        self._te_lr_after_cfg = None
+        try:
+            self._te_lr_after_cfg = self._parse_te_lr_after_option(getattr(args, "te_lr_after", None))
+        except ValueError as exc:
+            logger.error(str(exc))
+            raise
         # parse bits schedule if provided
         def _parse_bits_sched(spec: str):
             items = []
@@ -557,6 +817,12 @@ class NetworkTrainer:
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
 
+        if self._te_lr_after_cfg and not train_text_encoder:
+            logger.warning(
+                "ignore te_lr_after because text encoder training is disabled / Text Encoderを学習しないため te_lr_after は無視されます"
+            )
+            self._te_lr_after_cfg = None
+
         num_text_encoders = len(text_encoders)
         te_selection_indices: List[int] = []
         te_targets_for_network: Optional[List[int]] = None
@@ -603,6 +869,16 @@ class NetworkTrainer:
             network.set_te_train_targets(te_targets_for_network)
 
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
+
+        if self._te_lr_after_cfg:
+            active_targets = {idx for idx in self._te_lr_after_cfg["target_indices"] if idx in te_selection_indices}
+            if not active_targets:
+                logger.warning(
+                    "ignore te_lr_after because the specified text encoder target(s) are not selected / 指定されたText Encoderが学習対象外のため te_lr_after は無視されます"
+                )
+                self._te_lr_after_cfg = None
+            else:
+                self._te_lr_after_cfg["target_indices"] = active_targets
 
         # Configure LoRA delta fake-quantization if available
         if (((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step) or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched) and hasattr(network, "set_delta_fake_quant")):
@@ -703,6 +979,40 @@ class NetworkTrainer:
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
+        if self._te_lr_after_cfg:
+            if lr_descriptions is None:
+                logger.warning(
+                    "te_lr_after requires optimizer group descriptions; disabling option / te_lr_after を利用するには学習率グループの情報が必要なため無効化します"
+                )
+                self._te_lr_after_cfg = None
+            else:
+                te_group_indices: List[int] = []
+                missing_targets: List[int] = []
+                for te_idx in sorted(self._te_lr_after_cfg["target_indices"]):
+                    matches = [
+                        idx for idx, desc in enumerate(lr_descriptions) if self._te_group_matches_description(desc, te_idx)
+                    ]
+                    if not matches:
+                        missing_targets.append(te_idx)
+                    else:
+                        te_group_indices.extend(matches)
+                if missing_targets:
+                    target_names = ", ".join(f"TE{idx + 1}" for idx in missing_targets)
+                    logger.warning(
+                        "te_lr_after: targets %s have no optimizer groups; they will be skipped / te_lr_after: 対象 %s に対応するパラメーターグループが見つからなかったためスキップします",
+                        target_names,
+                        target_names,
+                    )
+                te_group_indices = sorted(set(te_group_indices))
+                if not te_group_indices:
+                    logger.warning(
+                        "te_lr_after: no applicable text encoder parameter groups detected; disabling option / te_lr_after: 対応するText Encoderパラメーターが見つからなかったため無効化します"
+                    )
+                    self._te_lr_after_cfg = None
+                else:
+                    self._te_lr_after_cfg["group_indices"] = te_group_indices
+                    self._te_lr_after_cfg["group_labels"] = [lr_descriptions[i] for i in te_group_indices]
+
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
@@ -724,6 +1034,42 @@ class NetworkTrainer:
             accelerator.print(
                 f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
             )
+
+        if self._te_lr_after_cfg:
+            total_steps = args.max_train_steps
+            if total_steps is None or total_steps <= 0:
+                logger.warning(
+                    "disable te_lr_after because max_train_steps is not a positive number / max_train_steps が正の値ではないため te_lr_after は無効化されます"
+                )
+                self._te_lr_after_cfg = None
+            else:
+                threshold = math.floor(total_steps * self._te_lr_after_cfg["ratio"])
+                self._te_lr_after_cfg["threshold_step"] = threshold
+                labels = self._te_lr_after_cfg.get("group_labels")
+                if not labels:
+                    labels = [f"TE{idx + 1}" for idx in sorted(self._te_lr_after_cfg.get("target_indices", []))]
+                mult = self._te_lr_after_cfg["mult"]
+                ratio = self._te_lr_after_cfg["ratio"]
+                self._handle_te_lr_after_resume()
+                status = "applied" if self._te_lr_after_cfg.get("applied") else "pending"
+                applied_step = self._te_lr_after_cfg.get("applied_step")
+                status_detail = f"{status}"
+                if applied_step is not None:
+                    status_detail += f" (step={applied_step})"
+                logger.info(
+                    "te_lr_after ready (%s): scale %s lr by %.6f after step > %d (ratio=%.4f) / "
+                    "te_lr_after: 状態=%s。ステップ%d超で %s の学習率に倍率%.6f (割合=%.4f) を適用します",
+                    status_detail,
+                    ", ".join(labels),
+                    mult,
+                    threshold,
+                    ratio,
+                    status_detail,
+                    threshold,
+                    ", ".join(labels),
+                    mult,
+                    ratio,
+                )
 
         # データセット側にも学習ステップを送信
         train_dataset_group.set_max_train_steps(args.max_train_steps)
@@ -845,8 +1191,18 @@ class NetworkTrainer:
             train_state_file = os.path.join(output_dir, "train_state.json")
             # +1 is needed because the state is saved before current_step is set from global_step
             logger.info(f"save train state to {train_state_file} at epoch {current_epoch.value} step {current_step.value+1}")
+            train_state = {
+                "current_epoch": current_epoch.value,
+                "current_step": current_step.value + 1,
+            }
+            if self._te_lr_after_cfg:
+                train_state["te_lr_after"] = {
+                    "applied": bool(self._te_lr_after_cfg.get("applied", False)),
+                    "applied_step": self._te_lr_after_cfg.get("applied_step"),
+                    "threshold_step": self._te_lr_after_cfg.get("threshold_step"),
+                }
             with open(train_state_file, "w", encoding="utf-8") as f:
-                json.dump({"current_epoch": current_epoch.value, "current_step": current_step.value + 1}, f)
+                json.dump(train_state, f)
 
         steps_from_state = None
 
@@ -866,8 +1222,18 @@ class NetworkTrainer:
             if os.path.exists(train_state_file):
                 with open(train_state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                steps_from_state = data["current_step"]
+                step_value = data.get("current_step")
+                try:
+                    steps_from_state_local = int(step_value) if step_value is not None else None
+                except (TypeError, ValueError):
+                    steps_from_state_local = None
+                steps_from_state = steps_from_state_local
+                self._te_lr_after_resumed = True
+                self._te_lr_after_resume_state = data.get("te_lr_after")
+                self._te_lr_after_resume_step = steps_from_state_local
                 logger.info(f"load train state from {train_state_file}: {data}")
+            elif getattr(args, "resume", False):
+                self._te_lr_after_resumed = True
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1475,6 +1841,7 @@ class NetworkTrainer:
 
                         optimizer.step()
                         lr_scheduler.step()
+                        self._apply_te_lr_after_if_ready(optimizer, lr_scheduler, global_step + 1)
                         optimizer.zero_grad(set_to_none=True)
 
                         # Optional: quantize/round LoRA trainable parameters after each optimizer step
@@ -1683,6 +2050,18 @@ def setup_parser() -> argparse.ArgumentParser:
         choices=["te1", "te2"],
         default=None,
         help="LoRA targets to train in SDXL text encoders (te1=ViT-L, te2=BiG-G). Omit to train both / SDXLのText Encoderで学習するLoRA対象 (te1=ViT-L, te2=BiG-G)。未指定時は両方を学習",
+    )
+    parser.add_argument(
+        "--te-lr-after",
+        nargs="+",
+        default=None,
+        metavar=("RATIO", "MULT", "TARGET"),
+        help=(
+            "Apply a learning rate multiplier to text encoder(s) once training progress exceeds the specified ratio "
+            "(single-step change). Provide ratio (0-1), multiplier, and optional target (both|te1|te2). / "
+            "総ステップ数に対する割合を超えたタイミングでText Encoderの学習率に倍率を一度だけ適用します。"
+            "指定は <割合> <倍率> [対象(both|te1|te2)] です。"
+        ),
     )
 
     parser.add_argument(
