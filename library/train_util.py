@@ -2736,6 +2736,29 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         """
         from pathlib import Path
 
+        # Validate that latent caching is enabled
+        # CDC requires latents to be cached (either to disk or in memory) because:
+        # 1. CDC files are named based on latent cache filenames
+        # 2. CDC files are saved next to latent cache files
+        # 3. Training needs latent paths to load corresponding CDC files
+        has_cached_latents = False
+        for dataset in self.datasets:
+            for info in dataset.image_data.values():
+                if info.latents is not None or info.latents_npz is not None:
+                    has_cached_latents = True
+                    break
+            if has_cached_latents:
+                break
+
+        if not has_cached_latents:
+            raise ValueError(
+                "CDC-FM requires latent caching to be enabled. "
+                "Please enable latent caching by setting one of:\n"
+                "  - cache_latents = true (cache in memory)\n"
+                "  - cache_latents_to_disk = true (cache to disk)\n"
+                "in your training config or command line arguments."
+            )
+
         # Collect dataset/subset directories for config hash
         dataset_dirs = []
         for dataset in self.datasets:
