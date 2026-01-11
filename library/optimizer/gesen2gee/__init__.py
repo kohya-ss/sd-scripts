@@ -1,0 +1,2 @@
+from .automagic_cameamp import Automagic_CameAMP
+from .automagic_cameamp import Automagic_CameAMP8bit

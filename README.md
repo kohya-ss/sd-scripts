@@ -1,10 +1,18 @@
 # Custom trainer dedicated for AstolfoXL #
 
+### Base content (250308) ###
+
 - Rewritten `sdxl_train.py` to gather many features from stalled PR and exclusively in other scripts. [The PR](https://github.com/kohya-ss/sd-scripts/pull/1950/). 
 
 - Many added features are *obvious and fundamental* for large scale finetuning: Multi node multi GPU (scalable k8s scripts not included), resume from steps, and common enhancing techniques.
 
 - Code has been refractored as `train_native.py`, which would replace `fine_tune.py` which matches the code pattern from `train_network.py`. *However there are many arch specific problem to be solved.* 
+
+### gesen2gee's "automagic" optimizer ###
+
+- Ported from [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit/issues/237).
+
+- Later developed as "SinkGD" in [hinablue/sd-scripts](https://github.com/hinablue/sd-scripts/blob/lora-train/library/automagic_sinkgd.py).
 
 ------
 
