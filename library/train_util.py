@@ -12,9 +12,8 @@ import pathlib
 import re
 import shutil
 import time
-import typing
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
+from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState, DataLoaderConfiguration
 import glob
 import math
 import os
@@ -208,6 +207,19 @@ class ImageInfo:
 
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
         self.resize_interpolation: Optional[str] = None
+
+    @staticmethod
+    def _pin_tensor(tensor):
+        return tensor.pin_memory() if tensor is not None else tensor
+
+    def pin_memory(self):
+        self.latents = self._pin_tensor(self.latents)
+        self.latents_flipped = self._pin_tensor(self.latents_flipped)
+        self.text_encoder_outputs1 = self._pin_tensor(self.text_encoder_outputs1)
+        self.text_encoder_outputs2 = self._pin_tensor(self.text_encoder_outputs2)
+        self.text_encoder_pool2 = self._pin_tensor(self.text_encoder_pool2)
+        self.alpha_mask = self._pin_tensor(self.alpha_mask)
+        return self
 
 
 class BucketManager:
@@ -2181,6 +2193,11 @@ class DreamBoothDataset(BaseDataset):
 
         self.num_reg_images = num_reg_images
 
+    def pin_memory(self):
+        for key in self.image_data.keys():
+            if hasattr(self.image_data[key], 'pin_memory') and callable(self.image_data[key].pin_memory):
+                self.image_data[key].pin_memory()
+
 
 class FineTuningDataset(BaseDataset):
     def __init__(
@@ -4005,6 +4022,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         action="store_true",
         help="persistent DataLoader workers (useful for reduce time gap between epoch, but may use more memory) / DataLoader のワーカーを持続させる (エポック間の時間差を少なくするのに有効だが、より多くのメモリを消費する可能性がある)",
     )
+    parser.add_argument(
+        "--pin_memory",
+        action="store_true",
+        help="Pin memory for faster GPU loading / GPU の読み込みを高速化するためのピンメモリ",
+    )
     parser.add_argument("--seed", type=int, default=None, help="random seed for training / 学習時の乱数のseed")
     parser.add_argument(
         "--gradient_checkpointing", action="store_true", help="enable gradient checkpointing / gradient checkpointingを有効にする"
@@ -5529,6 +5551,8 @@ def prepare_accelerator(args: argparse.Namespace):
     kwargs_handlers = [i for i in kwargs_handlers if i is not None]
     deepspeed_plugin = deepspeed_utils.prepare_deepspeed_plugin(args)
 
+    dataloader_config = DataLoaderConfiguration(non_blocking=args.pin_memory)
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -5537,6 +5561,7 @@ def prepare_accelerator(args: argparse.Namespace):
         kwargs_handlers=kwargs_handlers,
         dynamo_backend=dynamo_backend,
         deepspeed_plugin=deepspeed_plugin,
+        dataloader_config=dataloader_config
     )
     print("accelerator device:", accelerator.device)
     return accelerator
@@ -6699,6 +6724,10 @@ class collator_class:
         dataset.set_current_epoch(self.current_epoch.value)
         dataset.set_current_step(self.current_step.value)
         return examples[0]
+
+    def pin_memory(self):
+        if hasattr(self, 'pin_memory') and callable(self.pin_memory):
+            self.dataset.pin_memory()
 
 
 class LossRecorder:
