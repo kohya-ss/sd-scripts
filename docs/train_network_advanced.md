@@ -100,8 +100,32 @@ Basic options are common with `train_network.py`.
 
 *   `--sample_every_n_steps=N` / `--sample_every_n_epochs=N`: Generates sample images every N steps/epochs.
 *   `--sample_at_first`: Generates sample images before training starts.
-*   `--sample_prompts=\"<prompt file>\"`: Specifies a file (`.txt`, `.toml`, `.json`) containing prompts for sample image generation. Format follows [gen_img_diffusers.py](gen_img_diffusers.py). See [documentation](gen_img_README-ja.md) for details.
+*   `--sample_prompts=\"<prompt file>\"`: Specifies a file (`.txt`, `.toml`, `.json`) containing prompts for sample image generation. 
 *   `--sample_sampler=\"...\"`: Specifies the sampler (scheduler) for sample image generation. `euler_a`, `dpm++_2m_karras`, etc., are common. See `--help` for choices.
+
+#### Format of Prompt File
+
+A prompt file can contain multiple prompts with options, for example:
+
+```
+# prompt 1
+masterpiece, best quality, (1girl), in white shirts, upper body, looking at viewer, simple background --n low quality, worst quality, bad anatomy,bad composition, poor, low effort --w 768 --h 768 --d 1 --l 7.5 --s 28
+
+# prompt 2
+masterpiece, best quality, 1boy, in business suit, standing at street, looking back --n (low quality, worst quality), bad anatomy,bad composition, poor, low effort --w 576 --h 832 --d 2 --l 5.5 --s 40
+```
+
+  Lines beginning with `#` are comments. You can specify options for the generated image with options like `--n` after the prompt. The following can be used.
+
+  * `--n` Negative prompt up to the next option. Ignored when CFG scale is `1.0`.
+  * `--w` Specifies the width of the generated image.
+  * `--h` Specifies the height of the generated image.
+  * `--d` Specifies the seed of the generated image.
+  * `--l` Specifies the CFG scale of the generated image. For FLUX.1 models, the default is `1.0`, which means no CFG. For Chroma models, set to around `4.0` to enable CFG.
+  * `--g` Specifies the embedded guidance scale for the models with embedded guidance (FLUX.1), the default is `3.5`. Set to `0.0` for Chroma models.
+  * `--s` Specifies the number of steps in the generation.
+
+The prompt weighting such as `( )` and `[ ]` are working for SD/SDXL models, not working for other models like FLUX.1.
 
 ### 1.8. Logging & Tracking
 
@@ -185,7 +209,6 @@ This technique involves merging a pre-trained LoRA into the base model before st
 * `--disable_mmap_load_safetensors`: Disables memory-mapped loading for `.safetensors` files. This can speed up model loading in some environments like WSL.
 
 ## 2. Other Tips / その他のTips
-
 
 *   **VRAM Usage:** SDXL LoRA training requires a lot of VRAM. Even with 24GB VRAM, you might run out of memory depending on settings. Reduce VRAM usage with these settings:
     *   `--mixed_precision=\"bf16\"` or `\"fp16\"` (essential)
@@ -376,9 +399,32 @@ SDXLは計算コストが高いため、キャッシュ機能が効果的です�
 *   `--sample_at_first`
     *   学習開始前にサンプル画像を生成します。
 *   `--sample_prompts="<プロンプトファイル>"`
-    *   サンプル画像生成に使用するプロンプトを記述したファイル (`.txt`, `.toml`, `.json`) を指定します。書式は[gen\_img\_diffusers.py](gen_img_diffusers.py)に準じます。詳細は[ドキュメント](gen_img_README-ja.md)を参照してください。
+    *   サンプル画像生成に使用するプロンプトを記述したファイル (`.txt`, `.toml`, `.json`) を指定します。
 *   `--sample_sampler="..."`
     *   サンプル画像生成時のサンプラー（スケジューラ）を指定します。`euler_a`, `dpm++_2m_karras` などが一般的です。選択肢は `--help` を参照してください。
+
+#### プロンプトファイルの書式
+プロンプトファイルは複数のプロンプトとオプションを含めることができます。例えば：
+
+```
+# prompt 1
+masterpiece, best quality, (1girl), in white shirts, upper body, looking at viewer, simple background --n low quality, worst quality, bad anatomy,bad composition, poor, low effort --w 768 --h 768 --d 1 --l 7.5 --s 28
+
+# prompt 2
+masterpiece, best quality, 1boy, in business suit, standing at street, looking back --n (low quality, worst quality), bad anatomy,bad composition, poor, low effort --w 576 --h 832 --d 2 --l 5.5 --s 40
+```
+
+`#`で始まる行はコメントです。生成画像のオプションはプロンプトの後に `--n` のように指定できます。以下のオプションが使用可能です。
+
+  * `--n` 次のオプションまでがネガティブプロンプトです。CFGスケールが `1.0` の場合は無視されます。
+  * `--w` 生成画像の幅を指定します。
+  * `--h` 生成画像の高さを指定します。
+  * `--d` 生成画像のシード値を指定します。
+  * `--l` 生成画像のCFGスケールを指定します。FLUX.1モデルでは、デフォルトは `1.0` でCFGなしを意味します。Chromaモデルでは、CFGを有効にするために `4.0` 程度に設定してください。
+  * `--g` 埋め込みガイダンス付きモデル（FLUX.1）の埋め込みガイダンススケールを指定、デフォルトは `3.5`。Chromaモデルでは `0.0` に設定してください。
+  * `--s` 生成時のステップ数を指定します。
+
+プロンプトの重み付け `( )` や `[ ]` はSD/SDXLモデルで動作し、FLUX.1など他のモデルでは動作しません。
 
 ### 1.8. Logging & Tracking 関連
 
