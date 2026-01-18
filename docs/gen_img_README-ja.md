@@ -1,8 +1,8 @@
-SD 1.x、2.x、およびSDXLのモデル、当リポジトリで学習したLoRA、ControlNet、ControlNet-LLLiteなどに対応した、Diffusersベースの推論（画像生成）スクリプトです。コマンドラインから用います。
+SD 1.x、2.x、およびSDXLのモデル、当リポジトリで学習したLoRA、ControlNet、ControlNet-LLLiteなどに対応した、独自の推論（画像生成）スクリプトです。コマンドラインから用います。
 
 # 概要
 
-* Diffusers (v0.10.2以降) ベースの推論（画像生成）スクリプト。
+* 独自の推論（画像生成）スクリプト。
 * SD 1.x、2.x (base/v-parameterization)、およびSDXLモデルに対応。
 * txt2img、img2img、inpaintingに対応。
 * 対話モード、およびファイルからのプロンプト読み込み、連続生成に対応。
@@ -14,7 +14,7 @@ SD 1.x、2.x、およびSDXLのモデル、当リポジトリで学習したLoRA
 * Diffusersの各種samplerに対応。
 * Text Encoderのclip skip（最後からn番目の層の出力を用いる）に対応。
 * VAEの別途読み込み、VAEのバッチ処理やスライスによる省メモリ化に対応。
-* CLIP Guided Stable Diffusion、VGG16 Guided Stable Diffusion、Highres. fix（独自実装およびGradual Latent）、upscale対応。
+* Highres. fix（独自実装およびGradual Latent）、upscale対応。
 * LoRA、DyLoRA対応。適用率指定、複数LoRA同時利用、重みのマージに対応。
 * Attention Couple、Regional LoRAに対応。
 * ControlNet (v1.0/v1.1)、ControlNet-LLLiteに対応。
@@ -517,21 +517,6 @@ LoRAを指定すると、`--network_weights`で指定した複数のLoRAがそ�
 - `--network_show_meta`：追加ネットワークのメタデータを表示します。
 
 --- 
-
-# About Gradual Latent
-
-Gradual Latent is a Hires fix that gradually increases the size of the latent.
-
-- `--gradual_latent_timesteps`: Specifies the timestep to start increasing the size of the latent. The default is None, which means Gradual Latent is not used. Please try around 750 at first.
-- `--gradual_latent_ratio`: Specifies the initial size of the latent. The default is 0.5, which means it starts with half the default latent size.
-- `--gradual_latent_ratio_step`: Specifies the ratio to increase the size of the latent. The default is 0.125, which means the latent size is gradually increased to 0.625, 0.75, 0.875, 1.0.
-- `--gradual_latent_ratio_every_n_steps`: Specifies the interval to increase the size of the latent. The default is 3, which means the latent size is increased every 3 steps.
-
-Each option can also be specified with prompt options, `--glt`, `--glr`, `--gls`, `--gle`.
-
-__Please specify `euler_a` for the sampler.__ Because the source code of the sampler is modified. It will not work with other samplers.
-
-It is more effective with SD 1.5. It is quite subtle with SDXL.
 
 # Gradual Latent について
 
