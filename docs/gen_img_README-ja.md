@@ -1,30 +1,24 @@
-SD 1.xおよび2.xのモデル、当リポジトリで学習したLoRA、ControlNet（v1.0のみ動作確認）などに対応した、Diffusersベースの推論（画像生成）スクリプトです。コマンドラインから用います。
+SD 1.x、2.x、およびSDXLのモデル、当リポジトリで学習したLoRA、ControlNet、ControlNet-LLLiteなどに対応した、Diffusersベースの推論（画像生成）スクリプトです。コマンドラインから用います。
 
 # 概要
 
-* Diffusers (v0.10.2) ベースの推論（画像生成）スクリプト。
+* Diffusers (v0.10.2以降) ベースの推論（画像生成）スクリプト。
 * SD 1.x、2.x (base/v-parameterization)、およびSDXLモデルに対応。
 * txt2img、img2img、inpaintingに対応。
 * 対話モード、およびファイルからのプロンプト読み込み、連続生成に対応。
 * プロンプト1行あたりの生成枚数を指定可能。
 * 全体の繰り返し回数を指定可能。
 * `fp16`だけでなく`bf16`にも対応。
-* xformersに対応し高速生成が可能。
-    * xformersにより省メモリ生成を行いますが、Automatic 1111氏のWeb UIほど最適化していないため、512*512の画像生成でおおむね6GB程度のVRAMを使用します。
+* xformers、SDPA（Scaled Dot-Product Attention）に対応。
 * プロンプトの225トークンへの拡張。ネガティブプロンプト、重みづけに対応。
-* Diffusersの各種samplerに対応（Web UIよりもsampler数は少ないです）。
+* Diffusersの各種samplerに対応。
 * Text Encoderのclip skip（最後からn番目の層の出力を用いる）に対応。
-* VAEの別途読み込み。
-* CLIP Guided Stable Diffusion、VGG16 Guided Stable Diffusion、Highres. fix、upscale対応。
-    * Highres. fixはWeb UIの実装を全く確認していない独自実装のため、出力結果は異なるかもしれません。
-* LoRA対応。適用率指定、複数LoRA同時利用、重みのマージに対応。
-    * Text EncoderとU-Netで別の適用率を指定することはできません。
-* Attention Coupleに対応。
-* ControlNet v1.0に対応。
+* VAEの別途読み込み、VAEのバッチ処理やスライスによる省メモリ化に対応。
+* CLIP Guided Stable Diffusion、VGG16 Guided Stable Diffusion、Highres. fix（独自実装およびGradual Latent）、upscale対応。
+* LoRA、DyLoRA対応。適用率指定、複数LoRA同時利用、重みのマージに対応。
+* Attention Couple、Regional LoRAに対応。
+* ControlNet (v1.0/v1.1)、ControlNet-LLLiteに対応。
 * 途中でモデルを切り替えることはできませんが、バッチファイルを組むことで対応できます。
-* 個人的に欲しくなった機能をいろいろ追加。
-
-機能追加時にすべてのテストを行っているわけではないため、以前の機能に影響が出て一部機能が動かない可能性があります。何か問題があればお知らせください。
 
 # 基本的な使い方
 
@@ -33,18 +27,20 @@ SD 1.xおよび2.xのモデル、当リポジトリで学習したLoRA、Control
 以下のように入力してください。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先> --xformers --fp16 --interactive
+python gen_img.py --ckpt <モデル名> --outdir <画像出力先> --xformers --fp16 --interactive
 ```
 
 `--ckpt`オプションにモデル（Stable Diffusionのcheckpointファイル、またはDiffusersのモデルフォルダ）、`--outdir`オプションに画像の出力先フォルダを指定します。
 
-`--xformers`オプションでxformersの使用を指定します（xformersを使わない場合は外してください）。`--fp16`オプションでfp16（単精度）での推論を行います。RTX 30系のGPUでは `--bf16`オプションでbf16（bfloat16）での推論を行うこともできます。
+`--xformers`オプションでxformersの使用を指定します。`--fp16`オプションでfp16（半精度）での推論を行います。RTX 30系以降のGPUでは `--bf16`オプションでbf16（bfloat16）での推論を行うこともできます。
 
 `--interactive`オプションで対話モードを指定しています。
 
 Stable Diffusion 2.0（またはそこからの追加学習モデル）を使う場合は`--v2`オプションを追加してください。v-parameterizationを使うモデル（`768-v-ema.ckpt`およびそこからの追加学習モデル）を使う場合はさらに`--v_parameterization`を追加してください。
 
-`--v2`の指定有無が間違っているとモデル読み込み時にエラーになります。`--v_parameterization`の指定有無が間違っていると茶色い画像が表示されます。
+SDXLモデルを使う場合は`--sdxl`オプションを追加してください。
+
+`--v2`や`--sdxl`の指定有無が間違っているとモデル読み込み時にエラーになります。`--v_parameterization`の指定有無が間違っていると茶色い画像が表示されます。
 
 `Type prompt:`と表示されたらプロンプトを入力してください。
 
@@ -59,7 +55,7 @@ Stable Diffusion 2.0（またはそこからの追加学習モデル）を使う
 以下のように入力します（実際には1行で入力します）。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先> 
+python gen_img.py --ckpt <モデル名> --outdir <画像出力先> 
     --xformers --fp16 --images_per_prompt <生成枚数> --prompt "<プロンプト>"
 ```
 
@@ -72,7 +68,7 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 以下のように入力します。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先> 
+python gen_img.py --ckpt <モデル名> --outdir <画像出力先> 
     --xformers --fp16 --from_file <プロンプトファイル名>
 ```
 
@@ -106,7 +102,17 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
     
     `--v2`や`--sdxl`の指定有無が間違っているとモデル読み込み時にエラーになります。`--v_parameterization`の指定有無が間違っていると茶色い画像が表示されます。
 
-- `--vae`：使用するVAEを指定します。未指定時はモデル内のVAEを使用します。
+- `--zero_terminal_snr`：noise schedulerのbetasを修正して、zero terminal SNRを強制します。
+
+- `--pyramid_noise_prob`：ピラミッドノイズを適用する確率を指定します。
+
+- `--pyramid_noise_discount_range`：ピラミッドノイズの割引率の範囲を指定します。
+
+- `--noise_offset_prob`：ノイズオフセットを適用する確率を指定します。
+
+- `--noise_offset_range`：ノイズオフセットの範囲を指定します。
+
+- `--vae`：使用する VAE を指定します。未指定時はモデル内の VAE を使用します。
 
 - `--tokenizer_cache_dir`：トークナイザーのキャッシュディレクトリを指定します（オフライン利用のため）。
 
@@ -130,19 +136,22 @@ python gen_img_diffusers.py --ckpt <モデル名> --outdir <画像出力先>
 
 - `--scale <ガイダンススケール>`：unconditionalガイダンススケールを指定します。デフォルトは`7.5`です。
 
-- `--sampler <サンプラー名>`：サンプラーを指定します。デフォルトは`ddim`です。Diffusersで提供されているddim、pndm、dpmsolver、dpmsolver+++、lms、euler、euler_a、が指定可能です（後ろの三つはk_lms、k_euler、k_euler_aでも指定できます）。
+- `--sampler <サンプラー名>`：サンプラーを指定します。デフォルトは`ddim`です。
+    `ddim`, `pndm`, `lms`, `euler`, `euler_a`, `heun`, `dpm_2`, `dpm_2_a`, `dpmsolver`, `dpmsolver++`, `dpmsingle`, `k_lms`, `k_euler`, `k_euler_a`, `k_dpm_2`, `k_dpm_2_a` が指定可能です。
 
 - `--outdir <画像出力先フォルダ>`：画像の出力先を指定します。
 
 - `--images_per_prompt <生成枚数>`：プロンプト1件当たりの生成枚数を指定します。デフォルトは`1`です。
 
-- `--clip_skip <スキップ数>`：CLIPの後ろから何番目の層を使うかを指定します。省略時は最後の層を使います。
+- `--clip_skip <スキップ数>`：CLIPの後ろから何番目の層を使うかを指定します。デフォルトはSD1/2の場合1、SDXLの場合2です。
 
 - `--max_embeddings_multiples <倍数>`：CLIPの入出力長をデフォルト（75）の何倍にするかを指定します。未指定時は75のままです。たとえば3を指定すると入出力長が225になります。
 
 - `--negative_scale` : uncoditioningのguidance scaleを個別に指定します。[gcem156氏のこちらの記事](https://note.com/gcem156/n/ne9a53e4a6f43)を参考に実装したものです。
 
 - `--emb_normalize_mode`：embedding正規化モードを指定します。"original"（デフォルト）、"abs"、"none"から選択できます。プロンプトの重みの正規化方法に影響します。
+
+- `--force_scheduler_zero_steps_offset`：スケジューラのステップオフセットを、スケジューラ設定の `steps_offset` の値に関わらず強制的にゼロにします。
 
 ## SDXL固有のオプション
 
@@ -164,7 +173,7 @@ SDXL モデル（`--sdxl`フラグ付き）を使用する場合、追加のコ�
 
 - `--batch_size <バッチサイズ>`：バッチサイズを指定します。デフォルトは`1`です。バッチサイズが大きいとメモリを多く消費しますが、生成速度が速くなります。
 
-- `--vae_batch_size <VAEのバッチサイズ>`：VAEのバッチサイズを指定します。デフォルトはバッチサイズと同じです。
+- `--vae_batch_size <VAEのバッチサイズ>`：VAEのバッチサイズを指定します。デフォルトはバッチサイズと同じです。1未満の値を指定すると、バッチサイズに対する比率として扱われます。
     VAEのほうがメモリを多く消費するため、デノイジング後（stepが100%になった後）でメモリ不足になる場合があります。このような場合にはVAEのバッチサイズを小さくしてください。
 
 - `--vae_slices <スライス数>`：VAE処理時に画像をスライスに分割してVRAM使用量を削減します。None（デフォルト）で分割なし。16や32のような値が推奨されます。有効にすると処理が遅くなりますが、VRAM使用量が少なくなります。
@@ -177,9 +186,9 @@ SDXL モデル（`--sdxl`フラグ付き）を使用する場合、追加のコ�
 
 - `--diffusers_xformers`：Diffusers経由でxformersを使用します（注：Hypernetworksと互換性がありません）。
 
-- `--fp16`：fp16（単精度）での推論を行います。`fp16`と`bf16`をどちらも指定しない場合はfp32（単精度）での推論を行います。
+- `--fp16`：fp16（半精度）での推論を行います。`fp16`と`bf16`をどちらも指定しない場合はfp32（単精度）での推論を行います。
 
-- `--bf16`：bf16（bfloat16）での推論を行います。RTX 30系のGPUでのみ指定可能です。`--bf16`オプションはRTX 30系以外のGPUではエラーになります。`fp16`よりも`bf16`のほうが推論結果がNaNになる（真っ黒の画像になる）可能性が低いようです。
+- `--bf16`：bf16（bfloat16）での推論を行います。RTX 30系以降のGPUでのみ指定可能です。`--bf16`オプションはRTX 30系以外のGPUではエラーになります。SDXLでは`fp16`よりも`bf16`のほうが推論結果がNaNになる（真っ黒の画像になる）可能性が低いようです。
 
 ## 追加ネットワーク（LoRA等）の使用
 
@@ -204,7 +213,7 @@ SDXL モデル（`--sdxl`フラグ付き）を使用する場合、追加のコ�
 次は同一プロンプトで64枚をバッチサイズ4で一括生成する例です。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt model.ckpt --outdir outputs 
+python gen_img.py --ckpt model.ckpt --outdir outputs 
     --xformers --fp16 --W 512 --H 704 --scale 12.5 --sampler k_euler_a 
     --steps 32 --batch_size 4 --images_per_prompt 64 
     --prompt "beautiful flowers --n monochrome"
@@ -213,7 +222,7 @@ python gen_img_diffusers.py --ckpt model.ckpt --outdir outputs
 次はファイルに書かれたプロンプトを、それぞれ10枚ずつ、バッチサイズ4で一括生成する例です。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt model.ckpt --outdir outputs 
+python gen_img.py --ckpt model.ckpt --outdir outputs 
     --xformers --fp16 --W 512 --H 704 --scale 12.5 --sampler k_euler_a 
     --steps 32 --batch_size 4 --images_per_prompt 10 
     --from_file prompts.txt
@@ -222,7 +231,7 @@ python gen_img_diffusers.py --ckpt model.ckpt --outdir outputs
 Textual Inversion（後述）およびLoRAの使用例です。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt model.safetensors 
+python gen_img.py --ckpt model.safetensors 
     --scale 8 --steps 48 --outdir txt2img --xformers 
     --W 512 --H 768 --fp16 --sampler k_euler_a 
     --textual_inversion_embeddings goodembed.safetensors negprompt.pt 
@@ -258,6 +267,22 @@ python gen_img_diffusers.py --ckpt model.safetensors
 
 - `--am`：追加ネットワークの重みを指定します。コマンドラインからの指定を上書きします。複数の追加ネットワークを使用する場合は`--am 0.8,0.5,0.3`のように __カンマ区切りで__ 指定します。
 
+- `--ow`：SDXLのoriginal_widthを指定します。
+
+- `--oh`：SDXLのoriginal_heightを指定します。
+
+- `--nw`：SDXLのoriginal_width_negativeを指定します。
+
+- `--nh`：SDXLのoriginal_height_negativeを指定します。
+
+- `--ct`：SDXLのcrop_topを指定します。
+
+- `--cl`：SDXLのcrop_leftを指定します。
+
+- `--c`：CLIPプロンプトを指定します。
+
+- `--f`：生成ファイル名を指定します。
+
 ※これらのオプションを指定すると、バッチサイズよりも小さいサイズでバッチが実行される場合があります（これらの値が異なると一括生成できないため）。（あまり気にしなくて大丈夫ですが、ファイルからプロンプトを読み込み生成する場合は、これらの値が同一のプロンプトを並べておくと効率が良くなります。）
 
 例：
@@ -266,6 +291,21 @@ python gen_img_diffusers.py --ckpt model.safetensors
 ```
 
 ![image](https://user-images.githubusercontent.com/52813779/235343446-25654172-fff4-4aaf-977a-20d262b51676.png)
+
+# プロンプトのワイルドカード (Dynamic Prompts)
+
+Dynamic Prompts (Wildcard) 記法に対応しています。Web UIの拡張機能等と完全に同じではありませんが、以下の機能が利用可能です。
+
+- `{A|B|C}` : A, B, C の中からランダムに1つを選択します。
+- `{e$$A|B|C}` : A, B, C のすべてを順に利用します（全列挙）。プロンプト内に複数の `{e$$...}` がある場合、すべての組み合わせが生成されます。
+  - 例：`{e$$red|blue} flower, {e$$1girl|2girls}` → `red flower, 1girl`, `red flower, 2girls`, `blue flower, 1girl`, `blue flower, 2girls` の4枚が生成されます。
+- `{n$$A|B|C}` : A, B, C の中から n 個をランダムに選択して結合します。
+  - 例：`{2$$A|B|C}` → `A, B` や `B, C` など。
+- `{n-m$$A|B|C}` : A, B, C の中から n 個から m 個をランダムに選択して結合します。
+- `{$$sep$$A|B|C}` : 選択された項目を sep で結合します（デフォルトは `, `）。
+  - 例：`{2$$ and $$A|B|C}` → `A and B` など。
+
+これらは組み合わせて利用可能です。
 
 # img2img
 
@@ -284,7 +324,7 @@ python gen_img_diffusers.py --ckpt model.safetensors
 ## コマンドラインからの実行例
 
 ```batchfile
-python gen_img_diffusers.py --ckpt trinart_characters_it4_v1_vae_merged.ckpt 
+python gen_img.py --ckpt trinart_characters_it4_v1_vae_merged.ckpt 
     --outdir outputs --xformers --fp16 --scale 12.5 --sampler k_euler --steps 32 
     --image_path template.png --strength 0.8 
     --prompt "1girl, cowboy shot, brown hair, pony tail, brown eyes, 
@@ -325,10 +365,6 @@ img2img時にコマンドラインオプションの`--W`と`--H`で生成画像
 
 モデルとして、当リポジトリで学習したTextual Inversionモデル、およびWeb UIで学習したTextual Inversionモデル（画像埋め込みは非対応）を利用できます
 
-## Extended Textual Inversion
-
-`--textual_inversion_embeddings`の代わりに`--XTI_embeddings`オプションを指定してください。使用法は`--textual_inversion_embeddings`と同じです。
-
 ## Highres. fix
 
 AUTOMATIC1111氏のWeb UIにある機能の類似機能です（独自実装のためもしかしたらいろいろ異なるかもしれません）。最初に小さめの画像を生成し、その画像を元にimg2imgすることで、画像全体の破綻を防ぎつつ大きな解像度の画像を生成します。
@@ -342,6 +378,8 @@ img2imgと併用できません。
 - `--highres_fix_scale`：Highres. fixを有効にして、1st stageで生成する画像のサイズを、倍率で指定します。最終出力が1024x1024で、最初に512x512の画像を生成する場合は`--highres_fix_scale 0.5`のように指定します。Web UI出の指定の逆数になっていますのでご注意ください。
 
 - `--highres_fix_steps`：1st stageの画像のステップ数を指定します。デフォルトは`28`です。
+
+- `--highres_fix_strength`：1st stageのimg2img時のstrengthを指定します。省略時は`--strength`と同じ値になります。
 
 - `--highres_fix_save_1st`：1st stageの画像を保存するかどうかを指定します。
 
@@ -357,7 +395,7 @@ img2imgと併用できません。
 コマンドラインの例です。
 
 ```batchfile
-python gen_img_diffusers.py  --ckpt trinart_characters_it4_v1_vae_merged.ckpt
+python gen_img.py  --ckpt trinart_characters_it4_v1_vae_merged.ckpt
     --n_iter 1 --scale 7.5 --W 1024 --H 1024 --batch_size 1 --outdir ../txt2img 
     --steps 48 --sampler ddim --fp16 
     --xformers 
@@ -407,16 +445,16 @@ Deep Shrinkは、異なるタイムステップで異なる深度のUNetを使�
 - `--control_net_preps`：ControlNetのプリプロセスを指定します。`--control_net_models`と同様に複数指定可能です。現在はcannyのみ対応しています。対象モデルでプリプロセスを使用しない場合は `none` を指定します。
    cannyの場合 `--control_net_preps canny_63_191`のように、閾値1と2を'_'で区切って指定できます。
 
-- `--control_net_weights`：ControlNetの適用時の重みを指定します（`1.0`で通常、`0.5`なら半分の影響力で適用）。`--control_net_models`と同様に複数指定可能です。
+- `--control_net_multipliers`：ControlNetの適用時の重みを指定します（`1.0`で通常、`0.5`なら半分の影響力で適用）。`--control_net_models`と同様に複数指定可能です。
 
 - `--control_net_ratios`：ControlNetを適用するstepの範囲を指定します。`0.5`の場合は、step数の半分までControlNetを適用します。`--control_net_models`と同様に複数指定可能です。
 
 コマンドラインの例です。
 
 ```batchfile
-python gen_img_diffusers.py --ckpt model_ckpt --scale 8 --steps 48 --outdir txt2img --xformers 
+python gen_img.py --ckpt model_ckpt --scale 8 --steps 48 --outdir txt2img --xformers 
     --W 512 --H 768 --bf16 --sampler k_euler_a 
-    --control_net_models diff_control_sd15_canny.safetensors --control_net_weights 1.0 
+    --control_net_models diff_control_sd15_canny.safetensors --control_net_multipliers 1.0 
     --guide_image_path guide.png --control_net_ratios 1.0 --interactive
 ```
 
@@ -458,70 +496,6 @@ ControlNetと組み合わせることも可能です（細かい位置指定に�
 
 LoRAを指定すると、`--network_weights`で指定した複数のLoRAがそれぞれANDの各部分に対応します。現在の制約として、LoRAの数はANDの部分の数と同じである必要があります。
 
-## CLIP Guided Stable Diffusion
-
-DiffusersのCommunity Examplesの[こちらのcustom pipeline](https://github.com/huggingface/diffusers/blob/main/examples/community/README.md#clip-guided-stable-diffusion)からソースをコピー、変更したものです。
-
-通常のプロンプトによる生成指定に加えて、追加でより大規模のCLIPでプロンプトのテキストの特徴量を取得し、生成中の画像の特徴量がそのテキストの特徴量に近づくよう、生成される画像をコントロールします（私のざっくりとした理解です）。大きめのCLIPを使いますのでVRAM使用量はかなり増加し（VRAM 8GBでは512*512でも厳しいかもしれません）、生成時間も掛かります。
-
-なお選択できるサンプラーはDDIM、PNDM、LMSのみとなります。
-
-`--clip_guidance_scale`オプションにどの程度、CLIPの特徴量を反映するかを数値で指定します。先のサンプルでは100になっていますので、そのあたりから始めて増減すると良いようです。
-
-デフォルトではプロンプトの先頭75トークン（重みづけの特殊文字を除く）がCLIPに渡されます。プロンプトの`--c`オプションで、通常のプロンプトではなく、CLIPに渡すテキストを別に指定できます（たとえばCLIPはDreamBoothのidentifier（識別子）や「1girl」などのモデル特有の単語は認識できないと思われますので、それらを省いたテキストが良いと思われます）。
-
-コマンドラインの例です。
-
-```batchfile
-python gen_img_diffusers.py  --ckpt v1-5-pruned-emaonly.ckpt --n_iter 1 
-    --scale 2.5 --W 512 --H 512 --batch_size 1 --outdir ../txt2img --steps 36  
-    --sampler ddim --fp16 --opt_channels_last --xformers --images_per_prompt 1  
-    --interactive --clip_guidance_scale 100
-```
-
-## CLIP Image Guided Stable Diffusion
-
-テキストではなくCLIPに別の画像を渡し、その特徴量に近づくよう生成をコントロールする機能です。`--clip_image_guidance_scale`オプションで適用量の数値を、`--guide_image_path`オプションでguideに使用する画像（ファイルまたはフォルダ）を指定してください。
-
-コマンドラインの例です。
-
-```batchfile
-python gen_img_diffusers.py  --ckpt trinart_characters_it4_v1_vae_merged.ckpt
-    --n_iter 1 --scale 7.5 --W 512 --H 512 --batch_size 1 --outdir ../txt2img 
-    --steps 80 --sampler ddim --fp16 --opt_channels_last --xformers 
-    --images_per_prompt 1  --interactive  --clip_image_guidance_scale 100 
-    --guide_image_path YUKA160113420I9A4104_TP_V.jpg
-```
-
-### VGG16 Guided Stable Diffusion
-
-指定した画像に近づくように画像生成する機能です。通常のプロンプトによる生成指定に加えて、追加でVGG16の特徴量を取得し、生成中の画像が指定したガイド画像に近づくよう、生成される画像をコントロールします。img2imgでの使用をお勧めします（通常の生成では画像がぼやけた感じになります）。CLIP Guided Stable Diffusionの仕組みを流用した独自の機能です。またアイデアはVGGを利用したスタイル変換から拝借しています。
-
-なお選択できるサンプラーはDDIM、PNDM、LMSのみとなります。
-
-`--vgg16_guidance_scale`オプションにどの程度、VGG16特徴量を反映するかを数値で指定します。試した感じでは100くらいから始めて増減すると良いようです。`--guide_image_path`オプションでguideに使用する画像（ファイルまたはフォルダ）を指定してください。
-
-複数枚の画像を一括でimg2img変換し、元画像をガイド画像とする場合、`--guide_image_path`と`--image_path`に同じ値を指定すればOKです。
-
-コマンドラインの例です。
-
-```batchfile
-python gen_img_diffusers.py --ckpt wd-v1-3-full-pruned-half.ckpt 
-    --n_iter 1 --scale 5.5 --steps 60 --outdir ../txt2img 
-    --xformers --sampler ddim --fp16 --W 512 --H 704 
-    --batch_size 1 --images_per_prompt 1 
-    --prompt "picturesque, 1girl, solo, anime face, skirt, beautiful face 
-        --n lowres, bad anatomy, bad hands, error, missing fingers, 
-        cropped, worst quality, low quality, normal quality, 
-        jpeg artifacts, blurry, 3d, bad face, monochrome --d 1" 
-    --strength 0.8 --image_path ..\src_image
-    --vgg16_guidance_scale 100 --guide_image_path ..\src_image 
-```
-
-`--vgg16_guidance_layerPで特徴量取得に使用するVGG16のレイヤー番号を指定できます（デフォルトは20でconv4-2のReLUです）。上の層ほど画風を表現し、下の層ほどコンテンツを表現するといわれています。
-
-![image](https://user-images.githubusercontent.com/52813779/235343813-3c1f0d7a-4fb3-4274-98e4-b92d76b551df.png)
-
 # その他のオプション
 
 - `--no_preview` : 対話モードでプレビュー画像を表示しません。OpenCVがインストールされていない場合や、出力されたファイルを直接確認する場合に指定してください。
@@ -542,12 +516,11 @@ python gen_img_diffusers.py --ckpt wd-v1-3-full-pruned-half.ckpt
 
 - `--network_show_meta`：追加ネットワークのメタデータを表示します。
 
-
 --- 
 
 # About Gradual Latent
 
-Gradual Latent is a Hires fix that gradually increases the size of the latent.  `gen_img.py`, `sdxl_gen_img.py`, and `gen_img_diffusers.py` have the following options.
+Gradual Latent is a Hires fix that gradually increases the size of the latent.
 
 - `--gradual_latent_timesteps`: Specifies the timestep to start increasing the size of the latent. The default is None, which means Gradual Latent is not used. Please try around 750 at first.
 - `--gradual_latent_ratio`: Specifies the initial size of the latent. The default is 0.5, which means it starts with half the default latent size.
@@ -562,7 +535,7 @@ It is more effective with SD 1.5. It is quite subtle with SDXL.
 
 # Gradual Latent について
 
-latentのサイズを徐々に大きくしていくHires fixです。`gen_img.py` 、``sdxl_gen_img.py` 、`gen_img_diffusers.py` に以下のオプションが追加されています。
+latentのサイズを徐々に大きくしていくHires fixです。
 
 - `--gradual_latent_timesteps` : latentのサイズを大きくし始めるタイムステップを指定します。デフォルトは None で、Gradual Latentを使用しません。750 くらいから始めてみてください。
 - `--gradual_latent_ratio` : latentの初期サイズを指定します。デフォルトは 0.5 で、デフォルトの latent サイズの半分のサイズから始めます。
