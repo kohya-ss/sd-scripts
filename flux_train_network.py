@@ -101,6 +101,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def load_target_model(self, args, weight_dtype, accelerator):
         # currently offload to cpu for some models
 
+        self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
+
         # if the file is fp8 and we are using fp8_base, we can load it as is (fp8)
         loading_dtype = None if args.fp8_base or args.fp8_scaled else weight_dtype
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
@@ -125,8 +127,6 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         # if args.split_mode:
         #     model = self.prepare_split_model(model, weight_dtype, accelerator)
-
-        self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
         if self.is_swapping_blocks:
             # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
             logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
