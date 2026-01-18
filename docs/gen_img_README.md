@@ -10,25 +10,16 @@ This is an inference (image generation) script that supports SD 1.x and 2.x mode
 * The number of images generated per prompt line can be specified.
 * The total number of repetitions can be specified.
 * Supports not only `fp16` but also `bf16`.
-* Supports xformers for high-speed generation.
-    * Although xformers are used for memory-saving generation, it is not as optimized as Automatic 1111's Web UI, so it uses about 6GB of VRAM for 512*512 image generation.
+* Supports xformers and SDPA (Scaled Dot-Product Attention).
 * Extension of prompts to 225 tokens. Supports negative prompts and weighting.
-* Supports various samplers from Diffusers including ddim, pndm, lms, euler, euler_a, heun, dpm_2, dpm_2_a, dpmsolver, dpmsolver++, dpmsingle.
+* Supports various samplers from Diffusers.
 * Supports clip skip (uses the output of the nth layer from the end) of Text Encoder.
-* Separate loading of VAE.
-* Supports CLIP Guided Stable Diffusion, VGG16 Guided Stable Diffusion, Highres. fix, and upscale.
-    * Highres. fix is an original implementation that has not confirmed the Web UI implementation at all, so the output results may differ.
-* LoRA support. Supports application rate specification, simultaneous use of multiple LoRAs, and weight merging.
-    * It is not possible to specify different application rates for Text Encoder and U-Net.
-* Supports Attention Couple.
-* Supports ControlNet v1.0.
-* Supports Deep Shrink for optimizing generation at different depths.
-* Supports Gradual Latent for progressive upscaling during generation.
-* Supports CLIP Vision Conditioning for img2img.
+* Separate loading of VAE, supports VAE batch processing and slicing for memory saving.
+* Highres. fix (original implementation and Gradual Latent), upscale support.
+* LoRA, DyLoRA support. Supports application rate specification, simultaneous use of multiple LoRAs, and weight merging.
+* Supports Attention Couple, Regional LoRA.
+* Supports ControlNet (v1.0/v1.1), ControlNet-LLLite.
 * It is not possible to switch models midway, but it can be handled by creating a batch file.
-* Various personally desired features have been added.
-
-Since not all tests are performed when adding features, it is possible that previous features may be affected and some features may not work. Please let us know if you have any problems.
 
 # Basic Usage
 
@@ -110,6 +101,16 @@ Specify from the command line.
 
     If the `--v2` or `--sdxl` specification is incorrect, an error will occur when loading the model. If the `--v_parameterization` specification is incorrect, a brown image will be displayed.
 
+- `--zero_terminal_snr`: Modifies the noise scheduler betas to enforce zero terminal SNR.
+
+- `--pyramid_noise_prob`: Specifies the probability of applying pyramid noise.
+
+- `--pyramid_noise_discount_range`: Specifies the discount range for pyramid noise.
+
+- `--noise_offset_prob`: Specifies the probability of applying noise offset.
+
+- `--noise_offset_range`: Specifies the range of noise offset.
+
 - `--vae`: Specifies the VAE to use. If not specified, the VAE in the model will be used.
 
 - `--tokenizer_cache_dir`: Specifies the cache directory for the tokenizer (for offline usage).
@@ -134,19 +135,22 @@ Specify from the command line.
 
 - `--scale <guidance_scale>`: Specifies the unconditional guidance scale. The default is `7.5`.
 
-- `--sampler <sampler_name>`: Specifies the sampler. The default is `ddim`. The following samplers are supported: ddim, pndm, lms, euler, euler_a, heun, dpm_2, dpm_2_a, dpmsolver, dpmsolver++, dpmsingle. Some can also be specified with k_ prefix (k_lms, k_euler, k_euler_a, k_dpm_2, k_dpm_2_a).
+- `--sampler <sampler_name>`: Specifies the sampler. The default is `ddim`.
+    `ddim`, `pndm`, `lms`, `euler`, `euler_a`, `heun`, `dpm_2`, `dpm_2_a`, `dpmsolver`, `dpmsolver++`, `dpmsingle`, `k_lms`, `k_euler`, `k_euler_a`, `k_dpm_2`, `k_dpm_2_a` can be specified.
 
 - `--outdir <image_output_destination_folder>`: Specifies the output destination for images.
 
 - `--images_per_prompt <number_of_images_to_generate>`: Specifies the number of images to generate per prompt. The default is `1`.
 
-- `--clip_skip <number_of_skips>`: Specifies which layer from the end of CLIP to use. If omitted, the last layer is used.
+- `--clip_skip <number_of_skips>`: Specifies which layer from the end of CLIP to use. Default is 1 for SD1/2, 2 for SDXL.
 
 - `--max_embeddings_multiples <multiplier>`: Specifies how many times the CLIP input/output length should be multiplied by the default (75). If not specified, it remains 75. For example, specifying 3 makes the input/output length 225.
 
 - `--negative_scale`: Specifies the guidance scale for unconditioning individually. Implemented with reference to [this article by gcem156](https://note.com/gcem156/n/ne9a53e4a6f43).
 
 - `--emb_normalize_mode`: Specifies the embedding normalization mode. Options are "original" (default), "abs", and "none". This affects how prompt weights are normalized.
+
+- `--force_scheduler_zero_steps_offset`: Forces the scheduler step offset to zero regardless of the `steps_offset` value in the scheduler configuration.
 
 ## SDXL-Specific Options
 
@@ -262,6 +266,22 @@ Please put spaces before and after the prompt option specification `--n`.
 
 - `--am`: Specifies the weight of the additional network. Overrides the command line specification. If using multiple additional networks, specify them separated by __commas__, like `--am 0.8,0.5,0.3`.
 
+- `--ow`: Specifies original_width for SDXL.
+
+- `--oh`: Specifies original_height for SDXL.
+
+- `--nw`: Specifies original_width_negative for SDXL.
+
+- `--nh`: Specifies original_height_negative for SDXL.
+
+- `--ct`: Specifies crop_top for SDXL.
+
+- `--cl`: Specifies crop_left for SDXL.
+
+- `--c`: Specifies the CLIP prompt.
+
+- `--f`: Specifies the generated file name.
+
 - `--glt`: Specifies the timestep to start increasing the size of the latent for Gradual Latent. Overrides the command line specification.
 
 - `--glr`: Specifies the initial size of the latent for Gradual Latent as a ratio. Overrides the command line specification.
@@ -278,6 +298,21 @@ Example:
 ```
 
 ![image](https://user-images.githubusercontent.com/52813779/235343446-25654172-fff4-4aaf-977a-20d262b51676.png)
+
+# Wildcards in Prompts (Dynamic Prompts)
+
+Dynamic Prompts (Wildcard) notation is supported. While not exactly the same as the Web UI extension, the following features are available.
+
+- `{A|B|C}` : Randomly selects one from A, B, or C.
+- `{e$$A|B|C}` : Uses all of A, B, and C in order (enumeration). If there are multiple `{e$$...}` in the prompt, all combinations will be generated.
+  - Example: `{e$$red|blue} flower, {e$$1girl|2girls}` -> Generates 4 images: `red flower, 1girl`, `red flower, 2girls`, `blue flower, 1girl`, `blue flower, 2girls`.
+- `{n$$A|B|C}` : Randomly selects n items from A, B, C and combines them.
+  - Example: `{2$$A|B|C}` -> `A, B` or `B, C`, etc.
+- `{n-m$$A|B|C}` : Randomly selects between n and m items from A, B, C and combines them.
+- `{$$sep$$A|B|C}` : Combines selected items with `sep` (default is `, `).
+  - Example: `{2$$ and $$A|B|C}` -> `A and B`, etc.
+
+These can be used in combination.
 
 # img2img
 
@@ -336,10 +371,6 @@ The mask image is a grayscale image, and the white parts will be inpainted. It i
 Specify the embeddings to use with the `--textual_inversion_embeddings` option (multiple specifications possible). By using the file name without the extension in the prompt, that embedding will be used (same usage as Web UI). It can also be used in negative prompts.
 
 As models, you can use Textual Inversion models trained with this repository and Textual Inversion models trained with Web UI (image embedding is not supported).
-
-## Extended Textual Inversion
-
-Specify the `--XTI_embeddings` option instead of `--textual_inversion_embeddings`. Usage is the same as `--textual_inversion_embeddings`.
 
 ## Highres. fix
 
@@ -480,70 +511,6 @@ It can also be combined with ControlNet (combination with ControlNet is recommen
 
 If LoRA is specified, multiple LoRAs specified with `--network_weights` will correspond to each part of AND. As a current constraint, the number of LoRAs must be the same as the number of AND parts.
 
-## CLIP Guided Stable Diffusion
-
-The source code is copied and modified from [this custom pipeline](https://github.com/huggingface/diffusers/blob/main/examples/community/README.md#clip-guided-stable-diffusion) in Diffusers' Community Examples.
-
-In addition to the normal prompt-based generation specification, it additionally acquires the text features of the prompt with a larger CLIP and controls the generated image so that the features of the image being generated approach those text features (this is my rough understanding). Since a larger CLIP is used, VRAM usage increases considerably (it may be difficult even for 512*512 with 8GB of VRAM), and generation time also increases.
-
-Note that the selectable samplers are DDIM, PNDM, and LMS only.
-
-Specify how much to reflect the CLIP features numerically with the `--clip_guidance_scale` option. In the previous sample, it is 100, so it seems good to start around there and increase or decrease it.
-
-By default, the first 75 tokens of the prompt (excluding special weighting characters) are passed to CLIP. With the `--c` option in the prompt, you can specify the text to be passed to CLIP separately from the normal prompt (for example, it is thought that CLIP cannot recognize DreamBooth identifiers or model-specific words like "1girl", so text excluding them is considered good).
-
-Command line example:
-
-```batchfile
-python gen_img.py  --ckpt v1-5-pruned-emaonly.ckpt --n_iter 1 \
-    --scale 2.5 --W 512 --H 512 --batch_size 1 --outdir ../txt2img --steps 36  \
-    --sampler ddim --fp16 --opt_channels_last --xformers --images_per_prompt 1  \
-    --interactive --clip_guidance_scale 100
-```
-
-## CLIP Image Guided Stable Diffusion
-
-This is a feature that passes another image to CLIP instead of text and controls generation to approach its features. Specify the numerical value of the application amount with the `--clip_image_guidance_scale` option and the image (file or folder) to use for guidance with the `--guide_image_path` option.
-
-Command line example:
-
-```batchfile
-python gen_img.py  --ckpt trinart_characters_it4_v1_vae_merged.ckpt\
-    --n_iter 1 --scale 7.5 --W 512 --H 512 --batch_size 1 --outdir ../txt2img \
-    --steps 80 --sampler ddim --fp16 --opt_channels_last --xformers \
-    --images_per_prompt 1  --interactive  --clip_image_guidance_scale 100 \
-    --guide_image_path YUKA160113420I9A4104_TP_V.jpg
-```
-
-### VGG16 Guided Stable Diffusion
-
-This is a feature that generates images to approach a specified image. In addition to the normal prompt-based generation specification, it additionally acquires the features of VGG16 and controls the generated image so that the image being generated approaches the specified guide image. It is recommended to use it with img2img (images tend to be blurred in normal generation). This is an original feature that reuses the mechanism of CLIP Guided Stable Diffusion. The idea is also borrowed from style transfer using VGG.
-
-Note that the selectable samplers are DDIM, PNDM, and LMS only.
-
-Specify how much to reflect the VGG16 features numerically with the `--vgg16_guidance_scale` option. From what I've tried, it seems good to start around 100 and increase or decrease it. Specify the image (file or folder) to use for guidance with the `--guide_image_path` option.
-
-When batch converting multiple images with img2img and using the original images as guide images, it is OK to specify the same value for `--guide_image_path` and `--image_path`.
-
-Command line example:
-
-```batchfile
-python gen_img.py --ckpt wd-v1-3-full-pruned-half.ckpt \
-    --n_iter 1 --scale 5.5 --steps 60 --outdir ../txt2img \
-    --xformers --sampler ddim --fp16 --W 512 --H 704 \
-    --batch_size 1 --images_per_prompt 1 \
-    --prompt "picturesque, 1girl, solo, anime face, skirt, beautiful face \
-        --n lowres, bad anatomy, bad hands, error, missing fingers, \
-        cropped, worst quality, low quality, normal quality, \
-        jpeg artifacts, blurry, 3d, bad face, monochrome --d 1" \
-    --strength 0.8 --image_path ..\\src_image\
-    --vgg16_guidance_scale 100 --guide_image_path ..\\src_image \
-```
-
-You can specify the VGG16 layer number used for feature acquisition with `--vgg16_guidance_layerP` (default is 20, which is ReLU of conv4-2). It is said that upper layers express style and lower layers express content.
-
-![image](https://user-images.githubusercontent.com/52813779/235343813-3c1f0d7a-4fb3-4274-98e4-b92d76b551df.png)
-
 # Other Options
 
 - `--no_preview`: Does not display preview images in interactive mode. Specify this if OpenCV is not installed or if you want to check the output files directly.
@@ -576,7 +543,7 @@ Gradual Latent is a Hires fix that gradually increases the size of the latent.  
 - `--gradual_latent_ratio_step`: Specifies the ratio to increase the size of the latent. The default is 0.125, which means the latent size is gradually increased to 0.625, 0.75, 0.875, 1.0.
 - `--gradual_latent_ratio_every_n_steps`: Specifies the interval to increase the size of the latent. The default is 3, which means the latent size is increased every 3 steps.
 - `--gradual_latent_s_noise`: Specifies the s_noise parameter for Gradual Latent. Default is 1.0.
-- `--gradual_latent_unsharp_params`: Specifies unsharp mask parameters for Gradual Latent in the format: ksize,sigma,strength,target-x (where target-x: 1=True, 0=False). Recommended values: `3,0.5,0.5,1` or `3,1.0,1.0,0`.
+- `--gradual_latent_unsharp_params`: Specifies unsharp mask parameters for Gradual Latent in the format: ksize,sigma,strength,target-x (target-x: 1=True, 0=False). Recommended values: `3,0.5,0.5,1` or `3,1.0,1.0,0`.
 
 Each option can also be specified with prompt options, `--glt`, `--glr`, `--gls`, `--gle`.
 
