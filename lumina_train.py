@@ -743,7 +743,7 @@ def train(args):
                     # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                     model_pred = nextdit(
                         x=noisy_model_input,  # image latents (B, C, H, W)
-                        t=timesteps / 1000,  # timesteps需要除以1000来匹配模型预期
+                        t=1 - timesteps / 1000,  # timesteps需要除以1000来匹配模型预期
                         cap_feats=gemma2_hidden_states,  # Gemma2的hidden states作为caption features
                         cap_mask=gemma2_attn_mask.to(
                             dtype=torch.int32
