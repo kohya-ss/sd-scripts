@@ -1,15 +1,21 @@
 import argparse
+from typing import List, Optional, Union
 
 import torch
+from accelerate import Accelerator
 from library.device_utils import init_ipex, clean_memory_on_device
+
 init_ipex()
 
-from library import sdxl_model_util, sdxl_train_util, train_util
+from library import sdxl_model_util, sdxl_train_util, strategy_base, strategy_sd, strategy_sdxl, train_util
 import train_network
 from library.utils import setup_logging
+
 setup_logging()
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 class SdxlNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
@@ -17,7 +23,12 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         self.vae_scale_factor = sdxl_model_util.VAE_SCALE_FACTOR
         self.is_sdxl = True
 
-    def assert_extra_args(self, args, train_dataset_group):
+    def assert_extra_args(
+        self,
+        args,
+        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
+        val_dataset_group: Optional[train_util.DatasetGroup],
+    ):
         sdxl_train_util.verify_sdxl_training_args(args)
 
         if args.cache_text_encoder_outputs:
@@ -30,6 +41,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         ), "network for Text Encoder cannot be trained with caching Text Encoder outputs / Text Encoderの出力をキャッシュしながらText Encoderのネットワークを学習することはできません"
 
         train_dataset_group.verify_bucket_reso_steps(32)
+        if val_dataset_group is not None:
+            val_dataset_group.verify_bucket_reso_steps(32)
 
     def load_target_model(self, args, weight_dtype, accelerator):
         (
@@ -46,17 +59,41 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         self.logit_scale = logit_scale
         self.ckpt_info = ckpt_info
 
+        # モデルに xformers とか memory efficient attention を組み込む
+        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+            vae.set_use_memory_efficient_attention_xformers(args.xformers)
+
         return sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, [text_encoder1, text_encoder2], vae, unet
 
-    def load_tokenizer(self, args):
-        tokenizer = sdxl_train_util.load_tokenizers(args)
-        return tokenizer
+    def get_tokenize_strategy(self, args):
+        return strategy_sdxl.SdxlTokenizeStrategy(args.max_token_length, args.tokenizer_cache_dir)
 
-    def is_text_encoder_outputs_cached(self, args):
-        return args.cache_text_encoder_outputs
+    def get_tokenizers(self, tokenize_strategy: strategy_sdxl.SdxlTokenizeStrategy):
+        return [tokenize_strategy.tokenizer1, tokenize_strategy.tokenizer2]
+
+    def get_latents_caching_strategy(self, args):
+        latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(
+            False, args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
+        )
+        return latents_caching_strategy
+
+    def get_text_encoding_strategy(self, args):
+        return strategy_sdxl.SdxlTextEncodingStrategy()
+
+    def get_models_for_text_encoding(self, args, accelerator, text_encoders):
+        return text_encoders + [accelerator.unwrap_model(text_encoders[-1])]
+
+    def get_text_encoder_outputs_caching_strategy(self, args):
+        if args.cache_text_encoder_outputs:
+            return strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
+                args.cache_text_encoder_outputs_to_disk, None, args.skip_cache_check, is_weighted=args.weighted_captions
+            )
+        else:
+            return None
 
     def cache_text_encoder_outputs_if_needed(
-        self, args, accelerator, unet, vae, tokenizers, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
+        self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
     ):
         if args.cache_text_encoder_outputs:
             if not args.lowram:
@@ -69,15 +106,11 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 clean_memory_on_device(accelerator.device)
 
             # When TE is not be trained, it will not be prepared so we need to use explicit autocast
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)
+            text_encoders[1].to(accelerator.device, dtype=weight_dtype)
             with accelerator.autocast():
-                dataset.cache_text_encoder_outputs(
-                    tokenizers,
-                    text_encoders,
-                    accelerator.device,
-                    weight_dtype,
-                    args.cache_text_encoder_outputs_to_disk,
-                    accelerator.is_main_process,
-                )
+                dataset.new_cache_text_encoder_outputs(text_encoders + [accelerator.unwrap_model(text_encoders[-1])], accelerator)
+            accelerator.wait_for_everyone()
 
             text_encoders[0].to("cpu", dtype=torch.float32)  # Text Encoder doesn't work with fp16 on CPU
             text_encoders[1].to("cpu", dtype=torch.float32)
@@ -146,7 +179,18 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 
         return encoder_hidden_states1, encoder_hidden_states2, pool2
 
-    def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):
+    def call_unet(
+        self,
+        args,
+        accelerator,
+        unet,
+        noisy_latents,
+        timesteps,
+        text_conds,
+        batch,
+        weight_dtype,
+        indices: Optional[List[int]] = None,
+    ):
         noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
         # get size embeddings
@@ -159,6 +203,12 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         encoder_hidden_states1, encoder_hidden_states2, pool2 = text_conds
         vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
         text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim=2).to(weight_dtype)
+
+        if indices is not None and len(indices) > 0:
+            noisy_latents = noisy_latents[indices]
+            timesteps = timesteps[indices]
+            text_embedding = text_embedding[indices]
+            vector_embedding = vector_embedding[indices]
 
         noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)
         return noise_pred
