@@ -42,7 +42,7 @@ Before starting training, you will need the following files:
 
 The dataset definition file (`.toml`) contains detailed settings such as the directory of images to use, repetition count, caption settings, resolution buckets (optional), etc.
 
-For more details on how to write the dataset definition file, please refer to the [Dataset Configuration Guide](link/to/dataset/config/doc).
+For more details on how to write the dataset definition file, please refer to the [Dataset Configuration Guide](./config_README-en.md).
 
 In this guide, we will use a file named `my_dataset_config.toml` as an example.
 
@@ -56,9 +56,9 @@ In this guide, we will use a file named `my_dataset_config.toml` as an example.
 
 **データセット定義ファイルについて**
 
-データセット定義ファイル (`.toml`) には、使用する画像のディレクトリ、繰り返し回数、キャプションの設定、解像度バケツ（任意）などの詳細な設定を記述します。
+データセット定義ファイル (`.toml`) には、使用する画像のディレクトリ、繰り返し回数、キャプションの設定、Aspect Ratio Bucketing（任意）などの詳細な設定を記述します。
 
-データセット定義ファイルの詳しい書き方については、[データセット設定ガイド](link/to/dataset/config/doc)を参照してください。
+データセット定義ファイルの詳しい書き方については、[データセット設定ガイド](./config_README-ja.md)を参照してください。
 
 ここでは、例として `my_dataset_config.toml` という名前のファイルを使用することにします。
 </details>
@@ -143,6 +143,16 @@ Next, we'll explain the main command-line arguments.
   * Specifies the rank (dimension) of LoRA. Higher values increase expressiveness but also increase file size and computational cost. Values between 4 and 128 are commonly used. There is no default (module dependent).
 * `--network_alpha=1`
   * Specifies the alpha value for LoRA. This parameter is related to learning rate scaling. It is generally recommended to set it to about half the value of `network_dim`, but it can also be the same value as `network_dim`. The default is 1. Setting it to the same value as `network_dim` will result in behavior similar to older versions.
+* `--network_args`
+  * Used to specify additional parameters specific to the LoRA module. For example, to use Conv2d (3x3) LoRA (LoRA-C3Lier), specify the following in `--network_args`. Use `conv_dim` to specify the rank for Conv2d (3x3) and `conv_alpha` for alpha.
+    ```
+    --network_args "conv_dim=4" "conv_alpha=1"
+    ```
+
+    If alpha is omitted as shown below, it defaults to 1.
+    ```
+    --network_args "conv_dim=4"
+    ```
 
 #### Training Parameters / 学習パラメータ
 
@@ -221,6 +231,16 @@ Next, we'll explain the main command-line arguments.
     *   LoRA のランク (rank / 次元数) を指定します。値が大きいほど表現力は増しますが、ファイルサイズと計算コストが増加します。一般的には 4〜128 程度の値が使われます。デフォルトは指定されていません（モジュール依存）。
 *   `--network_alpha=1`
     *   LoRA のアルファ値 (alpha) を指定します。学習率のスケーリングに関係するパラメータで、一般的には `network_dim` の半分程度の値を指定することが推奨されますが、`network_dim` と同じ値を指定する場合もあります。デフォルトは 1 です。`network_dim` と同じ値に設定すると、旧バージョンと同様の挙動になります。
+
+* `--network_args`
+    *   LoRA モジュールに特有の追加パラメータを指定するために使用します。例えば、Conv2d (3x3) の LoRA  (LoRA-C3Lier) を使用する場合は`--network_args` に以下のように指定してください。`conv_dim` で Conv2d (3x3) の rank を、`conv_alpha` で alpha を指定します。
+        ```
+        --network_args "conv_dim=4" "conv_alpha=1"
+        ```
+        以下のように alpha を省略した時は1になります。
+        ```
+        --network_args "conv_dim=4"
+        ```
 
 #### 学習パラメータ
 
@@ -311,4 +331,37 @@ For these features, please refer to the script's help (`python train_network.py 
 *   ネットワークの追加設定 (`--network_args` など)
 
 これらの機能については、スクリプトのヘルプ (`python train_network.py --help`) やリポジトリ内の他のドキュメントを参照してください。
+</details>
+
+## 6. Additional Information / 追加情報
+
+### Naming of LoRA
+
+The LoRA supported by `train_network.py` has been named to avoid confusion. The documentation has been updated. The following are the names of LoRA types in this repository.
+
+1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers)
+
+    LoRA for Linear layers and Conv2d layers with 1x1 kernel
+
+2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers)
+
+    In addition to 1., LoRA for Conv2d layers with 3x3 kernel 
+    
+LoRA-LierLa is the default LoRA type for `train_network.py` (without `conv_dim` network arg). 
+
+<details>
+<summary>日本語</summary>
+
+`train_network.py` がサポートするLoRAについて、混乱を避けるため名前を付けました。ドキュメントは更新済みです。以下は当リポジトリ内の独自の名称です。
+
+1. __LoRA-LierLa__ : (LoRA for __Li__ n __e__ a __r__  __La__ yers、リエラと読みます)
+
+    Linear 層およびカーネルサイズ 1x1 の Conv2d 層に適用されるLoRA
+
+2. __LoRA-C3Lier__ : (LoRA for __C__ olutional layers with __3__ x3 Kernel and  __Li__ n __e__ a __r__ layers、セリアと読みます)
+
+    1.に加え、カーネルサイズ 3x3 の Conv2d 層に適用されるLoRA
+
+デフォルトではLoRA-LierLaが使われます。LoRA-C3Lierを使う場合は `--network_args` に `conv_dim` を指定してください。
+
 </details>
