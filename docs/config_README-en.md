@@ -1,9 +1,6 @@
-Original Source by kohya-ss
+First version: A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
 
-First version:
-A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
-
-Some parts are manually added.
+Document is updated and maintained manually.
 
 # Config Readme
 
@@ -152,6 +149,7 @@ These options are related to subset configuration.
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `resize_interpolation` | (not specified) | o | o | o |
 
 * `num_repeats`
     * Specifies the number of repeats for images in a subset. This is equivalent to `--dataset_repeats` in fine-tuning but can be specified for any training method.
@@ -165,6 +163,8 @@ These options are related to subset configuration.
     * Specifies an additional separator. The part separated by this separator is treated as one tag and is shuffled and dropped. It is then replaced by `caption_separator`. For example, if you specify `aaa;;;bbb;;;ccc`, it will be replaced by `aaa,bbb,ccc` or dropped together.
 * `enable_wildcard`
     * Enables wildcard notation. This will be explained later.
+* `resize_interpolation`
+    * Specifies the interpolation method used when resizing images. Normally, there is no need to specify this. The following options can be specified: `lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box`. By default (when not specified), `area` is used for downscaling, and `lanczos` is used for upscaling. If this option is specified, the same interpolation method will be used for both upscaling and downscaling. When `lanczos` or `box` is specified, PIL is used; for other options, OpenCV is used.
 
 ### DreamBooth-specific options
 
@@ -264,10 +264,10 @@ The following command line argument options are ignored if a configuration file 
 * `--reg_data_dir`
 * `--in_json`
 
-The following command line argument options are given priority over the configuration file options if both are specified simultaneously. In most cases, they have the same names as the corresponding options in the configuration file.
+For the command line options listed below, if an option is specified in both the command line arguments and the configuration file, the value from the configuration file will be given priority. Unless otherwise noted, the option names are the same.
 
-| Command Line Argument Option   | Prioritized Configuration File Option |
-| ------------------------------- | ------------------------------------- |
+| Command Line Argument Option   | Corresponding Configuration File Option |
+| ------------------------------- | --------------------------------------- |
 | `--bucket_no_upscale`           |                                       |
 | `--bucket_reso_steps`           |                                       |
 | `--caption_dropout_every_n_epochs` |                                       |

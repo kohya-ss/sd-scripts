@@ -51,7 +51,7 @@ class OFTModule(torch.nn.Module):
             alpha = alpha.detach().numpy()
         
         # constraint in original paper is alpha * out_dim * out_dim, but we use alpha * out_dim for backward compatibility
-        # original alpha is 1e-6, so we use 1e-3 or 1e-4 for alpha
+        # original alpha is 1e-5, so we use 1e-2 or 1e-4 for alpha
         self.constraint = alpha * out_dim 
         
         self.register_buffer("alpha", torch.tensor(alpha))
