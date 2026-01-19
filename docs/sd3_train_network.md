@@ -95,7 +95,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py \
   --save_every_n_epochs=1 \
   --mixed_precision="fp16" \
   --gradient_checkpointing \
-  --weighting_scheme="sigma_sqrt" \
+  --weighting_scheme="uniform" \
   --blocks_to_swap=32
 ```
 
@@ -129,7 +129,7 @@ accelerate launch --num_cpu_threads_per_process 1 sd3_train_network.py
  --save_every_n_epochs=1
  --mixed_precision="fp16"
  --gradient_checkpointing
- --weighting_scheme="sigma_sqrt"
+ --weighting_scheme="uniform"
  --blocks_to_swap=32
 ```
 
