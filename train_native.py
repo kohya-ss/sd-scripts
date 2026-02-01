@@ -233,6 +233,7 @@ class NativeTrainer:
 
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
+        # Note: Flow Matching will bend the timesteps
         noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
         # ensure the hidden state will require grad
@@ -255,10 +256,16 @@ class NativeTrainer:
                 weight_dtype,
             )
 
-        if args.v_parameterization:
+        if args.flow_model:
+            # Rectified Flow. Kind of vpred. Math is fun.
+            target = noise - latents
+        elif args.v_parameterization:
             # v-parameterization training
+            # velocity = sqrt_alpha_prod * noise - sqrt_one_minus_alpha_prod * sample
+            # target = (alphas_cumprod[timesteps] ** 0.5) * noise - (1 - alphas_cumprod[timesteps]) ** 0.5 * latents
             target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
+            # EPS mode
             target = noise
 
         # differential output preservation
@@ -283,7 +290,10 @@ class NativeTrainer:
                     )
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        # weighting is unused unless cosmap is used (See SD3 / Flux). 
+        weighting = None
+        # noise is used for Contrastive Flow Matching.
+        return noise_pred, target, timesteps, weighting, noise
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -439,7 +449,7 @@ class NativeTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, target, timesteps, weighting, noise = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -456,6 +466,14 @@ class NativeTrainer:
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
         if weighting is not None:
             loss = loss * weighting
+        if args.flow_model and args.contrastive_flow_matching and latents.size(0) > 1:
+            # Original code accepts vpred, which is strange.
+            negative_latents = latents.roll(1, 0)
+            negative_noise = noise.roll(1, 0)
+            #with torch.no_grad():    
+            target_negative = negative_noise - negative_latents
+            loss_contrastive = torch.nn.functional.mse_loss(noise_pred.float(), target_negative.float(), reduction="none")
+            loss = loss - args.cfm_lambda * loss_contrastive
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
         loss = loss.mean([1, 2, 3])
@@ -465,6 +483,10 @@ class NativeTrainer:
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
+        # From Flow Matching code. So strange.
+        # if loss.ndim != 0:
+        #    loss = loss.mean()
+
         return loss.mean()
 
     def train(self, args):
@@ -472,6 +494,7 @@ class NativeTrainer:
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         train_util.verify_training_args(args)
+        train_util.verify_fm_training_args(args)
         train_util.prepare_dataset_args(args, True)
         if args.skip_cache_check:
             train_util.set_skip_npz_path_check(True)
@@ -1686,6 +1709,7 @@ def setup_parser() -> argparse.ArgumentParser:
 
     add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
+    train_util.add_fm_training_arguments(parser)
     train_util.add_dataset_arguments(parser, True, True, True)
     train_util.add_training_arguments(parser, True)
     train_util.add_masked_loss_arguments(parser)
