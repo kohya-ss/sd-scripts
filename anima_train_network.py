@@ -267,8 +267,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return noise_scheduler
 
     def encode_images_to_latents(self, args, vae, images):
-        # images are [0,1], need [-1,1] and temporal dim
-        images = images * 2.0 - 1.0
+        # images are already [-1,1] from IMAGE_TRANSFORMS, add temporal dim
         images = images.unsqueeze(2)  # (B, C, 1, H, W)
         # Ensure scale tensors are on the same device as images
         vae_device = images.device

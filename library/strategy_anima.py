@@ -162,6 +162,15 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
                 prompt_embeds[non_drop_indices] = nd_encoded_text
                 attn_mask[non_drop_indices] = nd_attn_mask
 
+            # Zero out t5_input_ids and t5_attn_mask for dropped items
+            # so the LLM adapter sees a consistent unconditional signal
+            t5_input_ids = t5_input_ids.clone()
+            t5_attn_mask = t5_attn_mask.clone()
+            drop_indices = [i for i in range(batch_size) if i not in non_drop_indices]
+            for i in drop_indices:
+                t5_input_ids[i] = torch.zeros_like(t5_input_ids[i])
+                t5_attn_mask[i] = torch.zeros_like(t5_attn_mask[i])
+
         return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
 
     def drop_cached_text_encoder_outputs(
@@ -181,6 +190,8 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
             prompt_embeds = prompt_embeds.clone()
             if attn_mask is not None:
                 attn_mask = attn_mask.clone()
+            if t5_input_ids is not None:
+                t5_input_ids = t5_input_ids.clone()
             if t5_attn_mask is not None:
                 t5_attn_mask = t5_attn_mask.clone()
 
@@ -189,6 +200,8 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
                     prompt_embeds[i] = torch.zeros_like(prompt_embeds[i])
                     if attn_mask is not None:
                         attn_mask[i] = torch.zeros_like(attn_mask[i])
+                    if t5_input_ids is not None:
+                        t5_input_ids[i] = torch.zeros_like(t5_input_ids[i])
                     if t5_attn_mask is not None:
                         t5_attn_mask[i] = torch.zeros_like(t5_attn_mask[i])
 
@@ -350,11 +363,9 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         def encode_by_vae(img_tensor):
             """Encode image tensor to latents.
 
-            img_tensor: (B, C, H, W) in [0, 1] range
-            Need to convert to (B, C, T=1, H, W) in [-1, 1] range for WanVAE
+            img_tensor: (B, C, H, W) in [-1, 1] range (already normalized by IMAGE_TRANSFORMS)
+            Need to add temporal dim to get (B, C, T=1, H, W) for WanVAE
             """
-            # Convert [0, 1] -> [-1, 1]
-            img_tensor = img_tensor * 2.0 - 1.0
             # Add temporal dimension: (B, C, H, W) -> (B, C, 1, H, W)
             img_tensor = img_tensor.unsqueeze(2)
             img_tensor = img_tensor.to(vae_device, dtype=vae_dtype)
