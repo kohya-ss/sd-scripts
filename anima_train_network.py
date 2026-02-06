@@ -183,6 +183,9 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
     def get_text_encoders_train_flags(self, args, text_encoders):
         return [False]  # Qwen3 always frozen
 
+    def is_train_text_encoder(self, args):
+        return False  # Qwen3 text encoder is always frozen for Anima
+
     def get_text_encoder_outputs_caching_strategy(self, args):
         if args.cache_text_encoder_outputs:
             return strategy_anima.AnimaTextEncoderOutputsCachingStrategy(
