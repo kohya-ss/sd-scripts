@@ -1,5 +1,4 @@
-# LoRA network module for Anima
-
+# LoRA network module for Anima 
 import math
 import os
 from typing import Dict, List, Optional, Tuple, Type, Union
@@ -181,7 +180,7 @@ class LoRANetwork(torch.nn.Module):
     # Target modules for text encoder (Qwen3)
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["Qwen3Attention", "Qwen3MLP", "Qwen3SdpaAttention", "Qwen3FlashAttention2"]
 
-    LORA_PREFIX_ANIMA = "lora_unet" 
+    LORA_PREFIX_ANIMA = "lora_unet"  # ComfyUI compatible
     LORA_PREFIX_TEXT_ENCODER = "lora_te1"  # Qwen3
 
     def __init__(
@@ -279,14 +278,13 @@ class LoRANetwork(torch.nn.Module):
 
                                     if is_unet and type_dims is not None:
                                         # type_dims = [self_attn_dim, cross_attn_dim, mlp_dim, mod_dim, llm_adapter_dim]
-                                        # Check llm_adapter first (most specific) to avoid mismatches:
-                                        # e.g. "llm_adapter_blocks_0_self_attn_q" contains both "self_attn" and "llm_adapter"
+                                        # Order matters: check most specific identifiers first to avoid mismatches.
                                         identifier_order = [
-                                            (4, ("llm_adapter",)),     # check first — most specific
+                                            (4, ("llm_adapter",)),         
+                                            (3, ("adaln_modulation",)),   
                                             (0, ("self_attn",)),
                                             (1, ("cross_attn",)),
                                             (2, ("mlp",)),
-                                            (3, ("adaln_modulation",)),
                                         ]
                                         for idx, ids in identifier_order:
                                             d = type_dims[idx]

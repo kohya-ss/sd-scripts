@@ -200,7 +200,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         if args.cache_text_encoder_outputs:
             if not args.lowram:
                 logger.info("move vae and unet to cpu to save memory")
-                org_vae_device = vae.device
+                org_vae_device = next(vae.parameters()).device
                 org_unet_device = unet.device
                 vae.to("cpu")
                 unet.to("cpu")
@@ -250,7 +250,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             text_encoders[0].to(accelerator.device, dtype=weight_dtype)
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
-        text_encoders = text_encoder  # compatibility
+        text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]  # compatibility
         te = self.get_models_for_text_encoding(args, accelerator, text_encoders)
         qwen3_te = te[0] if te is not None else None
 
@@ -365,16 +365,14 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                     model_pred_prior = unet(
                         noisy_model_input[diff_output_pr_indices],
                         timesteps[diff_output_pr_indices],
-                        crossattn_emb[diff_output_pr_indices],
+                        prompt_embeds[diff_output_pr_indices],
                         padding_mask=padding_mask[diff_output_pr_indices],
+                        source_attention_mask=attn_mask[diff_output_pr_indices],
+                        t5_input_ids=t5_input_ids[diff_output_pr_indices],
+                        t5_attn_mask=t5_attn_mask[diff_output_pr_indices],
                     )
                 network.set_multiplier(1.0)
 
-                target[diff_output_pr_indices] = (noise[diff_output_pr_indices] - latents[diff_output_pr_indices]).to(target.dtype)
-                # Actually we want the prior prediction as the target
-                # For rectified flow: if model predicts v = noise - x, then target should also be v
-                # but for differential output preservation, we use the prior model's prediction
-                # The prior model output IS the velocity prediction directly
                 target[diff_output_pr_indices] = model_pred_prior.to(target.dtype)
 
         return model_pred, target, timesteps, weighting
