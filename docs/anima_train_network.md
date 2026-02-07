@@ -169,8 +169,6 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - Maximum token length for the Qwen3 tokenizer. Default `512`.
 * `--t5_max_token_length=<integer>`
   - Maximum token length for the T5 tokenizer. Default `512`.
-* `--apply_t5_attn_mask`
-  - Apply attention mask to T5 tokens in the LLM adapter.
 * `--flash_attn`
   - Use Flash Attention for DiT self/cross-attention. Requires `pip install flash-attn`. Falls back to PyTorch SDPA if the package is not installed. Note: Flash Attention is only applied to DiT blocks; the LLM Adapter uses standard attention because it requires attention masks.
 * `--transformer_dtype=<choice>`
@@ -229,7 +227,6 @@ Anima supports 6 independent learning rate groups. Set to `0` to freeze a compon
 * `--sigmoid_scale` - logit_normalタイムステップサンプリングのスケール係数。デフォルト`1.0`。
 * `--qwen3_max_token_length` - Qwen3トークナイザーの最大トークン長。デフォルト`512`。
 * `--t5_max_token_length` - T5トークナイザーの最大トークン長。デフォルト`512`。
-* `--apply_t5_attn_mask` - LLM AdapterでT5トークンにアテンションマスクを適用。
 * `--flash_attn` - DiTのself/cross-attentionにFlash Attentionを使用。`pip install flash-attn`が必要。
 * `--transformer_dtype` - Transformerブロック用の個別dtype。
 
@@ -537,7 +534,6 @@ Anima LoRA学習では、Qwen3テキストエンコーダーのLoRAもトレー�
 
 The following Anima-specific metadata is saved in the LoRA model file:
 
-* `ss_apply_t5_attn_mask`
 * `ss_weighting_scheme`
 * `ss_discrete_flow_shift`
 * `ss_timestep_sample_method`
@@ -552,7 +548,6 @@ The following Anima-specific metadata is saved in the LoRA model file:
 
 以下のAnima固有のメタデータがLoRAモデルファイルに保存されます：
 
-* `ss_apply_t5_attn_mask`
 * `ss_weighting_scheme`
 * `ss_discrete_flow_shift`
 * `ss_timestep_sample_method`

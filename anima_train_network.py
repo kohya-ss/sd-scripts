@@ -166,7 +166,6 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
     def get_text_encoding_strategy(self, args):
         caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
         self.text_encoding_strategy = strategy_anima.AnimaTextEncodingStrategy(
-            apply_t5_attn_mask=args.apply_t5_attn_mask,
             dropout_rate=caption_dropout_rate,
         )
         return self.text_encoding_strategy
@@ -193,7 +192,6 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                 args.text_encoder_batch_size,
                 args.skip_cache_check,
                 is_partial=False,
-                apply_t5_attn_mask=args.apply_t5_attn_mask,
             )
         return None
 
@@ -471,7 +469,6 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return train_util.get_sai_model_spec(None, args, False, True, False, is_stable_diffusion_ckpt=True)
 
     def update_metadata(self, metadata, args):
-        metadata["ss_apply_t5_attn_mask"] = args.apply_t5_attn_mask
         metadata["ss_weighting_scheme"] = args.weighting_scheme
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
         metadata["ss_timestep_sample_method"] = getattr(args, 'timestep_sample_method', 'logit_normal')

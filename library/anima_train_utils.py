@@ -107,11 +107,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Maximum token length for T5 tokenizer (default: 512)",
     )
     parser.add_argument(
-        "--apply_t5_attn_mask",
-        action="store_true",
-        help="Apply attention mask to T5 tokens in LLM adapter",
-    )
-    parser.add_argument(
         "--discrete_flow_shift",
         type=float,
         default=3.0,

@@ -165,7 +165,6 @@ def train(args):
                     args.text_encoder_batch_size,
                     False,
                     False,
-                    args.apply_t5_attn_mask,
                 )
             )
         train_dataset_group.set_current_strategies()
@@ -223,7 +222,6 @@ def train(args):
     # Set text encoding strategy
     caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
     text_encoding_strategy = strategy_anima.AnimaTextEncodingStrategy(
-        apply_t5_attn_mask=args.apply_t5_attn_mask,
         dropout_rate=caption_dropout_rate,
     )
     strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
@@ -243,7 +241,6 @@ def train(args):
             args.text_encoder_batch_size,
             args.skip_cache_check,
             is_partial=False,
-            apply_t5_attn_mask=args.apply_t5_attn_mask,
         )
         strategy_base.TextEncoderOutputsCachingStrategy.set_strategy(text_encoder_caching_strategy)
 

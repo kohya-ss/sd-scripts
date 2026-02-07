@@ -200,7 +200,6 @@ def test_text_encoder_cache(args, pairs):
         t5_max_length=args.t5_max_length,
     )
     text_encoding_strategy = AnimaTextEncodingStrategy(
-        apply_t5_attn_mask=False,
         dropout_rate=0.0,
     )
 
@@ -355,7 +354,6 @@ def test_text_encoder_cache(args, pairs):
     # Test drop_cached_text_encoder_outputs
     print(f"\n[2.8] Testing drop_cached_text_encoder_outputs (caption dropout)...")
     dropout_strategy = AnimaTextEncodingStrategy(
-        apply_t5_attn_mask=False,
         dropout_rate=0.5,  # high rate to ensure some drops
     )
     dropped = dropout_strategy.drop_cached_text_encoder_outputs(*stacked)
@@ -401,7 +399,7 @@ def test_full_batch_simulation(args, pairs):
         qwen3_tokenizer=qwen3_tokenizer, t5_tokenizer=t5_tokenizer,
         qwen3_max_length=args.qwen3_max_length, t5_max_length=args.t5_max_length,
     )
-    text_encoding_strategy = AnimaTextEncodingStrategy(apply_t5_attn_mask=False, dropout_rate=0.0)
+    text_encoding_strategy = AnimaTextEncodingStrategy(dropout_rate=0.0)
 
     captions = [cap for _, cap in pairs]
 
