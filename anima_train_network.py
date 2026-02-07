@@ -236,6 +236,14 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                                 )
                 self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
+            # Pre-cache unconditional embeddings for caption dropout before text encoder is deleted
+            caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+            text_encoding_strategy_for_uncond = strategy_base.TextEncodingStrategy.get_strategy()
+            if caption_dropout_rate > 0.0:
+                tokenize_strategy_for_uncond = strategy_base.TokenizeStrategy.get_strategy()
+                with accelerator.autocast():
+                    text_encoding_strategy_for_uncond.cache_uncond_embeddings(tokenize_strategy_for_uncond, text_encoders)
+
             accelerator.wait_for_everyone()
 
             # move text encoder back to cpu

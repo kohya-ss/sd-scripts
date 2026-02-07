@@ -265,6 +265,12 @@ def train(args):
                                 enable_dropout=False,
                             )
 
+        # Pre-cache unconditional embeddings for caption dropout before text encoder is deleted
+        caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+        if caption_dropout_rate > 0.0:
+            with accelerator.autocast():
+                text_encoding_strategy.cache_uncond_embeddings(tokenize_strategy, [qwen3_text_encoder])
+
         accelerator.wait_for_everyone()
 
         # free text encoder memory
