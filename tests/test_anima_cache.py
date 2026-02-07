@@ -488,7 +488,13 @@ def test_full_batch_simulation(args, pairs):
     print(f"  train_text_encoder (NEW=False): {train_text_encoder_FALSE}")
     print(f"")
     print(f"  Condition with OLD behavior (no override): {cond_old}")
-    print(f"    -> {'ENTERS re-encode block -> accesses batch[\"input_ids_list\"] -> CRASH!' if cond_old else 'SKIPS re-encode block -> uses cache -> OK'}")
+    msg = (
+        "ENTERS re-encode block -> accesses batch['input_ids_list'] -> CRASH!"
+        if cond_old
+        else "SKIPS re-encode block -> uses cache -> OK"
+    )
+
+    print(f"    -> {msg}")
     print(f"  Condition with NEW behavior (override):    {cond_new}")
     print(f"    -> {'ENTERS re-encode block' if cond_new else 'SKIPS re-encode block -> uses cache -> OK'}")
 
