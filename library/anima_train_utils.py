@@ -109,8 +109,8 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
-        default=3.0,
-        help="Timestep distribution shift for rectified flow training (default: 3.0)",
+        default=1.0,
+        help="Timestep distribution shift for rectified flow training (default: 1.0)",
     )
     parser.add_argument(
         "--timestep_sample_method",
