@@ -231,12 +231,10 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                 self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
             # Pre-cache unconditional embeddings for caption dropout before text encoder is deleted
-            caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
             text_encoding_strategy_for_uncond = strategy_base.TextEncodingStrategy.get_strategy()
-            if caption_dropout_rate > 0.0:
-                tokenize_strategy_for_uncond = strategy_base.TokenizeStrategy.get_strategy()
-                with accelerator.autocast():
-                    text_encoding_strategy_for_uncond.cache_uncond_embeddings(tokenize_strategy_for_uncond, text_encoders)
+            tokenize_strategy_for_uncond = strategy_base.TokenizeStrategy.get_strategy()
+            with accelerator.autocast():
+                text_encoding_strategy_for_uncond.cache_uncond_embeddings(tokenize_strategy_for_uncond, text_encoders)
 
             accelerator.wait_for_everyone()
 
@@ -433,13 +431,21 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Text encoder conditions
         text_encoder_conds = []
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
+        anima_text_encoding_strategy: strategy_anima.AnimaTextEncodingStrategy = text_encoding_strategy
         if text_encoder_outputs_list is not None:
-            text_encoder_conds = text_encoder_outputs_list
+            caption_dropout_rates = text_encoder_outputs_list[-1]
+            text_encoder_outputs_list = text_encoder_outputs_list[:-1]
+
+            # Apply caption dropout to cached outputs
+            text_encoder_conds = anima_text_encoding_strategy.drop_cached_text_encoder_outputs(
+                *text_encoder_outputs_list, caption_dropout_rates=caption_dropout_rates
+            )
 
         if len(text_encoder_conds) == 0 or text_encoder_conds[0] is None or train_text_encoder:
             with torch.set_grad_enabled(is_train and train_text_encoder), accelerator.autocast():
                 input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
-                encoded_text_encoder_conds = text_encoding_strategy.encode_tokens(
+                # TODO stop gradient for uncond embeddings when using caption dropout?
+                encoded_text_encoder_conds = anima_text_encoding_strategy.encode_tokens(
                     tokenize_strategy,
                     self.get_models_for_text_encoding(args, accelerator, text_encoders),
                     input_ids,
@@ -450,6 +456,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             if len(text_encoder_conds) == 0:
                 text_encoder_conds = encoded_text_encoder_conds
             else:
+                # Fill in only missing parts (partial caching)
                 for i in range(len(encoded_text_encoder_conds)):
                     if encoded_text_encoder_conds[i] is not None:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
