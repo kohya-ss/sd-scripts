@@ -32,6 +32,7 @@ hime="hime"
 OT="OT"
 byt="byt"
 tak="tak"
+temperal="temperal"
 
 [files]
 extend-exclude = ["_typos.toml", "venv", "configs"]
