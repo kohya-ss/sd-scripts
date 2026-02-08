@@ -34,4 +34,4 @@ byt="byt"
 tak="tak"
 
 [files]
-extend-exclude = ["_typos.toml", "venv"]
+extend-exclude = ["_typos.toml", "venv", "configs"]
