@@ -118,7 +118,7 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
   --timestep_sample_method="logit_normal" \
-  --discrete_flow_shift=3.0 \
+  --discrete_flow_shift=1.0 \
   --max_train_epochs=10 \
   --save_every_n_epochs=1 \
   --mixed_precision="bf16" \
@@ -162,7 +162,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--timestep_sample_method=<choice>`
   - Timestep sampling method. Choose from `logit_normal` (default) or `uniform`.
 * `--discrete_flow_shift=<float>`
-  - Shift for the timestep distribution in Rectified Flow training. Default `3.0`. The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
+  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`. The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`. 1.0 means no shift.
 * `--sigmoid_scale=<float>`
   - Scale factor for `logit_normal` timestep sampling. Default `1.0`.
 * `--qwen3_max_token_length=<integer>`
