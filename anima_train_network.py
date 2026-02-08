@@ -39,17 +39,15 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         val_dataset_group: Optional[train_util.DatasetGroup],
     ):
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
-            logger.warning(
-                "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled"
-            )
+            logger.warning("cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled")
             args.cache_text_encoder_outputs = True
 
         # Anima uses embedding-level dropout (in AnimaTextEncodingStrategy) instead of
         # dataset-level caption dropout, so zero out subset-level rates to allow caching.
-        caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+        caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
         if caption_dropout_rate > 0:
             logger.info(f"Using embedding-level caption dropout rate: {caption_dropout_rate}")
-            if hasattr(train_dataset_group, 'datasets'):
+            if hasattr(train_dataset_group, "datasets"):
                 for dataset in train_dataset_group.datasets:
                     for subset in dataset.subsets:
                         subset.caption_dropout_rate = 0.0
@@ -63,26 +61,28 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             args.blocks_to_swap is None or args.blocks_to_swap == 0
         ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing"
 
-        if getattr(args, 'unsloth_offload_checkpointing', False):
+        if getattr(args, "unsloth_offload_checkpointing", False):
             if not args.gradient_checkpointing:
                 logger.warning("unsloth_offload_checkpointing is enabled, so gradient_checkpointing is also enabled")
                 args.gradient_checkpointing = True
-            assert not args.cpu_offload_checkpointing, \
-                "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
+            assert (
+                not args.cpu_offload_checkpointing
+            ), "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
             assert (
                 args.blocks_to_swap is None or args.blocks_to_swap == 0
             ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
 
         # Flash attention: validate availability
-        if getattr(args, 'flash_attn', False):
+        if getattr(args, "flash_attn", False):
             try:
                 import flash_attn  # noqa: F401
+
                 logger.info("Flash Attention enabled for DiT blocks")
             except ImportError:
                 logger.warning("flash_attn package not installed, falling back to PyTorch SDPA")
                 args.flash_attn = False
 
-        if getattr(args, 'blockwise_fused_optimizers', False):
+        if getattr(args, "blockwise_fused_optimizers", False):
             raise ValueError("blockwise_fused_optimizers is not supported with LoRA/NetworkTrainer")
 
         train_dataset_group.verify_bucket_reso_steps(8)  # WanVAE spatial downscale = 8
@@ -92,14 +92,12 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
     def load_target_model(self, args, weight_dtype, accelerator):
         # Load Qwen3 text encoder (tokenizers already loaded in get_tokenize_strategy)
         logger.info("Loading Qwen3 text encoder...")
-        self.qwen3_text_encoder, _ = anima_utils.load_qwen3_text_encoder(
-            args.qwen3_path, dtype=weight_dtype, device="cpu"
-        )
+        self.qwen3_text_encoder, _ = anima_utils.load_qwen3_text_encoder(args.qwen3_path, dtype=weight_dtype, device="cpu")
         self.qwen3_text_encoder.eval()
 
         # Parse transformer_dtype
         transformer_dtype = None
-        if hasattr(args, 'transformer_dtype') and args.transformer_dtype is not None:
+        if hasattr(args, "transformer_dtype") and args.transformer_dtype is not None:
             transformer_dtype_map = {
                 "float16": torch.float16,
                 "bfloat16": torch.bfloat16,
@@ -114,18 +112,18 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             dtype=weight_dtype,
             device="cpu",
             transformer_dtype=transformer_dtype,
-            llm_adapter_path=getattr(args, 'llm_adapter_path', None),
-            disable_mmap=getattr(args, 'disable_mmap_load_safetensors', False),
+            llm_adapter_path=getattr(args, "llm_adapter_path", None),
+            disable_mmap=getattr(args, "disable_mmap_load_safetensors", False),
         )
 
         # Flash attention
-        if getattr(args, 'flash_attn', False):
+        if getattr(args, "flash_attn", False):
             dit.set_flash_attn(True)
 
         # Store unsloth preference so that when the base NetworkTrainer calls
         # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.
         # The base trainer only passes cpu_offload, so we store the flag on the model.
-        self._use_unsloth_offload_checkpointing = getattr(args, 'unsloth_offload_checkpointing', False)
+        self._use_unsloth_offload_checkpointing = getattr(args, "unsloth_offload_checkpointing", False)
 
         # Block swap
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
@@ -135,9 +133,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
 
         # Load VAE
         logger.info("Loading Anima VAE...")
-        self.vae, vae_mean, vae_std, self.vae_scale = anima_utils.load_anima_vae(
-            args.vae_path, dtype=weight_dtype, device="cpu"
-        )
+        self.vae, vae_mean, vae_std, self.vae_scale = anima_utils.load_anima_vae(args.vae_path, dtype=weight_dtype, device="cpu")
 
         # Return format: (model_type, text_encoders, vae, unet)
         return "anima", [self.qwen3_text_encoder], self.vae, dit
@@ -146,7 +142,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Load tokenizers from paths (called before load_target_model, so self.qwen3_tokenizer isn't set yet)
         self.tokenize_strategy = strategy_anima.AnimaTokenizeStrategy(
             qwen3_path=args.qwen3_path,
-            t5_tokenizer_path=getattr(args, 't5_tokenizer_path', None),
+            t5_tokenizer_path=getattr(args, "t5_tokenizer_path", None),
             qwen3_max_length=args.qwen3_max_token_length,
             t5_max_length=args.t5_max_token_length,
         )
@@ -159,12 +155,10 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return [tokenize_strategy.qwen3_tokenizer]
 
     def get_latents_caching_strategy(self, args):
-        return strategy_anima.AnimaLatentsCachingStrategy(
-            args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
-        )
+        return strategy_anima.AnimaLatentsCachingStrategy(args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check)
 
     def get_text_encoding_strategy(self, args):
-        caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+        caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
         self.text_encoding_strategy = strategy_anima.AnimaTextEncodingStrategy(
             dropout_rate=caption_dropout_rate,
         )
@@ -237,7 +231,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                 self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
             # Pre-cache unconditional embeddings for caption dropout before text encoder is deleted
-            caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+            caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
             text_encoding_strategy_for_uncond = strategy_base.TextEncodingStrategy.get_strategy()
             if caption_dropout_rate > 0.0:
                 tokenize_strategy_for_uncond = strategy_base.TokenizeStrategy.get_strategy()
@@ -264,8 +258,16 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         qwen3_te = te[0] if te is not None else None
 
         anima_train_utils.sample_images(
-            accelerator, args, epoch, global_step, unet, vae, self.vae_scale,
-            qwen3_te, self.tokenize_strategy, self.text_encoding_strategy,
+            accelerator,
+            args,
+            epoch,
+            global_step,
+            unet,
+            vae,
+            self.vae_scale,
+            qwen3_te,
+            self.tokenize_strategy,
+            self.text_encoding_strategy,
             self.sample_prompts_te_outputs,
         )
 
@@ -329,10 +331,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         bs = latents.shape[0]
         h_latent = latents.shape[-2]
         w_latent = latents.shape[-1]
-        padding_mask = torch.zeros(
-            bs, 1, h_latent, w_latent,
-            dtype=weight_dtype, device=accelerator.device
-        )
+        padding_mask = torch.zeros(bs, 1, h_latent, w_latent, dtype=weight_dtype, device=accelerator.device)
 
         # Prepare block swap
         if self.is_swapping_blocks:
@@ -354,9 +353,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         target = noise - latents
 
         # Loss weighting
-        weighting = anima_train_utils.compute_loss_weighting_for_anima(
-            weighting_scheme=args.weighting_scheme, sigmas=sigmas
-        )
+        weighting = anima_train_utils.compute_loss_weighting_for_anima(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
 
         # Differential output preservation
         if "custom_attributes" in batch:
@@ -386,10 +383,22 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return model_pred, target, timesteps, weighting
 
     def process_batch(
-        self, batch, text_encoders, unet, network, vae, noise_scheduler,
-        vae_dtype, weight_dtype, accelerator, args,
-        text_encoding_strategy, tokenize_strategy,
-        is_train=True, train_text_encoder=True, train_unet=True,
+        self,
+        batch,
+        text_encoders,
+        unet,
+        network,
+        vae,
+        noise_scheduler,
+        vae_dtype,
+        weight_dtype,
+        accelerator,
+        args,
+        text_encoding_strategy,
+        tokenize_strategy,
+        is_train=True,
+        train_text_encoder=True,
+        train_unet=True,
     ) -> torch.Tensor:
         """Override base process_batch for 5D video latents (B, C, T, H, W).
 
@@ -446,8 +455,17 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
-            args, accelerator, noise_scheduler, latents, batch,
-            text_encoder_conds, unet, network, weight_dtype, train_unet, is_train=is_train,
+            args,
+            accelerator,
+            noise_scheduler,
+            latents,
+            batch,
+            text_encoder_conds,
+            unet,
+            network,
+            weight_dtype,
+            train_unet,
+            is_train=is_train,
         )
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
@@ -479,8 +497,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
     def update_metadata(self, metadata, args):
         metadata["ss_weighting_scheme"] = args.weighting_scheme
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
-        metadata["ss_timestep_sample_method"] = getattr(args, 'timestep_sample_method', 'logit_normal')
-        metadata["ss_sigmoid_scale"] = getattr(args, 'sigmoid_scale', 1.0)
+        metadata["ss_timestep_sample_method"] = getattr(args, "timestep_sample_method", "logit_normal")
+        metadata["ss_sigmoid_scale"] = getattr(args, "sigmoid_scale", 1.0)
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs

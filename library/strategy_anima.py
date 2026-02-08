@@ -92,9 +92,9 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         # Cached unconditional embeddings (from encoding empty caption "")
         # Must be initialized via cache_uncond_embeddings() before text encoder is deleted
         self._uncond_prompt_embeds: Optional[torch.Tensor] = None  # (1, seq_len, hidden)
-        self._uncond_attn_mask: Optional[torch.Tensor] = None      # (1, seq_len)
-        self._uncond_t5_input_ids: Optional[torch.Tensor] = None   # (1, t5_seq_len)
-        self._uncond_t5_attn_mask: Optional[torch.Tensor] = None   # (1, t5_seq_len)
+        self._uncond_attn_mask: Optional[torch.Tensor] = None  # (1, seq_len)
+        self._uncond_t5_input_ids: Optional[torch.Tensor] = None  # (1, t5_seq_len)
+        self._uncond_t5_attn_mask: Optional[torch.Tensor] = None  # (1, t5_seq_len)
 
     def cache_uncond_embeddings(
         self,
@@ -182,8 +182,8 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
                 )
 
         seq_len = qwen3_input_ids.shape[1]
-        hidden_size = (nd_encoded_text.shape[-1] if nd_encoded_text is not None else uncond_pe.shape[-1])
-        dtype = (nd_encoded_text.dtype if nd_encoded_text is not None else uncond_pe.dtype)
+        hidden_size = nd_encoded_text.shape[-1] if nd_encoded_text is not None else uncond_pe.shape[-1]
+        dtype = nd_encoded_text.dtype if nd_encoded_text is not None else uncond_pe.dtype
 
         prompt_embeds = torch.zeros((batch_size, seq_len, hidden_size), device=encoder_device, dtype=dtype)
         attn_mask = torch.zeros((batch_size, seq_len), device=encoder_device, dtype=qwen3_attn_mask.dtype)
@@ -202,7 +202,6 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         t5_attn_mask[drop_mask] = uncond_t5_am.to(device=t5_attn_mask.device, dtype=t5_attn_mask.dtype)
 
         return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
-
 
     def drop_cached_text_encoder_outputs(
         self,
@@ -367,18 +366,10 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         return self.ANIMA_LATENTS_NPZ_SUFFIX
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return (
-            os.path.splitext(absolute_path)[0]
-            + f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + self.ANIMA_LATENTS_NPZ_SUFFIX
-        )
+        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.ANIMA_LATENTS_NPZ_SUFFIX
 
-    def is_disk_cached_latents_expected(
-        self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool
-    ):
-        return self._default_is_disk_cached_latents_expected(
-            8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True
-        )
+    def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
+        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)
 
     def load_latents_from_disk(
         self, npz_path: str, bucket_reso: Tuple[int, int]

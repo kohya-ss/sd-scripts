@@ -21,7 +21,7 @@ from library import anima_models
 
 
 # Keys that should stay in high precision (float32/bfloat16, not quantized)
-KEEP_IN_HIGH_PRECISION = ['x_embedder', 't_embedder', 't_embedding_norm', 'final_layer']
+KEEP_IN_HIGH_PRECISION = ["x_embedder", "t_embedder", "t_embedding_norm", "final_layer"]
 
 
 def load_safetensors(path: str, device: str = "cpu", dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
@@ -56,6 +56,7 @@ def load_anima_dit(
     logger.info(f"Loading Anima DiT from {dit_path}")
     if disable_mmap:
         from library.safetensors_utils import load_safetensors as load_safetensors_no_mmap
+
         state_dict = load_safetensors_no_mmap(dit_path, device="cpu", disable_mmap=True)
     else:
         state_dict = load_file(dit_path, device="cpu")
@@ -63,8 +64,8 @@ def load_anima_dit(
     # Remove 'net.' prefix if present
     new_state_dict = {}
     for k, v in state_dict.items():
-        if k.startswith('net.'):
-            k = k[len('net.'):]
+        if k.startswith("net."):
+            k = k[len("net.") :]
         new_state_dict[k] = v
     state_dict = new_state_dict
 
@@ -74,18 +75,20 @@ def load_anima_dit(
     # Detect LLM adapter
     if llm_adapter_path is not None:
         use_llm_adapter = True
-        dit_config['use_llm_adapter'] = True
+        dit_config["use_llm_adapter"] = True
         llm_adapter_state_dict = load_safetensors(llm_adapter_path, device="cpu")
-    elif 'llm_adapter.out_proj.weight' in state_dict:
+    elif "llm_adapter.out_proj.weight" in state_dict:
         use_llm_adapter = True
-        dit_config['use_llm_adapter'] = True
+        dit_config["use_llm_adapter"] = True
         llm_adapter_state_dict = None  # Loaded as part of DiT
     else:
         use_llm_adapter = False
         llm_adapter_state_dict = None
 
-    logger.info(f"DiT config: model_channels={dit_config['model_channels']}, num_blocks={dit_config['num_blocks']}, "
-                f"num_heads={dit_config['num_heads']}, use_llm_adapter={use_llm_adapter}")
+    logger.info(
+        f"DiT config: model_channels={dit_config['model_channels']}, num_blocks={dit_config['num_blocks']}, "
+        f"num_heads={dit_config['num_heads']}, use_llm_adapter={use_llm_adapter}"
+    )
 
     # Build model normally on CPU — buffers get proper values from __init__
     dit = anima_models.MiniTrainDIT(**dit_config)
@@ -99,9 +102,11 @@ def load_anima_dit(
     missing, unexpected = dit.load_state_dict(state_dict, strict=False)
     if missing:
         # Filter out expected missing buffers (initialized in __init__, not saved in checkpoint)
-        unexpected_missing = [k for k in missing if not any(
-            buf_name in k for buf_name in ('seq', 'dim_spatial_range', 'dim_temporal_range', 'inv_freq')
-        )]
+        unexpected_missing = [
+            k
+            for k in missing
+            if not any(buf_name in k for buf_name in ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq"))
+        ]
         if unexpected_missing:
             logger.warning(f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}")
     if unexpected:
@@ -109,9 +114,7 @@ def load_anima_dit(
 
     # Apply per-parameter dtype (high precision for 1D/critical, transformer_dtype for rest)
     for name, p in dit.named_parameters():
-        dtype_to_use = dtype if (
-            any(keyword in name for keyword in KEEP_IN_HIGH_PRECISION) or p.ndim == 1
-        ) else transformer_dtype
+        dtype_to_use = dtype if (any(keyword in name for keyword in KEEP_IN_HIGH_PRECISION) or p.ndim == 1) else transformer_dtype
         p.data = p.data.to(dtype=dtype_to_use)
 
     dit.to(device)
@@ -156,7 +159,38 @@ def load_anima_model(
     loading_device = torch.device(loading_device)
 
     # We currently support fixed DiT config for Anima models
-    dit_config={'max_img_h': 512, 'max_img_w': 512, 'max_frames': 128, 'in_channels': 16, 'out_channels': 16, 'patch_spatial': 2, 'patch_temporal': 1, 'model_channels': 2048, 'concat_padding_mask': True, 'crossattn_emb_channels': 1024, 'pos_emb_cls': 'rope3d', 'pos_emb_learnable': True, 'pos_emb_interpolation': 'crop', 'min_fps': 1, 'max_fps': 30, 'use_adaln_lora': True, 'adaln_lora_dim': 256, 'num_blocks': 28, 'num_heads': 16, 'extra_per_block_abs_pos_emb': False, 'rope_h_extrapolation_ratio': 4.0, 'rope_w_extrapolation_ratio': 4.0, 'rope_t_extrapolation_ratio': 1.0, 'extra_h_extrapolation_ratio': 1.0, 'extra_w_extrapolation_ratio': 1.0, 'extra_t_extrapolation_ratio': 1.0, 'rope_enable_fps_modulation': False, 'use_llm_adapter': True, 'attn_mode': attn_mode, 'split_attn': split_attn}
+    dit_config = {
+        "max_img_h": 512,
+        "max_img_w": 512,
+        "max_frames": 128,
+        "in_channels": 16,
+        "out_channels": 16,
+        "patch_spatial": 2,
+        "patch_temporal": 1,
+        "model_channels": 2048,
+        "concat_padding_mask": True,
+        "crossattn_emb_channels": 1024,
+        "pos_emb_cls": "rope3d",
+        "pos_emb_learnable": True,
+        "pos_emb_interpolation": "crop",
+        "min_fps": 1,
+        "max_fps": 30,
+        "use_adaln_lora": True,
+        "adaln_lora_dim": 256,
+        "num_blocks": 28,
+        "num_heads": 16,
+        "extra_per_block_abs_pos_emb": False,
+        "rope_h_extrapolation_ratio": 4.0,
+        "rope_w_extrapolation_ratio": 4.0,
+        "rope_t_extrapolation_ratio": 1.0,
+        "extra_h_extrapolation_ratio": 1.0,
+        "extra_w_extrapolation_ratio": 1.0,
+        "extra_t_extrapolation_ratio": 1.0,
+        "rope_enable_fps_modulation": False,
+        "use_llm_adapter": True,
+        "attn_mode": attn_mode,
+        "split_attn": split_attn,
+    }
     # model = create_model(attn_mode, split_attn, dit_weight_dtype)
     with init_empty_weights():
         model = anima_models.Anima(dit_config)
@@ -190,12 +224,16 @@ def load_anima_model(
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     if missing:
         # Filter out expected missing buffers (initialized in __init__, not saved in checkpoint)
-        unexpected_missing = [k for k in missing if not any(
-            buf_name in k for buf_name in ('seq', 'dim_spatial_range', 'dim_temporal_range', 'inv_freq')
-        )]
+        unexpected_missing = [
+            k
+            for k in missing
+            if not any(buf_name in k for buf_name in ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq"))
+        ]
         if unexpected_missing:
             # Raise error to avoid silent failures
-            raise RuntimeError(f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}")
+            raise RuntimeError(
+                f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}"
+            )
         missing = {}  # all missing keys were expected
     if unexpected:
         # Raise error to avoid silent failures
@@ -203,7 +241,6 @@ def load_anima_model(
     logger.info(f"Loaded DiT model from {dit_path}, unexpected missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
 
     return model
-
 
 
 def load_anima_vae(vae_path: str, dtype: torch.dtype = torch.float32, device: str = "cpu"):
@@ -229,14 +266,14 @@ def load_anima_vae(vae_path: str, dtype: torch.dtype = torch.float32, device: st
     from library.anima_vae import WanVAE_
 
     # Build model
-    with torch.device('meta'):
+    with torch.device("meta"):
         vae = WanVAE_(**vae_config)
 
     # Load state dict
-    if vae_path.endswith('.safetensors'):
-        vae_sd = load_file(vae_path, device='cpu')
+    if vae_path.endswith(".safetensors"):
+        vae_sd = load_file(vae_path, device="cpu")
     else:
-        vae_sd = torch.load(vae_path, map_location='cpu', weights_only=True)
+        vae_sd = torch.load(vae_path, map_location="cpu", weights_only=True)
 
     vae.load_state_dict(vae_sd, assign=True)
     vae = vae.eval().requires_grad_(False).to(device, dtype=dtype)
@@ -265,7 +302,7 @@ def load_qwen3_tokenizer(qwen3_path: str):
     if os.path.isdir(qwen3_path):
         tokenizer = AutoTokenizer.from_pretrained(qwen3_path, local_files_only=True)
     else:
-        config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs', 'qwen3_06b')
+        config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "qwen3_06b")
         if not os.path.exists(config_dir):
             raise FileNotFoundError(
                 f"Qwen3 config directory not found at {config_dir}. "
@@ -299,12 +336,10 @@ def load_qwen3_text_encoder(qwen3_path: str, dtype: torch.dtype = torch.bfloat16
     if os.path.isdir(qwen3_path):
         # Directory with full model
         tokenizer = AutoTokenizer.from_pretrained(qwen3_path, local_files_only=True)
-        model = transformers.AutoModelForCausalLM.from_pretrained(
-            qwen3_path, torch_dtype=dtype, local_files_only=True
-        ).model
+        model = transformers.AutoModelForCausalLM.from_pretrained(qwen3_path, torch_dtype=dtype, local_files_only=True).model
     else:
         # Single safetensors file - use configs/qwen3_06b/ for config
-        config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs', 'qwen3_06b')
+        config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "qwen3_06b")
         if not os.path.exists(config_dir):
             raise FileNotFoundError(
                 f"Qwen3 config directory not found at {config_dir}. "
@@ -317,16 +352,16 @@ def load_qwen3_text_encoder(qwen3_path: str, dtype: torch.dtype = torch.bfloat16
         model = transformers.Qwen3ForCausalLM(qwen3_config).model
 
         # Load weights
-        if qwen3_path.endswith('.safetensors'):
-            state_dict = load_file(qwen3_path, device='cpu')
+        if qwen3_path.endswith(".safetensors"):
+            state_dict = load_file(qwen3_path, device="cpu")
         else:
-            state_dict = torch.load(qwen3_path, map_location='cpu', weights_only=True)
+            state_dict = torch.load(qwen3_path, map_location="cpu", weights_only=True)
 
         # Remove 'model.' prefix if present
         new_sd = {}
         for k, v in state_dict.items():
-            if k.startswith('model.'):
-                new_sd[k[len('model.'):]] = v
+            if k.startswith("model."):
+                new_sd[k[len("model.") :]] = v
             else:
                 new_sd[k] = v
 
@@ -355,11 +390,11 @@ def load_t5_tokenizer(t5_tokenizer_path: Optional[str] = None):
         return T5TokenizerFast.from_pretrained(t5_tokenizer_path, local_files_only=True)
 
     # Use bundled config
-    config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'configs', 't5_old')
+    config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "t5_old")
     if os.path.exists(config_dir):
         return T5TokenizerFast(
-            vocab_file=os.path.join(config_dir, 'spiece.model'),
-            tokenizer_file=os.path.join(config_dir, 'tokenizer.json'),
+            vocab_file=os.path.join(config_dir, "spiece.model"),
+            tokenizer_file=os.path.join(config_dir, "tokenizer.json"),
         )
 
     raise FileNotFoundError(
@@ -381,9 +416,9 @@ def save_anima_model(save_path: str, dit_state_dict: Dict[str, torch.Tensor], dt
     for k, v in dit_state_dict.items():
         if dtype is not None:
             v = v.to(dtype)
-        prefixed_sd['net.' + k] = v.contiguous()
+        prefixed_sd["net." + k] = v.contiguous()
 
-    save_file(prefixed_sd, save_path, metadata={'format': 'pt'})
+    save_file(prefixed_sd, save_path, metadata={"format": "pt"})
     logger.info(f"Saved Anima model to {save_path}")
 
 

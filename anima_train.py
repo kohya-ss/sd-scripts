@@ -49,35 +49,32 @@ def train(args):
         args.skip_cache_check = args.skip_latents_validity_check
 
     if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
-        logger.warning(
-            "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled"
-        )
+        logger.warning("cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled")
         args.cache_text_encoder_outputs = True
 
     if args.cpu_offload_checkpointing and not args.gradient_checkpointing:
         logger.warning("cpu_offload_checkpointing is enabled, so gradient_checkpointing is also enabled")
         args.gradient_checkpointing = True
 
-    if getattr(args, 'unsloth_offload_checkpointing', False):
+    if getattr(args, "unsloth_offload_checkpointing", False):
         if not args.gradient_checkpointing:
             logger.warning("unsloth_offload_checkpointing is enabled, so gradient_checkpointing is also enabled")
             args.gradient_checkpointing = True
-        assert not args.cpu_offload_checkpointing, \
-            "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
+        assert not args.cpu_offload_checkpointing, "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
 
     assert (
         args.blocks_to_swap is None or args.blocks_to_swap == 0
     ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing"
 
-    assert (
-        args.blocks_to_swap is None or args.blocks_to_swap == 0
-    ) or not getattr(args, 'unsloth_offload_checkpointing', False), \
-        "blocks_to_swap is not supported with unsloth_offload_checkpointing"
+    assert (args.blocks_to_swap is None or args.blocks_to_swap == 0) or not getattr(
+        args, "unsloth_offload_checkpointing", False
+    ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
 
     # Flash attention: validate availability
-    if getattr(args, 'flash_attn', False):
+    if getattr(args, "flash_attn", False):
         try:
             import flash_attn  # noqa: F401
+
             logger.info("Flash Attention enabled for DiT blocks")
         except ImportError:
             logger.warning("flash_attn package not installed, falling back to PyTorch SDPA")
@@ -104,9 +101,7 @@ def train(args):
             user_config = config_util.load_user_config(args.dataset_config)
             ignored = ["train_data_dir", "in_json"]
             if any(getattr(args, attr) is not None for attr in ignored):
-                logger.warning(
-                    "ignore following options because config file is found: {0}".format(", ".join(ignored))
-                )
+                logger.warning("ignore following options because config file is found: {0}".format(", ".join(ignored)))
         else:
             if use_dreambooth_method:
                 logger.info("Using DreamBooth method.")
@@ -150,7 +145,7 @@ def train(args):
     # Anima uses embedding-level dropout (in AnimaTextEncodingStrategy) instead of
     # dataset-level caption dropout, so we save the rate and zero out subset-level
     # caption_dropout_rate to allow text encoder output caching.
-    caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+    caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
     if caption_dropout_rate > 0:
         logger.info(f"Using embedding-level caption dropout rate: {caption_dropout_rate}")
         for dataset in train_dataset_group.datasets:
@@ -175,9 +170,7 @@ def train(args):
         return
 
     if cache_latents:
-        assert (
-            train_dataset_group.is_latent_cacheable()
-        ), "when caching latents, either color_aug or random_crop cannot be used"
+        assert train_dataset_group.is_latent_cacheable(), "when caching latents, either color_aug or random_crop cannot be used"
 
     if args.cache_text_encoder_outputs:
         assert (
@@ -193,7 +186,7 @@ def train(args):
 
     # parse transformer_dtype
     transformer_dtype = None
-    if hasattr(args, 'transformer_dtype') and args.transformer_dtype is not None:
+    if hasattr(args, "transformer_dtype") and args.transformer_dtype is not None:
         transformer_dtype_map = {
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
@@ -203,12 +196,8 @@ def train(args):
 
     # Load tokenizers and set strategies
     logger.info("Loading tokenizers...")
-    qwen3_text_encoder, qwen3_tokenizer = anima_utils.load_qwen3_text_encoder(
-        args.qwen3_path, dtype=weight_dtype, device="cpu"
-    )
-    t5_tokenizer = anima_utils.load_t5_tokenizer(
-        getattr(args, 't5_tokenizer_path', None)
-    )
+    qwen3_text_encoder, qwen3_tokenizer = anima_utils.load_qwen3_text_encoder(args.qwen3_path, dtype=weight_dtype, device="cpu")
+    t5_tokenizer = anima_utils.load_t5_tokenizer(getattr(args, "t5_tokenizer_path", None))
 
     # Set tokenize strategy
     tokenize_strategy = strategy_anima.AnimaTokenizeStrategy(
@@ -220,7 +209,7 @@ def train(args):
     strategy_base.TokenizeStrategy.set_strategy(tokenize_strategy)
 
     # Set text encoding strategy
-    caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+    caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
     text_encoding_strategy = strategy_anima.AnimaTextEncodingStrategy(
         dropout_rate=caption_dropout_rate,
     )
@@ -266,7 +255,7 @@ def train(args):
                             )
 
         # Pre-cache unconditional embeddings for caption dropout before text encoder is deleted
-        caption_dropout_rate = getattr(args, 'caption_dropout_rate', 0.0)
+        caption_dropout_rate = getattr(args, "caption_dropout_rate", 0.0)
         if caption_dropout_rate > 0.0:
             with accelerator.autocast():
                 text_encoding_strategy.cache_uncond_embeddings(tokenize_strategy, [qwen3_text_encoder])
@@ -299,17 +288,17 @@ def train(args):
         dtype=weight_dtype,
         device="cpu",
         transformer_dtype=transformer_dtype,
-        llm_adapter_path=getattr(args, 'llm_adapter_path', None),
-        disable_mmap=getattr(args, 'disable_mmap_load_safetensors', False),
+        llm_adapter_path=getattr(args, "llm_adapter_path", None),
+        disable_mmap=getattr(args, "disable_mmap_load_safetensors", False),
     )
 
     if args.gradient_checkpointing:
         dit.enable_gradient_checkpointing(
             cpu_offload=args.cpu_offload_checkpointing,
-            unsloth_offload=getattr(args, 'unsloth_offload_checkpointing', False),
+            unsloth_offload=getattr(args, "unsloth_offload_checkpointing", False),
         )
 
-    if getattr(args, 'flash_attn', False):
+    if getattr(args, "flash_attn", False):
         dit.set_flash_attn(True)
 
     train_dit = args.learning_rate != 0
@@ -335,11 +324,11 @@ def train(args):
         param_groups = anima_train_utils.get_anima_param_groups(
             dit,
             base_lr=args.learning_rate,
-            self_attn_lr=getattr(args, 'self_attn_lr', None),
-            cross_attn_lr=getattr(args, 'cross_attn_lr', None),
-            mlp_lr=getattr(args, 'mlp_lr', None),
-            mod_lr=getattr(args, 'mod_lr', None),
-            llm_adapter_lr=getattr(args, 'llm_adapter_lr', None),
+            self_attn_lr=getattr(args, "self_attn_lr", None),
+            cross_attn_lr=getattr(args, "cross_attn_lr", None),
+            mlp_lr=getattr(args, "mlp_lr", None),
+            mod_lr=getattr(args, "mod_lr", None),
+            llm_adapter_lr=getattr(args, "llm_adapter_lr", None),
         )
     else:
         param_groups = []
@@ -366,8 +355,8 @@ def train(args):
         # Build param_id → lr mapping from param_groups to propagate per-component LRs
         param_lr_map = {}
         for group in param_groups:
-            for p in group['params']:
-                param_lr_map[id(p)] = group['lr']
+            for p in group["params"]:
+                param_lr_map[id(p)] = group["lr"]
 
         grouped_params = []
         param_group = {}
@@ -557,9 +546,7 @@ def train(args):
     accelerator.print(f"  num examples: {train_dataset_group.num_train_images}")
     accelerator.print(f"  num batches per epoch: {len(train_dataloader)}")
     accelerator.print(f"  num epochs: {num_train_epochs}")
-    accelerator.print(
-        f"  batch size per device: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}"
-    )
+    accelerator.print(f"  batch size per device: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}")
     accelerator.print(f"  gradient accumulation steps = {args.gradient_accumulation_steps}")
     accelerator.print(f"  total optimization steps: {args.max_train_steps}")
 
@@ -580,6 +567,7 @@ def train(args):
 
         if "wandb" in [tracker.name for tracker in accelerator.trackers]:
             import wandb
+
             wandb.define_metric("epoch")
             wandb.define_metric("loss/epoch", step_metric="epoch")
 
@@ -589,8 +577,16 @@ def train(args):
     # For --sample_at_first
     optimizer_eval_fn()
     anima_train_utils.sample_images(
-        accelerator, args, 0, global_step, dit, vae, vae_scale,
-        qwen3_text_encoder, tokenize_strategy, text_encoding_strategy,
+        accelerator,
+        args,
+        0,
+        global_step,
+        dit,
+        vae,
+        vae_scale,
+        qwen3_text_encoder,
+        tokenize_strategy,
+        text_encoding_strategy,
         sample_prompts_te_outputs,
     )
     optimizer_train_fn()
@@ -600,7 +596,9 @@ def train(args):
     # Show model info
     unwrapped_dit = accelerator.unwrap_model(dit) if dit is not None else None
     if unwrapped_dit is not None:
-        logger.info(f"dit device: {unwrapped_dit.t_embedding_norm.weight.device}, dtype: {unwrapped_dit.t_embedding_norm.weight.dtype}")
+        logger.info(
+            f"dit device: {unwrapped_dit.t_embedding_norm.weight.device}, dtype: {unwrapped_dit.t_embedding_norm.weight.dtype}"
+        )
     if qwen3_text_encoder is not None:
         logger.info(f"qwen3 device: {next(qwen3_text_encoder.parameters()).device}")
     if vae is not None:
@@ -640,9 +638,7 @@ def train(args):
                 text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
                 if text_encoder_outputs_list is not None:
                     # Cached outputs
-                    text_encoder_outputs_list = text_encoding_strategy.drop_cached_text_encoder_outputs(
-                        *text_encoder_outputs_list
-                    )
+                    text_encoder_outputs_list = text_encoding_strategy.drop_cached_text_encoder_outputs(*text_encoder_outputs_list)
                     prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = text_encoder_outputs_list
                 else:
                     # Encode on-the-fly
@@ -678,10 +674,7 @@ def train(args):
                 bs = latents.shape[0]
                 h_latent = latents.shape[-2]
                 w_latent = latents.shape[-1]
-                padding_mask = torch.zeros(
-                    bs, 1, h_latent, w_latent,
-                    dtype=weight_dtype, device=accelerator.device
-                )
+                padding_mask = torch.zeros(bs, 1, h_latent, w_latent, dtype=weight_dtype, device=accelerator.device)
 
                 # DiT forward (LLM adapter runs inside forward for DDP gradient sync)
                 if is_swapping_blocks:
@@ -708,9 +701,7 @@ def train(args):
 
                 # Loss
                 huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, None)
-                loss = train_util.conditional_loss(
-                    model_pred.float(), target.float(), args.loss_type, "none", huber_c
-                )
+                loss = train_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3, 4])  # (B, C, T, H, W) -> (B,)
@@ -748,8 +739,16 @@ def train(args):
 
                 optimizer_eval_fn()
                 anima_train_utils.sample_images(
-                    accelerator, args, None, global_step, dit, vae, vae_scale,
-                    qwen3_text_encoder, tokenize_strategy, text_encoding_strategy,
+                    accelerator,
+                    args,
+                    None,
+                    global_step,
+                    dit,
+                    vae,
+                    vae_scale,
+                    qwen3_text_encoder,
+                    tokenize_strategy,
+                    text_encoding_strategy,
                     sample_prompts_te_outputs,
                 )
 
@@ -773,8 +772,10 @@ def train(args):
             if len(accelerator.trackers) > 0:
                 logs = {"loss": current_loss}
                 train_util.append_lr_to_logs_with_names(
-                    logs, lr_scheduler, args.optimizer_type,
-                    ["base", "self_attn", "cross_attn", "mlp", "mod", "llm_adapter"] if train_dit else []
+                    logs,
+                    lr_scheduler,
+                    args.optimizer_type,
+                    ["base", "self_attn", "cross_attn", "mlp", "mod", "llm_adapter"] if train_dit else [],
                 )
                 accelerator.log(logs, step=global_step)
 
@@ -807,8 +808,16 @@ def train(args):
                 )
 
         anima_train_utils.sample_images(
-            accelerator, args, epoch + 1, global_step, dit, vae, vae_scale,
-            qwen3_text_encoder, tokenize_strategy, text_encoding_strategy,
+            accelerator,
+            args,
+            epoch + 1,
+            global_step,
+            dit,
+            vae,
+            vae_scale,
+            qwen3_text_encoder,
+            tokenize_strategy,
+            text_encoding_strategy,
             sample_prompts_te_outputs,
         )
 
