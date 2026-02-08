@@ -6138,7 +6138,8 @@ def conditional_loss(
     elif loss_type == "huber":
         if huber_c is None:
             raise NotImplementedError("huber_c not implemented correctly")
-        huber_c = huber_c.view(-1, 1, 1, 1)
+        # Reshape huber_c to broadcast with model_pred (supports 4D and 5D tensors)
+        huber_c = huber_c.view(-1, *([1] * (model_pred.ndim - 1)))
         loss = 2 * huber_c * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
             loss = torch.mean(loss)
@@ -6147,7 +6148,8 @@ def conditional_loss(
     elif loss_type == "smooth_l1":
         if huber_c is None:
             raise NotImplementedError("huber_c not implemented correctly")
-        huber_c = huber_c.view(-1, 1, 1, 1)
+        # Reshape huber_c to broadcast with model_pred (supports 4D and 5D tensors)
+        huber_c = huber_c.view(-1, *([1] * (model_pred.ndim - 1)))
         loss = 2 * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
             loss = torch.mean(loss)
