@@ -2,7 +2,7 @@
 Diagnostic script to test Anima latent & text encoder caching independently.
 
 Usage:
-    python test_anima_cache.py \
+    python manual_test_anima_cache.py \
         --image_dir /path/to/images \
         --qwen3_path /path/to/qwen3 \
         --vae_path /path/to/vae.safetensors \
