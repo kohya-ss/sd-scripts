@@ -212,7 +212,7 @@ def check_inputs(args: argparse.Namespace) -> Tuple[int, int]:
 
 def load_dit_model(
     args: argparse.Namespace, device: torch.device, dit_weight_dtype: Optional[torch.dtype] = None
-) -> anima_models.MiniTrainDIT:
+) -> anima_models.Anima:
     """load DiT model
 
     Args:
@@ -221,7 +221,7 @@ def load_dit_model(
         dit_weight_dtype: data type for the model weights. None for as-is
 
     Returns:
-        anima_models.MiniTrainDIT: DiT model instance
+        anima_models.Anima: DiT model instance
     """
     # If LyCORIS is enabled, we will load the model to CPU and then merge LoRA weights (static method)
 
@@ -439,7 +439,7 @@ def generate(
     else:
         # use shared model
         logger.info("Using shared DiT model.")
-        anima: anima_models.MiniTrainDIT = shared_models["model"]
+        anima: anima_models.Anima = shared_models["model"]
 
     if precomputed_text_data is not None:
         logger.info("Using precomputed text data.")
@@ -455,7 +455,7 @@ def generate(
 
 def generate_body(
     args: Union[argparse.Namespace, SimpleNamespace],
-    anima: anima_models.MiniTrainDIT,
+    anima: anima_models.Anima,
     context: Dict[str, Any],
     context_null: Optional[Dict[str, Any]],
     device: torch.device,
@@ -479,7 +479,7 @@ def generate_body(
     negative_embed = context_null["embed"][0].to(device, dtype=torch.bfloat16)
 
     # Prepare latent variables
-    num_channels_latents = 16  # anima_models.MiniTrainDIT.LATENT_CHANNELS
+    num_channels_latents = anima_models.Anima.LATENT_CHANNELS
     shape = (
         1,
         num_channels_latents,

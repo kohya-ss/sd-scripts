@@ -1049,12 +1049,14 @@ class Block(nn.Module):
             )
 
 
-# Main DiT Model: MiniTrainDIT
-class MiniTrainDIT(nn.Module):
+# Main DiT Model: MiniTrainDIT (renamed to Anima)
+class Anima(nn.Module):
     """Cosmos-Predict2 DiT model for image/video generation.
 
     28 transformer blocks with AdaLN-LoRA modulation, 3D RoPE, and optional LLM Adapter.
     """
+
+    LATENT_CHANNELS = 16
 
     def __init__(
         self,
@@ -1307,7 +1309,7 @@ class MiniTrainDIT(nn.Module):
             return
         self.offloader.prepare_block_devices_before_forward(self.blocks)
 
-    def forward(
+    def forward_mini_train_dit(
         self,
         x_B_C_T_H_W: torch.Tensor,
         timesteps_B_T: torch.Tensor,
@@ -1377,6 +1379,41 @@ class MiniTrainDIT(nn.Module):
         x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D)
         x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
         return x_B_C_Tt_Hp_Wp
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
+        fps: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        target_input_ids: Optional[torch.Tensor] = None,
+        target_attention_mask: Optional[torch.Tensor] = None,
+        source_attention_mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        context = self._preprocess_text_embeds(context, target_input_ids, target_attention_mask, source_attention_mask)
+        return self.forward_mini_train_dit(x, timesteps, context, fps=fps, padding_mask=padding_mask, **kwargs)
+
+    def _preprocess_text_embeds(
+        self, source_hidden_states, target_input_ids, target_attention_mask=None, source_attention_mask=None
+    ):
+        if target_input_ids is not None:
+            # print(
+            #     f"Source hidden states shape: {source_hidden_states.shape},sum of attention mask: {torch.sum(source_attention_mask)}"
+            # )
+            # print(f"non zero source_hidden_states before LLM Adapter: {torch.sum(source_hidden_states != 0)}")
+            context = self.llm_adapter(
+                source_hidden_states,
+                target_input_ids,
+                target_attention_mask=target_attention_mask,
+                source_attention_mask=source_attention_mask,
+            )
+            context[~target_attention_mask.bool()] = 0  # zero out padding tokens
+            # print(f"LLM Adapter output context: {context.shape}, {torch.isnan(context).sum()}")
+            return context
+        else:
+            return source_hidden_states
 
 
 # LLM Adapter: Bridges Qwen3 embeddings to T5-compatible space
@@ -1531,33 +1568,15 @@ class LLMAdapterTransformerBlock(nn.Module):
             )
             x = x + attn_out
 
-        if source_attention_mask is not None:
-            # Select batch elements where source_attention_mask has at least one True value
-            batch_indices = torch.where(source_attention_mask.any(dim=(1, 2, 3)))[0]
-            # print("Batch indices for cross-attention:", batch_indices)
-            if len(batch_indices) == 0:
-                pass  # No valid batch elements, skip cross-attention
-            else:
-                normed = self.norm_cross_attn(x[batch_indices])
-                attn_out = self.cross_attn(
-                    normed,
-                    mask=None,
-                    context=context[batch_indices],
-                    position_embeddings=position_embeddings,
-                    position_embeddings_context=position_embeddings_context,
-                )
-                x[batch_indices] = x[batch_indices] + attn_out
-        else:
-            # Standard cross-attention without masking
-            normed = self.norm_cross_attn(x)
-            attn_out = self.cross_attn(
-                normed,
-                mask=source_attention_mask,
-                context=context,
-                position_embeddings=position_embeddings,
-                position_embeddings_context=position_embeddings_context,
-            )
-            x = x + attn_out
+        normed = self.norm_cross_attn(x)
+        attn_out = self.cross_attn(
+            normed,
+            mask=source_attention_mask,
+            context=context,
+            position_embeddings=position_embeddings,
+            position_embeddings_context=position_embeddings_context,
+        )
+        x = x + attn_out
 
         x = x + self.mlp(self.norm_mlp(x))
         return x
@@ -1621,76 +1640,6 @@ class LLMAdapter(nn.Module):
                 position_embeddings_context=position_embeddings_context,
             )
         return self.norm(self.out_proj(x))
-
-
-class Anima(nn.Module):
-    """
-    Wrapper class for the MiniTrainDIT and LLM Adapter.
-    """
-
-    LATENT_CHANNELS = 16
-
-    def __init__(self, dit_config: dict):
-        super().__init__()
-        self.net = MiniTrainDIT(**dit_config)
-
-    @property
-    def device(self):
-        return self.net.device
-
-    @property
-    def dtype(self):
-        return self.net.dtype
-
-    def enable_gradient_checkpointing(self, *args, **kwargs):
-        self.net.enable_gradient_checkpointing(*args, **kwargs)
-
-    def disable_gradient_checkpointing(self):
-        self.net.disable_gradient_checkpointing()
-
-    def enable_block_swap(self, *args, **kwargs):
-        self.net.enable_block_swap(*args, **kwargs)
-
-    def move_to_device_except_swap_blocks(self, *args, **kwargs):
-        self.net.move_to_device_except_swap_blocks(*args, **kwargs)
-
-    def prepare_block_swap_before_forward(self, *args, **kwargs):
-        self.net.prepare_block_swap_before_forward(*args, **kwargs)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        timesteps: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
-        fps: Optional[torch.Tensor] = None,
-        padding_mask: Optional[torch.Tensor] = None,
-        target_input_ids: Optional[torch.Tensor] = None,
-        target_attention_mask: Optional[torch.Tensor] = None,
-        source_attention_mask: Optional[torch.Tensor] = None,
-        **kwargs,
-    ) -> torch.Tensor:
-        context = self._preprocess_text_embeds(context, target_input_ids, target_attention_mask, source_attention_mask)
-        return self.net(x, timesteps, context, fps=fps, padding_mask=padding_mask, **kwargs)
-
-    def _preprocess_text_embeds(
-        self, source_hidden_states, target_input_ids, target_attention_mask=None, source_attention_mask=None
-    ):
-        if target_input_ids is not None:
-            # print(
-            #     f"Source hidden states shape: {source_hidden_states.shape},sum of attention mask: {torch.sum(source_attention_mask)}"
-            # )
-            # print(f"non zero source_hidden_states before LLM Adapter: {torch.sum(source_hidden_states != 0)}")
-            context = self.net.llm_adapter(
-                source_hidden_states,
-                target_input_ids,
-                target_attention_mask=target_attention_mask,
-                source_attention_mask=source_attention_mask,
-            )
-            context[~target_attention_mask.bool()] = 0  # zero out padding tokens
-            # print(f"LLM Adapter output context: {context.shape}, {torch.isnan(context).sum()}")
-            return context
-        else:
-            return source_hidden_states
 
 
 # VAE Wrapper

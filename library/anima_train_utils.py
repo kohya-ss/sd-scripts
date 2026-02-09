@@ -225,7 +225,7 @@ def get_anima_param_groups(
     """Create parameter groups for Anima training with separate learning rates.
 
     Args:
-        dit: MiniTrainDIT model
+        dit: Anima model
         base_lr: Base learning rate
         self_attn_lr: LR for self-attention layers (None = base_lr, 0 = freeze)
         cross_attn_lr: LR for cross-attention layers
@@ -307,7 +307,7 @@ def save_anima_model_on_train_end(
     save_dtype: torch.dtype,
     epoch: int,
     global_step: int,
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
 ):
     """Save Anima model at the end of training."""
 
@@ -328,7 +328,7 @@ def save_anima_model_on_epoch_end_or_stepwise(
     epoch: int,
     num_train_epochs: int,
     global_step: int,
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
 ):
     """Save Anima model at epoch end or specific steps."""
 
@@ -356,7 +356,7 @@ def do_sample(
     height: int,
     width: int,
     seed: Optional[int],
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
     crossattn_emb: torch.Tensor,
     steps: int,
     dtype: torch.dtype,
@@ -370,7 +370,7 @@ def do_sample(
     Args:
         height, width: Output image dimensions
         seed: Random seed (None for random)
-        dit: MiniTrainDIT model
+        dit: Anima model
         crossattn_emb: Cross-attention embeddings (B, N, D)
         steps: Number of sampling steps
         dtype: Compute dtype
@@ -588,8 +588,8 @@ def _sample_image_inference(
     t5_attn_mask = t5_attn_mask.to(accelerator.device)
 
     # Process through LLM adapter if available
-    if dit.net.use_llm_adapter:
-        crossattn_emb = dit.net.llm_adapter(
+    if dit.use_llm_adapter:
+        crossattn_emb = dit.llm_adapter(
             source_hidden_states=prompt_embeds,
             target_input_ids=t5_input_ids,
             target_attention_mask=t5_attn_mask,
@@ -616,8 +616,8 @@ def _sample_image_inference(
             neg_t5_ids = neg_t5_ids.to(accelerator.device, dtype=torch.long)
             neg_t5_am = neg_t5_am.to(accelerator.device)
 
-            if dit.net.use_llm_adapter:
-                neg_crossattn_emb = dit.net.llm_adapter(
+            if dit.use_llm_adapter:
+                neg_crossattn_emb = dit.llm_adapter(
                     source_hidden_states=neg_pe,
                     target_input_ids=neg_t5_ids,
                     target_attention_mask=neg_t5_am,

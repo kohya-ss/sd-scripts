@@ -11,13 +11,13 @@ from accelerate import init_empty_weights
 from library.fp8_optimization_utils import apply_fp8_monkey_patch
 from library.lora_utils import load_safetensors_with_lora_and_fp8
 from library import anima_models
+from library.safetensors_utils import WeightTransformHooks
 from .utils import setup_logging
 
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 # Keys that should stay in high precision (float32/bfloat16, not quantized)
@@ -39,8 +39,8 @@ def load_anima_dit(
     transformer_dtype: Optional[torch.dtype] = None,
     llm_adapter_path: Optional[str] = None,
     disable_mmap: bool = False,
-) -> anima_models.MiniTrainDIT:
-    """Load the MiniTrainDIT model from safetensors.
+) -> anima_models.Anima:
+    """Load the Anima model from safetensors.
 
     Args:
         dit_path: Path to DiT safetensors file
@@ -91,7 +91,7 @@ def load_anima_dit(
     )
 
     # Build model normally on CPU — buffers get proper values from __init__
-    dit = anima_models.MiniTrainDIT(**dit_config)
+    dit = anima_models.Anima(**dit_config)
 
     # Merge LLM adapter weights into state_dict if loaded separately
     if use_llm_adapter and llm_adapter_state_dict is not None:
@@ -192,12 +192,13 @@ def load_anima_model(
         "split_attn": split_attn,
     }
     with init_empty_weights():
-        model = anima_models.Anima(dit_config)
+        model = anima_models.Anima(**dit_config)
         if dit_weight_dtype is not None:
             model.to(dit_weight_dtype)
 
     # load model weights with dynamic fp8 optimization and LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
+    rename_hooks = WeightTransformHooks(rename_hook=lambda k: k[len("net.") :] if k.startswith("net.") else k)
     sd = load_safetensors_with_lora_and_fp8(
         model_files=dit_path,
         lora_weights_list=lora_weights_list,
@@ -208,6 +209,7 @@ def load_anima_model(
         dit_weight_dtype=dit_weight_dtype,
         target_keys=FP8_OPTIMIZATION_TARGET_KEYS,
         exclude_keys=FP8_OPTIMIZATION_EXCLUDE_KEYS,
+        weight_transform_hooks=rename_hooks,
     )
 
     if fp8_scaled:
