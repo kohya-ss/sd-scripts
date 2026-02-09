@@ -29,7 +29,7 @@ def create_network(
         network_alpha = 1.0
 
     # train LLM adapter
-    train_llm_adapter = kwargs.get("train_llm_adapter", False)
+    train_llm_adapter = kwargs.get("train_llm_adapter", "false")
     if train_llm_adapter is not None:
         train_llm_adapter = True if train_llm_adapter.lower() == "true" else False
 
@@ -60,7 +60,7 @@ def create_network(
         module_dropout = float(module_dropout)
 
     # verbose
-    verbose = kwargs.get("verbose", False)
+    verbose = kwargs.get("verbose", "false")
     if verbose is not None:
         verbose = True if verbose.lower() == "true" else False
 
