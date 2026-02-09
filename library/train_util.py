@@ -1099,11 +1099,11 @@ class BaseDataset(torch.utils.data.Dataset):
     def is_latent_cacheable(self):
         return all([not subset.color_aug and not subset.random_crop for subset in self.subsets])
 
-    def is_text_encoder_output_cacheable(self):
+    def is_text_encoder_output_cacheable(self, cache_supports_dropout: bool = False):
         return all(
             [
                 not (
-                    subset.caption_dropout_rate > 0
+                    subset.caption_dropout_rate > 0 and not cache_supports_dropout
                     or subset.shuffle_caption
                     or subset.token_warmup_step > 0
                     or subset.caption_tag_dropout_rate > 0
@@ -2664,8 +2664,8 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
 
-    def is_text_encoder_output_cacheable(self) -> bool:
-        return all([dataset.is_text_encoder_output_cacheable() for dataset in self.datasets])
+    def is_text_encoder_output_cacheable(self, cache_supports_dropout: bool = False) -> bool:
+        return all([dataset.is_text_encoder_output_cacheable(cache_supports_dropout) for dataset in self.datasets])
 
     def set_current_strategies(self):
         for dataset in self.datasets:

@@ -9,6 +9,7 @@ import torch
 
 from library import anima_utils, train_util
 from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
+from library import qwen_image_autoencoder_kl
 
 from library.utils import setup_logging
 
@@ -65,7 +66,6 @@ class AnimaTokenizeStrategy(TokenizeStrategy):
         )
         t5_input_ids = t5_encoding["input_ids"]
         t5_attn_mask = t5_encoding["attention_mask"]
-
         return [qwen3_input_ids, qwen3_attn_mask, t5_input_ids, t5_attn_mask]
 
 
@@ -78,31 +78,6 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
 
     def __init__(self) -> None:
         super().__init__()
-
-        # Cached unconditional embeddings (from encoding empty caption "")
-        # Must be initialized via cache_uncond_embeddings() before text encoder is deleted
-        self._uncond_prompt_embeds: Optional[torch.Tensor] = None  # (1, seq_len, hidden)
-        self._uncond_attn_mask: Optional[torch.Tensor] = None  # (1, seq_len)
-        self._uncond_t5_input_ids: Optional[torch.Tensor] = None  # (1, t5_seq_len)
-        self._uncond_t5_attn_mask: Optional[torch.Tensor] = None  # (1, t5_seq_len)
-
-    def cache_uncond_embeddings(self, tokenize_strategy: TokenizeStrategy, models: List[Any]) -> None:
-        """Pre-encode empty caption "" and cache the unconditional embeddings.
-
-        Must be called before the text encoder is deleted from GPU.
-        This matches diffusion-pipe-main behavior where empty caption embeddings
-        are pre-cached and swapped in during caption dropout.
-        """
-        logger.info("Caching unconditional embeddings for caption dropout (encoding empty caption)...")
-        tokens = tokenize_strategy.tokenize("")
-        with torch.no_grad():
-            uncond_outputs = self.encode_tokens(tokenize_strategy, models, tokens)
-        # Store as CPU tensors (1, seq_len, ...) to avoid GPU memory waste
-        self._uncond_prompt_embeds = uncond_outputs[0].cpu()
-        self._uncond_attn_mask = uncond_outputs[1].cpu()
-        self._uncond_t5_input_ids = uncond_outputs[2].cpu()
-        self._uncond_t5_attn_mask = uncond_outputs[3].cpu()
-        logger.info("  Unconditional embeddings cached successfully")
 
     def encode_tokens(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], tokens: List[torch.Tensor]
@@ -127,6 +102,7 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         qwen3_attn_mask = qwen3_attn_mask.to(encoder_device)
         outputs = qwen3_text_encoder(input_ids=qwen3_input_ids, attention_mask=qwen3_attn_mask)
         prompt_embeds = outputs.last_hidden_state
+        prompt_embeds[~qwen3_attn_mask.bool()] = 0
 
         return [prompt_embeds, qwen3_attn_mask, t5_input_ids, t5_attn_mask]
 
@@ -147,8 +123,6 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         if caption_dropout_rates is None or all(caption_dropout_rates == 0.0):
             return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
 
-        assert self._uncond_prompt_embeds is not None, "Unconditional embeddings not cached, cannot apply caption dropout"
-
         # Clone to avoid in-place modification of cached tensors
         prompt_embeds = prompt_embeds.clone()
         if attn_mask is not None:
@@ -161,13 +135,15 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         for i in range(prompt_embeds.shape[0]):
             if random.random() < caption_dropout_rates[i].item():
                 # Use pre-cached unconditional embeddings
-                prompt_embeds[i] = self._uncond_prompt_embeds[0].to(device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+                prompt_embeds[i] = 0
                 if attn_mask is not None:
-                    attn_mask[i] = self._uncond_attn_mask[0].to(device=attn_mask.device, dtype=attn_mask.dtype)
+                    attn_mask[i] = 0
                 if t5_input_ids is not None:
-                    t5_input_ids[i] = self._uncond_t5_input_ids[0].to(device=t5_input_ids.device, dtype=t5_input_ids.dtype)
+                    t5_input_ids[i, 0] = 1  # Set to </s> token ID
+                    t5_input_ids[i, 1:] = 0
                 if t5_attn_mask is not None:
-                    t5_attn_mask[i] = self._uncond_t5_attn_mask[0].to(device=t5_attn_mask.device, dtype=t5_attn_mask.dtype)
+                    t5_attn_mask[i, 0] = 1
+                    t5_attn_mask[i, 1:] = 0
 
         return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
 
@@ -239,12 +215,8 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
 
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
-            # Always disable dropout during caching
             prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = anima_text_encoding_strategy.encode_tokens(
-                tokenize_strategy,
-                models,
-                tokens_and_masks,
-                enable_dropout=False,
+                tokenize_strategy, models, tokens_and_masks
             )
 
         # Convert to numpy for caching
@@ -272,13 +244,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     caption_dropout_rate=caption_dropout_rate,
                 )
             else:
-                info.text_encoder_outputs = (
-                    prompt_embeds_i,
-                    attn_mask_i,
-                    t5_input_ids_i,
-                    t5_attn_mask_i,
-                    caption_dropout_rate,
-                )
+                info.text_encoder_outputs = (prompt_embeds_i, attn_mask_i, t5_input_ids_i, t5_attn_mask_i, caption_dropout_rate)
 
 
 class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
@@ -309,32 +275,23 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         return self._default_load_latents_from_disk(8, npz_path, bucket_reso)
 
     def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
-        """Cache batch of latents using WanVAE.
+        """Cache batch of latents using Qwen Image VAE.
 
-        vae is expected to be the WanVAE_ model (not the wrapper).
+        vae is expected to be the Qwen Image VAE (AutoencoderKLQwenImage).
         The encoding function handles the mean/std normalization.
         """
-        from library.anima_models import ANIMA_VAE_MEAN, ANIMA_VAE_STD
-
-        vae_device = next(vae.parameters()).device
-        vae_dtype = next(vae.parameters()).dtype
-
-        # Create scale tensors on VAE device
-        mean = torch.tensor(ANIMA_VAE_MEAN, dtype=vae_dtype, device=vae_device)
-        std = torch.tensor(ANIMA_VAE_STD, dtype=vae_dtype, device=vae_device)
-        scale = [mean, 1.0 / std]
+        vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage = vae
+        vae_device = vae.device
+        vae_dtype = vae.dtype
 
         def encode_by_vae(img_tensor):
             """Encode image tensor to latents.
 
             img_tensor: (B, C, H, W) in [-1, 1] range (already normalized by IMAGE_TRANSFORMS)
-            Need to add temporal dim to get (B, C, T=1, H, W) for WanVAE
+            Qwen Image VAE accepts inputs in (B, C, H, W) or (B, C, 1, H, W) shape.
+            Returns latents in (B, 16, 1, H/8, W/8) shape on CPU.
             """
-            # Add temporal dimension: (B, C, H, W) -> (B, C, 1, H, W)
-            img_tensor = img_tensor.unsqueeze(2)
-            img_tensor = img_tensor.to(vae_device, dtype=vae_dtype)
-
-            latents = vae.encode(img_tensor, scale)
+            latents = vae.encode_pixels_to_latents(img_tensor)
             return latents.to("cpu")
 
         self._default_cache_batch_latents(

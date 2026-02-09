@@ -10,6 +10,7 @@ from accelerate import init_empty_weights
 
 from library.fp8_optimization_utils import apply_fp8_monkey_patch
 from library.lora_utils import load_safetensors_with_lora_and_fp8
+from library import anima_models
 from .utils import setup_logging
 
 setup_logging()
@@ -17,7 +18,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import anima_models
 
 
 # Keys that should stay in high precision (float32/bfloat16, not quantized)
@@ -191,7 +191,6 @@ def load_anima_model(
         "attn_mode": attn_mode,
         "split_attn": split_attn,
     }
-    # model = create_model(attn_mode, split_attn, dit_weight_dtype)
     with init_empty_weights():
         model = anima_models.Anima(dit_config)
         if dit_weight_dtype is not None:
@@ -199,7 +198,6 @@ def load_anima_model(
 
     # load model weights with dynamic fp8 optimization and LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
-
     sd = load_safetensors_with_lora_and_fp8(
         model_files=dit_path,
         lora_weights_list=lora_weights_list,
