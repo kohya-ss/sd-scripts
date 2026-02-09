@@ -123,7 +123,8 @@ def load_anima_dit(
 
 
 FP8_OPTIMIZATION_TARGET_KEYS = ["blocks", ""]
-FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_embedder", "norm", "adaln", "final_layer"]
+# ".embed." excludes Embedding in LLMAdapter
+FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_embedder", "norm", "adaln", "final_layer", ".embed."]
 
 
 def load_anima_model(

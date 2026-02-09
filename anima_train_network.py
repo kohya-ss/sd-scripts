@@ -96,7 +96,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         return "anima", [qwen3_text_encoder], vae, None  # unet loaded lazily
 
     def load_unet_lazily(self, args, weight_dtype, accelerator, text_encoders) -> tuple[nn.Module, list[nn.Module]]:
-        loading_dtype = None if args.fp8_base else weight_dtype
+        loading_dtype = None if args.fp8_scaled else weight_dtype
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
 
         attn_mode = "torch"
