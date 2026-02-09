@@ -859,11 +859,11 @@ def setup_parser() -> argparse.ArgumentParser:
     anima_train_utils.add_anima_training_arguments(parser)
     sai_model_spec.add_model_spec_arguments(parser)
 
-    parser.add_argument(
-        "--blockwise_fused_optimizers",
-        action="store_true",
-        help="enable blockwise optimizers for fused backward pass and optimizer step",
-    )
+    # parser.add_argument(
+    #     "--blockwise_fused_optimizers",
+    #     action="store_true",
+    #     help="enable blockwise optimizers for fused backward pass and optimizer step",
+    # )
     parser.add_argument(
         "--cpu_offload_checkpointing",
         action="store_true",
