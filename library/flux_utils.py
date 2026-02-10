@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import replace
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import einops
 import torch
@@ -10,6 +10,8 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 from transformers import CLIPConfig, CLIPTextModel, T5Config, T5EncoderModel
 
+from library.fp8_optimization_utils import apply_fp8_monkey_patch
+from library.lora_utils import load_safetensors_with_lora_and_fp8
 from library.utils import setup_logging
 
 setup_logging()
@@ -24,6 +26,9 @@ MODEL_VERSION_FLUX_V1 = "flux1"
 MODEL_NAME_DEV = "dev"
 MODEL_NAME_SCHNELL = "schnell"
 MODEL_VERSION_CHROMA = "chroma"
+
+FP8_OPTIMIZATION_TARGET_KEYS = ["double_blocks", "single_blocks"]
+FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_mod", "norm", "modulation"]
 
 
 def analyze_checkpoint_state(ckpt_path: str) -> Tuple[bool, bool, Tuple[int, int], List[str]]:
@@ -93,17 +98,23 @@ def analyze_checkpoint_state(ckpt_path: str) -> Tuple[bool, bool, Tuple[int, int
 
 
 def load_flow_model(
-    ckpt_path: str,
-    dtype: Optional[torch.dtype],
     device: Union[str, torch.device],
-    disable_mmap: bool = False,
+    ckpt_path: str,
+    dit_weight_dtype: Optional[torch.dtype],
+    loading_device: Union[str, torch.device],
     model_type: str = "flux",
+    fp8_scaled: bool = False,
+    lora_weights_list: Optional[Dict[str, torch.Tensor]] = None,
+    lora_multipliers: Optional[list[float]] = None,
 ) -> Tuple[bool, flux_models.Flux]:
+    device = torch.device(device)  # device for calculation, typically "cuda"
+    loading_device = torch.device(loading_device)
+
+    # build model
     if model_type == "flux":
         is_diffusers, is_schnell, (num_double_blocks, num_single_blocks), ckpt_paths = analyze_checkpoint_state(ckpt_path)
         name = MODEL_NAME_DEV if not is_schnell else MODEL_NAME_SCHNELL
 
-        # build model
         logger.info(f"Building Flux model {name} from {'Diffusers' if is_diffusers else 'BFL'} checkpoint")
         with torch.device("meta"):
             params = flux_models.configs[name].params
@@ -117,31 +128,8 @@ def load_flow_model(
                 params = replace(params, depth_single_blocks=num_single_blocks)
 
             model = flux_models.Flux(params)
-            if dtype is not None:
-                model = model.to(dtype)
-
-        # load_sft doesn't support torch.device
-        logger.info(f"Loading state dict from {ckpt_path}")
-        sd = {}
-        for ckpt_path in ckpt_paths:
-            sd.update(load_safetensors(ckpt_path, device=device, disable_mmap=disable_mmap, dtype=dtype))
-
-        # convert Diffusers to BFL
-        if is_diffusers:
-            logger.info("Converting Diffusers to BFL")
-            sd = convert_diffusers_sd_to_bfl(sd, num_double_blocks, num_single_blocks)
-            logger.info("Converted Diffusers to BFL")
-
-        # if the key has annoying prefix, remove it
-        for key in list(sd.keys()):
-            new_key = key.replace("model.diffusion_model.", "")
-            if new_key == key:
-                break  # the model doesn't have annoying prefix
-            sd[new_key] = sd.pop(key)
-
-        info = model.load_state_dict(sd, strict=False, assign=True)
-        logger.info(f"Loaded Flux: {info}")
-        return is_schnell, model
+            if dit_weight_dtype is not None:
+                model = model.to(dit_weight_dtype)
 
     elif model_type == "chroma":
         from . import chroma_models
@@ -150,27 +138,58 @@ def load_flow_model(
         logger.info("Building Chroma model")
         with torch.device("meta"):
             model = chroma_models.Chroma(chroma_models.chroma_params)
-            if dtype is not None:
-                model = model.to(dtype)
+            if dit_weight_dtype is not None:
+                model = model.to(dit_weight_dtype)
 
-        # load_sft doesn't support torch.device
-        logger.info(f"Loading state dict from {ckpt_path}")
-        sd = load_safetensors(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
+        ckpt_paths = [ckpt_path]
 
-        # if the key has annoying prefix, remove it
-        for key in list(sd.keys()):
-            new_key = key.replace("model.diffusion_model.", "")
-            if new_key == key:
-                break  # the model doesn't have annoying prefix
-            sd[new_key] = sd.pop(key)
+    # load state dict
+    logger.info(f"Loading DiT model from {ckpt_paths}, device={loading_device}")
 
+    sd = load_safetensors_with_lora_and_fp8(
+        model_files=ckpt_paths,
+        lora_weights_list=lora_weights_list,
+        lora_multipliers=lora_multipliers,
+        fp8_optimization=fp8_scaled,
+        calc_device=device,
+        move_to_device=(loading_device == device),
+        dit_weight_dtype=dit_weight_dtype,
+        target_keys=FP8_OPTIMIZATION_TARGET_KEYS,
+        exclude_keys=FP8_OPTIMIZATION_EXCLUDE_KEYS,
+    )
+
+    # if the key has annoying prefix, remove it
+    for key in list(sd.keys()):
+        new_key = key.replace("model.diffusion_model.", "")
+        if new_key == key:
+            break  # the model doesn't have annoying prefix
+        sd[new_key] = sd.pop(key)
+
+    if fp8_scaled:
+        apply_fp8_monkey_patch(model, sd, use_scaled_mm=False)
+
+        if loading_device.type != "cpu":  # in case of no block swapping
+            # make sure all the model weights are on the loading_device
+            logger.info(f"Moving weights to {loading_device}")
+            for key in sd.keys():
+                sd[key] = sd[key].to(loading_device)
+
+    if model_type == "flux":
+        # convert Diffusers to BFL
+        if is_diffusers:
+            logger.info("Converting Diffusers to BFL")
+            sd = convert_diffusers_sd_to_bfl(sd, num_double_blocks, num_single_blocks)
+            logger.info("Converted Diffusers to BFL")
+
+        info = model.load_state_dict(sd, strict=False, assign=True)
+        logger.info(f"Loaded Flux: {info}")
+        return is_schnell, model
+
+    elif model_type == "chroma":
         info = model.load_state_dict(sd, strict=False, assign=True)
         logger.info(f"Loaded Chroma: {info}")
         is_schnell = False  # Chroma is not schnell
         return is_schnell, model
-
-    else:
-        raise ValueError(f"Unsupported model_type: {model_type}. Supported types are 'flux' and 'chroma'.")
 
 
 def load_ae(

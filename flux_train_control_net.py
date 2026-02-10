@@ -265,7 +265,7 @@ def train(args):
 
     # load FLUX
     is_schnell, flux = flux_utils.load_flow_model(
-        args.pretrained_model_name_or_path, weight_dtype, "cpu", args.disable_mmap_load_safetensors, model_type="flux"
+        accelerator.device, args.pretrained_model_name_or_path, weight_dtype, "cpu", model_type="flux"
     )
     flux.requires_grad_(False)
 
@@ -304,7 +304,7 @@ def train(args):
         # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
         # This idea is based on 2kpr's great work. Thank you!
         logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-        flux.enable_block_swap(args.blocks_to_swap, accelerator.device)
+        flux.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
         flux.move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
         # ControlNet only has two blocks, so we can keep it on GPU
         # controlnet.enable_block_swap(args.blocks_to_swap, accelerator.device)

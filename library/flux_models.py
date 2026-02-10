@@ -691,25 +691,32 @@ class DoubleStreamBlock(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
+        del vec
 
         # prepare image for attention
-        img_modulated = self.img_norm1(img)
+        img_modulated = self.img_norm1(img.to(torch.float32)).to(img.dtype)
         img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
         img_qkv = self.img_attn.qkv(img_modulated)
         img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        del img_qkv
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
 
         # prepare txt for attention
-        txt_modulated = self.txt_norm1(txt)
+        txt_modulated = self.txt_norm1(txt.to(torch.float32)).to(txt.dtype)
         txt_modulated = (1 + txt_mod1.scale) * txt_modulated + txt_mod1.shift
         txt_qkv = self.txt_attn.qkv(txt_modulated)
+        del txt_modulated
         txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        del txt_qkv
         txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
 
         # run actual attention
         q = torch.cat((txt_q, img_q), dim=2)
+        del txt_q, img_q
         k = torch.cat((txt_k, img_k), dim=2)
+        del txt_k, img_k
         v = torch.cat((txt_v, img_v), dim=2)
+        del txt_v, img_v
 
         # make attention mask if not None
         attn_mask = None
@@ -725,14 +732,24 @@ class DoubleStreamBlock(nn.Module):
 
         attn = attention(q, k, v, pe=pe, attn_mask=attn_mask)
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
+        del q, k, v, attn
 
         # calculate the img blocks
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
-        img = img + img_mod2.gate * self.img_mlp((1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift)
+        del img_mod1, img_attn
+        img = img + img_mod2.gate * self.img_mlp(
+            (1 + img_mod2.scale) * self.img_norm2(img.to(torch.float32)).to(img.dtype) + img_mod2.shift
+        )
+        del img_mod2
 
         # calculate the txt blocks
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
-        txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
+        del txt_mod1, txt_attn
+        txt = txt + txt_mod2.gate * self.txt_mlp(
+            (1 + txt_mod2.scale) * self.txt_norm2(txt.to(torch.float32)).to(txt.dtype) + txt_mod2.shift
+        )
+        del txt_mod2
+
         return img, txt
 
     def forward(
@@ -805,10 +822,14 @@ class SingleStreamBlock(nn.Module):
 
     def _forward(self, x: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None) -> Tensor:
         mod, _ = self.modulation(vec)
-        x_mod = (1 + mod.scale) * self.pre_norm(x) + mod.shift
+        del vec
+        x_mod = (1 + mod.scale) * self.pre_norm(x.to(torch.float32)) + mod.shift
+        x_mod = x_mod.to(x.dtype)
+
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
 
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        del qkv
         q, k = self.norm(q, k, v)
 
         # make attention mask if not None
@@ -831,9 +852,12 @@ class SingleStreamBlock(nn.Module):
 
         # compute attention
         attn = attention(q, k, v, pe=pe, attn_mask=attn_mask)
+        del q, k, v
 
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+        del attn, mlp
+
         return x + mod.gate * output
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor, txt_attention_mask: Optional[Tensor] = None) -> Tensor:
@@ -969,7 +993,7 @@ class Flux(nn.Module):
 
         print("FLUX: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, device: torch.device, supports_backward: bool = False):
         self.blocks_to_swap = num_blocks
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
@@ -980,10 +1004,10 @@ class Flux(nn.Module):
         )
 
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, device  # , debug=True
+            self.double_blocks, double_blocks_to_swap, device, supports_backward=supports_backward  # , debug=True
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, single_blocks_to_swap, device  # , debug=True
+            self.single_blocks, single_blocks_to_swap, device, supports_backward=supports_backward  # , debug=True
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
@@ -1215,7 +1239,7 @@ class ControlNetFlux(nn.Module):
 
         print("FLUX: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, device: torch.device, supports_backward: bool = False):
         self.blocks_to_swap = num_blocks
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
@@ -1226,10 +1250,10 @@ class ControlNetFlux(nn.Module):
         )
 
         self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, device  # , debug=True
+            self.double_blocks, double_blocks_to_swap, device, supports_backward=supports_backward  # , debug=True
         )
         self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks,  single_blocks_to_swap, device  # , debug=True
+            self.single_blocks, single_blocks_to_swap, device, supports_backward=supports_backward  # , debug=True
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
