@@ -154,7 +154,9 @@ def load_anima_model(
         lora_multipliers (Optional[List[float]]): LoRA multipliers for the weights, if any.
     """
     # dit_weight_dtype is None for fp8_scaled
-    assert (not fp8_scaled and dit_weight_dtype is not None) or (fp8_scaled and dit_weight_dtype is None)
+    assert (
+        not fp8_scaled and dit_weight_dtype is not None
+    ) or dit_weight_dtype is None, "dit_weight_dtype should be None when fp8_scaled is True"
 
     device = torch.device(device)
     loading_device = torch.device(loading_device)

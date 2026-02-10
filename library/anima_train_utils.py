@@ -444,7 +444,7 @@ def sample_images(
     args: argparse.Namespace,
     epoch,
     steps,
-    dit,
+    dit: anima_models.Anima,
     vae,
     text_encoder,
     tokenize_strategy,
@@ -478,6 +478,8 @@ def sample_images(
     dit = accelerator.unwrap_model(dit)
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
+
+    dit.switch_block_swap_for_inference()
 
     prompts = train_util.load_prompts(args.sample_prompts)
     save_dir = os.path.join(args.output_dir, "sample")
@@ -514,6 +516,7 @@ def sample_images(
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
 
+    dit.switch_block_swap_for_training()
     clean_memory_on_device(accelerator.device)
 
 

@@ -401,6 +401,12 @@ class Attention(nn.Module):
         rope_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q, k, v = self.compute_qkv(x, context, rope_emb=rope_emb)
+        if q.dtype != v.dtype:
+            if (not attn_params.supports_fp32 or attn_params.requires_same_dtype) and torch.is_autocast_enabled():
+                # FlashAttention requires fp16/bf16, xformers require same dtype; only cast when autocast is active.
+                target_dtype = v.dtype  # v has fp16/bf16 dtype
+                q = q.to(target_dtype)
+                k = k.to(target_dtype)
         # return self.compute_attention(q, k, v)
         qkv = [q, k, v]
         del q, k, v
@@ -1303,6 +1309,20 @@ class Anima(nn.Module):
 
         if self.blocks_to_swap:
             self.blocks = save_blocks
+
+    def switch_block_swap_for_inference(self):
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+        self.offloader.set_forward_only(True)
+        self.prepare_block_swap_before_forward()
+        print(f"Anima: Block swap set to forward only.")
+
+    def switch_block_swap_for_training(self):
+        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+        self.offloader.set_forward_only(False)
+        self.prepare_block_swap_before_forward()
+        print(f"Anima: Block swap set to forward and backward.")
 
     def prepare_block_swap_before_forward(self):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
