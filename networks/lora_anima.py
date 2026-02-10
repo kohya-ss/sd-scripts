@@ -284,7 +284,7 @@ class LoRANetwork(torch.nn.Module):
                                         if re.fullmatch(reg, original_name):
                                             dim = d
                                             alpha_val = self.alpha
-                                            logger.info(f"LoRA {original_name} matched with regex {reg}, using dim: {dim}")
+                                            logger.info(f"Module {original_name} matched with regex '{reg}' -> dim: {dim}")
                                             break
                                 # fallback to default dim if not matched by reg_dims or reg_dims is not specified
                                 if dim is None:
