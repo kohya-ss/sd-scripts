@@ -37,6 +37,14 @@ class AttentionParams:
     cu_seqlens: Optional[torch.Tensor] = None
     max_seqlen: Optional[int] = None
 
+    @property
+    def supports_fp32(self) -> bool:
+        return self.attn_mode not in ["flash"]
+
+    @property
+    def requires_same_dtype(self) -> bool:
+        return self.attn_mode in ["xformers"]
+
     @staticmethod
     def create_attention_params(attn_mode: Optional[str], split_attn: bool) -> "AttentionParams":
         return AttentionParams(attn_mode, split_attn)
@@ -95,7 +103,7 @@ def attention(
         qkv_or_q: Query tensor [B, L, H, D]. or list of such tensors.
         k: Key tensor [B, L, H, D].
         v: Value tensor [B, L, H, D].
-        attn_param: Attention parameters including mask and sequence lengths.
+        attn_params: Attention parameters including mask and sequence lengths.
         drop_rate: Attention dropout rate.
 
     Returns:
