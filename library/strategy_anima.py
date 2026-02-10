@@ -291,7 +291,7 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
             Qwen Image VAE accepts inputs in (B, C, H, W) or (B, C, 1, H, W) shape.
             Returns latents in (B, 16, 1, H/8, W/8) shape on CPU.
             """
-            latents = vae.encode_pixels_to_latents(img_tensor)
+            latents = vae.encode_pixels_to_latents(img_tensor)  # Keep 4D for input/output
             return latents.to("cpu")
 
         self._default_cache_batch_latents(

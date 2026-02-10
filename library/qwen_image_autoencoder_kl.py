@@ -1008,14 +1008,19 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
         return {"sample": decoded}
 
     def decode_to_pixels(self, latents: torch.Tensor) -> torch.Tensor:
-        vae_scale_factor = 2 ** len(self.temperal_downsample)
-        # latents = qwen_image_utils.unpack_latents(latent, height, width, vae_scale_factor)
+        is_4d = latents.dim() == 4
+        if is_4d:
+            latents = latents.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
+
         latents = latents.to(self.dtype)
         latents_mean = torch.tensor(self.latents_mean).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
         latents_std = 1.0 / torch.tensor(self.latents_std).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
         latents = latents / latents_std + latents_mean
-        image = self.decode(latents, return_dict=False)[0][:, :, 0]  # -1 to 1
-        # return (image * 0.5 + 0.5).clamp(0.0, 1.0)  # Convert to [0, 1] range
+
+        image = self.decode(latents, return_dict=False)[0]  # -1 to 1
+        if is_4d:
+            image = image.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
+
         return image.clamp(-1.0, 1.0)
 
     def encode_pixels_to_latents(self, pixels: torch.Tensor) -> torch.Tensor:
@@ -1032,7 +1037,8 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
         # pixels = (pixels * 2.0 - 1.0).clamp(-1.0, 1.0)
 
         # Handle 2D input by adding temporal dimension
-        if pixels.dim() == 4:
+        is_4d = pixels.dim() == 4
+        if is_4d:
             pixels = pixels.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
 
         pixels = pixels.to(self.dtype)
@@ -1046,6 +1052,9 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
         latents_mean = torch.tensor(self.latents_mean).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
         latents_std = 1.0 / torch.tensor(self.latents_std).view(1, self.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
         latents = (latents - latents_mean) * latents_std
+
+        if is_4d:
+            latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
 
         return latents
 

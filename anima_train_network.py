@@ -41,16 +41,11 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
         val_dataset_group: Optional[train_util.DatasetGroup],
     ):
-        if (args.fp8_base or args.fp8_base_unet) and not args.fp8_scaled:
-            logger.warning(
-                "fp8_base and fp8_base_unet are not supported. Use fp8_scaled instead / fp8_baseとfp8_base_unetはサポートされていません。代わりにfp8_scaledを使用してください"
-            )
-        if args.fp8_scaled and (args.fp8_base or args.fp8_base_unet):
-            logger.info(
-                "fp8_scaled is used, so fp8_base and fp8_base_unet are ignored / fp8_scaledが使われているので、fp8_baseとfp8_base_unetは無視されます"
-            )
+        if args.fp8_base or args.fp8_base_unet:
+            logger.warning("fp8_base and fp8_base_unet are not supported. / fp8_baseとfp8_base_unetはサポートされていません。")
             args.fp8_base = False
             args.fp8_base_unet = False
+        args.fp8_scaled = False  # Anima DiT does not support fp8_scaled
 
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning("cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled")
@@ -249,7 +244,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
 
     def encode_images_to_latents(self, args, vae, images):
         vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage
-        return vae.encode_pixels_to_latents(images)
+        return vae.encode_pixels_to_latents(images)  # Keep 4D for input/output
 
     def shift_scale_latents(self, args, latents):
         # Latents already normalized by vae.encode with scale
@@ -272,6 +267,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         anima: anima_models.Anima = unet
 
         # Sample noise
+        if latents.ndim == 5:  # Fallback for 5D latents (old cache)
+            latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
         noise = torch.randn_like(latents)
 
         # Get noisy model input and timesteps
@@ -302,11 +299,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         w_latent = latents.shape[-1]
         padding_mask = torch.zeros(bs, 1, h_latent, w_latent, dtype=weight_dtype, device=accelerator.device)
 
-        # Prepare block swap
-        if self.is_swapping_blocks:
-            accelerator.unwrap_model(anima).prepare_block_swap_before_forward()
-
         # Call model
+        noisy_model_input = noisy_model_input.unsqueeze(2)  # 4D to 5D, [B, C, H, W] -> [B, C, 1, H, W]
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             model_pred = anima(
                 noisy_model_input,
@@ -317,6 +311,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                 target_attention_mask=t5_attn_mask,
                 source_attention_mask=attn_mask,
             )
+        model_pred = model_pred.squeeze(2)  # 5D to 4D, [B, C, 1, H, W] -> [B, C, H, W]
 
         # Rectified flow target: noise - latents
         target = noise - latents
@@ -344,10 +339,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         train_text_encoder=True,
         train_unet=True,
     ) -> torch.Tensor:
-        """Override base process_batch for caption dropout with cached text encoder outputs.
-
-        Base class now supports 4D and 5D latents, so we only need to handle caption dropout here.
-        """
+        """Override base process_batch for caption dropout with cached text encoder outputs."""
 
         # Text encoder conditions
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
@@ -418,6 +410,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
 
     def on_validation_step_end(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype):
         if self.is_swapping_blocks:
+            # prepare for next forward: because backward pass is not called, we need to prepare it here
             accelerator.unwrap_model(unet).prepare_block_swap_before_forward()
 
 
@@ -425,7 +418,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     train_util.add_dit_training_arguments(parser)
     anima_train_utils.add_anima_training_arguments(parser)
-    parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
+    # parser.add_argument("--fp8_scaled", action="store_true", help="Use scaled fp8 for DiT / DiTにスケーリングされたfp8を使う")
     parser.add_argument(
         "--unsloth_offload_checkpointing",
         action="store_true",
