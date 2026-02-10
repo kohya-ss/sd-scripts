@@ -86,6 +86,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Load VAE
         logger.info("Loading Anima VAE...")
         vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+        vae.to(weight_dtype)
+        vae.eval()
 
         # Return format: (model_type, text_encoders, vae, unet)
         return "anima", [qwen3_text_encoder], vae, None  # unet loaded lazily

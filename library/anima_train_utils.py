@@ -495,6 +495,7 @@ def sample_images(
 
     with torch.no_grad(), accelerator.autocast():
         for prompt_dict in prompts:
+            dit.prepare_block_swap_before_forward()
             _sample_image_inference(
                 accelerator,
                 args,
