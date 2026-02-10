@@ -286,6 +286,8 @@ def decode_latent(vae: WanVAE_, latent: torch.Tensor, device: torch.device) -> t
     with torch.no_grad():
         pixels = vae.decode_to_pixels(latent.to(device, dtype=vae.dtype))
         # pixels = vae.decode(latent.to(device, dtype=torch.bfloat16), scale=vae_scale)
+    if pixels.ndim == 5:  # remove frame dimension if exists, [B, C, F, H, W] -> [B, C, H, W]
+        pixels = pixels.squeeze(2)
 
     pixels = pixels.to("cpu", dtype=torch.float32)  # move to CPU and convert to float32 (bfloat16 is not supported by numpy)
     vae.to("cpu")
@@ -719,6 +721,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
     # 1. Prepare VAE
     logger.info("Loading VAE for batch generation...")
     vae_for_batch = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+    vae_for_batch.to(torch.bfloat16)
     vae_for_batch.eval()
 
     all_prompt_args_list = [apply_overrides(args, pd) for pd in prompts_data]  # Create all arg instances first
@@ -840,6 +843,7 @@ def process_interactive(args: argparse.Namespace) -> None:
     shared_models["conds_cache"] = {}  # Initialize empty cache for interactive mode
 
     vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+    vae.to(torch.bfloat16)
     vae.eval()
 
     print("Interactive mode. Enter prompts (Ctrl+D or Ctrl+Z (Windows) to exit):")
@@ -965,6 +969,7 @@ def main():
             args.seed = seeds[i]
 
             vae = qwen_image_autoencoder_kl.load_vae(args.vae, device=device, disable_mmap=True)
+            vae.to(torch.bfloat16)
             vae.eval()
             save_output(args, vae, latent, device, original_base_names[i])
 
@@ -1009,7 +1014,7 @@ def main():
 
             # Save latent and video
             vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
-
+            vae.to(torch.bfloat16)
             vae.eval()
             save_output(args, vae, latent, device)
 
