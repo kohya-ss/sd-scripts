@@ -120,7 +120,7 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         Replaces dropped items with pre-cached unconditional embeddings (from encoding "")
         to match diffusion-pipe-main behavior.
         """
-        if caption_dropout_rates is None or all(caption_dropout_rates == 0.0):
+        if caption_dropout_rates is None or torch.all(caption_dropout_rates == 0.0).item():
             return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
 
         # Clone to avoid in-place modification of cached tensors
