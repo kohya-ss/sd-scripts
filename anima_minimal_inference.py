@@ -43,6 +43,19 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
     parser.add_argument("--vae", type=str, default=None, help="VAE directory or path")
+    parser.add_argument(
+        "--vae_chunk_size",
+        type=int,
+        default=None,
+        help="Spatial chunk size for VAE encoding/decoding to reduce memory usage. Must be even number. If not specified, chunking is disabled (official behavior)."
+        + " / メモリ使用量を減らすためのVAEエンコード/デコードの空間チャンクサイズ。偶数である必要があります。未指定の場合、チャンク処理は無効になります（公式の動作）。",
+    )
+    parser.add_argument(
+        "--vae_disable_cache",
+        action="store_true",
+        help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
+        + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
+    )
     parser.add_argument("--text_encoder", type=str, required=True, help="Text Encoder 1 (Qwen2.5-VL) directory or path")
 
     # LoRA
@@ -717,7 +730,9 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
 
     # 1. Prepare VAE
     logger.info("Loading VAE for batch generation...")
-    vae_for_batch = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+    vae_for_batch = qwen_image_autoencoder_kl.load_vae(
+        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
+    )
     vae_for_batch.to(torch.bfloat16)
     vae_for_batch.eval()
 
@@ -839,7 +854,9 @@ def process_interactive(args: argparse.Namespace) -> None:
     shared_models = load_shared_models(args)
     shared_models["conds_cache"] = {}  # Initialize empty cache for interactive mode
 
-    vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+    vae = qwen_image_autoencoder_kl.load_vae(
+        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
+    )
     vae.to(torch.bfloat16)
     vae.eval()
 
@@ -960,14 +977,18 @@ def main():
 
             latents_list.append(latents)
 
-        # latent = torch.stack(latents_list, dim=0)  # [N, ...], must be same shape
+        vae = qwen_image_autoencoder_kl.load_vae(
+            args.vae,
+            device=device,
+            disable_mmap=True,
+            spatial_chunk_size=args.vae_chunk_size,
+            disable_cache=args.vae_disable_cache,
+        )
+        vae.to(torch.bfloat16)
+        vae.eval()
 
         for i, latent in enumerate(latents_list):
             args.seed = seeds[i]
-
-            vae = qwen_image_autoencoder_kl.load_vae(args.vae, device=device, disable_mmap=True)
-            vae.to(torch.bfloat16)
-            vae.eval()
             save_output(args, vae, latent, device, original_base_names[i])
 
     else:
@@ -1010,7 +1031,13 @@ def main():
             clean_memory_on_device(device)
 
             # Save latent and video
-            vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu", disable_mmap=True)
+            vae = qwen_image_autoencoder_kl.load_vae(
+                args.vae,
+                device="cpu",
+                disable_mmap=True,
+                spatial_chunk_size=args.vae_chunk_size,
+                disable_cache=args.vae_disable_cache,
+            )
             vae.to(torch.bfloat16)
             vae.eval()
             save_output(args, vae, latent, device)

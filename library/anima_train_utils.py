@@ -1,6 +1,7 @@
 # Anima Training Utilities
 
 import argparse
+import gc
 import math
 import os
 import time
@@ -12,7 +13,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 from PIL import Image
 
-from library.device_utils import init_ipex, clean_memory_on_device
+from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
 from library import anima_models, anima_utils, train_util, qwen_image_autoencoder_kl
 
 init_ipex()
@@ -120,6 +121,19 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--split_attn",
         action="store_true",
         help="split attention computation to reduce memory usage / メモリ使用量を減らすためにattention時にバッチを分割する",
+    )
+    parser.add_argument(
+        "--vae_chunk_size",
+        type=int,
+        default=None,
+        help="Spatial chunk size for VAE encoding/decoding to reduce memory usage. Must be even number. If not specified, chunking is disabled (official behavior)."
+        + " / メモリ使用量を減らすためのVAEエンコード/デコードの空間チャンクサイズ。偶数である必要があります。未指定の場合、チャンク処理は無効になります（公式の動作）。",
+    )
+    parser.add_argument(
+        "--vae_disable_cache",
+        action="store_true",
+        help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
+        + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
     )
 
 
@@ -566,11 +580,12 @@ def _sample_image_inference(
     )
 
     # Decode latents
+    gc.collect()
+    synchronize_device(accelerator.device)
     clean_memory_on_device(accelerator.device)
     org_vae_device = vae.device
     vae.to(accelerator.device)
     decoded = vae.decode_to_pixels(latents)
-    input("Decoded")
     vae.to(org_vae_device)
     clean_memory_on_device(accelerator.device)
 

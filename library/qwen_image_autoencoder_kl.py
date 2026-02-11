@@ -102,6 +102,94 @@ class DiagonalGaussianDistribution(object):
 # endregion diffusers-vae
 
 
+class ChunkedConv2d(nn.Conv2d):
+    """
+    Convolutional layer that processes input in chunks to reduce memory usage.
+
+    Parameters
+    ----------
+    spatial_chunk_size : int, optional
+        Size of chunks to process at a time. Default is None, which means no chunking.
+
+    TODO: Commonize with similar implementation in hunyuan_image_vae.py
+    """
+
+    def __init__(self, *args, **kwargs):
+        if "spatial_chunk_size" in kwargs:
+            self.spatial_chunk_size = kwargs.pop("spatial_chunk_size", None)
+        else:
+            self.spatial_chunk_size = None
+        super().__init__(*args, **kwargs)
+        assert self.padding_mode == "zeros", "Only 'zeros' padding mode is supported."
+        assert self.dilation == (1, 1), "Only dilation=1 is supported."
+        assert self.groups == 1, "Only groups=1 is supported."
+        assert self.kernel_size[0] == self.kernel_size[1], "Only square kernels are supported."
+        assert self.stride[0] == self.stride[1], "Only equal strides are supported."
+        self.original_padding = self.padding
+        self.padding = (0, 0)  # We handle padding manually in forward
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # If chunking is not needed, process normally. We chunk only along height dimension.
+        if (
+            self.spatial_chunk_size is None
+            or x.shape[2] <= self.spatial_chunk_size + self.kernel_size[0] + self.spatial_chunk_size // 4
+        ):
+            self.padding = self.original_padding
+            x = super().forward(x)
+            self.padding = (0, 0)
+            return x
+
+        # Process input in chunks to reduce memory usage
+        org_shape = x.shape
+
+        # If kernel size is not 1, we need to use overlapping chunks
+        overlap = self.kernel_size[0] // 2  # 1 for kernel size 3
+        if self.original_padding[0] == 0:
+            overlap = 0
+
+        # If stride > 1, QwenImageVAE pads manually with zeros before convolution, so we do not need to consider it here
+        y_height = org_shape[2] // self.stride[0]
+        y_width = org_shape[3] // self.stride[1]
+        y = torch.zeros((org_shape[0], self.out_channels, y_height, y_width), dtype=x.dtype, device=x.device)
+        yi = 0
+        i = 0
+        while i < org_shape[2]:
+            si = i if i == 0 else i - overlap
+            ei = i + self.spatial_chunk_size + overlap + self.stride[0] - 1
+
+            # Check last chunk. If remaining part is small, include it in last chunk
+            if ei > org_shape[2] or ei + self.spatial_chunk_size // 4 > org_shape[2]:
+                ei = org_shape[2]
+
+            chunk = x[:, :, si:ei, :]
+
+            # Pad chunk if needed: This is as the original Conv2d with padding
+            if i == 0 and overlap > 0:  # First chunk
+                # Pad except bottom
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap, overlap, 0), mode="constant", value=0)
+            elif ei == org_shape[2] and overlap > 0:  # Last chunk
+                # Pad except top
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap, 0, overlap), mode="constant", value=0)
+            elif overlap > 0:  # Middle chunks
+                # Pad left and right only
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap), mode="constant", value=0)
+
+            # print(f"Processing chunk: org_shape={org_shape}, si={si}, ei={ei}, chunk.shape={chunk.shape}, overlap={overlap}")
+            chunk = super().forward(chunk)
+            # print(f"  -> chunk after conv shape: {chunk.shape}")
+            y[:, :, yi : yi + chunk.shape[2], :] = chunk
+            yi += chunk.shape[2]
+            del chunk
+
+            if ei == org_shape[2]:
+                break
+            i += self.spatial_chunk_size
+
+        assert yi == y_height, f"yi={yi}, y_height={y_height}"
+
+        return y
+
+
 class QwenImageCausalConv3d(nn.Conv3d):
     r"""
     A custom 3D causal convolution layer with feature caching support.
@@ -124,6 +212,7 @@ class QwenImageCausalConv3d(nn.Conv3d):
         kernel_size: Union[int, Tuple[int, int, int]],
         stride: Union[int, Tuple[int, int, int]] = 1,
         padding: Union[int, Tuple[int, int, int]] = 0,
+        spatial_chunk_size: Optional[int] = None,
     ) -> None:
         super().__init__(
             in_channels=in_channels,
@@ -136,6 +225,42 @@ class QwenImageCausalConv3d(nn.Conv3d):
         # Set up causal padding
         self._padding = (self.padding[2], self.padding[2], self.padding[1], self.padding[1], 2 * self.padding[0], 0)
         self.padding = (0, 0, 0)
+        self.spatial_chunk_size = spatial_chunk_size
+        self._supports_spatial_chunking = (
+            self.groups == 1 and self.dilation[1] == 1 and self.dilation[2] == 1 and self.stride[1] == 1 and self.stride[2] == 1
+        )
+
+    def _forward_chunked_height(self, x: torch.Tensor) -> torch.Tensor:
+        chunk_size = self.spatial_chunk_size
+        if chunk_size is None or chunk_size <= 0:
+            return super().forward(x)
+        if not self._supports_spatial_chunking:
+            return super().forward(x)
+
+        kernel_h = self.kernel_size[1]
+        if kernel_h <= 1 or x.shape[3] <= chunk_size:
+            return super().forward(x)
+
+        receptive_h = kernel_h
+        out_h = x.shape[3] - receptive_h + 1
+        if out_h <= 0:
+            return super().forward(x)
+
+        y0 = 0
+        out = None
+        while y0 < out_h:
+            y1 = min(y0 + chunk_size, out_h)
+            in0 = y0
+            in1 = y1 + receptive_h - 1
+            out_chunk = super().forward(x[:, :, :, in0:in1, :])
+            if out is None:
+                out_shape = list(out_chunk.shape)
+                out_shape[3] = out_h
+                out = out_chunk.new_empty(out_shape)
+            out[:, :, :, y0:y1, :] = out_chunk
+            y0 = y1
+
+        return out
 
     def forward(self, x, cache_x=None):
         padding = list(self._padding)
@@ -144,7 +269,7 @@ class QwenImageCausalConv3d(nn.Conv3d):
             x = torch.cat([cache_x, x], dim=2)
             padding[4] -= cache_x.shape[2]
         x = F.pad(x, padding)
-        return super().forward(x)
+        return self._forward_chunked_height(x)
 
 
 class QwenImageRMS_norm(nn.Module):
@@ -211,19 +336,19 @@ class QwenImageResample(nn.Module):
         if mode == "upsample2d":
             self.resample = nn.Sequential(
                 QwenImageUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"),
-                nn.Conv2d(dim, dim // 2, 3, padding=1),
+                ChunkedConv2d(dim, dim // 2, 3, padding=1),
             )
         elif mode == "upsample3d":
             self.resample = nn.Sequential(
                 QwenImageUpsample(scale_factor=(2.0, 2.0), mode="nearest-exact"),
-                nn.Conv2d(dim, dim // 2, 3, padding=1),
+                ChunkedConv2d(dim, dim // 2, 3, padding=1),
             )
             self.time_conv = QwenImageCausalConv3d(dim, dim * 2, (3, 1, 1), padding=(1, 0, 0))
 
         elif mode == "downsample2d":
-            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), ChunkedConv2d(dim, dim, 3, stride=(2, 2)))
         elif mode == "downsample3d":
-            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), nn.Conv2d(dim, dim, 3, stride=(2, 2)))
+            self.resample = nn.Sequential(nn.ZeroPad2d((0, 1, 0, 1)), ChunkedConv2d(dim, dim, 3, stride=(2, 2)))
             self.time_conv = QwenImageCausalConv3d(dim, dim, (3, 1, 1), stride=(2, 1, 1), padding=(0, 0, 0))
 
         else:
@@ -788,6 +913,8 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
             1.9160,
         ],
         input_channels: int = 3,
+        spatial_chunk_size: Optional[int] = None,
+        disable_cache: bool = False,
     ) -> None:
         super().__init__()
 
@@ -831,6 +958,14 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
             "decoder": sum(isinstance(m, QwenImageCausalConv3d) for m in self.decoder.modules()) if self.decoder is not None else 0,
             "encoder": sum(isinstance(m, QwenImageCausalConv3d) for m in self.encoder.modules()) if self.encoder is not None else 0,
         }
+
+        self.spatial_chunk_size = None
+        if spatial_chunk_size is not None and spatial_chunk_size > 0:
+            self.enable_spatial_chunking(spatial_chunk_size)
+
+        self.cache_disabled = False
+        if disable_cache:
+            self.disable_cache()
 
     @property
     def dtype(self):
@@ -891,6 +1026,39 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
         """
         self.use_slicing = False
 
+    def enable_spatial_chunking(self, spatial_chunk_size: int) -> None:
+        r"""
+        Enable memory-efficient convolution by chunking all causal Conv3d layers only along height.
+        """
+        if spatial_chunk_size is None or spatial_chunk_size <= 0:
+            raise ValueError(f"`spatial_chunk_size` must be a positive integer, got {spatial_chunk_size}.")
+        self.spatial_chunk_size = int(spatial_chunk_size)
+        for module in self.modules():
+            if isinstance(module, QwenImageCausalConv3d):
+                module.spatial_chunk_size = self.spatial_chunk_size
+            elif isinstance(module, ChunkedConv2d):
+                module.spatial_chunk_size = self.spatial_chunk_size
+
+    def disable_spatial_chunking(self) -> None:
+        r"""
+        Disable memory-efficient convolution chunking on all causal Conv3d layers.
+        """
+        self.spatial_chunk_size = None
+        for module in self.modules():
+            if isinstance(module, QwenImageCausalConv3d):
+                module.spatial_chunk_size = None
+            elif isinstance(module, ChunkedConv2d):
+                module.spatial_chunk_size = None
+
+    def disable_cache(self) -> None:
+        r"""
+        Disable caching mechanism in encoder and decoder.
+        """
+        self.cache_disabled = True
+        self.clear_cache = lambda: None
+        self._feat_map = None  # Disable decoder cache
+        self._enc_feat_map = None  # Disable encoder cache
+
     def clear_cache(self):
         def _count_conv3d(model):
             count = 0
@@ -909,6 +1077,7 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
 
     def _encode(self, x: torch.Tensor):
         _, _, num_frame, height, width = x.shape
+        assert num_frame == 1 or not self.cache_disabled, "Caching must be enabled for encoding multiple frames."
 
         if self.use_tiling and (width > self.tile_sample_min_width or height > self.tile_sample_min_height):
             return self.tiled_encode(x)
@@ -959,6 +1128,7 @@ class AutoencoderKLQwenImage(nn.Module):  # ModelMixin, ConfigMixin, FromOrigina
 
     def _decode(self, z: torch.Tensor, return_dict: bool = True):
         _, _, num_frame, height, width = z.shape
+        assert num_frame == 1 or not self.cache_disabled, "Caching must be enabled for encoding multiple frames."
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
         tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
 
@@ -1372,7 +1542,12 @@ def convert_comfyui_state_dict(sd):
 
 
 def load_vae(
-    vae_path: str, input_channels: int = 3, device: Union[str, torch.device] = "cpu", disable_mmap: bool = False
+    vae_path: str,
+    input_channels: int = 3,
+    device: Union[str, torch.device] = "cpu",
+    disable_mmap: bool = False,
+    spatial_chunk_size: Optional[int] = None,
+    disable_cache: bool = False,
 ) -> AutoencoderKLQwenImage:
     """Load VAE from a given path."""
     VAE_CONFIG_JSON = """
@@ -1434,6 +1609,11 @@ def load_vae(
 }
 """
     logger.info("Initializing VAE")
+
+    if spatial_chunk_size is not None and spatial_chunk_size % 2 != 0:
+        spatial_chunk_size += 1
+        logger.warning(f"Adjusted spatial_chunk_size to the next even number: {spatial_chunk_size}")
+
     config = json.loads(VAE_CONFIG_JSON)
     vae = AutoencoderKLQwenImage(
         base_dim=config["base_dim"],
@@ -1446,6 +1626,8 @@ def load_vae(
         latents_mean=config["latents_mean"],
         latents_std=config["latents_std"],
         input_channels=input_channels,
+        spatial_chunk_size=spatial_chunk_size,
+        disable_cache=disable_cache,
     )
 
     logger.info(f"Loading VAE from {vae_path}")
@@ -1459,3 +1641,97 @@ def load_vae(
 
     vae.to(device)
     return vae
+
+
+if __name__ == "__main__":
+    # Debugging / testing code
+    import argparse
+    import glob
+    import os
+    import time
+
+    from PIL import Image
+
+    from library.device_utils import get_preferred_device, synchronize_device
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--vae", type=str, required=True, help="Path to the VAE model file.")
+    parser.add_argument("--input_image_dir", type=str, required=True, help="Path to the input image directory.")
+    parser.add_argument("--output_image_dir", type=str, required=True, help="Path to the output image directory.")
+    args = parser.parse_args()
+
+    # Load VAE
+    vae = load_vae(args.vae, device=get_preferred_device())
+
+    # Process images
+    def encode_decode_image(image_path, output_path):
+        image = Image.open(image_path).convert("RGB")
+
+        # Crop to multiple of 8
+        width, height = image.size
+        new_width = (width // 8) * 8
+        new_height = (height // 8) * 8
+        if new_width != width or new_height != height:
+            image = image.crop((0, 0, new_width, new_height))
+
+        image_tensor = torch.tensor(np.array(image)).permute(2, 0, 1).unsqueeze(0).float() / 255.0 * 2 - 1
+        image_tensor = image_tensor.to(vae.dtype).to(vae.device)
+
+        with torch.no_grad():
+            latents = vae.encode_pixels_to_latents(image_tensor)
+            reconstructed = vae.decode_to_pixels(latents)
+
+        diff = (image_tensor - reconstructed).abs().mean().item()
+        print(f"Processed {image_path} (size: {image.size}), reconstruction diff: {diff}")
+
+        reconstructed_image = ((reconstructed.squeeze(0).permute(1, 2, 0).float().cpu().numpy() + 1) / 2 * 255).astype(np.uint8)
+        Image.fromarray(reconstructed_image).save(output_path)
+
+    def process_directory(input_dir, output_dir):
+        if get_preferred_device().type == "cuda":
+            torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated()
+
+        synchronize_device(get_preferred_device())
+        start_time = time.perf_counter()
+
+        os.makedirs(output_dir, exist_ok=True)
+        image_paths = glob.glob(os.path.join(input_dir, "*.jpg")) + glob.glob(os.path.join(input_dir, "*.png"))
+        for image_path in image_paths:
+            filename = os.path.basename(image_path)
+            output_path = os.path.join(output_dir, filename)
+            encode_decode_image(image_path, output_path)
+
+        if get_preferred_device().type == "cuda":
+            max_mem = torch.cuda.max_memory_allocated() / (1024**3)
+            print(f"Max GPU memory allocated: {max_mem:.2f} GB")
+
+        synchronize_device(get_preferred_device())
+        end_time = time.perf_counter()
+        print(f"Processing time: {end_time - start_time:.2f} seconds")
+
+    print("Starting image processing with default settings...")
+    process_directory(args.input_image_dir, args.output_image_dir)
+
+    print("Starting image processing with spatial chunking enabled with chunk size 64...")
+    vae.enable_spatial_chunking(64)
+    process_directory(args.input_image_dir, args.output_image_dir + "_chunked_64")
+
+    print("Starting image processing with spatial chunking enabled with chunk size 16...")
+    vae.enable_spatial_chunking(16)
+    process_directory(args.input_image_dir, args.output_image_dir + "_chunked_16")
+
+    print("Starting image processing without caching and chunking enabled with chunk size 64...")
+    vae.enable_spatial_chunking(64)
+    vae.disable_cache()
+    process_directory(args.input_image_dir, args.output_image_dir + "_no_cache_chunked_64")
+
+    print("Starting image processing without caching and chunking enabled with chunk size 16...")
+    vae.disable_cache()
+    process_directory(args.input_image_dir, args.output_image_dir + "_no_cache_chunked_16")
+
+    print("Starting image processing without caching and chunking disabled...")
+    vae.disable_spatial_chunking()
+    process_directory(args.input_image_dir, args.output_image_dir + "_no_cache")
+
+    print("Processing completed.")

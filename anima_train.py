@@ -232,7 +232,9 @@ def train(args):
 
     # Load VAE and cache latents
     logger.info("Loading Anima VAE...")
-    vae = qwen_image_autoencoder_kl.load_vae(args.vae, device="cpu")
+    vae = qwen_image_autoencoder_kl.load_vae(
+        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
+    )
 
     if cache_latents:
         vae.to(accelerator.device, dtype=weight_dtype)
