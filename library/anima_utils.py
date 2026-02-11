@@ -20,106 +20,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Keys that should stay in high precision (float32/bfloat16, not quantized)
-KEEP_IN_HIGH_PRECISION = ["x_embedder", "t_embedder", "t_embedding_norm", "final_layer"]
-
-
-def load_safetensors(path: str, device: str = "cpu", dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
-    """Load a safetensors file and optionally cast to dtype."""
-    sd = load_file(path, device=device)
-    if dtype is not None:
-        sd = {k: v.to(dtype) for k, v in sd.items()}
-    return sd
-
-
-def load_anima_dit(
-    dit_path: str,
-    dtype: torch.dtype,
-    device: Union[str, torch.device] = "cpu",
-    transformer_dtype: Optional[torch.dtype] = None,
-    llm_adapter_path: Optional[str] = None,
-    disable_mmap: bool = False,
-) -> anima_models.Anima:
-    """Load the Anima model from safetensors.
-
-    Args:
-        dit_path: Path to DiT safetensors file
-        dtype: Base dtype for model parameters
-        device: Device to load to
-        transformer_dtype: Optional separate dtype for transformer blocks (lower precision)
-        llm_adapter_path: Optional separate path for LLM adapter weights
-        disable_mmap: If True, disable memory-mapped loading (reduces peak memory)
-    """
-    if transformer_dtype is None:
-        transformer_dtype = dtype
-
-    logger.info(f"Loading Anima DiT from {dit_path}")
-    if disable_mmap:
-        from library.safetensors_utils import load_safetensors as load_safetensors_no_mmap
-
-        state_dict = load_safetensors_no_mmap(dit_path, device="cpu", disable_mmap=True)
-    else:
-        state_dict = load_file(dit_path, device="cpu")
-
-    # Remove 'net.' prefix if present
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        if k.startswith("net."):
-            k = k[len("net.") :]
-        new_state_dict[k] = v
-    state_dict = new_state_dict
-
-    # Derive config from state_dict
-    dit_config = anima_models.get_dit_config(state_dict)
-
-    # Detect LLM adapter
-    if llm_adapter_path is not None:
-        use_llm_adapter = True
-        dit_config["use_llm_adapter"] = True
-        llm_adapter_state_dict = load_safetensors(llm_adapter_path, device="cpu")
-    elif "llm_adapter.out_proj.weight" in state_dict:
-        use_llm_adapter = True
-        dit_config["use_llm_adapter"] = True
-        llm_adapter_state_dict = None  # Loaded as part of DiT
-    else:
-        use_llm_adapter = False
-        llm_adapter_state_dict = None
-
-    logger.info(
-        f"DiT config: model_channels={dit_config['model_channels']}, num_blocks={dit_config['num_blocks']}, "
-        f"num_heads={dit_config['num_heads']}, use_llm_adapter={use_llm_adapter}"
-    )
-
-    # Build model normally on CPU — buffers get proper values from __init__
-    dit = anima_models.Anima(**dit_config)
-
-    # Merge LLM adapter weights into state_dict if loaded separately
-    if use_llm_adapter and llm_adapter_state_dict is not None:
-        for k, v in llm_adapter_state_dict.items():
-            state_dict[f"llm_adapter.{k}"] = v
-
-    # Load checkpoint: strict=False keeps buffers not in checkpoint (e.g. pos_embedder.seq)
-    missing, unexpected = dit.load_state_dict(state_dict, strict=False)
-    if missing:
-        # Filter out expected missing buffers (initialized in __init__, not saved in checkpoint)
-        unexpected_missing = [
-            k
-            for k in missing
-            if not any(buf_name in k for buf_name in ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq"))
-        ]
-        if unexpected_missing:
-            logger.warning(f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}")
-    if unexpected:
-        logger.info(f"Unexpected keys in checkpoint (ignored): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
-
-    # Apply per-parameter dtype (high precision for 1D/critical, transformer_dtype for rest)
-    for name, p in dit.named_parameters():
-        dtype_to_use = dtype if (any(keyword in name for keyword in KEEP_IN_HIGH_PRECISION) or p.ndim == 1) else transformer_dtype
-        p.data = p.data.to(dtype=dtype_to_use)
-
-    dit.to(device)
-    logger.info(f"Loaded Anima DiT successfully. Parameters: {sum(p.numel() for p in dit.parameters()):,}")
-    return dit
+# Original Anima high-precision keys. Kept for reference, but not used currently.
+# # Keys that should stay in high precision (float32/bfloat16, not quantized)
+# KEEP_IN_HIGH_PRECISION = ["x_embedder", "t_embedder", "t_embedding_norm", "final_layer"]
 
 
 FP8_OPTIMIZATION_TARGET_KEYS = ["blocks", ""]
@@ -244,50 +147,6 @@ def load_anima_model(
     logger.info(f"Loaded DiT model from {dit_path}, unexpected missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
 
     return model
-
-
-def load_anima_vae(vae_path: str, dtype: torch.dtype = torch.float32, device: str = "cpu"):
-    """Load WanVAE from a safetensors/pth file.
-
-    Returns (vae_model, mean_tensor, std_tensor, scale).
-    """
-    from library.anima_models import ANIMA_VAE_MEAN, ANIMA_VAE_STD
-
-    logger.info(f"Loading Anima VAE from {vae_path}")
-
-    # VAE config (fixed for WanVAE)
-    vae_config = dict(
-        dim=96,
-        z_dim=16,
-        dim_mult=[1, 2, 4, 4],
-        num_res_blocks=2,
-        attn_scales=[],
-        temperal_downsample=[False, True, True],
-        dropout=0.0,
-    )
-
-    from library.anima_vae import WanVAE_
-
-    # Build model
-    with torch.device("meta"):
-        vae = WanVAE_(**vae_config)
-
-    # Load state dict
-    if vae_path.endswith(".safetensors"):
-        vae_sd = load_file(vae_path, device="cpu")
-    else:
-        vae_sd = torch.load(vae_path, map_location="cpu", weights_only=True)
-
-    vae.load_state_dict(vae_sd, assign=True)
-    vae = vae.eval().requires_grad_(False).to(device, dtype=dtype)
-
-    # Create normalization tensors
-    mean = torch.tensor(ANIMA_VAE_MEAN, dtype=dtype, device=device)
-    std = torch.tensor(ANIMA_VAE_STD, dtype=dtype, device=device)
-    scale = [mean, 1.0 / std]
-
-    logger.info(f"Loaded Anima VAE successfully.")
-    return vae, mean, std, scale
 
 
 def load_qwen3_tokenizer(qwen3_path: str):
@@ -431,31 +290,3 @@ def save_anima_model(
 
     save_file(prefixed_sd, save_path, metadata=metadata)  # safetensors.save_file cosumes a lot of memory, but Anima is small enough
     logger.info(f"Saved Anima model to {save_path}")
-
-
-def vae_encode(tensor: torch.Tensor, vae, scale):
-    """Encode tensor through WanVAE with normalization.
-
-    Args:
-        tensor: Input tensor (B, C, T, H, W) in [-1, 1] range
-        vae: WanVAE_ model
-        scale: [mean, 1/std] list
-
-    Returns:
-        Normalized latents
-    """
-    return vae.encode(tensor, scale)
-
-
-def vae_decode(latents: torch.Tensor, vae, scale):
-    """Decode latents through WanVAE with denormalization.
-
-    Args:
-        latents: Normalized latents
-        vae: WanVAE_ model
-        scale: [mean, 1/std] list
-
-    Returns:
-        Decoded tensor in [-1, 1] range
-    """
-    return vae.decode(latents, scale)

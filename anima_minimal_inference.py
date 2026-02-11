@@ -4,13 +4,11 @@ import gc
 from importlib.util import find_spec
 import random
 import os
-import re
 import time
 import copy
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Tuple, Optional, List, Any, Dict, Union
 
-import numpy as np
 import torch
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
@@ -19,10 +17,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
 from library import anima_models, anima_utils, hunyuan_image_utils, qwen_image_autoencoder_kl, strategy_anima, strategy_base
-from library.anima_vae import WanVAE_
 from library.device_utils import clean_memory_on_device, synchronize_device
-from library.safetensors_utils import mem_eff_save_file
-from networks import lora_hunyuan_image
 
 lycoris_available = find_spec("lycoris") is not None
 if lycoris_available:
@@ -279,7 +274,9 @@ def load_dit_model(
 # endregion
 
 
-def decode_latent(vae: WanVAE_, latent: torch.Tensor, device: torch.device) -> torch.Tensor:
+def decode_latent(
+    vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage, latent: torch.Tensor, device: torch.device
+) -> torch.Tensor:
     logger.info(f"Decoding image. Latent shape {latent.shape}, device {device}")
 
     vae.to(device)
@@ -609,7 +606,7 @@ def save_images(sample: torch.Tensor, args: argparse.Namespace, original_base_na
 
 def save_output(
     args: argparse.Namespace,
-    vae: WanVAE_,
+    vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage,
     latent: torch.Tensor,
     device: torch.device,
     original_base_name: Optional[str] = None,

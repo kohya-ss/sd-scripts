@@ -30,10 +30,12 @@ from torchvision import transforms
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
-IMAGE_TRANSFORMS = transforms.Compose([
-    transforms.ToTensor(),           # [0,1]
-    transforms.Normalize([0.5], [0.5]),  # [-1,1]
-])
+IMAGE_TRANSFORMS = transforms.Compose(
+    [
+        transforms.ToTensor(),  # [0,1]
+        transforms.Normalize([0.5], [0.5]),  # [-1,1]
+    ]
+)
 
 
 def find_image_caption_pairs(image_dir: str):
@@ -60,35 +62,32 @@ def print_tensor_info(name: str, t, indent=2):
         print(f"{prefix}{name}: None")
         return
     if isinstance(t, np.ndarray):
-        print(f"{prefix}{name}: numpy {t.dtype} shape={t.shape} "
-              f"min={t.min():.4f} max={t.max():.4f} mean={t.mean():.4f}")
+        print(f"{prefix}{name}: numpy {t.dtype} shape={t.shape} " f"min={t.min():.4f} max={t.max():.4f} mean={t.mean():.4f}")
     elif isinstance(t, torch.Tensor):
-        print(f"{prefix}{name}: torch {t.dtype} shape={tuple(t.shape)} "
-              f"min={t.min().item():.4f} max={t.max().item():.4f} mean={t.float().mean().item():.4f}")
+        print(
+            f"{prefix}{name}: torch {t.dtype} shape={tuple(t.shape)} "
+            f"min={t.min().item():.4f} max={t.max().item():.4f} mean={t.float().mean().item():.4f}"
+        )
     else:
         print(f"{prefix}{name}: type={type(t)} value={t}")
 
 
 # Test 1: Latent Cache
 
+
 def test_latent_cache(args, pairs):
     print("\n" + "=" * 70)
     print("TEST 1: LATENT CACHING (VAE encode -> cache -> reload)")
     print("=" * 70)
 
-    from library import anima_utils
-    from library.anima_models import ANIMA_VAE_MEAN, ANIMA_VAE_STD
+    from library import qwen_image_autoencoder_kl
 
     # Load VAE
     print("\n[1.1] Loading VAE...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vae_dtype = torch.float32
-    vae, vae_mean, vae_std, vae_scale = anima_utils.load_anima_vae(
-        args.vae_path, dtype=vae_dtype, device=device
-    )
+    vae = qwen_image_autoencoder_kl.load_vae(args.vae_path, dtype=vae_dtype, device=device)
     print(f"  VAE loaded on {device}, dtype={vae_dtype}")
-    print(f"  VAE mean (first 4): {ANIMA_VAE_MEAN[:4]}")
-    print(f"  VAE std  (first 4): {ANIMA_VAE_STD[:4]}")
 
     for img_path, caption in pairs:
         print(f"\n[1.2] Processing: {os.path.basename(img_path)}")
@@ -96,13 +95,13 @@ def test_latent_cache(args, pairs):
         # Load image
         img = Image.open(img_path).convert("RGB")
         img_np = np.array(img)
-        print(f"  Raw image: {img_np.shape} dtype={img_np.dtype} "
-              f"min={img_np.min()} max={img_np.max()}")
+        print(f"  Raw image: {img_np.shape} dtype={img_np.dtype} " f"min={img_np.min()} max={img_np.max()}")
 
         # Apply IMAGE_TRANSFORMS (same as sd-scripts training)
         img_tensor = IMAGE_TRANSFORMS(img_np)
-        print(f"  After IMAGE_TRANSFORMS: shape={tuple(img_tensor.shape)} "
-              f"min={img_tensor.min():.4f} max={img_tensor.max():.4f}")
+        print(
+            f"  After IMAGE_TRANSFORMS: shape={tuple(img_tensor.shape)} " f"min={img_tensor.min():.4f} max={img_tensor.max():.4f}"
+        )
 
         # Check range is [-1, 1]
         if img_tensor.min() < -1.01 or img_tensor.max() > 1.01:
@@ -116,7 +115,7 @@ def test_latent_cache(args, pairs):
         print(f"  VAE input: shape={tuple(img_5d.shape)} dtype={img_5d.dtype}")
 
         with torch.no_grad():
-            latents = vae.encode(img_5d, vae_scale)
+            latents = vae.encode_pixels_to_latents(img_5d)
         latents_cpu = latents.cpu()
         print_tensor_info("Encoded latents", latents_cpu)
 
@@ -165,7 +164,9 @@ def test_latent_cache(args, pairs):
 
 # Test 2: Text Encoder Output Cache
 
+
 def test_text_encoder_cache(args, pairs):
+    # TODO Rewrite this
     print("\n" + "=" * 70)
     print("TEST 2: TEXT ENCODER OUTPUT CACHING")
     print("=" * 70)
@@ -175,9 +176,7 @@ def test_text_encoder_cache(args, pairs):
     # Load tokenizers
     print("\n[2.1] Loading tokenizers...")
     qwen3_tokenizer = anima_utils.load_qwen3_tokenizer(args.qwen3_path)
-    t5_tokenizer = anima_utils.load_t5_tokenizer(
-        getattr(args, 't5_tokenizer_path', None)
-    )
+    t5_tokenizer = anima_utils.load_t5_tokenizer(getattr(args, "t5_tokenizer_path", None))
     print(f"  Qwen3 tokenizer vocab: {qwen3_tokenizer.vocab_size}")
     print(f"  T5 tokenizer vocab: {t5_tokenizer.vocab_size}")
 
@@ -185,9 +184,7 @@ def test_text_encoder_cache(args, pairs):
     print("\n[2.2] Loading Qwen3 text encoder...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     te_dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    qwen3_model, _ = anima_utils.load_qwen3_text_encoder(
-        args.qwen3_path, dtype=te_dtype, device=device
-    )
+    qwen3_model, _ = anima_utils.load_qwen3_text_encoder(args.qwen3_path, dtype=te_dtype, device=device)
     qwen3_model.eval()
 
     # Create strategy objects
@@ -199,9 +196,7 @@ def test_text_encoder_cache(args, pairs):
         qwen3_max_length=args.qwen3_max_length,
         t5_max_length=args.t5_max_length,
     )
-    text_encoding_strategy = AnimaTextEncodingStrategy(
-        dropout_rate=0.0,
-    )
+    text_encoding_strategy = AnimaTextEncodingStrategy()
 
     captions = [cap for _, cap in pairs]
     print(f"\n[2.3] Tokenizing {len(captions)} captions...")
@@ -221,10 +216,7 @@ def test_text_encoder_cache(args, pairs):
     print(f"\n[2.4] Encoding with Qwen3 text encoder...")
     with torch.no_grad():
         prompt_embeds, attn_mask, t5_ids_out, t5_mask_out = text_encoding_strategy.encode_tokens(
-            tokenize_strategy,
-            [qwen3_model],
-            tokens_and_masks,
-            enable_dropout=False,
+            tokenize_strategy, [qwen3_model], tokens_and_masks
         )
 
     print(f"  Encoding results:")
@@ -374,13 +366,13 @@ def test_text_encoder_cache(args, pairs):
 
 # Test 3: Full batch simulation
 
+
 def test_full_batch_simulation(args, pairs):
     print("\n" + "=" * 70)
     print("TEST 3: FULL BATCH SIMULATION (mimics process_batch flow)")
     print("=" * 70)
 
     from library import anima_utils
-    from library.anima_models import ANIMA_VAE_MEAN, ANIMA_VAE_STD
     from library.strategy_anima import AnimaTokenizeStrategy, AnimaTextEncodingStrategy
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -390,14 +382,16 @@ def test_full_batch_simulation(args, pairs):
     # Load all models
     print("\n[3.1] Loading models...")
     qwen3_tokenizer = anima_utils.load_qwen3_tokenizer(args.qwen3_path)
-    t5_tokenizer = anima_utils.load_t5_tokenizer(getattr(args, 't5_tokenizer_path', None))
+    t5_tokenizer = anima_utils.load_t5_tokenizer(getattr(args, "t5_tokenizer_path", None))
     qwen3_model, _ = anima_utils.load_qwen3_text_encoder(args.qwen3_path, dtype=te_dtype, device=device)
     qwen3_model.eval()
     vae, _, _, vae_scale = anima_utils.load_anima_vae(args.vae_path, dtype=vae_dtype, device=device)
 
     tokenize_strategy = AnimaTokenizeStrategy(
-        qwen3_tokenizer=qwen3_tokenizer, t5_tokenizer=t5_tokenizer,
-        qwen3_max_length=args.qwen3_max_length, t5_max_length=args.t5_max_length,
+        qwen3_tokenizer=qwen3_tokenizer,
+        t5_tokenizer=t5_tokenizer,
+        qwen3_max_length=args.qwen3_max_length,
+        t5_max_length=args.t5_max_length,
     )
     text_encoding_strategy = AnimaTextEncodingStrategy(dropout_rate=0.0)
 
@@ -408,7 +402,10 @@ def test_full_batch_simulation(args, pairs):
     tokens_and_masks = tokenize_strategy.tokenize(captions)
     with torch.no_grad():
         te_outputs = text_encoding_strategy.encode_tokens(
-            tokenize_strategy, [qwen3_model], tokens_and_masks, enable_dropout=False,
+            tokenize_strategy,
+            [qwen3_model],
+            tokens_and_masks,
+            enable_dropout=False,
         )
     prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = te_outputs
 
@@ -473,7 +470,7 @@ def test_full_batch_simulation(args, pairs):
         print(f"  text_encoder_conds: empty (no cache)")
 
     # The critical condition
-    train_text_encoder_TRUE = True   # OLD behavior (base class default, no override)
+    train_text_encoder_TRUE = True  # OLD behavior (base class default, no override)
     train_text_encoder_FALSE = False  # NEW behavior (with is_train_text_encoder override)
 
     cond_old = len(text_encoder_conds) == 0 or text_encoder_conds[0] is None or train_text_encoder_TRUE
@@ -541,26 +538,19 @@ def test_full_batch_simulation(args, pairs):
 
 # Main
 
+
 def main():
     parser = argparse.ArgumentParser(description="Test Anima caching mechanisms")
-    parser.add_argument("--image_dir", type=str, required=True,
-                        help="Directory with image+txt pairs")
-    parser.add_argument("--qwen3_path", type=str, required=True,
-                        help="Path to Qwen3 model (directory or safetensors)")
-    parser.add_argument("--vae_path", type=str, required=True,
-                        help="Path to WanVAE safetensors")
-    parser.add_argument("--t5_tokenizer_path", type=str, default=None,
-                        help="Path to T5 tokenizer (optional, uses bundled config)")
+    parser.add_argument("--image_dir", type=str, required=True, help="Directory with image+txt pairs")
+    parser.add_argument("--qwen3_path", type=str, required=True, help="Path to Qwen3 model (directory or safetensors)")
+    parser.add_argument("--vae_path", type=str, required=True, help="Path to WanVAE safetensors")
+    parser.add_argument("--t5_tokenizer_path", type=str, default=None, help="Path to T5 tokenizer (optional, uses bundled config)")
     parser.add_argument("--qwen3_max_length", type=int, default=512)
     parser.add_argument("--t5_max_length", type=int, default=512)
-    parser.add_argument("--cache_to_disk", action="store_true",
-                        help="Also test disk cache round-trip")
-    parser.add_argument("--skip_latent", action="store_true",
-                        help="Skip latent cache test")
-    parser.add_argument("--skip_text", action="store_true",
-                        help="Skip text encoder cache test")
-    parser.add_argument("--skip_full", action="store_true",
-                        help="Skip full batch simulation")
+    parser.add_argument("--cache_to_disk", action="store_true", help="Also test disk cache round-trip")
+    parser.add_argument("--skip_latent", action="store_true", help="Skip latent cache test")
+    parser.add_argument("--skip_text", action="store_true", help="Skip text encoder cache test")
+    parser.add_argument("--skip_full", action="store_true", help="Skip full batch simulation")
     args = parser.parse_args()
 
     # Find pairs
