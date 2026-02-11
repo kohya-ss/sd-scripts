@@ -176,7 +176,7 @@ class LoRANetwork(torch.nn.Module):
     TEXT_ENCODER_TARGET_REPLACE_MODULE = ["Qwen3Attention", "Qwen3MLP", "Qwen3SdpaAttention", "Qwen3FlashAttention2"]
 
     LORA_PREFIX_ANIMA = "lora_unet"  # ComfyUI compatible
-    LORA_PREFIX_TEXT_ENCODER = "lora_te1"  # Qwen3
+    LORA_PREFIX_TEXT_ENCODER = "lora_te"  # Qwen3
 
     def __init__(
         self,
