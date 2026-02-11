@@ -40,6 +40,8 @@ from torch.optim import Optimizer
 from torchvision import transforms
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 import transformers
+
+from library.cdc_fm import CDCPreprocessor
 from diffusers.optimization import (
     SchedulerType as DiffusersSchedulerType,
     TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
@@ -1572,10 +1574,16 @@ class BaseDataset(torch.utils.data.Dataset):
         flippeds = []  # 変数名が微妙
         text_encoder_outputs_list = []
         custom_attributes = []
+        image_keys = []  # CDC-FM: track image keys for CDC lookup
+        latents_npz_paths = []  # CDC-FM: track latents_npz paths for CDC lookup
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
+
+            # CDC-FM: Store image_key and latents_npz path for CDC lookup
+            image_keys.append(image_key)
+            latents_npz_paths.append(image_info.latents_npz)
 
             custom_attributes.append(subset.custom_attributes)
 
@@ -1817,6 +1825,9 @@ class BaseDataset(torch.utils.data.Dataset):
         example["flippeds"] = flippeds
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
+
+        # CDC-FM: Add latents_npz paths to batch for CDC lookup
+        example["latents_npz"] = latents_npz_paths
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
@@ -2646,6 +2657,220 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             logger.info(f"[Dataset {i}]")
             dataset.new_cache_text_encoder_outputs(models, accelerator)
         accelerator.wait_for_everyone()
+
+    def cache_cdc_gamma_b(
+        self,
+        k_neighbors: int = 256,
+        k_bandwidth: int = 8,
+        d_cdc: int = 8,
+        gamma: float = 1.0,
+        force_recache: bool = False,
+        accelerator: Optional["Accelerator"] = None,
+        debug: bool = False,
+        adaptive_k: bool = False,
+        min_bucket_size: int = 16,
+    ) -> Optional[str]:
+        """
+        Cache CDC Γ_b matrices for all latents in the dataset
+
+        CDC files are saved as individual .npz files next to each latent cache file.
+        For example: image_0512x0768_flux.npz → image_0512x0768_flux_cdc_a1b2c3d4.npz
+        where 'a1b2c3d4' is the config hash (dataset dirs + CDC params).
+
+        Args:
+            k_neighbors: k-NN neighbors
+            k_bandwidth: Bandwidth estimation neighbors
+            d_cdc: CDC subspace dimension
+            gamma: CDC strength
+            force_recache: Force recompute even if cache exists
+            accelerator: For multi-GPU support
+            debug: Enable debug logging
+            adaptive_k: Enable adaptive k selection for small buckets
+            min_bucket_size: Minimum bucket size for CDC computation
+
+        Returns:
+            Config hash string for this CDC configuration, or None on error
+        """
+        from pathlib import Path
+
+        # Validate that latent caching is enabled
+        # CDC requires latents to be cached (either to disk or in memory) because:
+        # 1. CDC files are named based on latent cache filenames
+        # 2. CDC files are saved next to latent cache files
+        # 3. Training needs latent paths to load corresponding CDC files
+        has_cached_latents = False
+        for dataset in self.datasets:
+            for info in dataset.image_data.values():
+                if info.latents is not None or info.latents_npz is not None:
+                    has_cached_latents = True
+                    break
+            if has_cached_latents:
+                break
+
+        if not has_cached_latents:
+            raise ValueError(
+                "CDC-FM requires latent caching to be enabled. "
+                "Please enable latent caching by setting one of:\n"
+                "  - cache_latents = true (cache in memory)\n"
+                "  - cache_latents_to_disk = true (cache to disk)\n"
+                "in your training config or command line arguments."
+            )
+
+        # Collect dataset/subset directories for config hash
+        dataset_dirs = []
+        for dataset in self.datasets:
+            # Get the directory containing the images
+            if hasattr(dataset, 'image_dir'):
+                dataset_dirs.append(str(dataset.image_dir))
+            # Fallback: use first image's parent directory
+            elif dataset.image_data:
+                first_image = next(iter(dataset.image_data.values()))
+                dataset_dirs.append(str(Path(first_image.absolute_path).parent))
+
+        # Create preprocessor to get config hash
+        preprocessor = CDCPreprocessor(
+            k_neighbors=k_neighbors,
+            k_bandwidth=k_bandwidth,
+            d_cdc=d_cdc,
+            gamma=gamma,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            debug=debug,
+            adaptive_k=adaptive_k,
+            min_bucket_size=min_bucket_size,
+            dataset_dirs=dataset_dirs
+        )
+
+        logger.info(f"CDC config hash: {preprocessor.config_hash}")
+
+        # Check if CDC caches already exist (unless force_recache)
+        if not force_recache:
+            all_cached = self._check_cdc_caches_exist(preprocessor.config_hash)
+            if all_cached:
+                logger.info("All CDC cache files found, skipping preprocessing")
+                return preprocessor.config_hash
+            else:
+                logger.info("Some CDC cache files missing, will compute")
+
+        # Only main process computes CDC
+        is_main = accelerator is None or accelerator.is_main_process
+        if not is_main:
+            if accelerator is not None:
+                accelerator.wait_for_everyone()
+            return preprocessor.config_hash
+
+        logger.info("Starting CDC-FM preprocessing")
+        logger.info(f"Parameters: k={k_neighbors}, k_bw={k_bandwidth}, d_cdc={d_cdc}, gamma={gamma}")
+
+        # Get caching strategy for loading latents
+        from library.strategy_base import LatentsCachingStrategy
+
+        caching_strategy = LatentsCachingStrategy.get_strategy()
+
+        # Collect all latents from all datasets
+        for dataset_idx, dataset in enumerate(self.datasets):
+            logger.info(f"Loading latents from dataset {dataset_idx}...")
+            image_infos = list(dataset.image_data.values())
+
+            for local_idx, info in enumerate(tqdm(image_infos, desc=f"Dataset {dataset_idx}")):
+                # Load latent from disk or memory
+                if info.latents is not None:
+                    latent = info.latents
+                elif info.latents_npz is not None:
+                    # Load from disk
+                    latent, _, _, _, _ = caching_strategy.load_latents_from_disk(info.latents_npz, info.bucket_reso)
+                    if latent is None:
+                        logger.warning(f"Failed to load latent from {info.latents_npz}, skipping")
+                        continue
+                else:
+                    logger.warning(f"No latent found for {info.absolute_path}, skipping")
+                    continue
+
+                # Add to preprocessor (with unique global index across all datasets)
+                actual_global_idx = sum(len(d.image_data) for d in self.datasets[:dataset_idx]) + local_idx
+
+                # Get latents_npz_path - will be set whether caching to disk or memory
+                if info.latents_npz is None:
+                    # If not set, generate the path from the caching strategy
+                    info.latents_npz = caching_strategy.get_latents_npz_path(info.absolute_path, info.bucket_reso)
+
+                preprocessor.add_latent(
+                    latent=latent,
+                    global_idx=actual_global_idx,
+                    latents_npz_path=info.latents_npz,
+                    shape=latent.shape,
+                    metadata={"image_key": info.image_key}
+                )
+
+        # Compute and save individual CDC files
+        logger.info(f"\nComputing CDC Γ_b matrices for {len(preprocessor.batcher)} samples...")
+        files_saved = preprocessor.compute_all()
+        logger.info(f"Saved {files_saved} CDC cache files")
+
+        if accelerator is not None:
+            accelerator.wait_for_everyone()
+
+        # Return config hash so training can initialize GammaBDataset with it
+        return preprocessor.config_hash
+
+    def _check_cdc_caches_exist(self, config_hash: str) -> bool:
+        """
+        Check if CDC cache files exist for all latents in the dataset
+
+        Args:
+            config_hash: The config hash to use for CDC filename lookup
+        """
+        from pathlib import Path
+
+        missing_count = 0
+        total_count = 0
+
+        for dataset in self.datasets:
+            for info in dataset.image_data.values():
+                total_count += 1
+                if info.latents_npz is None:
+                    # If latents_npz not set, we can't check for CDC cache
+                    continue
+
+                # Compute expected latent shape from bucket_reso
+                # For multi-resolution CDC, we need to pass latent_shape to get the correct filename
+                latent_shape = None
+                if info.bucket_reso is not None:
+                    # Get latent shape efficiently without loading full data
+                    # First check if latent is already in memory
+                    if info.latents is not None:
+                        latent_shape = info.latents.shape
+                    else:
+                        # Load latent shape from npz file metadata
+                        # This is faster than loading the full latent data
+                        try:
+                            import numpy as np
+                            with np.load(info.latents_npz) as data:
+                                # Find the key for this bucket resolution
+                                # Multi-resolution format uses keys like "latents_104x80"
+                                h, w = info.bucket_reso[1] // 8, info.bucket_reso[0] // 8
+                                key = f"latents_{h}x{w}"
+                                if key in data:
+                                    latent_shape = data[key].shape
+                                elif 'latents' in data:
+                                    # Fallback for single-resolution cache
+                                    latent_shape = data['latents'].shape
+                        except Exception as e:
+                            logger.debug(f"Failed to read latent shape from {info.latents_npz}: {e}")
+                            # Fall back to checking without shape (backward compatibility)
+                            latent_shape = None
+
+                cdc_path = CDCPreprocessor.get_cdc_npz_path(info.latents_npz, config_hash, latent_shape)
+                if not Path(cdc_path).exists():
+                    missing_count += 1
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Missing CDC cache: {cdc_path}")
+
+        if missing_count > 0:
+            logger.info(f"Found {missing_count}/{total_count} missing CDC cache files")
+            return False
+
+        logger.debug(f"All {total_count} CDC cache files exist")
+        return True
 
     def set_caching_mode(self, caching_mode):
         for dataset in self.datasets:
@@ -6064,8 +6289,19 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
 
 
 def get_noise_noisy_latents_and_timesteps(
-    args, noise_scheduler, latents: torch.FloatTensor
+    args, noise_scheduler, latents: torch.FloatTensor,
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
+    """
+    Sample noise and create noisy latents.
+    
+    Args:
+        args: Training arguments
+        noise_scheduler: The noise scheduler
+        latents: Clean latents
+        
+    Returns:
+        (noise, noisy_latents, timesteps)
+    """
     # Sample noise that we'll add to the latents
     noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:

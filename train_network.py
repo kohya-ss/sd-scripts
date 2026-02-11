@@ -622,6 +622,27 @@ class NetworkTrainer:
 
             accelerator.wait_for_everyone()
 
+        # CDC-FM preprocessing
+        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm:
+            logger.info("CDC-FM enabled, preprocessing Γ_b matrices...")
+
+            self.cdc_config_hash = train_dataset_group.cache_cdc_gamma_b(
+                k_neighbors=args.cdc_k_neighbors,
+                k_bandwidth=args.cdc_k_bandwidth,
+                d_cdc=args.cdc_d_cdc,
+                gamma=args.cdc_gamma,
+                force_recache=args.force_recache_cdc,
+                accelerator=accelerator,
+                debug=getattr(args, 'cdc_debug', False),
+                adaptive_k=getattr(args, 'cdc_adaptive_k', False),
+                min_bucket_size=getattr(args, 'cdc_min_bucket_size', 16),
+            )
+
+            if self.cdc_config_hash is None:
+                logger.warning("CDC-FM preprocessing failed (likely missing FAISS). Training will continue without CDC-FM.")
+        else:
+            self.cdc_config_hash = None
+
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
         # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
         text_encoding_strategy = self.get_text_encoding_strategy(args)
@@ -659,6 +680,19 @@ class NetworkTrainer:
                 module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
 
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
+
+        # Load CDC-FM Γ_b dataset if enabled
+        if hasattr(args, "use_cdc_fm") and args.use_cdc_fm and self.cdc_config_hash is not None:
+            from library.cdc_fm import GammaBDataset
+
+            logger.info(f"CDC Γ_b dataset ready (hash: {self.cdc_config_hash})")
+
+            self.gamma_b_dataset = GammaBDataset(
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                config_hash=self.cdc_config_hash
+            )
+        else:
+            self.gamma_b_dataset = None
 
         # prepare network
         net_kwargs = {}

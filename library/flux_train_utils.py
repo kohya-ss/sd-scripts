@@ -2,10 +2,8 @@ import argparse
 import math
 import os
 import numpy as np
-import toml
-import json
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple
 
 import torch
 from accelerate import Accelerator, PartialState
@@ -183,7 +181,7 @@ def sample_image_inference(
     if cfg_scale != 1.0:
         logger.info(f"negative_prompt: {negative_prompt}")
     elif negative_prompt != "":
-        logger.info(f"negative prompt is ignored because scale is 1.0")
+        logger.info("negative prompt is ignored because scale is 1.0")
     logger.info(f"height: {height}")
     logger.info(f"width: {width}")
     logger.info(f"sample_steps: {sample_steps}")
@@ -468,9 +466,91 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
     return weighting
 
 
-def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+# Global set to track samples that have already been warned about shape mismatches
+# This prevents log spam during training (warning once per sample is sufficient)
+_cdc_warned_samples = set()
+
+
+def apply_cdc_noise_transformation(
+    noise: torch.Tensor,
+    timesteps: torch.Tensor,
+    num_timesteps: int,
+    gamma_b_dataset,
+    latents_npz_paths,
+    device
+) -> torch.Tensor:
+    """
+    Apply CDC-FM geometry-aware noise transformation.
+
+    Args:
+        noise: (B, C, H, W) standard Gaussian noise
+        timesteps: (B,) timesteps for this batch
+        num_timesteps: Total number of timesteps in scheduler
+        gamma_b_dataset: GammaBDataset with cached CDC matrices
+        latents_npz_paths: List of latent cache paths for this batch
+        device: Device to load CDC matrices to
+
+    Returns:
+        Transformed noise with geometry-aware covariance
+    """
+    # Device consistency validation
+    # Normalize device strings: "cuda" -> "cuda:0", "cpu" -> "cpu"
+    target_device = torch.device(device) if not isinstance(device, torch.device) else device
+    noise_device = noise.device
+
+    # Check if devices are compatible (cuda:0 vs cuda should not warn)
+    devices_compatible = (
+        noise_device == target_device or
+        (noise_device.type == "cuda" and target_device.type == "cuda") or
+        (noise_device.type == "cpu" and target_device.type == "cpu")
+    )
+
+    if not devices_compatible:
+        logger.warning(
+            f"CDC device mismatch: noise on {noise_device} but CDC loading to {target_device}. "
+            f"Transferring noise to {target_device} to avoid errors."
+        )
+        noise = noise.to(target_device)
+        device = target_device
+
+    # Normalize timesteps to [0, 1] for CDC-FM
+    t_normalized = timesteps.to(device) / num_timesteps
+
+    B, C, H, W = noise.shape
+
+    # Batch processing: Get CDC data for all samples at once
+    # Pass latent shape for multi-resolution CDC support
+    latent_shape = (C, H, W)
+    eigvecs, eigvals = gamma_b_dataset.get_gamma_b_sqrt(latents_npz_paths, device=device, latent_shape=latent_shape)
+    noise_flat = noise.reshape(B, -1)
+    noise_cdc_flat = gamma_b_dataset.compute_sigma_t_x(eigvecs, eigvals, noise_flat, t_normalized)
+    return noise_cdc_flat.reshape(B, C, H, W)
+
+
+def get_noisy_model_input_and_timestep(
+    args, 
+    noise_scheduler, 
+    latents: torch.Tensor, 
+    noise: torch.Tensor, 
+    device: torch.device, 
+    dtype: torch.dtype,
+    gamma_b_dataset=None, 
+    latents_npz_paths=None,
+    timestep_index: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Generate noisy model input and corresponding timesteps for training.
+    
+    Args:
+        args: Configuration with sampling parameters
+        noise_scheduler: Scheduler for noise/timestep management
+        latents: Clean latent representations
+        noise: Random noise tensor
+        device: Target device
+        dtype: Target dtype
+        gamma_b_dataset: Optional CDC-FM gamma_b dataset for geometry-aware noise
+        latents_npz_paths: Optional list of latent cache file paths for CDC-FM (required if gamma_b_dataset provided)
+    """
     bsz, _, h, w = latents.shape
     assert bsz > 0, "Batch size not large enough"
     num_timesteps = noise_scheduler.config.num_train_timesteps
@@ -514,10 +594,20 @@ def get_noisy_model_input_and_timesteps(
     # Broadcast sigmas to latent shape
     sigmas = sigmas.view(-1, 1, 1, 1)
 
-    # Add noise to the latents according to the noise magnitude at each timestep
-    # (this is the forward diffusion process)
+    # Apply CDC-FM geometry-aware noise transformation if enabled
+    if gamma_b_dataset is not None and latents_npz_paths is not None:
+        noise = apply_cdc_noise_transformation(
+            noise=noise,
+            timesteps=timesteps,
+            num_timesteps=num_timesteps,
+            gamma_b_dataset=gamma_b_dataset,
+            latents_npz_paths=latents_npz_paths,
+            device=device
+        )
+    
     if args.ip_noise_gamma:
         xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
+        
         if args.ip_noise_gamma_random_strength:
             ip_noise_gamma = torch.rand(1, device=latents.device, dtype=dtype) * args.ip_noise_gamma
         else:
