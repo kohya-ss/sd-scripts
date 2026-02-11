@@ -429,11 +429,10 @@ class TensorWeightAdapter:
                     if converted_key not in self.concat_key_set:  # first time seeing this concatenated key
                         self.concat_key_set.add(converted_key)
                         self.new_key_to_original_key_map[converted_key] = []
+                        self.new_keys.append(converted_key)
 
                     # multiple original keys map to the same concatenated key
                     self.new_key_to_original_key_map[converted_key].append(key)
-
-                    self.new_keys.append(converted_key)
                     continue  # skip to next key
 
             # direct mapping
