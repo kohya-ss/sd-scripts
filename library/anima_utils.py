@@ -3,7 +3,6 @@
 import os
 from typing import Dict, List, Optional, Union
 import torch
-import torch.nn as nn
 from safetensors.torch import load_file, save_file
 from accelerate.utils import set_module_tensor_to_device  # kept for potential future use
 from accelerate import init_empty_weights
@@ -38,11 +37,11 @@ def load_anima_model(
     loading_device: Union[str, torch.device],
     dit_weight_dtype: Optional[torch.dtype],
     fp8_scaled: bool = False,
-    lora_weights_list: Optional[Dict[str, torch.Tensor]] = None,
+    lora_weights_list: Optional[List[Dict[str, torch.Tensor]]] = None,
     lora_multipliers: Optional[list[float]] = None,
 ) -> anima_models.Anima:
     """
-    Load a HunyuanImage model from the specified checkpoint.
+    Load Anima model from the specified checkpoint.
 
     Args:
         device (Union[str, torch.device]): Device for optimization or merging
@@ -53,7 +52,7 @@ def load_anima_model(
         dit_weight_dtype (Optional[torch.dtype]): Data type of the DiT weights.
             If None, it will be loaded as is (same as the state_dict) or scaled for fp8. if not None, model weights will be casted to this dtype.
         fp8_scaled (bool): Whether to use fp8 scaling for the model weights.
-        lora_weights_list (Optional[Dict[str, torch.Tensor]]): LoRA weights to apply, if any.
+        lora_weights_list (Optional[List[Dict[str, torch.Tensor]]]): LoRA weights to apply, if any.
         lora_multipliers (Optional[List[float]]): LoRA multipliers for the weights, if any.
     """
     # dit_weight_dtype is None for fp8_scaled

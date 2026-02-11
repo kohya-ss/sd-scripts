@@ -28,8 +28,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-import logging
-
 from library.safetensors_utils import load_safetensors
 
 from library.utils import setup_logging

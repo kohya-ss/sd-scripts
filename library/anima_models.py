@@ -352,10 +352,6 @@ class Attention(nn.Module):
 
         return q, k, v
 
-    # def compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    #     result = self.attn_op(q, k, v)  # [B, S, H, D]
-    #     return self.output_dropout(self.output_proj(result))
-
     def forward(
         self,
         x: torch.Tensor,

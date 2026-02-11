@@ -72,16 +72,6 @@ def train(args):
         args.blocks_to_swap is None or args.blocks_to_swap == 0
     ) or not args.unsloth_offload_checkpointing, "blocks_to_swap is not supported with unsloth_offload_checkpointing"
 
-    # # Flash attention: validate availability
-    # if args.flash_attn:
-    #     try:
-    #         import flash_attn  # noqa: F401
-
-    #         logger.info("Flash Attention enabled for DiT blocks")
-    #     except ImportError:
-    #         logger.warning("flash_attn package not installed, falling back to PyTorch SDPA")
-    #         args.flash_attn = False
-
     cache_latents = args.cache_latents
     use_dreambooth_method = args.in_json is None
 
@@ -348,7 +338,7 @@ def train(args):
         assert args.mixed_precision == "bf16", "full_bf16 requires mixed_precision='bf16'"
         accelerator.print("enable full bf16 training.")
     else:
-        dit_weight_dtype = torch.float32  # Default to float32
+        dit_weight_dtype = torch.float32  # If neither full_fp16 nor full_bf16, the model weights should be in float32
     dit.to(dit_weight_dtype)  # convert dit to target weight dtype
 
     # move text encoder to GPU if not cached
@@ -431,6 +421,7 @@ def train(args):
     global_step = 0
 
     noise_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.discrete_flow_shift)
+    # Copy for noise and timestep generation, because noise_scheduler may be changed during training in future
     noise_scheduler_copy = copy.deepcopy(noise_scheduler)
 
     if accelerator.is_main_process:
@@ -540,7 +531,7 @@ def train(args):
 
                 # Get noisy model input and timesteps
                 noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
-                    args, noise_scheduler, latents, noise, accelerator.device, dit_weight_dtype
+                    args, noise_scheduler_copy, latents, noise, accelerator.device, dit_weight_dtype
                 )
                 timesteps = timesteps / 1000.0  # scale to [0, 1] range. timesteps is float32
 
