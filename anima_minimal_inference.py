@@ -1024,9 +1024,6 @@ def main():
             # For single mode, precomputed data is None, shared_models is None.
             # generate will load all necessary models (Text Encoders, DiT).
             latent = generate(args, gen_settings)
-            # print(f"Generated latent shape: {latent.shape}")
-            # if args.save_merged_model:
-            #     return
 
             clean_memory_on_device(device)
 
