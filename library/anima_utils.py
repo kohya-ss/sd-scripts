@@ -407,21 +407,29 @@ def load_t5_tokenizer(t5_tokenizer_path: Optional[str] = None):
     )
 
 
-def save_anima_model(save_path: str, dit_state_dict: Dict[str, torch.Tensor], dtype: Optional[torch.dtype] = None):
+def save_anima_model(
+    save_path: str, dit_state_dict: Dict[str, torch.Tensor], metadata: Dict[str, any], dtype: Optional[torch.dtype] = None
+):
     """Save Anima DiT model with 'net.' prefix for ComfyUI compatibility.
 
     Args:
         save_path: Output path (.safetensors)
         dit_state_dict: State dict from dit.state_dict()
+        metadata: Metadata dict to include in the safetensors file
         dtype: Optional dtype to cast to before saving
     """
     prefixed_sd = {}
     for k, v in dit_state_dict.items():
         if dtype is not None:
-            v = v.to(dtype)
+            # v = v.to(dtype)
+            v = v.detach().clone().to("cpu").to(dtype)  # Reduce GPU memory usage during save
         prefixed_sd["net." + k] = v.contiguous()
 
-    save_file(prefixed_sd, save_path, metadata={"format": "pt"})
+    if metadata is None:
+        metadata = {}
+    metadata["format"] = "pt"  # For compatibility with the official .safetensors file
+
+    save_file(prefixed_sd, save_path, metadata=metadata)  # safetensors.save_file cosumes a lot of memory, but Anima is small enough
     logger.info(f"Saved Anima model to {save_path}")
 
 

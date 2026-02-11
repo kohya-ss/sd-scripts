@@ -312,10 +312,12 @@ def save_anima_model_on_train_end(
     """Save Anima model at the end of training."""
 
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True)
+        sai_metadata = train_util.get_sai_model_spec_dataclass(
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
+        ).to_metadata_dict()
         dit_sd = dit.state_dict()
         # Save with 'net.' prefix for ComfyUI compatibility
-        anima_utils.save_anima_model(ckpt_file, dit_sd, save_dtype)
+        anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
     train_util.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
 
@@ -333,9 +335,11 @@ def save_anima_model_on_epoch_end_or_stepwise(
     """Save Anima model at epoch end or specific steps."""
 
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True)
+        sai_metadata = train_util.get_sai_model_spec_dataclass(
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
+        ).to_metadata_dict()
         dit_sd = dit.state_dict()
-        anima_utils.save_anima_model(ckpt_file, dit_sd, save_dtype)
+        anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
     train_util.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
