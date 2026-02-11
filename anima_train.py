@@ -13,7 +13,7 @@ import toml
 from tqdm import tqdm
 
 import torch
-from library import flux_train_utils, qwen_image_autoencoder_kl, utils
+from library import flux_train_utils, qwen_image_autoencoder_kl
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
