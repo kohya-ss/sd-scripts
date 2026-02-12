@@ -346,6 +346,8 @@ To apply LoRA to the LLM Adapter blocks:
 --network_args "train_llm_adapter=True"
 ```
 
+In preliminary tests, lowering the learning rate for the LLM Adapter seems to improve stability. Adjust it using something like: `"network_reg_lrs=.*llm_adapter.*=5e-5"`.
+
 ### 5.4. Other Network Args / その他のネットワーク引数
 
 * `--network_args "verbose=True"` - Print all LoRA module names and their dimensions.
@@ -395,6 +397,8 @@ To apply LoRA to the LLM Adapter blocks:
 ### 5.3. LLM Adapter LoRA
 
 LLM AdapterブロックにLoRAを適用するには：`--network_args "train_llm_adapter=True"`
+
+簡易な検証ではLLM Adapterの学習率はある程度下げた方が安定するようです。`"network_reg_lrs=.*llm_adapter.*=5e-5"`などで調整してください。
 
 ### 5.4. その他のネットワーク引数
 
@@ -573,7 +577,35 @@ Qwen3に個別の学習率を指定するには`--text_encoder_lr`を使用し�
 
 </details>
 
-## 9. Others / その他
+## 9. Related Tools / 関連ツール
+
+### `networks/anima_convert_lora_to_comfy.py`
+
+A script to convert LoRA models to ComfyUI-compatible format. ComfyUI does not directly support sd-scripts format Qwen3 LoRA, so conversion is necessary (conversion may not be needed for DiT-only LoRA). You can convert from the sd-scripts format to ComfyUI format with:
+
+```bash
+python networks/convert_anima_lora_to_comfy.py path/to/source.safetensors path/to/destination.safetensors
+```
+
+Using the `--reverse` option allows conversion in the opposite direction (ComfyUI format to sd-scripts format). However, reverse conversion is only possible for LoRAs converted by this script. LoRAs created with other training tools cannot be converted.
+
+<details>
+<summary>日本語</summary>
+
+**`networks/convert_anima_lora_to_comfy.py`**
+
+LoRAモデルをComfyUI互換形式に変換するスクリプト。ComfyUIがsd-scripts形式のQwen3 LoRAを直接サポートしていないため、変換が必要です（DiTのみのLoRAの場合は変換不要のようです）。sd-scripts形式からComfyUI形式への変換は以下のコマンドで行います：
+
+```bash
+python networks/convert_anima_lora_to_comfy.py path/to/source.safetensors path/to/destination.safetensors
+```
+
+`--reverse`オプションを付けると、逆変換（ComfyUI形式からsd-scripts形式）も可能です。ただし、逆変換ができるのはこのスクリプトで変換したLoRAに限ります。他の学習ツールで作成したLoRAは変換できません。
+
+</details>
+
+
+## 10. Others / その他
 
 ### Metadata Saved in LoRA Models
 

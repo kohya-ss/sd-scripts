@@ -11,6 +11,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+COMFYUI_DIT_PREFIX = "diffusion_model."
+COMFYUI_QWEN3_PREFIX = "text_encoders.qwen3_06b.transformer.model."
+
 
 def main(args):
     # load source safetensors
@@ -48,6 +51,7 @@ def main(args):
 
             # Convert back illegal dots in module names
             # DiT
+            original_module_name = original_module_name.replace("llm.adapter", "llm_adapter")
             original_module_name = original_module_name.replace(".linear.", ".linear_")
             original_module_name = original_module_name.replace("t.embedding.norm", "t_embedding_norm")
             original_module_name = original_module_name.replace("x.embedder", "x_embedder")
@@ -78,16 +82,16 @@ def main(args):
             original_module_name = original_module_name.replace("post.attention.layernorm", "post_attention_layernorm")
 
             # Prefix conversion
-            new_prefix = "diffusion_model." if is_dit_lora else "text_encoder.qwen3."
+            new_prefix = COMFYUI_DIT_PREFIX if is_dit_lora else COMFYUI_QWEN3_PREFIX
 
             new_k = f"{new_prefix}{original_module_name}.{weight_name}"
         else:
-            if k.startswith("diffusion_model."):
+            if k.startswith(COMFYUI_DIT_PREFIX):
                 is_dit_lora = True
-                module_and_weight_name = k[len("diffusion_model.") :]
-            elif k.startswith("text_encoder.qwen3."):
+                module_and_weight_name = k[len(COMFYUI_DIT_PREFIX) :]
+            elif k.startswith(COMFYUI_QWEN3_PREFIX):
                 is_dit_lora = False
-                module_and_weight_name = k[len("text_encoder.qwen3.") :]
+                module_and_weight_name = k[len(COMFYUI_QWEN3_PREFIX) :]
             else:
                 logger.warning(f"Skipping unrecognized key {k}")
                 continue
