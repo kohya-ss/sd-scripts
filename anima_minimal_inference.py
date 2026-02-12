@@ -244,6 +244,7 @@ def load_dit_model(
             logger.info(f"Loading LoRA weight from: {lora_weight}")
             lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
             # lora_sd = filter_lora_state_dict(lora_sd, args.include_patterns, args.exclude_patterns)
+            lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}  # only keep unet lora weights
             lora_weights_list.append(lora_sd)
     else:
         lora_weights_list = None
@@ -284,6 +285,28 @@ def load_dit_model(
     return model
 
 
+def load_text_encoder(
+    args: argparse.Namespace, dtype: torch.dtype = torch.bfloat16, device: torch.device = torch.device("cpu")
+) -> torch.nn.Module:
+    lora_weights_list = None
+    if args.lora_weight is not None and len(args.lora_weight) > 0:
+        lora_weights_list = []
+        for lora_weight in args.lora_weight:
+            logger.info(f"Loading LoRA weight from: {lora_weight}")
+            lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
+            # lora_sd = filter_lora_state_dict(lora_sd, args.include_patterns, args.exclude_patterns)
+            lora_sd = {
+                "model_" + k[len("lora_te_") :]: v for k, v in lora_sd.items() if k.startswith("lora_te_")
+            }  # only keep Text Encoder lora weights, remove prefix "lora_te_" and add "model_" prefix
+            lora_weights_list.append(lora_sd)
+
+    text_encoder, _ = anima_utils.load_qwen3_text_encoder(
+        args.text_encoder, dtype=dtype, device=device, lora_weights=lora_weights_list, lora_multipliers=args.lora_multiplier
+    )
+    text_encoder.eval()
+    return text_encoder
+
+
 # endregion
 
 
@@ -305,6 +328,7 @@ def decode_latent(
     logger.info(f"Decoded. Pixel shape {pixels.shape}")
     return pixels[0]  # remove batch dimension
 
+
 def process_escape(text: str) -> str:
     """Process escape sequences in text
 
@@ -315,6 +339,7 @@ def process_escape(text: str) -> str:
         str: Processed text
     """
     return text.encode("utf-8").decode("unicode_escape")
+
 
 def prepare_text_inputs(
     args: argparse.Namespace, device: torch.device, anima: anima_models.Anima, shared_models: Optional[Dict] = None
@@ -333,9 +358,7 @@ def prepare_text_inputs(
         # text_encoder is on device (batched inference) or CPU (interactive inference)
     else:  # Load if not in shared_models
         text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
-        text_encoder, _ = anima_utils.load_qwen3_text_encoder(
-            args.text_encoder, dtype=text_encoder_dtype, device=text_encoder_device
-        )
+        text_encoder = load_text_encoder(args, dtype=text_encoder_dtype, device=text_encoder_device)
         text_encoder.eval()
         tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
         # Store references so load_target_model can reuse them
@@ -721,7 +744,7 @@ def load_shared_models(args: argparse.Namespace) -> Dict:
     shared_models = {}
     # Load text encoders to CPU
     text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
-    text_encoder, _ = anima_utils.load_qwen3_text_encoder(args.text_encoder, dtype=text_encoder_dtype, device="cpu")
+    text_encoder = load_text_encoder(args, dtype=text_encoder_dtype, device=torch.device("cpu"))
     shared_models["text_encoder"] = text_encoder
     return shared_models
 
@@ -766,7 +789,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
 
     # Text Encoder loaded to CPU by load_text_encoder
     text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
-    text_encoder_batch, _ = anima_utils.load_qwen3_text_encoder(args.text_encoder, dtype=text_encoder_dtype, device="cpu")
+    text_encoder_batch = load_text_encoder(args, dtype=text_encoder_dtype, device=torch.device("cpu"))
 
     # Text Encoder to device for this phase
     text_encoder_device = torch.device("cpu") if args.text_encoder_cpu else device

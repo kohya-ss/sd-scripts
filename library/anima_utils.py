@@ -178,7 +178,13 @@ def load_qwen3_tokenizer(qwen3_path: str):
     return tokenizer
 
 
-def load_qwen3_text_encoder(qwen3_path: str, dtype: torch.dtype = torch.bfloat16, device: str = "cpu"):
+def load_qwen3_text_encoder(
+    qwen3_path: str,
+    dtype: torch.dtype = torch.bfloat16,
+    device: str = "cpu",
+    lora_weights: Optional[List[Dict[str, torch.Tensor]]] = None,
+    lora_multipliers: Optional[List[float]] = None,
+):
     """Load Qwen3-0.6B text encoder.
 
     Args:
@@ -214,8 +220,20 @@ def load_qwen3_text_encoder(qwen3_path: str, dtype: torch.dtype = torch.bfloat16
 
         # Load weights
         if qwen3_path.endswith(".safetensors"):
-            state_dict = load_file(qwen3_path, device="cpu")
+            if lora_weights is None:
+                state_dict = load_file(qwen3_path, device="cpu")
+            else:
+                state_dict = load_safetensors_with_lora_and_fp8(
+                    model_files=qwen3_path,
+                    lora_weights_list=lora_weights,
+                    lora_multipliers=lora_multipliers,
+                    fp8_optimization=False,
+                    calc_device=device,
+                    move_to_device=True,
+                    dit_weight_dtype=None,
+                )
         else:
+            assert lora_weights is None, "LoRA weights merging is only supported for safetensors checkpoints"
             state_dict = torch.load(qwen3_path, map_location="cpu", weights_only=True)
 
         # Remove 'model.' prefix if present

@@ -120,13 +120,18 @@ def load_safetensors_with_lora_and_fp8(
 
             for lora_weight_keys, lora_sd, multiplier in zip(list_of_lora_weight_keys, lora_weights_list, lora_multipliers):
                 # check if this weight has LoRA weights
-                lora_name = model_weight_key.rsplit(".", 1)[0]  # remove trailing ".weight"
-                lora_name = "lora_unet_" + lora_name.replace(".", "_")
-                down_key = lora_name + ".lora_down.weight"
-                up_key = lora_name + ".lora_up.weight"
-                alpha_key = lora_name + ".alpha"
-                if down_key not in lora_weight_keys or up_key not in lora_weight_keys:
-                    continue
+                lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]  # remove trailing ".weight"
+                found = False
+                for prefix in ["lora_unet_", ""]:
+                    lora_name = prefix + lora_name_without_prefix.replace(".", "_")
+                    down_key = lora_name + ".lora_down.weight"
+                    up_key = lora_name + ".lora_up.weight"
+                    alpha_key = lora_name + ".alpha"
+                    if down_key in lora_weight_keys and up_key in lora_weight_keys:
+                        found = True
+                        break
+                if not found:
+                    continue  # no LoRA weights for this model weight
 
                 # get LoRA weights
                 down_weight = lora_sd[down_key]
