@@ -47,6 +47,11 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Version 0.10.1 (2026-02-13):**
+    - [Anima Preview](https://huggingface.co/circlestone-labs/Anima) model LoRA training and fine-tuning are now supported. See [PR #2260](https://github.com/kohya-ss/sd-scripts/pull/2260) and [PR #2261](https://github.com/kohya-ss/sd-scripts/pull/2261).
+    - Many thanks to CircleStone Labs for releasing this amazing model, and to duongve13112002 for submitting great PR #2260.
+    - For details, please refer to the [documentation](./docs/anima_train_network.md).
+
 - **Version 0.10.0 (2026-01-19):**
     - `sd3` branch is merged to `main` branch. From this version, FLUX.1 and SD3/SD3.5 etc. are supported in the `main` branch.
     - There are still some missing parts in the documentation, so please let us know if you find any issues via Issues etc.

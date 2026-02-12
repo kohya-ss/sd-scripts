@@ -50,6 +50,11 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **Version 0.10.1 (2026-02-13):**
+  - [Anima Preview](https://huggingface.co/circlestone-labs/Anima)モデルのLoRA学習およびfine-tuningをサポートしました。[PR #2260](https://github.com/kohya-ss/sd-scripts/pull/2260) および[PR #2261](https://github.com/kohya-ss/sd-scripts/pull/2261)
+  - 素晴らしいモデルを公開された CircleStone Labs、および PR #2260を提出していただいたduongve13112002氏に深く感謝します。
+  - 詳細は[ドキュメント](./docs/anima_train_network.md)をご覧ください。
+
 - **Version 0.10.0 (2026-01-19):**
   - `sd3`ブランチを`main`ブランチにマージしました。このバージョンからFLUX.1およびSD3/SD3.5等のモデルが`main`ブランチでサポートされます。
   - ドキュメントにはまだ不備があるため、お気づきの点はIssue等でお知らせください。
