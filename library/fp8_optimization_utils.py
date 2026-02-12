@@ -9,7 +9,7 @@ import logging
 from tqdm import tqdm
 
 from library.device_utils import clean_memory_on_device
-from library.safetensors_utils import MemoryEfficientSafeOpen
+from library.safetensors_utils import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks
 from library.utils import setup_logging
 
 setup_logging()
@@ -220,6 +220,8 @@ def quantize_weight(
         tensor_max = torch.max(torch.abs(tensor).view(-1))
         scale = tensor_max / max_value
 
+    # print(f"Optimizing {key} with scale: {scale}")
+
     # numerical safety
     scale = torch.clamp(scale, min=1e-8)
     scale = scale.to(torch.float32)  # ensure scale is in float32 for division
@@ -245,6 +247,8 @@ def load_safetensors_with_fp8_optimization(
     weight_hook=None,
     quantization_mode: str = "block",
     block_size: Optional[int] = 64,
+    disable_numpy_memmap: bool = False,
+    weight_transform_hooks: Optional[WeightTransformHooks] = None,
 ) -> dict:
     """
     Load weight tensors from safetensors files and merge LoRA weights into the state dict with explicit FP8 optimization.
@@ -260,6 +264,8 @@ def load_safetensors_with_fp8_optimization(
         weight_hook (callable, optional): Function to apply to each weight tensor before optimization
         quantization_mode (str): Quantization mode, "tensor", "channel", or "block"
         block_size (int, optional): Block size for block-wise quantization (used if quantization_mode is "block")
+        disable_numpy_memmap (bool): Disable numpy memmap when loading safetensors
+        weight_transform_hooks (WeightTransformHooks, optional): Hooks for weight transformation during loading
 
     Returns:
         dict: FP8 optimized state dict
@@ -288,7 +294,9 @@ def load_safetensors_with_fp8_optimization(
     # Process each file
     state_dict = {}
     for model_file in model_files:
-        with MemoryEfficientSafeOpen(model_file) as f:
+        with MemoryEfficientSafeOpen(model_file, disable_numpy_memmap=disable_numpy_memmap) as original_f:
+            f = TensorWeightAdapter(weight_transform_hooks, original_f) if weight_transform_hooks is not None else original_f
+
             keys = f.keys()
             for key in tqdm(keys, desc=f"Loading {os.path.basename(model_file)}", unit="key"):
                 value = f.get_tensor(key)
@@ -311,6 +319,11 @@ def load_safetensors_with_fp8_optimization(
                     value = value.to(calc_device)
 
                 original_dtype = value.dtype
+                if original_dtype.itemsize == 1:
+                    raise ValueError(
+                        f"Layer {key} is already in {original_dtype} format. `--fp8_scaled` optimization should not be applied. Please use fp16/bf16/float32 model weights."
+                        + f" / レイヤー {key} は既に{original_dtype}形式です。`--fp8_scaled` 最適化は適用できません。FP16/BF16/Float32のモデル重みを使用してください。"
+                    )
                 quantized_weight, scale_tensor = quantize_weight(
                     key, value, fp8_dtype, max_value, min_value, quantization_mode, block_size
                 )
@@ -387,7 +400,7 @@ def fp8_linear_forward_patch(self: nn.Linear, x, use_scaled_mm=False, max_value=
         else:
             o = torch._scaled_mm(x, weight, out_dtype=input_dtype, scale_a=scale_x, scale_b=scale_weight)
 
-        o = o.reshape(original_shape[0], original_shape[1], -1) if x.ndim == 3 else o.reshape(original_shape[0], -1)
+        o = o.reshape(original_shape[0], original_shape[1], -1) if len(original_shape) == 3 else o.reshape(original_shape[0], -1)
         return o.to(input_dtype)
 
     else:

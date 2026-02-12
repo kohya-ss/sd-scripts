@@ -1,20 +1,20 @@
 # Anima Training Utilities
 
 import argparse
+import gc
 import math
 import os
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from safetensors.torch import save_file
-from accelerate import Accelerator, PartialState
+from accelerate import Accelerator
 from tqdm import tqdm
 from PIL import Image
 
-from library.device_utils import init_ipex, clean_memory_on_device
+from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
+from library import anima_models, anima_utils, train_util, qwen_image_autoencoder_kl
 
 init_ipex()
 
@@ -25,29 +25,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import anima_models, anima_utils, strategy_base, train_util
-
-from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler, get_sigmas
-
 
 # Anima-specific training arguments
+
 
 def add_anima_training_arguments(parser: argparse.ArgumentParser):
     """Add Anima-specific training arguments to the parser."""
     parser.add_argument(
-        "--dit_path",
-        type=str,
-        default=None,
-        help="Path to Anima DiT model safetensors file",
-    )
-    parser.add_argument(
-        "--vae_path",
-        type=str,
-        default=None,
-        help="Path to WanVAE safetensors/pth file",
-    )
-    parser.add_argument(
-        "--qwen3_path",
+        "--qwen3",
         type=str,
         default=None,
         help="Path to Qwen3-0.6B model (safetensors file or directory)",
@@ -86,7 +71,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--mod_lr",
         type=float,
         default=None,
-        help="Learning rate for AdaLN modulation layers. None=same as base LR, 0=freeze",
+        help="Learning rate for AdaLN modulation layers. None=same as base LR, 0=freeze. Note: mod layers are not included in LoRA by default.",
     )
     parser.add_argument(
         "--t5_tokenizer_path",
@@ -113,110 +98,52 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Timestep distribution shift for rectified flow training (default: 1.0)",
     )
     parser.add_argument(
-        "--timestep_sample_method",
+        "--timestep_sampling",
         type=str,
-        default="logit_normal",
-        choices=["logit_normal", "uniform"],
-        help="Timestep sampling method (default: logit_normal)",
+        default="sigmoid",
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        help="Timestep sampling method (default: sigmoid (logit normal))",
     )
     parser.add_argument(
         "--sigmoid_scale",
         type=float,
         default=1.0,
-        help="Scale factor for logit_normal timestep sampling (default: 1.0)",
+        help="Scale factor for sigmoid (logit_normal) timestep sampling (default: 1.0)",
     )
-    # Note: --caption_dropout_rate is defined by base add_dataset_arguments().
-    # Anima uses embedding-level dropout (via AnimaTextEncodingStrategy.dropout_rate)
-    # instead of dataset-level caption dropout, so the subset caption_dropout_rate
-    # is zeroed out in the training scripts to allow caching.
     parser.add_argument(
-        "--transformer_dtype",
-        type=str,
+        "--attn_mode",
+        choices=["torch", "xformers", "flash", "sageattn", "sdpa"],  # "sdpa" is for backward compatibility
         default=None,
-        choices=["float16", "bfloat16", "float32", None],
-        help="Separate dtype for transformer blocks. If None, uses same as mixed_precision",
+        help="Attention implementation to use. Default is None (torch). xformers requires --split_attn. sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
+        " / 使用するAttentionの実装。デフォルトはNone（torch）です。xformersは--split_attnの指定が必要です。sageattnはトレーニングをサポートしていません（推論のみ）。このオプションは--xformersまたは--sdpaを上書きします。",
     )
     parser.add_argument(
-        "--flash_attn",
+        "--split_attn",
         action="store_true",
-        help="Use Flash Attention for DiT self/cross-attention (requires flash-attn package). "
-        "Falls back to PyTorch SDPA if flash-attn is not installed.",
+        help="split attention computation to reduce memory usage / メモリ使用量を減らすためにattention時にバッチを分割する",
     )
-
-
-# Noise & Timestep sampling (Rectified Flow)
-def get_noisy_model_input_and_timesteps(
-    args,
-    latents: torch.Tensor,
-    noise: torch.Tensor,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Generate noisy model input and timesteps for rectified flow training.
-
-    Rectified flow: noisy_input = (1 - t) * latents + t * noise
-    Target: noise - latents
-
-    Args:
-        args: Training arguments with timestep_sample_method, sigmoid_scale, discrete_flow_shift
-        latents: Clean latent tensors
-        noise: Random noise tensors
-        device: Target device
-        dtype: Target dtype
-
-    Returns:
-        (noisy_model_input, timesteps, sigmas)
-    """
-    bs = latents.shape[0]
-
-    timestep_sample_method = getattr(args, 'timestep_sample_method', 'logit_normal')
-    sigmoid_scale = getattr(args, 'sigmoid_scale', 1.0)
-    shift = getattr(args, 'discrete_flow_shift', 1.0)
-
-    if timestep_sample_method == 'logit_normal':
-        dist = torch.distributions.normal.Normal(0, 1)
-    elif timestep_sample_method == 'uniform':
-        dist = torch.distributions.uniform.Uniform(0, 1)
-    else:
-        raise NotImplementedError(f"Unknown timestep_sample_method: {timestep_sample_method}")
-
-    t = dist.sample((bs,)).to(device)
-
-    if timestep_sample_method == 'logit_normal':
-        t = t * sigmoid_scale
-        t = torch.sigmoid(t)
-
-    # Apply shift
-    if shift is not None and shift != 1.0:
-        t = (t * shift) / (1 + (shift - 1) * t)
-
-    # Clamp to avoid exact 0 or 1
-    t = t.clamp(1e-5, 1.0 - 1e-5)
-
-    # Create noisy input: (1 - t) * latents + t * noise
-    t_expanded = t.view(-1, *([1] * (latents.ndim - 1)))
-
-    ip_noise_gamma = getattr(args, 'ip_noise_gamma', None)
-    if ip_noise_gamma:
-        xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
-        if getattr(args, 'ip_noise_gamma_random_strength', False):
-            ip_noise_gamma = torch.rand(1, device=latents.device, dtype=dtype) * ip_noise_gamma
-        noisy_model_input = (1 - t_expanded) * latents + t_expanded * (noise + ip_noise_gamma * xi)
-    else:
-        noisy_model_input = (1 - t_expanded) * latents + t_expanded * noise
-
-    # Sigmas for potential loss weighting
-    sigmas = t.view(-1, 1)
-
-    return noisy_model_input.to(dtype), t.to(dtype), sigmas.to(dtype)
+    parser.add_argument(
+        "--vae_chunk_size",
+        type=int,
+        default=None,
+        help="Spatial chunk size for VAE encoding/decoding to reduce memory usage. Must be even number. If not specified, chunking is disabled (official behavior)."
+        + " / メモリ使用量を減らすためのVAEエンコード/デコードの空間チャンクサイズ。偶数である必要があります。未指定の場合、チャンク処理は無効になります（公式の動作）。",
+    )
+    parser.add_argument(
+        "--vae_disable_cache",
+        action="store_true",
+        help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
+        + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
+    )
 
 
 # Loss weighting
 
+
 def compute_loss_weighting_for_anima(weighting_scheme: str, sigmas: torch.Tensor) -> torch.Tensor:
     """Compute loss weighting for Anima training.
 
-    Same schemes as SD3 but can add Anima-specific ones.
+    Same schemes as SD3 but can add Anima-specific ones if needed in future.
     """
     if weighting_scheme == "sigma_sqrt":
         weighting = (sigmas**-2.0).float()
@@ -243,7 +170,7 @@ def get_anima_param_groups(
     """Create parameter groups for Anima training with separate learning rates.
 
     Args:
-        dit: MiniTrainDIT model
+        dit: Anima model
         base_lr: Base learning rate
         self_attn_lr: LR for self-attention layers (None = base_lr, 0 = freeze)
         cross_attn_lr: LR for cross-attention layers
@@ -276,15 +203,15 @@ def get_anima_param_groups(
         # Store original name for debugging
         p.original_name = name
 
-        if 'llm_adapter' in name:
+        if "llm_adapter" in name:
             llm_adapter_params.append(p)
-        elif '.self_attn' in name:
+        elif ".self_attn" in name:
             self_attn_params.append(p)
-        elif '.cross_attn' in name:
+        elif ".cross_attn" in name:
             cross_attn_params.append(p)
-        elif '.mlp' in name:
+        elif ".mlp" in name:
             mlp_params.append(p)
-        elif '.adaln_modulation' in name:
+        elif ".adaln_modulation" in name:
             mod_params.append(p)
         else:
             base_params.append(p)
@@ -311,9 +238,9 @@ def get_anima_param_groups(
                 p.requires_grad_(False)
             logger.info(f"  Frozen {name} params ({len(params)} parameters)")
         elif len(params) > 0:
-            param_groups.append({'params': params, 'lr': lr})
+            param_groups.append({"params": params, "lr": lr})
 
-    total_trainable = sum(p.numel() for group in param_groups for p in group['params'] if p.requires_grad)
+    total_trainable = sum(p.numel() for group in param_groups for p in group["params"] if p.requires_grad)
     logger.info(f"Total trainable parameters: {total_trainable:,}")
 
     return param_groups
@@ -325,16 +252,17 @@ def save_anima_model_on_train_end(
     save_dtype: torch.dtype,
     epoch: int,
     global_step: int,
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
 ):
     """Save Anima model at the end of training."""
+
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(
-            None, args, False, False, False, is_stable_diffusion_ckpt=True
-        )
+        sai_metadata = train_util.get_sai_model_spec_dataclass(
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
+        ).to_metadata_dict()
         dit_sd = dit.state_dict()
         # Save with 'net.' prefix for ComfyUI compatibility
-        anima_utils.save_anima_model(ckpt_file, dit_sd, save_dtype)
+        anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
     train_util.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
 
@@ -347,15 +275,16 @@ def save_anima_model_on_epoch_end_or_stepwise(
     epoch: int,
     num_train_epochs: int,
     global_step: int,
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
 ):
     """Save Anima model at epoch end or specific steps."""
+
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(
-            None, args, False, False, False, is_stable_diffusion_ckpt=True
-        )
+        sai_metadata = train_util.get_sai_model_spec_dataclass(
+            None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
+        ).to_metadata_dict()
         dit_sd = dit.state_dict()
-        anima_utils.save_anima_model(ckpt_file, dit_sd, save_dtype)
+        anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
     train_util.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
@@ -376,12 +305,13 @@ def do_sample(
     height: int,
     width: int,
     seed: Optional[int],
-    dit: anima_models.MiniTrainDIT,
+    dit: anima_models.Anima,
     crossattn_emb: torch.Tensor,
     steps: int,
     dtype: torch.dtype,
     device: torch.device,
     guidance_scale: float = 1.0,
+    flow_shift: float = 3.0,
     neg_crossattn_emb: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Generate a sample using Euler discrete sampling for rectified flow.
@@ -389,12 +319,13 @@ def do_sample(
     Args:
         height, width: Output image dimensions
         seed: Random seed (None for random)
-        dit: MiniTrainDIT model
+        dit: Anima model
         crossattn_emb: Cross-attention embeddings (B, N, D)
         steps: Number of sampling steps
         dtype: Compute dtype
         device: Compute device
         guidance_scale: CFG scale (1.0 = no guidance)
+        flow_shift: Flow shift parameter for rectified flow
         neg_crossattn_emb: Negative cross-attention embeddings for CFG
 
     Returns:
@@ -410,12 +341,13 @@ def do_sample(
         generator = torch.manual_seed(seed)
     else:
         generator = None
-    noise = torch.randn(
-        latent.size(), dtype=torch.float32, generator=generator, device="cpu"
-    ).to(dtype).to(device)
+    noise = torch.randn(latent.size(), dtype=torch.float32, generator=generator, device="cpu").to(dtype).to(device)
 
     # Timestep schedule: linear from 1.0 to 0.0
     sigmas = torch.linspace(1.0, 0.0, steps + 1, device=device, dtype=dtype)
+    flow_shift = float(flow_shift)
+    if flow_shift != 1.0:
+        sigmas = (sigmas * flow_shift) / (1 + (flow_shift - 1) * sigmas)
 
     # Start from pure noise
     x = noise.clone()
@@ -429,19 +361,13 @@ def do_sample(
         sigma = sigmas[i]
         t = sigma.unsqueeze(0)  # (1,)
 
-        dit.prepare_block_swap_before_forward()
-
         if use_cfg:
-            # CFG: concat positive and negative
-            x_input = torch.cat([x, x], dim=0)
-            t_input = torch.cat([t, t], dim=0)
-            crossattn_input = torch.cat([crossattn_emb, neg_crossattn_emb], dim=0)
-            padding_input = torch.cat([padding_mask, padding_mask], dim=0)
+            # CFG: two separate passes to reduce memory usage
+            pos_out = dit(x, t, crossattn_emb, padding_mask=padding_mask)
+            pos_out = pos_out.float()
+            neg_out = dit(x, t, neg_crossattn_emb, padding_mask=padding_mask)
+            neg_out = neg_out.float()
 
-            model_output = dit(x_input, t_input, crossattn_input, padding_mask=padding_input)
-            model_output = model_output.float()
-
-            pos_out, neg_out = model_output.chunk(2)
             model_output = neg_out + guidance_scale * (pos_out - neg_out)
         else:
             model_output = dit(x, t, crossattn_emb, padding_mask=padding_mask)
@@ -452,7 +378,6 @@ def do_sample(
         x = x + model_output * dt
         x = x.to(dtype)
 
-    dit.prepare_block_swap_before_forward()
     return x
 
 
@@ -461,9 +386,8 @@ def sample_images(
     args: argparse.Namespace,
     epoch,
     steps,
-    dit,
+    dit: anima_models.Anima,
     vae,
-    vae_scale,
     text_encoder,
     tokenize_strategy,
     text_encoding_strategy,
@@ -497,6 +421,8 @@ def sample_images(
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
 
+    dit.switch_block_swap_for_inference()
+
     prompts = train_util.load_prompts(args.sample_prompts)
     save_dir = os.path.join(args.output_dir, "sample")
     os.makedirs(save_dir, exist_ok=True)
@@ -511,11 +437,21 @@ def sample_images(
 
     with torch.no_grad(), accelerator.autocast():
         for prompt_dict in prompts:
+            dit.prepare_block_swap_before_forward()
             _sample_image_inference(
-                accelerator, args, dit, text_encoder, vae, vae_scale,
-                tokenize_strategy, text_encoding_strategy,
-                save_dir, prompt_dict, epoch, steps,
-                sample_prompts_te_outputs, prompt_replacement,
+                accelerator,
+                args,
+                dit,
+                text_encoder,
+                vae,
+                tokenize_strategy,
+                text_encoding_strategy,
+                save_dir,
+                prompt_dict,
+                epoch,
+                steps,
+                sample_prompts_te_outputs,
+                prompt_replacement,
             )
 
     # Restore RNG state
@@ -523,14 +459,24 @@ def sample_images(
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
 
+    dit.switch_block_swap_for_training()
     clean_memory_on_device(accelerator.device)
 
 
 def _sample_image_inference(
-    accelerator, args, dit, text_encoder, vae, vae_scale,
-    tokenize_strategy, text_encoding_strategy,
-    save_dir, prompt_dict, epoch, steps,
-    sample_prompts_te_outputs, prompt_replacement,
+    accelerator,
+    args,
+    dit,
+    text_encoder,
+    vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage,
+    tokenize_strategy,
+    text_encoding_strategy,
+    save_dir,
+    prompt_dict,
+    epoch,
+    steps,
+    sample_prompts_te_outputs,
+    prompt_replacement,
 ):
     """Generate a single sample image."""
     prompt = prompt_dict.get("prompt", "")
@@ -540,6 +486,7 @@ def _sample_image_inference(
     height = prompt_dict.get("height", 512)
     scale = prompt_dict.get("scale", 7.5)
     seed = prompt_dict.get("seed")
+    flow_shift = prompt_dict.get("flow_shift", 3.0)
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -553,7 +500,9 @@ def _sample_image_inference(
     height = max(64, height - height % 16)
     width = max(64, width - width % 16)
 
-    logger.info(f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}")
+    logger.info(
+        f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, flow_shift: {flow_shift}, seed: {seed}"
+    )
 
     # Encode prompt
     def encode_prompt(prpt):
@@ -579,13 +528,13 @@ def _sample_image_inference(
         t5_input_ids = torch.from_numpy(t5_input_ids).unsqueeze(0)
         t5_attn_mask = torch.from_numpy(t5_attn_mask).unsqueeze(0)
 
-    prompt_embeds = prompt_embeds.to(accelerator.device, dtype=dit.t_embedding_norm.weight.dtype)
+    prompt_embeds = prompt_embeds.to(accelerator.device, dtype=dit.dtype)
     attn_mask = attn_mask.to(accelerator.device)
     t5_input_ids = t5_input_ids.to(accelerator.device, dtype=torch.long)
     t5_attn_mask = t5_attn_mask.to(accelerator.device)
 
     # Process through LLM adapter if available
-    if dit.use_llm_adapter and hasattr(dit, 'llm_adapter'):
+    if dit.use_llm_adapter:
         crossattn_emb = dit.llm_adapter(
             source_hidden_states=prompt_embeds,
             target_input_ids=t5_input_ids,
@@ -608,12 +557,12 @@ def _sample_image_inference(
                 neg_t5_ids = torch.from_numpy(neg_t5_ids).unsqueeze(0)
                 neg_t5_am = torch.from_numpy(neg_t5_am).unsqueeze(0)
 
-            neg_pe = neg_pe.to(accelerator.device, dtype=dit.t_embedding_norm.weight.dtype)
+            neg_pe = neg_pe.to(accelerator.device, dtype=dit.dtype)
             neg_am = neg_am.to(accelerator.device)
             neg_t5_ids = neg_t5_ids.to(accelerator.device, dtype=torch.long)
             neg_t5_am = neg_t5_am.to(accelerator.device)
 
-            if dit.use_llm_adapter and hasattr(dit, 'llm_adapter'):
+            if dit.use_llm_adapter:
                 neg_crossattn_emb = dit.llm_adapter(
                     source_hidden_states=neg_pe,
                     target_input_ids=neg_t5_ids,
@@ -627,16 +576,16 @@ def _sample_image_inference(
     # Generate sample
     clean_memory_on_device(accelerator.device)
     latents = do_sample(
-        height, width, seed, dit, crossattn_emb,
-        sample_steps, dit.t_embedding_norm.weight.dtype,
-        accelerator.device, scale, neg_crossattn_emb,
+        height, width, seed, dit, crossattn_emb, sample_steps, dit.dtype, accelerator.device, scale, flow_shift, neg_crossattn_emb
     )
 
     # Decode latents
+    gc.collect()
+    synchronize_device(accelerator.device)
     clean_memory_on_device(accelerator.device)
-    org_vae_device = next(vae.parameters()).device
+    org_vae_device = vae.device
     vae.to(accelerator.device)
-    decoded = vae.decode(latents.to(next(vae.parameters()).device, dtype=next(vae.parameters()).dtype), vae_scale)
+    decoded = vae.decode_to_pixels(latents)
     vae.to(org_vae_device)
     clean_memory_on_device(accelerator.device)
 
@@ -662,4 +611,5 @@ def _sample_image_inference(
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
         import wandb
+
         wandb_tracker.log({f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False)
