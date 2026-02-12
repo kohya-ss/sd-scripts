@@ -135,6 +135,8 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
 
 The learning rate of `1e-4` is just an example. Adjust it according to your dataset and objectives. This value is for `alpha=1.0` (default). If increasing `--network_alpha`, consider lowering the learning rate.
 
+If loss becomes NaN, ensure you are using PyTorch version 2.5 or higher.
+
 **Note:** `--vae_chunk_size` and `--vae_disable_cache` are custom options in this repository to reduce memory usage of the Qwen-Image VAE.
 
 <details>
@@ -147,6 +149,8 @@ The learning rate of `1e-4` is just an example. Adjust it according to your data
 ※実際には1行で書くか、適切な改行文字（`\` または `^`）を使用してください。
 
 学習率1e-4はあくまで一例です。データセットや目的に応じて適切に調整してください。またこの値はalpha=1.0（デフォルト）での値です。`--network_alpha`を増やす場合は学習率を下げることを検討してください。
+
+lossがNaNになる場合は、PyTorchのバージョンが2.5以上であることを確認してください。
 
 注意: `--vae_chunk_size`および`--vae_disable_cache`は当リポジトリ独自のオプションで、Qwen-Image VAEのメモリ使用量を削減するために使用します。
 
