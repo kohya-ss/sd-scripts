@@ -305,6 +305,16 @@ def decode_latent(
     logger.info(f"Decoded. Pixel shape {pixels.shape}")
     return pixels[0]  # remove batch dimension
 
+def process_escape(text: str) -> str:
+    """Process escape sequences in text
+
+    Args:
+        text: Input text with escape sequences
+
+    Returns:
+        str: Processed text
+    """
+    return text.encode("utf-8").decode("unicode_escape")
 
 def prepare_text_inputs(
     args: argparse.Namespace, device: torch.device, anima: anima_models.Anima, shared_models: Optional[Dict] = None
@@ -354,7 +364,7 @@ def prepare_text_inputs(
 
     logger.info("Encoding prompt with Text Encoder")
 
-    prompt = args.prompt
+    prompt = process_escape(args.prompt)
     cache_key = prompt
     if cache_key in conds_cache:
         embed = conds_cache[cache_key]
@@ -380,12 +390,15 @@ def prepare_text_inputs(
 
         conds_cache[cache_key] = embed
 
-    negative_prompt = args.negative_prompt
+    negative_prompt = process_escape(args.negative_prompt)
     cache_key = negative_prompt
     if cache_key in conds_cache:
         negative_embed = conds_cache[cache_key]
     else:
         move_models_to_device_if_needed()
+
+        tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
+        encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
 
         with torch.no_grad():
             # negative_embed = anima_text_encoder.get_text_embeds(anima, tokenizer, text_encoder, t5xxl_tokenizer, negative_prompt)
