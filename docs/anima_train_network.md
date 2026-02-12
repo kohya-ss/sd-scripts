@@ -496,6 +496,10 @@ The `--weighting_scheme` option specifies loss weighting by timestep:
 
 Caption dropout uses the `caption_dropout_rate` setting from the dataset configuration (per-subset in TOML). When using `--cache_text_encoder_outputs`, the dropout rate is stored with each cached entry and applied during training, so caption dropout is compatible with text encoder output caching.
 
+**If you change the `caption_dropout_rate` setting, you must delete and regenerate the cache.**
+
+Note: Currently, only Anima supports combining `caption_dropout_rate` with text encoder output caching.
+
 <details>
 <summary>日本語</summary>
 
@@ -521,7 +525,11 @@ Caption dropout uses the `caption_dropout_rate` setting from the dataset configu
 
 #### キャプションドロップアウト
 
-キャプションドロップアウトにはデータセット設定（TOMLでのサブセット単位）の`caption_dropout_rate`を使用します。`--cache_text_encoder_outputs`使用時は、ドロップアウト率が各キャッシュエントリとともに保存され、学習中に適用されるため、テキストエンコーダー出力キャッシュとの互換性があります。
+キャプションドロップアウトにはデータセット設定（TOMLでのサブセット単位）の`caption_dropout_rate`を使用します。`--cache_text_encoder_outputs`使用時は、ドロップアウト率が各キャッシュエントリとともに保存され、学習中に適用されるため、テキストエンコーダー出力キャッシュと同時に使用できます。
+
+**`caption_dropout_rate`の設定を変えた場合、キャッシュを削除し、再生成する必要があります。**
+
+※`caption_dropout_rate`をテキストエンコーダー出力キャッシュと組み合わせられるのは、今のところAnimaのみです。
 
 </details>
 
