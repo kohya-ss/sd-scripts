@@ -1,4 +1,5 @@
 import argparse
+import os
 from dataclasses import (
     asdict,
     dataclass,
@@ -108,6 +109,7 @@ class BaseDatasetParams:
     validation_seed: Optional[int] = None
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
+    skip_duplicate_bucketed_images: bool = False
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
@@ -118,7 +120,7 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
-    
+
 @dataclass
 class FineTuningDatasetParams(BaseDatasetParams):
     batch_size: int = 1
@@ -244,6 +246,7 @@ class ConfigSanitizer:
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
         "resize_interpolation": str,
+        "skip_duplicate_bucketed_images": bool,
     }
 
     # options handled by argparse but not handled by user config
@@ -530,6 +533,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                   resolution: {(dataset.width, dataset.height)}
                   resize_interpolation: {dataset.resize_interpolation}
                   enable_bucket: {dataset.enable_bucket}
+                  skip_duplicate_bucketed_images: {dataset.skip_duplicate_bucketed_images}
             """)
 
             if dataset.enable_bucket:
@@ -592,6 +596,52 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
         logger.info(f"[Prepare dataset {i}]")
         dataset.make_buckets()
         dataset.set_seed(seed)
+
+    # Optional dedup: remove later duplicates when the same image lands in the
+    # same bucket resolution across datasets.
+    seen_items = set()
+    for i, dataset in enumerate(datasets):
+        if not (dataset.bucket_no_upscale and dataset.skip_duplicate_bucketed_images):
+            continue
+
+        removed = 0
+        # Convert iterator to list to avoid mutating the iterator in the loop
+        for image_key, info in list(dataset.image_data.items()):
+            subset = dataset.image_to_subset.get(image_key)
+            if subset is None or info.bucket_reso is None:
+                continue
+
+            dedup_key = (
+                os.path.normcase(os.path.abspath(info.absolute_path)),
+                info.bucket_reso,
+                info.caption,
+                info.is_reg,
+                dataset.network_multiplier,
+                subset.flip_aug,
+                subset.alpha_mask,
+                subset.random_crop,
+                subset.shuffle_caption,
+                subset.caption_dropout_rate,
+                subset.caption_dropout_every_n_epochs,
+                subset.caption_tag_dropout_rate,
+            )
+
+            if dedup_key in seen_items:
+                dataset.image_data.pop(image_key, None)
+                dataset.image_to_subset.pop(image_key, None)
+                if info.is_reg:
+                    dataset.num_reg_images -= info.num_repeats
+                else:
+                    dataset.num_train_images -= info.num_repeats
+                removed += 1
+            else:
+                seen_items.add(dedup_key)
+
+        if removed > 0:
+            logger.info(f"[Prepare dataset {i}] removed {removed} duplicated images with same bucket resolution across datasets")
+            # make_buckets reuses existing bucket_manager when present, so clear it to avoid stale keys
+            dataset.bucket_manager = None
+            dataset.make_buckets()
 
     for i, dataset in enumerate(val_datasets):
         logger.info(f"[Prepare validation dataset {i}]")

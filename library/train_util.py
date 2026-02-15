@@ -703,6 +703,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.token_strings = None
 
         self.enable_bucket = False
+        self.skip_duplicate_bucketed_images = False
         self.bucket_manager: BucketManager = None  # not initialized
         self.min_bucket_reso = None
         self.max_bucket_reso = None
@@ -1914,6 +1915,7 @@ class DreamBoothDataset(BaseDataset):
         debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],
+        skip_duplicate_bucketed_images: bool,
         resize_interpolation: Optional[str],
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
@@ -1929,6 +1931,7 @@ class DreamBoothDataset(BaseDataset):
         self.validation_split = validation_split
 
         self.enable_bucket = enable_bucket
+        self.skip_duplicate_bucketed_images = skip_duplicate_bucketed_images
         if self.enable_bucket:
             min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
                 resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
@@ -2199,6 +2202,7 @@ class FineTuningDataset(BaseDataset):
         debug_dataset: bool,
         validation_seed: int,
         validation_split: float,
+        skip_duplicate_bucketed_images: bool,
         resize_interpolation: Optional[str],
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
@@ -2208,6 +2212,7 @@ class FineTuningDataset(BaseDataset):
         self.latents_cache = None
 
         self.enable_bucket = enable_bucket
+        self.skip_duplicate_bucketed_images = skip_duplicate_bucketed_images
         if self.enable_bucket:
             min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
                 resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
@@ -2386,6 +2391,7 @@ class ControlNetDataset(BaseDataset):
         debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],
+        skip_duplicate_bucketed_images: bool,
         resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__(resolution, network_multiplier, debug_dataset, resize_interpolation)
@@ -2439,6 +2445,7 @@ class ControlNetDataset(BaseDataset):
             debug_dataset,
             validation_split,
             validation_seed,
+            skip_duplicate_bucketed_images,
             resize_interpolation,
         )
 
@@ -2449,6 +2456,7 @@ class ControlNetDataset(BaseDataset):
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images
         self.validation_split = validation_split
         self.validation_seed = validation_seed
+        self.skip_duplicate_bucketed_images = skip_duplicate_bucketed_images
         self.resize_interpolation = resize_interpolation
 
         # assert all conditioning data exists
