@@ -68,6 +68,14 @@ def make_kron(w1, w2, scale):
     return rebuild
 
 
+def rebuild_tucker(t, wa, wb):
+    """Rebuild weight from Tucker decomposition: einsum("i j ..., i p, j r -> p r ...", t, wa, wb).
+
+    Compatible with LyCORIS convention.
+    """
+    return torch.einsum("i j ..., i p, j r -> p r ...", t, wa, wb)
+
+
 class LoKrModule(torch.nn.Module):
     """LoKr module for training. Replaces forward method of the original Linear/Conv2d."""
 
@@ -82,6 +90,7 @@ class LoKrModule(torch.nn.Module):
         rank_dropout=None,
         module_dropout=None,
         factor=-1,
+        use_tucker=False,
         **kwargs,
     ):
         super().__init__()
@@ -92,13 +101,32 @@ class LoKrModule(torch.nn.Module):
         if is_conv2d:
             in_dim = org_module.in_channels
             out_dim = org_module.out_channels
+            kernel_size = org_module.kernel_size
             self.is_conv = True
-            if org_module.kernel_size != (1, 1):
-                raise ValueError("LoKr Conv2d 3x3 (Tucker decomposition) is not supported yet")
+            self.stride = org_module.stride
+            self.padding = org_module.padding
+            self.dilation = org_module.dilation
+            self.groups = org_module.groups
+            self.kernel_size = kernel_size
+
+            self.tucker = use_tucker and any(k != 1 for k in kernel_size)
+
+            if kernel_size == (1, 1):
+                self.conv_mode = "1x1"
+            elif self.tucker:
+                self.conv_mode = "tucker"
+            else:
+                self.conv_mode = "flat"
         else:
             in_dim = org_module.in_features
             out_dim = org_module.out_features
             self.is_conv = False
+            self.tucker = False
+            self.conv_mode = None
+            self.kernel_size = None
+
+        self.in_dim = in_dim
+        self.out_dim = out_dim
 
         factor = int(factor)
         self.use_w2 = False
@@ -110,18 +138,44 @@ class LoKrModule(torch.nn.Module):
         # w1 is always a full matrix (the "scale" factor, small)
         self.lokr_w1 = nn.Parameter(torch.empty(out_l, in_m))
 
-        # w2: low-rank decomposition if rank is small enough, otherwise full matrix
-        if lora_dim < max(out_k, in_n) / 2:
-            self.lokr_w2_a = nn.Parameter(torch.empty(out_k, lora_dim))
-            self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n))
-        else:
-            self.use_w2 = True
-            self.lokr_w2 = nn.Parameter(torch.empty(out_k, in_n))
+        # w2: depends on mode
+        if self.conv_mode in ("tucker", "flat"):
+            # Conv2d 3x3+ modes
+            k_size = kernel_size
+
             if lora_dim >= max(out_k, in_n) / 2:
+                # Full matrix mode (includes kernel dimensions)
+                self.use_w2 = True
+                self.lokr_w2 = nn.Parameter(torch.empty(out_k, in_n, *k_size))
                 logger.warning(
                     f"LoKr: lora_dim {lora_dim} is large for dim={max(in_dim, out_dim)} "
-                    f"and factor={factor}, using full matrix mode."
+                    f"and factor={factor}, using full matrix mode for Conv2d."
                 )
+            elif self.tucker:
+                # Tucker mode: separate kernel into t2 tensor
+                self.lokr_t2 = nn.Parameter(torch.empty(lora_dim, lora_dim, *k_size))
+                self.lokr_w2_a = nn.Parameter(torch.empty(lora_dim, out_k))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n))
+            else:
+                # Non-Tucker: flatten kernel into w2_b
+                k_prod = 1
+                for k in k_size:
+                    k_prod *= k
+                self.lokr_w2_a = nn.Parameter(torch.empty(out_k, lora_dim))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n * k_prod))
+        else:
+            # Linear or Conv2d 1x1
+            if lora_dim < max(out_k, in_n) / 2:
+                self.lokr_w2_a = nn.Parameter(torch.empty(out_k, lora_dim))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n))
+            else:
+                self.use_w2 = True
+                self.lokr_w2 = nn.Parameter(torch.empty(out_k, in_n))
+                if lora_dim >= max(out_k, in_n) / 2:
+                    logger.warning(
+                        f"LoKr: lora_dim {lora_dim} is large for dim={max(in_dim, out_dim)} "
+                        f"and factor={factor}, using full matrix mode."
+                    )
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()
@@ -137,6 +191,8 @@ class LoKrModule(torch.nn.Module):
         if self.use_w2:
             torch.nn.init.constant_(self.lokr_w2, 0)
         else:
+            if self.tucker:
+                torch.nn.init.kaiming_uniform_(self.lokr_t2, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
             torch.nn.init.constant_(self.lokr_w2_b, 0)
         # Ensures ΔW = kron(w1, 0) = 0 at init
@@ -153,13 +209,30 @@ class LoKrModule(torch.nn.Module):
         del self.org_module
 
     def get_diff_weight(self):
-        """Return materialized weight delta."""
+        """Return materialized weight delta.
+
+        Returns:
+            - Linear: 2D tensor (out_dim, in_dim)
+            - Conv2d 1x1: 2D tensor (out_dim, in_dim) — caller should unsqueeze for F.conv2d
+            - Conv2d 3x3+ Tucker/full: 4D tensor (out_dim, in_dim, k1, k2)
+            - Conv2d 3x3+ flat: 4D tensor (out_dim, in_dim, k1, k2) — reshaped from 2D
+        """
         w1 = self.lokr_w1
+
         if self.use_w2:
             w2 = self.lokr_w2
+        elif self.tucker:
+            w2 = rebuild_tucker(self.lokr_t2, self.lokr_w2_a, self.lokr_w2_b)
         else:
             w2 = self.lokr_w2_a @ self.lokr_w2_b
-        return make_kron(w1, w2, self.scale)
+
+        result = make_kron(w1, w2, self.scale)
+
+        # For non-Tucker Conv2d 3x3+, result is 2D; reshape to 4D
+        if self.conv_mode == "flat" and result.dim() == 2:
+            result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
+
+        return result
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -174,15 +247,25 @@ class LoKrModule(torch.nn.Module):
         # rank dropout
         if self.rank_dropout is not None and self.training:
             drop = (torch.rand(diff_weight.size(0), device=diff_weight.device) > self.rank_dropout).to(diff_weight.dtype)
-            drop = drop.view(-1, 1)
+            drop = drop.view(-1, *([1] * (diff_weight.dim() - 1)))
             diff_weight = diff_weight * drop
             scale = 1.0 / (1.0 - self.rank_dropout)
         else:
             scale = 1.0
 
         if self.is_conv:
-            diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
-            return org_forwarded + F.conv2d(x, diff_weight) * self.multiplier * scale
+            if self.conv_mode == "1x1":
+                diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+                return org_forwarded + F.conv2d(
+                    x, diff_weight, stride=self.stride, padding=self.padding,
+                    dilation=self.dilation, groups=self.groups
+                ) * self.multiplier * scale
+            else:
+                # Conv2d 3x3+: diff_weight is already 4D from get_diff_weight
+                return org_forwarded + F.conv2d(
+                    x, diff_weight, stride=self.stride, padding=self.padding,
+                    dilation=self.dilation, groups=self.groups
+                ) * self.multiplier * scale
         else:
             return org_forwarded + F.linear(x, diff_weight) * self.multiplier * scale
 
@@ -207,9 +290,10 @@ class LoKrInfModule(LoKrModule):
         alpha=1,
         **kwargs,
     ):
-        # no dropout for inference; pass factor from kwargs if present
+        # no dropout for inference; pass factor and use_tucker from kwargs
         factor = kwargs.pop("factor", -1)
-        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha, factor=factor)
+        use_tucker = kwargs.pop("use_tucker", False)
+        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha, factor=factor, use_tucker=use_tucker)
 
         self.org_module_ref = [org_module]
         self.enabled = True
@@ -236,6 +320,12 @@ class LoKrInfModule(LoKrModule):
 
         if "lokr_w2" in sd:
             w2 = sd["lokr_w2"].to(torch.float).to(device)
+        elif "lokr_t2" in sd:
+            # Tucker mode
+            t2 = sd["lokr_t2"].to(torch.float).to(device)
+            w2a = sd["lokr_w2_a"].to(torch.float).to(device)
+            w2b = sd["lokr_w2_b"].to(torch.float).to(device)
+            w2 = rebuild_tucker(t2, w2a, w2b)
         else:
             w2a = sd["lokr_w2_a"].to(torch.float).to(device)
             w2b = sd["lokr_w2_b"].to(torch.float).to(device)
@@ -244,8 +334,9 @@ class LoKrInfModule(LoKrModule):
         # compute ΔW via Kronecker product
         diff_weight = make_kron(w1, w2, self.scale)
 
-        if self.is_conv:
-            diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+        # reshape diff_weight to match original weight shape if needed
+        if diff_weight.shape != weight.shape:
+            diff_weight = diff_weight.reshape(weight.shape)
 
         weight = weight.to(device) + self.multiplier * diff_weight
 
@@ -257,23 +348,39 @@ class LoKrInfModule(LoKrModule):
             multiplier = self.multiplier
 
         w1 = self.lokr_w1.to(torch.float)
+
         if self.use_w2:
             w2 = self.lokr_w2.to(torch.float)
+        elif self.tucker:
+            w2 = rebuild_tucker(
+                self.lokr_t2.to(torch.float),
+                self.lokr_w2_a.to(torch.float),
+                self.lokr_w2_b.to(torch.float),
+            )
         else:
             w2 = (self.lokr_w2_a @ self.lokr_w2_b).to(torch.float)
 
         weight = make_kron(w1, w2, self.scale) * multiplier
 
+        # reshape to match original weight shape if needed
         if self.is_conv:
-            weight = weight.unsqueeze(2).unsqueeze(3)
+            if self.conv_mode == "1x1":
+                weight = weight.unsqueeze(2).unsqueeze(3)
+            elif self.conv_mode == "flat" and weight.dim() == 2:
+                weight = weight.reshape(self.out_dim, self.in_dim, *self.kernel_size)
+            # Tucker and full matrix modes: already 4D from kron
 
         return weight
 
     def default_forward(self, x):
         diff_weight = self.get_diff_weight()
         if self.is_conv:
-            diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
-            return self.org_forward(x) + F.conv2d(x, diff_weight) * self.multiplier
+            if self.conv_mode == "1x1":
+                diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+            return self.org_forward(x) + F.conv2d(
+                x, diff_weight, stride=self.stride, padding=self.padding,
+                dilation=self.dilation, groups=self.groups
+            ) * self.multiplier
         else:
             return self.org_forward(x) + F.linear(x, diff_weight) * self.multiplier
 
@@ -337,7 +444,7 @@ def create_network(
     if module_dropout is not None:
         module_dropout = float(module_dropout)
 
-    # conv dim/alpha (for future Conv2d 3x3 support)
+    # conv dim/alpha for Conv2d 3x3
     conv_lora_dim = kwargs.get("conv_dim", None)
     conv_alpha = kwargs.get("conv_alpha", None)
     if conv_lora_dim is not None:
@@ -346,6 +453,11 @@ def create_network(
             conv_alpha = 1.0
         else:
             conv_alpha = float(conv_alpha)
+
+    # Tucker decomposition for Conv2d 3x3
+    use_tucker = kwargs.get("use_tucker", "false")
+    if use_tucker is not None:
+        use_tucker = True if str(use_tucker).lower() == "true" else False
 
     # factor for LoKr
     factor = int(kwargs.get("factor", -1))
@@ -373,7 +485,7 @@ def create_network(
         rank_dropout=rank_dropout,
         module_dropout=module_dropout,
         module_class=LoKrModule,
-        module_kwargs={"factor": factor},
+        module_kwargs={"factor": factor, "use_tucker": use_tucker},
         conv_lora_dim=conv_lora_dim,
         conv_alpha=conv_alpha,
         train_llm_adapter=train_llm_adapter,
@@ -411,6 +523,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     modules_dim = {}
     modules_alpha = {}
     train_llm_adapter = False
+    use_tucker = False
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -419,13 +532,21 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         if "alpha" in key:
             modules_alpha[lora_name] = value
         elif "lokr_w2_a" in key:
-            # low-rank mode: dim = w2_a.shape[1]
-            dim = value.shape[1]
+            # low-rank mode: dim detection depends on Tucker vs non-Tucker
+            if "lokr_t2" in key.replace("lokr_w2_a", "lokr_t2") and lora_name + ".lokr_t2" in weights_sd:
+                # Tucker: w2_a = (rank, out_k) → dim = w2_a.shape[0]
+                dim = value.shape[0]
+            else:
+                # Non-Tucker: w2_a = (out_k, rank) → dim = w2_a.shape[1]
+                dim = value.shape[1]
             modules_dim[lora_name] = dim
         elif "lokr_w2" in key and "lokr_w2_a" not in key and "lokr_w2_b" not in key:
             # full matrix mode: set dim large enough to trigger full-matrix path
             if lora_name not in modules_dim:
-                modules_dim[lora_name] = max(value.shape)
+                modules_dim[lora_name] = max(value.shape[0], value.shape[1])
+
+        if "lokr_t2" in key:
+            use_tucker = True
 
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
@@ -440,7 +561,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     factor = int(kwargs.get("factor", -1))
 
     module_class = LoKrInfModule if for_inference else LoKrModule
-    module_kwargs = {"factor": factor}
+    module_kwargs = {"factor": factor, "use_tucker": use_tucker}
 
     network = AdditionalNetwork(
         text_encoders,
@@ -466,6 +587,7 @@ def merge_weights_to_tensor(
 ) -> torch.Tensor:
     """Merge LoKr weights directly into a model weight tensor.
 
+    Supports standard LoKr, non-Tucker Conv2d 3x3, and Tucker Conv2d 3x3.
     No Module/Network creation needed. Consumed keys are removed from lora_weight_keys.
     Returns model_weight unchanged if no matching LoKr keys found.
     """
@@ -473,6 +595,7 @@ def merge_weights_to_tensor(
     w2_key = lora_name + ".lokr_w2"
     w2a_key = lora_name + ".lokr_w2_a"
     w2b_key = lora_name + ".lokr_w2_b"
+    t2_key = lora_name + ".lokr_t2"
     alpha_key = lora_name + ".alpha"
 
     if w1_key not in lora_weight_keys:
@@ -480,13 +603,23 @@ def merge_weights_to_tensor(
 
     w1 = lora_sd[w1_key].to(calc_device)
 
-    # determine low-rank vs full matrix mode
+    # determine mode: full matrix vs Tucker vs low-rank
+    has_tucker = t2_key in lora_weight_keys
+
     if w2a_key in lora_weight_keys:
-        # low-rank: w2 = w2_a @ w2_b
         w2a = lora_sd[w2a_key].to(calc_device)
         w2b = lora_sd[w2b_key].to(calc_device)
-        dim = w2a.shape[1]
+
+        if has_tucker:
+            # Tucker: w2a = (rank, out_k), dim = rank
+            dim = w2a.shape[0]
+        else:
+            # Non-Tucker low-rank: w2a = (out_k, rank), dim = rank
+            dim = w2a.shape[1]
+
         consumed_keys = [w1_key, w2a_key, w2b_key, alpha_key]
+        if has_tucker:
+            consumed_keys.append(t2_key)
     elif w2_key in lora_weight_keys:
         # full matrix mode
         w2a = None
@@ -502,7 +635,6 @@ def merge_weights_to_tensor(
 
     # compute scale
     if w2a is not None:
-        # low-rank mode
         if alpha is None:
             alpha = dim
         scale = alpha / dim
@@ -519,7 +651,13 @@ def merge_weights_to_tensor(
 
     # compute w2
     if w2a is not None:
-        w2 = w2a @ w2b
+        if has_tucker:
+            t2 = lora_sd[t2_key].to(calc_device)
+            if original_dtype.itemsize == 1:
+                t2 = t2.to(torch.float16)
+            w2 = rebuild_tucker(t2, w2a, w2b)
+        else:
+            w2 = w2a @ w2b
     else:
         w2 = lora_sd[w2_key].to(calc_device)
         if original_dtype.itemsize == 1:
@@ -528,9 +666,10 @@ def merge_weights_to_tensor(
     # ΔW = kron(w1, w2) * scale
     diff_weight = make_kron(w1, w2, scale)
 
-    # handle Conv2d 1x1 weights (4D tensors)
-    if len(model_weight.shape) == 4:
-        diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+    # Reshape diff_weight to match model_weight shape if needed
+    # (handles Conv2d 1x1 unsqueeze, Conv2d 3x3 non-Tucker reshape, etc.)
+    if diff_weight.shape != model_weight.shape:
+        diff_weight = diff_weight.reshape(model_weight.shape)
 
     model_weight = model_weight + multiplier * diff_weight
 

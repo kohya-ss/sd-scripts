@@ -25,6 +25,7 @@ class ArchConfig:
     te_prefixes: List[str]
     default_excludes: List[str] = field(default_factory=list)
     adapter_target_modules: List[str] = field(default_factory=list)
+    unet_conv_target_modules: List[str] = field(default_factory=list)
 
 
 def detect_arch_config(unet, text_encoders) -> ArchConfig:
@@ -39,6 +40,7 @@ def detect_arch_config(unet, text_encoders) -> ArchConfig:
             unet_prefix="lora_unet",
             te_prefixes=["lora_te1", "lora_te2"],
             default_excludes=[],
+            unet_conv_target_modules=["ResnetBlock2D", "Downsample2D", "Upsample2D"],
         )
 
     # Check Anima: look for Block class in named_modules
@@ -258,6 +260,8 @@ class AdditionalNetwork(torch.nn.Module):
 
         # Create modules for UNet/DiT
         target_modules = list(arch_config.unet_target_modules)
+        if modules_dim is not None or conv_lora_dim is not None:
+            target_modules.extend(arch_config.unet_conv_target_modules)
         if train_llm_adapter and arch_config.adapter_target_modules:
             target_modules.extend(arch_config.adapter_target_modules)
 
