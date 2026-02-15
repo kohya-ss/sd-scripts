@@ -1,16 +1,220 @@
 # LoRA network module for Anima
 import ast
+import math
 import os
 import re
 from typing import Dict, List, Optional, Tuple, Type, Union
 import torch
 from library.utils import setup_logging
-from networks.lora_flux import LoRAModule, LoRAInfModule
 
 import logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+class LoRAModule(torch.nn.Module):
+    """
+    replaces forward method of the original Linear, instead of replacing the original Linear module.
+    """
+
+    def __init__(
+        self,
+        lora_name,
+        org_module: torch.nn.Module,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=1,
+        dropout=None,
+        rank_dropout=None,
+        module_dropout=None,
+    ):
+        """
+        if alpha == 0 or None, alpha is rank (no scaling).
+        """
+        super().__init__()
+        self.lora_name = lora_name
+
+        if org_module.__class__.__name__ == "Conv2d":
+            in_dim = org_module.in_channels
+            out_dim = org_module.out_channels
+        else:
+            in_dim = org_module.in_features
+            out_dim = org_module.out_features
+
+        self.lora_dim = lora_dim
+
+        if org_module.__class__.__name__ == "Conv2d":
+            kernel_size = org_module.kernel_size
+            stride = org_module.stride
+            padding = org_module.padding
+            self.lora_down = torch.nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
+            self.lora_up = torch.nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
+        else:
+            self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
+            self.lora_up = torch.nn.Linear(self.lora_dim, out_dim, bias=False)
+
+        torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+        torch.nn.init.zeros_(self.lora_up.weight)
+
+        if type(alpha) == torch.Tensor:
+            alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
+        alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
+        self.scale = alpha / self.lora_dim
+        self.register_buffer("alpha", torch.tensor(alpha))  # 定数として扱える
+
+        # same as microsoft's
+        self.multiplier = multiplier
+        self.org_module = org_module  # remove in applying
+        self.dropout = dropout
+        self.rank_dropout = rank_dropout
+        self.module_dropout = module_dropout
+
+    def apply_to(self):
+        self.org_forward = self.org_module.forward
+        self.org_module.forward = self.forward
+
+        del self.org_module
+
+    def forward(self, x):
+        org_forwarded = self.org_forward(x)
+
+        # module dropout
+        if self.module_dropout is not None and self.training:
+            if torch.rand(1) < self.module_dropout:
+                return org_forwarded
+
+        lx = self.lora_down(x)
+
+        # normal dropout
+        if self.dropout is not None and self.training:
+            lx = torch.nn.functional.dropout(lx, p=self.dropout)
+
+        # rank dropout
+        if self.rank_dropout is not None and self.training:
+            mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
+            if len(lx.size()) == 3:
+                mask = mask.unsqueeze(1)  # for Text Encoder
+            elif len(lx.size()) == 4:
+                mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
+            lx = lx * mask
+
+            # scaling for rank dropout: treat as if the rank is changed
+            # maskから計算することも考えられるが、augmentation的な効果を期待してrank_dropoutを用いる
+            scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
+        else:
+            scale = self.scale
+
+        lx = self.lora_up(lx)
+
+        return org_forwarded + lx * self.multiplier * scale
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+
+class LoRAInfModule(LoRAModule):
+    def __init__(
+        self,
+        lora_name,
+        org_module: torch.nn.Module,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=1,
+        **kwargs,
+    ):
+        # no dropout for inference
+        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha)
+
+        self.org_module_ref = [org_module]  # 後から参照できるように
+        self.enabled = True
+        self.network: LoRANetwork = None
+
+    def set_network(self, network):
+        self.network = network
+
+    # freezeしてマージする
+    def merge_to(self, sd, dtype, device):
+        # extract weight from org_module
+        org_sd = self.org_module.state_dict()
+        weight = org_sd["weight"]
+        org_dtype = weight.dtype
+        org_device = weight.device
+        weight = weight.to(torch.float)  # calc in float
+
+        if dtype is None:
+            dtype = org_dtype
+        if device is None:
+            device = org_device
+
+        # get up/down weight
+        down_weight = sd["lora_down.weight"].to(torch.float).to(device)
+        up_weight = sd["lora_up.weight"].to(torch.float).to(device)
+
+        # merge weight
+        if len(weight.size()) == 2:
+            # linear
+            weight = weight + self.multiplier * (up_weight @ down_weight) * self.scale
+        elif down_weight.size()[2:4] == (1, 1):
+            # conv2d 1x1
+            weight = (
+                weight
+                + self.multiplier
+                * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+                * self.scale
+            )
+        else:
+            # conv2d 3x3
+            conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+            # logger.info(conved.size(), weight.size(), module.stride, module.padding)
+            weight = weight + self.multiplier * conved * self.scale
+
+        # set weight to org_module
+        org_sd["weight"] = weight.to(dtype)
+        self.org_module.load_state_dict(org_sd)
+
+    # 復元できるマージのため、このモジュールのweightを返す
+    def get_weight(self, multiplier=None):
+        if multiplier is None:
+            multiplier = self.multiplier
+
+        # get up/down weight from module
+        up_weight = self.lora_up.weight.to(torch.float)
+        down_weight = self.lora_down.weight.to(torch.float)
+
+        # pre-calculated weight
+        if len(down_weight.size()) == 2:
+            # linear
+            weight = self.multiplier * (up_weight @ down_weight) * self.scale
+        elif down_weight.size()[2:4] == (1, 1):
+            # conv2d 1x1
+            weight = (
+                self.multiplier
+                * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+                * self.scale
+            )
+        else:
+            # conv2d 3x3
+            conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+            weight = self.multiplier * conved * self.scale
+
+        return weight
+
+    def default_forward(self, x):
+        # logger.info(f"default_forward {self.lora_name} {x.size()}")
+        lx = self.lora_down(x)
+        lx = self.lora_up(lx)
+        return self.org_forward(x) + lx * self.multiplier * self.scale
+
+    def forward(self, x):
+        if not self.enabled:
+            return self.org_forward(x)
+        return self.default_forward(x)
 
 
 def create_network(

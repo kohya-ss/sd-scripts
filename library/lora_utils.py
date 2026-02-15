@@ -130,56 +130,76 @@ def load_safetensors_with_lora_and_fp8(
                     if down_key in lora_weight_keys and up_key in lora_weight_keys:
                         found = True
                         break
-                if not found:
-                    continue  # no LoRA weights for this model weight
 
-                # get LoRA weights
-                down_weight = lora_sd[down_key]
-                up_weight = lora_sd[up_key]
+                if found:
+                    # Standard LoRA merge
+                    # get LoRA weights
+                    down_weight = lora_sd[down_key]
+                    up_weight = lora_sd[up_key]
 
-                dim = down_weight.size()[0]
-                alpha = lora_sd.get(alpha_key, dim)
-                scale = alpha / dim
+                    dim = down_weight.size()[0]
+                    alpha = lora_sd.get(alpha_key, dim)
+                    scale = alpha / dim
 
-                down_weight = down_weight.to(calc_device)
-                up_weight = up_weight.to(calc_device)
+                    down_weight = down_weight.to(calc_device)
+                    up_weight = up_weight.to(calc_device)
 
-                original_dtype = model_weight.dtype
-                if original_dtype.itemsize == 1:  # fp8
-                    # temporarily convert to float16 for calculation
-                    model_weight = model_weight.to(torch.float16)
-                    down_weight = down_weight.to(torch.float16)
-                    up_weight = up_weight.to(torch.float16)
+                    original_dtype = model_weight.dtype
+                    if original_dtype.itemsize == 1:  # fp8
+                        # temporarily convert to float16 for calculation
+                        model_weight = model_weight.to(torch.float16)
+                        down_weight = down_weight.to(torch.float16)
+                        up_weight = up_weight.to(torch.float16)
 
-                # W <- W + U * D
-                if len(model_weight.size()) == 2:
-                    # linear
-                    if len(up_weight.size()) == 4:  # use linear projection mismatch
-                        up_weight = up_weight.squeeze(3).squeeze(2)
-                        down_weight = down_weight.squeeze(3).squeeze(2)
-                    model_weight = model_weight + multiplier * (up_weight @ down_weight) * scale
-                elif down_weight.size()[2:4] == (1, 1):
-                    # conv2d 1x1
-                    model_weight = (
-                        model_weight
-                        + multiplier
-                        * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
-                        * scale
-                    )
-                else:
-                    # conv2d 3x3
-                    conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
-                    # logger.info(conved.size(), weight.size(), module.stride, module.padding)
-                    model_weight = model_weight + multiplier * conved * scale
+                    # W <- W + U * D
+                    if len(model_weight.size()) == 2:
+                        # linear
+                        if len(up_weight.size()) == 4:  # use linear projection mismatch
+                            up_weight = up_weight.squeeze(3).squeeze(2)
+                            down_weight = down_weight.squeeze(3).squeeze(2)
+                        model_weight = model_weight + multiplier * (up_weight @ down_weight) * scale
+                    elif down_weight.size()[2:4] == (1, 1):
+                        # conv2d 1x1
+                        model_weight = (
+                            model_weight
+                            + multiplier
+                            * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+                            * scale
+                        )
+                    else:
+                        # conv2d 3x3
+                        conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+                        # logger.info(conved.size(), weight.size(), module.stride, module.padding)
+                        model_weight = model_weight + multiplier * conved * scale
 
-                if original_dtype.itemsize == 1:  # fp8
-                    model_weight = model_weight.to(original_dtype)  # convert back to original dtype
+                    if original_dtype.itemsize == 1:  # fp8
+                        model_weight = model_weight.to(original_dtype)  # convert back to original dtype
 
-                # remove LoRA keys from set
-                lora_weight_keys.remove(down_key)
-                lora_weight_keys.remove(up_key)
-                if alpha_key in lora_weight_keys:
-                    lora_weight_keys.remove(alpha_key)
+                    # remove LoRA keys from set
+                    lora_weight_keys.remove(down_key)
+                    lora_weight_keys.remove(up_key)
+                    if alpha_key in lora_weight_keys:
+                        lora_weight_keys.remove(alpha_key)
+                    continue
+
+                # Check for LoHa/LoKr weights with same prefix search
+                for prefix in ["lora_unet_", ""]:
+                    lora_name = prefix + lora_name_without_prefix.replace(".", "_")
+                    hada_key = lora_name + ".hada_w1_a"
+                    lokr_key = lora_name + ".lokr_w1"
+
+                    if hada_key in lora_weight_keys:
+                        # LoHa merge
+                        from networks.loha import merge_weights_to_tensor as loha_merge
+
+                        model_weight = loha_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
+                        break
+                    elif lokr_key in lora_weight_keys:
+                        # LoKr merge
+                        from networks.lokr import merge_weights_to_tensor as lokr_merge
+
+                        model_weight = lokr_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
+                        break
 
             if not keep_on_calc_device and original_device != calc_device:
                 model_weight = model_weight.to(original_device)  # move back to original device
