@@ -87,7 +87,14 @@ def index_sv_ratio(S, target):
 # Modified from Kohaku-blueleaf's extract/merge functions
 def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
     out_size, in_size, kernel_size, _ = weight.size()
-    U, S, Vh = torch.linalg.svd(weight.reshape(out_size, -1).to(device))
+    weight = weight.reshape(out_size, -1)
+    _in_size = in_size * kernel_size * kernel_size
+
+    if out_size > 2048 and _in_size > 2048:
+        U, S, V = torch.svd_lowrank(weight.to(device), q=min(2 * lora_rank, out_size, _in_size))
+        Vh = V.T
+    else:
+        U, S, Vh = torch.linalg.svd(weight.to(device))
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -106,7 +113,11 @@ def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale
 def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
     out_size, in_size = weight.size()
 
-    U, S, Vh = torch.linalg.svd(weight.to(device))
+    if out_size > 2048 and in_size > 2048:
+        U, S, V = torch.svd_lowrank(weight.to(device), q=min(2 * lora_rank, out_size, in_size))
+        Vh = V.T
+    else:
+        U, S, Vh = torch.linalg.svd(weight.to(device))
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
