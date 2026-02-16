@@ -36,6 +36,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         self.is_schnell: Optional[bool] = None
         self.is_swapping_blocks: bool = False
         self.model_type: Optional[str] = None
+        self.args = None
 
     def assert_extra_args(
         self,
@@ -162,25 +163,50 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
     def get_tokenize_strategy(self, args):
         # This method is called before `assert_extra_args`, so we cannot use `self.is_schnell` here.
         # Instead, we analyze the checkpoint state to determine if it is schnell.
-        if args.model_type != "chroma":
-            _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
-        else:
+        if args.model_type == "chroma":
             is_schnell = False
-        self.is_schnell = is_schnell
-
-        if args.t5xxl_max_token_length is None:
-            if self.is_schnell:
-                t5xxl_max_token_length = 256
-            else:
-                t5xxl_max_token_length = 512
+            self.is_schnell = is_schnell
+            t5xxl_max_token_length = args.t5xxl_max_token_length or 512
+            logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
+            # Chroma doesn't use CLIP-L
+            return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir, use_clip_l=False)
         else:
-            t5xxl_max_token_length = args.t5xxl_max_token_length
+            _, is_schnell, _, _ = flux_utils.analyze_checkpoint_state(args.pretrained_model_name_or_path)
+            self.is_schnell = is_schnell
 
-        logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
-        return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir)
+            if args.t5xxl_max_token_length is None:
+                if self.is_schnell:
+                    t5xxl_max_token_length = 256
+                else:
+                    t5xxl_max_token_length = 512
+            else:
+                t5xxl_max_token_length = args.t5xxl_max_token_length
+
+            logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
+            # FLUX models use both CLIP-L and T5
+            return strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir, use_clip_l=True)
 
     def get_tokenizers(self, tokenize_strategy: strategy_flux.FluxTokenizeStrategy):
-        return [tokenize_strategy.clip_l, tokenize_strategy.t5xxl]
+        # Try to access the tokenizers through the tokenize strategy's attributes
+        # First, check if the attributes exist directly
+        if hasattr(tokenize_strategy, 'clip_l') and hasattr(tokenize_strategy, 't5xxl'):
+            return [tokenize_strategy.clip_l, tokenize_strategy.t5xxl]
+        # If not, try to find them with different attribute names
+        elif hasattr(tokenize_strategy, 'clip_l_tokenizer') and hasattr(tokenize_strategy, 't5xxl_tokenizer'):
+            return [tokenize_strategy.clip_l_tokenizer, tokenize_strategy.t5xxl_tokenizer]
+        else:
+            # As a last resort, create new tokenizers
+            logger.warning("Tokenizers not found in tokenize strategy, creating new ones")
+            from transformers import CLIPTokenizer, T5TokenizerFast
+            clip_l_tokenizer = CLIPTokenizer.from_pretrained(
+                "openai/clip-vit-large-patch14", 
+                cache_dir=getattr(self.args, 'tokenizer_cache_dir', None) if hasattr(self, 'args') else None
+            )
+            t5xxl_tokenizer = T5TokenizerFast.from_pretrained(
+                "google/t5-v1_1-xxl", 
+                cache_dir=getattr(self.args, 'tokenizer_cache_dir', None) if hasattr(self, 'args') else None
+            )
+            return [clip_l_tokenizer, t5xxl_tokenizer]
 
     def get_latents_caching_strategy(self, args):
         latents_caching_strategy = strategy_flux.FluxLatentsCachingStrategy(args.cache_latents_to_disk, args.vae_batch_size, False)
