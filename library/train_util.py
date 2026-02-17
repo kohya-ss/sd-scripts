@@ -3936,6 +3936,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         ],
         help="dynamo backend type (default is inductor) / dynamoのbackendの種類（デフォルトは inductor）",
     )
+    parser.add_argument(
+        "--activation_memory_budget", 
+        type=float,
+        default=None,
+        help="activation memory budget setting for torch.compile (range: 0~1). Smaller value saves more memory at cost of speed. If set, use --torch_compile without --gradient_checkpointing is recommended. Requires PyTorch 2.4. / torch.compileのactivation memory budget設定（0～1の値）。この値を小さくするとメモリ使用量を節約できますが、処理速度は低下します。この設定を行う場合は、--gradient_checkpointing オプションを指定せずに --torch_compile を使用することをお勧めします。PyTorch 2.4以降が必要です。"
+    )
     parser.add_argument("--xformers", action="store_true", help="use xformers for CrossAttention / CrossAttentionにxformersを使う")
     parser.add_argument(
         "--sdpa",
@@ -5467,6 +5473,19 @@ def prepare_accelerator(args: argparse.Namespace):
     dynamo_backend = "NO"
     if args.torch_compile:
         dynamo_backend = args.dynamo_backend
+
+    if args.activation_memory_budget is not None:  # Note: 0 is a valid value.
+        if 0 <= args.activation_memory_budget <= 1:
+            logger.info(
+                f"set torch compile activation memory budget to {args.activation_memory_budget}"
+            )
+            torch._functorch.config.activation_memory_budget = (  # type: ignore
+                args.activation_memory_budget
+            )
+        else:
+            raise ValueError(
+                "activation_memory_budget must be between 0 and 1 (inclusive)"
+            )
 
     kwargs_handlers = [
         (
