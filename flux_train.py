@@ -381,9 +381,26 @@ def train(args):
             raise ValueError("Schedule-free optimizer is not supported with blockwise fused optimizers")
         optimizer_train_fn = lambda: None  # dummy function
         optimizer_eval_fn = lambda: None  # dummy function
+
+        if args.optimizer_type == "adafactor" and args.full_bf16:
+            logger.warning("Use of --blockwise_fused_optimizer with Adafactor optimizer prevents stochastic/kahan weight updates.")
     else:
         _, _, optimizer = train_util.get_optimizer(args, trainable_params=params_to_optimize)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
+
+    # Pass any Kahan summation arg to the optimizer
+    if args.kahan_summation:
+        # Self check parameter compatibility
+        if args.optimizer_type != "adafactor":
+            logger.warning("Kahan summation has been requested, but currently this is only supported by the supplied Adafactor optimizer.")
+        elif not args.full_bf16:
+            logger.warning("Kahan summation requires --full_bf16")
+        elif args.blockwise_fused_optimizers:
+            logger.warning("Kahan summation has been requested, but it is incompatible with --blockwise_fused_optimizer. "\
+                           "Perhaps try --fused_backward_pass instead.")
+        else:
+            logger.info("Using Kahan summation")
+    optimizer.use_kahan_summation = args.kahan_summation
 
     # prepare dataloader
     # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -815,6 +832,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "--blockwise_fused_optimizers",
         action="store_true",
         help="enable blockwise optimizers for fused backward pass and optimizer step / fused backward passとoptimizer step のためブロック単位のoptimizerを有効にする",
+    )
+    parser.add_argument(
+        "--kahan_summation",
+        action="store_true",
+        help="Offloads to CPU the float parts lost during bf16 quantization, and re-adds them to the next step / "\
+            "bf16 量子化中に失われた浮動小数点部分を CPU にオフロードし、次のステップに再度追加します",
     )
     parser.add_argument(
         "--skip_latents_validity_check",
