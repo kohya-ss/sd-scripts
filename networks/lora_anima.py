@@ -98,6 +98,12 @@ def create_network(
     else:
         reg_dims = None
 
+    network_reg_alphas = kwargs.get("network_reg_alphas", None)
+    if network_reg_alphas is not None:
+        reg_alphas = parse_kv_pairs(network_reg_alphas, is_int=False)
+    else:
+        reg_alphas = None
+
     network = LoRANetwork(
         text_encoders,
         unet,
@@ -111,6 +117,7 @@ def create_network(
         exclude_patterns=exclude_patterns,
         include_patterns=include_patterns,
         reg_dims=reg_dims,
+        reg_alphas=reg_alphas,
         reg_lrs=reg_lrs,
         verbose=verbose,
     )
@@ -195,6 +202,7 @@ class LoRANetwork(torch.nn.Module):
         exclude_patterns: Optional[List[str]] = None,
         include_patterns: Optional[List[str]] = None,
         reg_dims: Optional[Dict[str, int]] = None,
+        reg_alphas: Optional[Dict[str, float]] = None,
         reg_lrs: Optional[Dict[str, float]] = None,
         verbose: Optional[bool] = False,
     ) -> None:
@@ -207,6 +215,7 @@ class LoRANetwork(torch.nn.Module):
         self.module_dropout = module_dropout
         self.train_llm_adapter = train_llm_adapter
         self.reg_dims = reg_dims
+        self.reg_alphas = reg_alphas
         self.reg_lrs = reg_lrs
 
         self.loraplus_lr_ratio = None
@@ -286,11 +295,19 @@ class LoRANetwork(torch.nn.Module):
                                             alpha_val = self.alpha
                                             logger.info(f"Module {original_name} matched with regex '{reg}' -> dim: {dim}")
                                             break
+                                # check for regex-specific alpha (overrides default alpha)
+                                if self.reg_alphas is not None:
+                                    for reg, a in self.reg_alphas.items():
+                                        if re.fullmatch(reg, original_name):
+                                            alpha_val = a
+                                            logger.info(f"Module {original_name} matched with regex '{reg}' -> alpha: {alpha_val}")
+                                            break
                                 # fallback to default dim if not matched by reg_dims or reg_dims is not specified
                                 if dim is None:
                                     if is_linear or is_conv2d_1x1:
                                         dim = default_dim if default_dim is not None else self.lora_dim
-                                        alpha_val = self.alpha
+                                        if alpha_val is None:
+                                            alpha_val = self.alpha
 
                             if dim is None or dim == 0:
                                 if is_linear or is_conv2d_1x1:

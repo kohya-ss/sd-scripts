@@ -48,7 +48,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **Arguments:** Uses the common `--pretrained_model_name_or_path` for the DiT model path, `--qwen3` for the Qwen3 text encoder, and `--vae` for the Qwen-Image VAE. The LLM adapter and T5 tokenizer can be specified separately with `--llm_adapter_path` and `--t5_tokenizer_path`.
 * **Incompatible arguments:** Stable Diffusion v1/v2 options such as `--v2`, `--v_parameterization` and `--clip_skip` are not used. `--fp8_base` is not supported.
 * **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`).
-* **LoRA:** Uses regex-based module selection and per-module rank/learning rate control (`network_reg_dims`, `network_reg_lrs`) instead of per-component arguments. Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
+* **LoRA:** Uses regex-based module selection and per-module rank/alpha/learning rate control (`network_reg_dims`, `network_reg_alphas`, `network_reg_lrs`) instead of per-component arguments. Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
 
 <details>
 <summary>日本語</summary>
@@ -60,7 +60,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **引数:** DiTモデルのパスには共通引数`--pretrained_model_name_or_path`を、Qwen3テキストエンコーダーには`--qwen3`を、Qwen-Image VAEには`--vae`を使用します。LLM AdapterとT5トークナイザーはそれぞれ`--llm_adapter_path`、`--t5_tokenizer_path`で個別に指定できます。
 * **一部引数の非互換性:** Stable Diffusion v1/v2向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）は使用されません。`--fp8_base`はサポートされていません。
 * **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`）を使用します。
-* **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します。
+* **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/アルファ/学習率制御（`network_reg_dims`、`network_reg_alphas`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します。
 </details>
 
 ## 3. Preparation / 準備
@@ -225,7 +225,93 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
   - Chunk size for Qwen-Image VAE processing. Reduces VRAM usage at the cost of speed. Default is no chunking.
 * `--vae_disable_cache`
   - Disable internal caching in Qwen-Image VAE to reduce VRAM usage.
-  
+
+#### EMA (Exponential Moving Average) / EMA (指数移動平均)
+
+EMA maintains a shadow copy of the model parameters, averaging them over training steps. This produces smoother, more stable weights that often generalize better than the final training checkpoint. EMA is supported for both full fine-tuning (`anima_train.py`) and LoRA training (`anima_train_network.py`).
+
+* `--ema`
+  - Enable EMA. When enabled, an EMA model is saved alongside each regular checkpoint with an `ema_` prefix on the filename (e.g., `ema_anima-000010.safetensors`). The EMA model has the same format as the regular model and can be used directly for inference.
+* `--ema_decay=<float>` (default: `0.9999`)
+  - Decay rate for EMA. Higher values produce smoother weights but adapt more slowly to new training data. Typical values range from `0.999` to `0.99999`.
+* `--ema_device=<choice>` (default: `cuda`)
+  - Device to store EMA shadow parameters. Choose `cuda` or `cpu`. Using `cpu` significantly reduces GPU VRAM usage (shadow params use the same amount of memory as the model) but makes EMA updates slower due to CPU-GPU data transfer.
+* `--ema_use_num_updates`
+  - Automatically adjust the EMA decay based on the number of update steps. The effective decay is calculated as `min(decay, (1 + num_updates) / (10 + num_updates))`. This makes the EMA warm up faster in early training steps.
+* `--ema_sample`
+  - Enable dual sampling: generate sample images with both training weights and EMA weights side by side. EMA sample images are saved with a `_ema` suffix (e.g., `image_0000_000010_ema.png`). EMA sampling is skipped at step 0 since EMA hasn't accumulated meaningful averages yet. This option works with the existing `--sample_every_n_steps`, `--sample_every_n_epochs`, and `--sample_prompts` arguments.
+* `--ema_resume_path=<path>` *[Optional]*
+  - Path to a previously saved EMA model (`.safetensors`) to resume EMA from. For full fine-tuning, the file should be a saved EMA DiT model. For LoRA training, the file should be a saved EMA LoRA file.
+* `--ema_use_feedback` *[Experimental]*
+  - Feed back EMA parameters into the training model after each update. This is an experimental feature and is **not compatible with multi-GPU DDP training** (it modifies parameters only on the main process, causing parameter desynchronization across GPUs).
+* `--ema_param_multiplier=<float>` (default: `1.0`) *[Experimental]*
+  - Multiply shadow parameters by this value after each EMA update. This is an experimental feature and is **not compatible with multi-GPU DDP training** when set to a value other than `1.0`.
+
+**Example — LoRA training with EMA:**
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
+  --pretrained_model_name_or_path="<path to Anima DiT model>" \
+  --qwen3="<path to Qwen3-0.6B model>" \
+  --vae="<path to Qwen-Image VAE model>" \
+  --dataset_config="my_anima_dataset_config.toml" \
+  --output_dir="<output directory>" \
+  --output_name="my_anima_lora" \
+  --save_model_as=safetensors \
+  --network_module=networks.lora_anima \
+  --network_dim=8 \
+  --learning_rate=1e-4 \
+  --optimizer_type="AdamW8bit" \
+  --max_train_epochs=10 \
+  --save_every_n_epochs=1 \
+  --mixed_precision="bf16" \
+  --gradient_checkpointing \
+  --cache_latents \
+  --cache_text_encoder_outputs \
+  --ema \
+  --ema_decay=0.9999 \
+  --ema_device=cuda \
+  --ema_sample \
+  --sample_every_n_epochs=1 \
+  --sample_prompts="<path to prompt file>"
+```
+
+**Notes:**
+* When `--ema_device=cpu` is used, EMA shadow parameters are stored in system RAM instead of GPU VRAM. This is useful for large models where VRAM is limited, but EMA updates will be slower.
+* For multi-GPU training, `--ema_use_feedback` and `--ema_param_multiplier` (when not `1.0`) are not supported and will raise an error. Other EMA features work correctly with multi-GPU DDP.
+* The EMA model file uses the same format as the regular model. For LoRA, the EMA LoRA file can be loaded the same way as a regular LoRA file.
+
+#### Guidance Loss (Guidance Distillation) / ガイダンスロス（ガイダンス蒸留）
+
+Guidance Loss bakes the effect of Classifier-Free Guidance (CFG) directly into the model during training. Instead of needing CFG at inference time, the model learns to produce guided outputs on its own. This requires an extra unconditional forward pass per training step, which roughly doubles the compute cost.
+
+**How it works:** For each training step, the model runs an additional forward pass with an empty prompt to get the unconditional prediction. The training target is then modified using the CFG formula: `target = uncond_pred + scale * (target - uncond_pred)`. The model learns to match this CFG-modified target directly.
+
+* `--do_guidance_loss`
+  - Enable guidance loss. Requires pre-computing empty prompt embeddings before training (done automatically). Roughly doubles compute per step due to the extra forward pass.
+* `--guidance_loss_scale=<float>` (default: `1.0`)
+  - CFG scale for the guidance loss target computation. Higher values produce stronger guidance baked into the model. A value of `1.0` means no CFG effect (target is unchanged). Typical values: `1.0` to `5.0`.
+* `--guidance_loss_cfg_zero`
+  - Use CFG-Zero\* for guidance loss. Automatically reduces the CFG effect at high noise levels (early timesteps) by computing a projection coefficient `alpha = dot(target, uncond_pred) / ||uncond_pred||^2`. This prevents artifacts that can occur when applying strong CFG at high noise levels.
+
+#### Differential Guidance / ディファレンシャルガイダンス
+
+Differential Guidance amplifies the training loss in regions where the model's prediction differs most from the ground truth. It acts as an adaptive per-pixel gradient scaling, pushing the model harder where it is most wrong.
+
+**How it works:** The target is extrapolated beyond the ground truth using the formula: `target = model_pred + scale * (target - model_pred)`. This amplifies the error by `scale^2` in the loss. Areas where the model already predicts well are barely affected, while areas with large errors receive much stronger gradients.
+
+* `--do_differential_guidance`
+  - Enable differential guidance. No extra forward pass needed (uses the existing model prediction).
+* `--differential_guidance_scale=<float>` (default: `3.0`)
+  - Scale factor for differential guidance. Higher values amplify the loss more where the model is wrong. The effective loss is scaled by approximately `scale^2` (e.g., scale=3.0 means ~9x loss amplification for large errors). Typical values: `1.0` to `5.0`.
+
+**Combining Guidance Loss and Differential Guidance:** Both features can be used together. When combined, Guidance Loss is applied first (modifying the target with CFG), then Differential Guidance amplifies the error relative to that CFG-modified target. This means the model learns to produce CFG-guided outputs while receiving stronger gradients where it struggles most.
+
+**Notes:**
+* Guidance Loss is compatible with `--blocks_to_swap` (block swap state is automatically reset for the extra forward pass).
+* Differential Guidance adds no extra compute cost since it only modifies the target tensor.
+* Both features work with both full fine-tuning (`anima_train.py`) and LoRA training (`anima_train_network.py`).
+
 #### Incompatible or Unsupported Options / 非互換・非サポートの引数
 
 * `--v2`, `--v_parameterization`, `--clip_skip` - Options for Stable Diffusion v1/v2 that are not used for Anima training.
@@ -277,6 +363,50 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
 * `--vae_disable_cache` - Qwen-Image VAEの内部キャッシュを無効化してメモリ使用量を削減します。
+
+#### EMA (指数移動平均)
+
+EMAはモデルパラメータのシャドウコピーを維持し、学習ステップにわたって平均化します。これにより、最終的な学習チェックポイントよりも滑らかで安定した重みが得られ、汎化性能が向上することがあります。EMAはフルファインチューニング（`anima_train.py`）とLoRA学習（`anima_train_network.py`）の両方でサポートされています。
+
+* `--ema` - EMAを有効にします。有効にすると、通常のチェックポイントと並行して`ema_`プレフィックス付きのEMAモデルが保存されます（例: `ema_anima-000010.safetensors`）。EMAモデルは通常のモデルと同じフォーマットで、そのまま推論に使用できます。
+* `--ema_decay` - EMAの減衰率。デフォルト`0.9999`。高い値ほど滑らかな重みになりますが、新しい学習データへの適応が遅くなります。
+* `--ema_device` - EMAシャドウパラメータを保存するデバイス。`cuda`（デフォルト）または`cpu`。`cpu`を使用するとGPU VRAMを大幅に節約できますが、更新速度が遅くなります。
+* `--ema_use_num_updates` - 更新ステップ数に基づいてEMA減衰率を自動調整します。早期の学習ステップでEMAのウォームアップを速くします。
+* `--ema_sample` - デュアルサンプリングを有効にします。学習重みとEMA重みの両方でサンプル画像を生成します。EMAサンプル画像は`_ema`サフィックス付きで保存されます。ステップ0ではEMAがまだ十分に蓄積されていないためスキップされます。
+* `--ema_resume_path` - 以前保存したEMAモデルからEMAを再開するためのパス。
+* `--ema_use_feedback` *[実験的]* - EMAパラメータを学習モデルにフィードバックします。**マルチGPU DDP学習とは互換性がありません。**
+* `--ema_param_multiplier` *[実験的]* - 各EMA更新後にシャドウパラメータにこの値を乗算します。デフォルト`1.0`。`1.0`以外の場合、**マルチGPU DDP学習とは互換性がありません。**
+
+**注意:**
+* `--ema_device=cpu`を使用すると、EMAシャドウパラメータがGPU VRAMではなくシステムRAMに保存されます。大規模モデルでVRAMが限られている場合に有用です。
+* マルチGPU学習では、`--ema_use_feedback`および`--ema_param_multiplier`（`1.0`以外）はサポートされておらず、エラーが発生します。
+* EMAモデルファイルは通常のモデルと同じフォーマットです。LoRAの場合、EMA LoRAファイルは通常のLoRAファイルと同じ方法で読み込めます。
+
+#### ガイダンスロス（ガイダンス蒸留）
+
+ガイダンスロスは、Classifier-Free Guidance (CFG) の効果を学習中にモデルに直接組み込みます。推論時にCFGを使用する必要がなくなり、モデルがガイダンスされた出力を単独で生成できるようになります。各学習ステップで追加の無条件フォワードパスが必要なため、計算コストはおよそ2倍になります。
+
+**仕組み:** 各学習ステップで、空プロンプトによる追加のフォワードパスを実行して無条件予測を取得します。学習ターゲットはCFGの式で修正されます：`target = uncond_pred + scale * (target - uncond_pred)`。モデルはこのCFG修正済みターゲットに直接マッチするよう学習します。
+
+* `--do_guidance_loss` - ガイダンスロスを有効にします。空プロンプトの埋め込みを事前に計算する必要があります（自動で行われます）。追加のフォワードパスにより、ステップあたりの計算量がおよそ2倍になります。
+* `--guidance_loss_scale` - ガイダンスロスのターゲット計算に使用するCFGスケール。デフォルト`1.0`。高い値ほど強いガイダンスがモデルに組み込まれます。`1.0`ではCFG効果なし（ターゲット変更なし）。
+* `--guidance_loss_cfg_zero` - ガイダンスロスにCFG-Zero\*を使用します。高ノイズレベル（早期タイムステップ）でCFG効果を自動的に低減し、強いCFGによるアーティファクトを防止します。
+
+#### ディファレンシャルガイダンス
+
+ディファレンシャルガイダンスは、モデルの予測がグラウンドトゥルースと最も異なる領域で学習損失を増幅します。適応的なピクセル単位の勾配スケーリングとして機能し、モデルが最も間違っている箇所をより強く修正します。
+
+**仕組み:** ターゲットはグラウンドトゥルースを超えて外挿されます：`target = model_pred + scale * (target - model_pred)`。これにより、損失は`scale^2`倍に増幅されます。モデルが既に正確に予測している領域はほとんど影響を受けず、大きな誤差がある領域にはより強い勾配が適用されます。
+
+* `--do_differential_guidance` - ディファレンシャルガイダンスを有効にします。追加のフォワードパスは不要です。
+* `--differential_guidance_scale` - ディファレンシャルガイダンスのスケール係数。デフォルト`3.0`。高い値ほど、モデルが間違っている箇所の損失をより増幅します。実効的な損失はおよそ`scale^2`倍にスケールされます。
+
+**ガイダンスロスとディファレンシャルガイダンスの併用:** 両機能は同時に使用できます。併用時は、最初にガイダンスロスが適用され（CFGでターゲットを修正）、次にディファレンシャルガイダンスがそのCFG修正済みターゲットに対する誤差を増幅します。
+
+**注意:**
+* ガイダンスロスは`--blocks_to_swap`と互換性があります（追加のフォワードパスのためにブロックスワップ状態が自動的にリセットされます）。
+* ディファレンシャルガイダンスはターゲットテンソルを修正するだけなので、追加の計算コストはありません。
+* 両機能ともフルファインチューニング（`anima_train.py`）とLoRA学習（`anima_train_network.py`）の両方で動作します。
 
 #### 非互換・非サポートの引数
 
@@ -330,20 +460,31 @@ Example to additionally exclude MLP layers:
 --network_args "exclude_patterns=['.*mlp.*']"
 ```
 
-### 5.2. Regex-based Rank and Learning Rate Control / 正規表現によるランク・学習率の制御
+### 5.2. Regex-based Rank, Alpha, and Learning Rate Control / 正規表現によるランク・アルファ・学習率の制御
 
-You can specify different ranks (network_dim) and learning rates for modules matching specific regex patterns:
+You can specify different ranks (network_dim), alphas (network_alpha), and learning rates for modules matching specific regex patterns:
 
 * `network_reg_dims`: Specify ranks for modules matching a regular expression. The format is a comma-separated string of `pattern=rank`.
     * Example: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
     * This sets the rank to 8 for self-attention modules, 4 for cross-attention modules, and 8 for MLP modules.
+* `network_reg_alphas`: Specify alphas for modules matching a regular expression. The format is a comma-separated string of `pattern=alpha`.
+    * Example: `--network_args "network_reg_alphas=.*self_attn.*=4,.*mlp.*=8"`
+    * This sets the alpha to 4 for self-attention modules and 8 for MLP modules.
+    * Alpha controls the effective scaling of LoRA: `effective_scale = alpha / dim`. A lower alpha relative to dim reduces the LoRA's influence.
 * `network_reg_lrs`: Specify learning rates for modules matching a regular expression. The format is a comma-separated string of `pattern=lr`.
     * Example: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
     * This sets the learning rate to `1e-4` for self-attention modules and `5e-5` for cross-attention modules.
 
+**Priority order:**
+
+1. `network_reg_dims` sets the rank for matched modules. If `network_reg_alphas` is also specified and matches the same module, that alpha is used; otherwise the global `--network_alpha` is used.
+2. `network_reg_alphas` can override the alpha independently, even for modules not matched by `network_reg_dims`.
+3. Modules not matched by any regex pattern fall back to the global `--network_dim` and `--network_alpha`.
+4. `network_reg_lrs` overrides the learning rate independently of rank/alpha settings.
+
 **Notes:**
 
-* Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
+* Settings via `network_reg_dims`, `network_reg_alphas`, and `network_reg_lrs` take precedence over the global `--network_dim`, `--network_alpha`, and `--learning_rate` settings.
 * Patterns are matched using `re.fullmatch()` against the module's original name (e.g., `blocks.0.self_attn.q_proj`).
 
 ### 5.3. LLM Adapter LoRA / LLM Adapter LoRA
@@ -389,17 +530,27 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 
 パターンは`re.fullmatch()`を使用して完全なモジュール名に対してマッチングされます。
 
-### 5.2. 正規表現によるランク・学習率の制御
+### 5.2. 正規表現によるランク・アルファ・学習率の制御
 
-正規表現にマッチするモジュールに対して、異なるランクや学習率を指定できます：
+正規表現にマッチするモジュールに対して、異なるランク、アルファ、学習率を指定できます：
 
 * `network_reg_dims`: 正規表現にマッチするモジュールに対してランクを指定します。`pattern=rank`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
+* `network_reg_alphas`: 正規表現にマッチするモジュールに対してアルファを指定します。`pattern=alpha`形式の文字列をカンマで区切って指定します。
+    * 例: `--network_args "network_reg_alphas=.*self_attn.*=4,.*mlp.*=8"`
+    * アルファはLoRAの実効的なスケーリングを制御します：`effective_scale = alpha / dim`。dimに対してアルファが低いほど、LoRAの影響が小さくなります。
 * `network_reg_lrs`: 正規表現にマッチするモジュールに対して学習率を指定します。`pattern=lr`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
 
+**優先順位:**
+
+1. `network_reg_dims`はマッチしたモジュールのランクを設定します。`network_reg_alphas`も指定されており同じモジュールにマッチする場合はそのアルファが使用されます。マッチしない場合はグローバルの`--network_alpha`が使用されます。
+2. `network_reg_alphas`は、`network_reg_dims`にマッチしていないモジュールに対してもアルファを独立して上書きできます。
+3. どの正規表現パターンにもマッチしないモジュールは、グローバルの`--network_dim`と`--network_alpha`にフォールバックします。
+4. `network_reg_lrs`はランク/アルファの設定とは独立して学習率を上書きします。
+
 **注意点:**
-* `network_reg_dims`および`network_reg_lrs`での設定は、全体設定である`--network_dim`や`--learning_rate`よりも優先されます。
+* `network_reg_dims`、`network_reg_alphas`、`network_reg_lrs`での設定は、全体設定である`--network_dim`、`--network_alpha`、`--learning_rate`よりも優先されます。
 * パターンはモジュールのオリジナル名（例: `blocks.0.self_attn.q_proj`）に対して`re.fullmatch()`でマッチングされます。
 
 ### 5.3. LLM Adapter LoRA
