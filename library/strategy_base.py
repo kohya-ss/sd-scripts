@@ -6,7 +6,11 @@ from typing import Any, List, Optional, Tuple, Union, Callable
 
 import numpy as np
 import torch
-from numpy.lib import _format_impl as np_format_impl
+
+try:
+    from numpy.lib import _format_impl as np_format_impl
+except ImportError:
+    from numpy.lib import format as np_format_impl
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
 
@@ -430,8 +434,7 @@ class LatentsCachingStrategy:
         if key not in npz:
             return None
 
-        npy_member_name = npz._files.get(key, key if key.endswith(".npy") else f"{key}.npy")
-        with npz.zip.open(npy_member_name) as npy_file:
+        with npz.zip.open(key + ".npy") as npy_file:
             version = np.lib.format.read_magic(npy_file)
             shape, _, _ = np_format_impl._read_array_header(npy_file, version)
         return shape
