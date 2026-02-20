@@ -108,8 +108,7 @@ class BaseDatasetParams:
     validation_seed: Optional[int] = None
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
-    min_orig_resolution: float = 0.0
-    max_orig_resolution: float = float("inf")
+    skip_image_resolution: float = 0.0
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
@@ -246,8 +245,7 @@ class ConfigSanitizer:
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
         "resize_interpolation": str,
-        "min_orig_resolution": Any(float, int),
-        "max_orig_resolution": Any(float, int),
+        "skip_image_resolution": Any(float, int),
     }
 
     # options handled by argparse but not handled by user config
@@ -260,8 +258,7 @@ class ConfigSanitizer:
     ARGPARSE_NULLABLE_OPTNAMES = [
         "face_crop_aug_range",
         "resolution",
-        "min_orig_resolution",
-        "max_orig_resolution",
+        "skip_image_resolution",
     ]
     # prepare map because option name may differ among argparse and user config
     ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME = {
@@ -534,8 +531,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                 [{dataset_type} {i}]
                   batch_size: {dataset.batch_size}
                   resolution: {(dataset.width, dataset.height)}
-                  min_orig_resolution: {dataset.min_orig_resolution}
-                  max_orig_resolution: {dataset.max_orig_resolution}
+                  skip_image_resolution: {dataset.skip_image_resolution}
                   resize_interpolation: {dataset.resize_interpolation}
                   enable_bucket: {dataset.enable_bucket}
             """)
