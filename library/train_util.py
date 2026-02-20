@@ -4,6 +4,7 @@ import argparse
 import ast
 import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 import datetime
 import importlib
 import json
@@ -26,6 +27,7 @@ import toml
 
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from torch.cuda import Stream
 from tqdm import tqdm
 from packaging.version import Version
 
@@ -1421,10 +1423,11 @@ class BaseDataset(torch.utils.data.Dataset):
             return
 
         # prepare tokenizers and text encoders
-        for text_encoder, device, te_dtype in zip(text_encoders, devices, te_dtypes):
-            text_encoder.to(device)
+        for i, (text_encoder, device, te_dtype) in enumerate(zip(text_encoders, devices, te_dtypes)):
+            te_kwargs = {}
             if te_dtype is not None:
-                text_encoder.to(dtype=te_dtype)
+                te_kwargs['dtype'] = te_dtype
+            text_encoders[i] = text_encoder.to(device, non_blocking=True, **te_dtype)
 
         # create batch
         is_sd3 = len(tokenizers) == 1
@@ -1445,6 +1448,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
         if len(batch) > 0:
             batches.append(batch)
+
+        torch.cuda.synchronize()
 
         # iterate batches: call text encoder and cache outputs for memory or disk
         logger.info("caching text encoder outputs...")
@@ -3080,7 +3085,10 @@ def cache_batch_latents(
         images.append(image)
 
     img_tensors = torch.stack(images, dim=0)
-    img_tensors = img_tensors.to(device=vae.device, dtype=vae.dtype)
+
+    s = Stream()
+
+    img_tensors = img_tensors.to(device=vae.device, dtype=vae.dtype, non_blocking=True)
 
     with torch.no_grad():
         latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
@@ -3116,12 +3124,13 @@ def cache_batch_latents(
     if not HIGH_VRAM:
         clean_memory_on_device(vae.device)
 
+    torch.cuda.synchronize()
 
 def cache_batch_text_encoder_outputs(
     image_infos, tokenizers, text_encoders, max_token_length, cache_to_disk, input_ids1, input_ids2, dtype
 ):
-    input_ids1 = input_ids1.to(text_encoders[0].device)
-    input_ids2 = input_ids2.to(text_encoders[1].device)
+    input_ids1 = input_ids1.to(text_encoders[0].device, non_blocking=True)
+    input_ids2 = input_ids2.to(text_encoders[1].device, non_blocking=True)
 
     with torch.no_grad():
         b_hidden_state1, b_hidden_state2, b_pool2 = get_hidden_states_sdxl(
@@ -5581,9 +5590,9 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
             )
             # work on low-ram device
             if args.lowram:
-                text_encoder.to(accelerator.device)
-                unet.to(accelerator.device)
-                vae.to(accelerator.device)
+                text_encoder = text_encoder.to(accelerator.device, non_blocking=True)
+                unet = unet.to(accelerator.device, non_blocking=True)
+                vae = vae.to(accelerator.device, non_blocking=True)
 
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
@@ -6399,7 +6408,7 @@ def sample_images_common(
     distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
 
     org_vae_device = vae.device  # CPUにいるはず
-    vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
+    vae = vae.to(distributed_state.device)  # distributed_state.device is same as accelerator.device
 
     # unwrap unet and text_encoder(s)
     unet = accelerator.unwrap_model(unet_wrapped)
@@ -6434,7 +6443,7 @@ def sample_images_common(
         requires_safety_checker=False,
         clip_skip=args.clip_skip,
     )
-    pipeline.to(distributed_state.device)
+    pipeline = pipeline.to(distributed_state.device)
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
 
@@ -6485,7 +6494,7 @@ def sample_images_common(
     torch.set_rng_state(rng_state)
     if torch.cuda.is_available() and cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
-    vae.to(org_vae_device)
+    vae = vae.to(org_vae_device)
 
     clean_memory_on_device(accelerator.device)
 

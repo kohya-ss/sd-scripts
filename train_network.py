@@ -222,8 +222,8 @@ class NetworkTrainer:
         return not args.network_train_unet_only
 
     def cache_text_encoder_outputs_if_needed(self, args, accelerator, unet, vae, text_encoders, dataset, weight_dtype):
-        for t_enc in text_encoders:
-            t_enc.to(accelerator.device, dtype=weight_dtype)
+        for i, t_enc in enumerate(text_encoders):
+            text_encoders[i] = t_enc.to(accelerator.device, dtype=weight_dtype)
 
     def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype, **kwargs):
         noise_pred = unet(noisy_latents, timesteps, text_conds[0]).sample
@@ -323,7 +323,7 @@ class NetworkTrainer:
                         indices=diff_output_pr_indices,
                     )
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
-                target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
+                target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype, non_blocking=True)
 
         return noise_pred, target, timesteps, None
 
@@ -352,7 +352,7 @@ class NetworkTrainer:
         text_encoder.text_model.embeddings.requires_grad_(True)
 
     def prepare_text_encoder_fp8(self, index, text_encoder, te_weight_dtype, weight_dtype):
-        text_encoder.text_model.embeddings.to(dtype=weight_dtype)
+        text_encoder.text_model.embeddings = text_encoder.text_model.embeddings.to(dtype=weight_dtype)
 
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
@@ -390,11 +390,11 @@ class NetworkTrainer:
         """
         with torch.no_grad():
             if "latents" in batch and batch["latents"] is not None:
-                latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device))
+                latents = typing.cast(torch.FloatTensor, batch["latents"].to(accelerator.device, non_blocking=True))
             else:
                 # latentに変換
                 if args.vae_batch_size is None or len(batch["images"]) <= args.vae_batch_size:
-                    latents = self.encode_images_to_latents(args, vae, batch["images"].to(accelerator.device, dtype=vae_dtype))
+                    latents = self.encode_images_to_latents(args, vae, batch["images"].to(accelerator.device, dtype=vae_dtype, non_blocking=True))
                 else:
                     chunks = [
                         batch["images"][i : i + args.vae_batch_size] for i in range(0, len(batch["images"]), args.vae_batch_size)
@@ -402,7 +402,7 @@ class NetworkTrainer:
                     list_latents = []
                     for chunk in chunks:
                         with torch.no_grad():
-                            chunk = self.encode_images_to_latents(args, vae, chunk.to(accelerator.device, dtype=vae_dtype))
+                            chunk = self.encode_images_to_latents(args, vae, chunk.to(accelerator.device, dtype=vae_dtype, non_blocking=True))
                             list_latents.append(chunk)
                     latents = torch.cat(list_latents, dim=0)
 
@@ -431,14 +431,14 @@ class NetworkTrainer:
                         weights_list,
                     )
                 else:
-                    input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
+                    input_ids = [ids.to(accelerator.device, non_blocking=True) for ids in batch["input_ids_list"]]
                     encoded_text_encoder_conds = text_encoding_strategy.encode_tokens(
                         tokenize_strategy,
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
                         input_ids,
                     )
                 if args.full_fp16:
-                    encoded_text_encoder_conds = [c.to(weight_dtype) for c in encoded_text_encoder_conds]
+                    encoded_text_encoder_conds = [c.to(weight_dtype, non_blocking=True) for c in encoded_text_encoder_conds]
 
             # if text_encoder_conds is not cached, use encoded_text_encoder_conds
             if len(text_encoder_conds) == 0:
@@ -448,6 +448,8 @@ class NetworkTrainer:
                 for i in range(len(encoded_text_encoder_conds)):
                     if encoded_text_encoder_conds[i] is not None:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
+
+        torch.cuda.synchronize()
 
         # sample noise, call unet, get target
         noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
@@ -816,13 +818,13 @@ class NetworkTrainer:
                 args.mixed_precision == "fp16"
             ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
             accelerator.print("enable full fp16 training.")
-            network.to(weight_dtype)
+            network = network.to(weight_dtype)
         elif args.full_bf16:
             assert (
                 args.mixed_precision == "bf16"
             ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
             accelerator.print("enable full bf16 training.")
-            network.to(weight_dtype)
+            network = network.to(weight_dtype)
 
         unet_weight_dtype = te_weight_dtype = weight_dtype
         # Experimental Feature: Put base model into fp8 to save vram
@@ -844,7 +846,7 @@ class NetworkTrainer:
             # logger.info(f"set U-Net weight dtype to {unet_weight_dtype}, device to {accelerator.device}")
             # unet.to(accelerator.device, dtype=unet_weight_dtype)  # this seems to be safer than above
             logger.info(f"set U-Net weight dtype to {unet_weight_dtype}")
-            unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
+            unet = unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
 
         unet.requires_grad_(False)
         if self.cast_unet(args):
@@ -858,7 +860,7 @@ class NetworkTrainer:
 
                 # nn.Embedding not support FP8
                 if te_weight_dtype != weight_dtype:
-                    self.prepare_text_encoder_fp8(i, t_enc, te_weight_dtype, weight_dtype)
+                    self.prepare_text_encoder_fp8(i, text_encoders[i], te_weight_dtype, weight_dtype)
 
         # acceleratorがなんかよろしくやってくれるらしい / accelerator will do something good
         if args.deepspeed:
@@ -920,7 +922,7 @@ class NetworkTrainer:
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
             vae.eval()
-            vae.to(accelerator.device, dtype=vae_dtype)
+            vae = vae.to(accelerator.device, dtype=vae_dtype)
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
@@ -1398,6 +1400,8 @@ class NetworkTrainer:
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
 
+        torch.cuda.empty_cache()
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
@@ -1453,6 +1457,12 @@ class NetworkTrainer:
                             network.update_grad_norms()
                         if hasattr(network, "update_norms"):
                             network.update_norms()
+
+                        torch.cuda.synchronize()  # Ensure GPU ops complete before next batch
+
+                    # Periodic cleanup
+                    if step % 50 == 0:
+                        torch.cuda.empty_cache()
 
                     optimizer.step()
                     lr_scheduler.step()

@@ -239,8 +239,8 @@ def train(args):
             args.mixed_precision == "fp16"
         ), "full_fp16 requires mixed precision='fp16' / full_fp16を使う場合はmixed_precision='fp16'を指定してください。"
         accelerator.print("enable full fp16 training.")
-        unet.to(weight_dtype)
-        text_encoder.to(weight_dtype)
+        unet = unet.to(weight_dtype)
+        text_encoder = text_encoder.to(weight_dtype)
 
     # acceleratorがなんかよろしくやってくれるらしい
     if args.deepspeed:
@@ -335,6 +335,7 @@ def train(args):
             text_encoder.train()
 
         for step, batch in enumerate(train_dataloader):
+            optimizer.train()
             current_step.value = global_step
             # 指定したステップ数でText Encoderの学習を止める
             if global_step == args.stop_text_encoder_training:

@@ -40,7 +40,7 @@ class SdTokenizeStrategy(TokenizeStrategy):
         text = [text] if isinstance(text, str) else text
         return [torch.stack([self._get_input_ids(self.tokenizer, t, self.max_length) for t in text], dim=0)]
 
-    def tokenize_with_weights(self, text: str | List[str]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    def tokenize_with_weights(self, text: str | List[str]) -> Tuple[List[torch.Tensor]]:
         text = [text] if isinstance(text, str) else text
         tokens_list = []
         weights_list = []
