@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from torch import Tensor
 import re
+from library.model_utils import AID
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -28,6 +29,21 @@ logger = logging.getLogger(__name__)
 
 NUM_DOUBLE_BLOCKS = 19
 NUM_SINGLE_BLOCKS = 38
+
+
+def get_point_on_curve(block_id, total_blocks=38, peak=0.9, shift=0.75):
+    # Normalize the position to 0-1 range
+    normalized_pos = block_id / total_blocks
+
+    # Shift the sine curve to only use the first 3/4 of the cycle
+    # This gives us: start at 0, peak in the middle, end around 0.7
+    phase_shift = shift * math.pi
+    sine_value = math.sin(normalized_pos * phase_shift)
+
+    # Scale to our desired peak of 0.9
+    result = peak * sine_value
+
+    return result
 
 
 class LoRAModule(torch.nn.Module):
@@ -45,6 +61,7 @@ class LoRAModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        aid_dropout=None,
         split_dims: Optional[List[int]] = None,
         ggpo_beta: Optional[float] = None,
         ggpo_sigma: Optional[float] = None,
@@ -107,6 +124,13 @@ class LoRAModule(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
+        self.aid = (
+            AID(aid_dropout) if aid_dropout is not None else torch.nn.Identity()
+        )  # AID activation
+
+        if aid_dropout is not None:
+            self.register_buffer("aid_p", torch.tensor(aid_dropout))
+
         self.ggpo_sigma = ggpo_sigma
         self.ggpo_beta = ggpo_beta
 
@@ -154,6 +178,9 @@ class LoRAModule(torch.nn.Module):
                 scale = self.scale
 
             lx = self.lora_up(lx)
+
+            # Activation by Interval-wise Dropout
+            lx = self.aid(lx)
 
             # LoRA Gradient-Guided Perturbation Optimization
             if (
@@ -551,6 +578,9 @@ def create_network(
     module_dropout = kwargs.get("module_dropout", None)
     if module_dropout is not None:
         module_dropout = float(module_dropout)
+    aid_dropout = kwargs.get("aid_dropout", None)
+    if aid_dropout is not None:
+        aid_dropout = float(aid_dropout)
 
     # single or double blocks
     train_blocks = kwargs.get("train_blocks", None)  # None (default), "all" (same as None), "single", "double"
@@ -627,6 +657,7 @@ def create_network(
         dropout=neuron_dropout,
         rank_dropout=rank_dropout,
         module_dropout=module_dropout,
+        aid_dropout=aid_dropout,
         conv_lora_dim=conv_dim,
         conv_alpha=conv_alpha,
         train_blocks=train_blocks,
@@ -727,6 +758,7 @@ class LoRANetwork(torch.nn.Module):
         dropout: Optional[float] = None,
         rank_dropout: Optional[float] = None,
         module_dropout: Optional[float] = None,
+        aid_dropout: Optional[float] = None,
         conv_lora_dim: Optional[int] = None,
         conv_alpha: Optional[float] = None,
         module_class: Type[object] = LoRAModule,
@@ -755,6 +787,7 @@ class LoRANetwork(torch.nn.Module):
         self.dropout = dropout
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
+        self.aid_dropout = aid_dropout
         self.train_blocks = train_blocks if train_blocks is not None else "all"
         self.split_qkv = split_qkv
         self.train_t5xxl = train_t5xxl
@@ -831,6 +864,7 @@ class LoRANetwork(torch.nn.Module):
 
                             dim = None
                             alpha = None
+                            aid_dropout_p = None
 
                             if modules_dim is not None:
                                 # モジュール指定あり
@@ -866,6 +900,21 @@ class LoRANetwork(torch.nn.Module):
                                             if d is not None and all([id in lora_name for id in identifier[i]]):
                                                 dim = d  # may be 0 for skip
                                                 break
+                                    is_double = False
+                                    if "double" in lora_name:
+                                        is_double = True
+                                    is_single = False
+                                    if "single" in lora_name:
+                                        is_single = True
+                                    block_index = None
+                                    if is_flux and dim and (is_double or is_single):
+                                        # "lora_unet_double_blocks_0_..." or "lora_unet_single_blocks_0_..."
+                                        block_index = int(lora_name.split("_")[4])  # bit dirty
+
+                                    if block_index is not None and aid_dropout is not None:
+                                        all_block_index = block_index if is_double else block_index + NUM_DOUBLE_BLOCKS
+                                        aid_dropout_p = get_point_on_curve(
+                                            all_block_index, NUM_DOUBLE_BLOCKS + NUM_SINGLE_BLOCKS, peak=aid_dropout)
 
                                     if (
                                         is_flux
@@ -876,8 +925,6 @@ class LoRANetwork(torch.nn.Module):
                                         )
                                         and ("double" in lora_name or "single" in lora_name)
                                     ):
-                                        # "lora_unet_double_blocks_0_..." or "lora_unet_single_blocks_0_..."
-                                        block_index = int(lora_name.split("_")[4])  # bit dirty
                                         if (
                                             "double" in lora_name
                                             and self.train_double_block_indices is not None
@@ -918,6 +965,7 @@ class LoRANetwork(torch.nn.Module):
                                 dropout=dropout,
                                 rank_dropout=rank_dropout,
                                 module_dropout=module_dropout,
+                                aid_dropout=aid_dropout_p if aid_dropout_p is not None else aid_dropout,
                                 split_dims=split_dims,
                                 ggpo_beta=ggpo_beta,
                                 ggpo_sigma=ggpo_sigma,
@@ -1114,6 +1162,7 @@ class LoRANetwork(torch.nn.Module):
             up_weights = [state_dict.pop(f"{lora_name}.lora_up.{i}.weight") for i in range(len(split_dims))]
 
             alpha = state_dict.pop(f"{lora_name}.alpha")
+            aid_p = state_dict.pop(f"{lora_name}.aid_p")
 
             # merge down weight
             down_weight = torch.cat(down_weights, dim=0)  # (rank, split_dim) * 3 -> (rank*3, sum of split_dim)
@@ -1129,6 +1178,7 @@ class LoRANetwork(torch.nn.Module):
             new_state_dict[f"{lora_name}.lora_down.weight"] = down_weight
             new_state_dict[f"{lora_name}.lora_up.weight"] = up_weight
             new_state_dict[f"{lora_name}.alpha"] = alpha
+            new_state_dict[f"{lora_name}.aid_p"] = aid_p
 
             # print(
             #     f"merged {lora_name}: {lora_name}, {[w.shape for w in down_weights]}, {[w.shape for w in up_weights]} to {down_weight.shape}, {up_weight.shape}"
