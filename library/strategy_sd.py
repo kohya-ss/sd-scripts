@@ -158,12 +158,25 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
         return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.suffix
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
-        return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)
+        return self._default_is_disk_cached_latents_expected(
+            8,
+            bucket_reso,
+            npz_path,
+            flip_aug,
+            alpha_mask,
+            multi_resolution=True,
+            fallback_no_reso=True,
+        )
 
     def load_latents_from_disk(
         self, npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-        return self._default_load_latents_from_disk(8, npz_path, bucket_reso)
+        return self._default_load_latents_from_disk(
+            8,
+            npz_path,
+            bucket_reso,
+            fallback_no_reso=True,
+        )
 
     # TODO remove circular dependency for ImageInfo
     def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
