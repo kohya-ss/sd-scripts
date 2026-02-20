@@ -4753,6 +4753,10 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
             ignore_nesting_dict[section_name] = section_dict
             continue
 
+        if section_name == "scale_weight_norms_map":
+            ignore_nesting_dict[section_name] = section_dict
+            continue
+
         # if value is dict, save all key and value into one dict
         for key, value in section_dict.items():
             ignore_nesting_dict[key] = value
