@@ -85,6 +85,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fp8", action="store_true", help="use fp8 for DiT model")
     parser.add_argument("--fp8_scaled", action="store_true", help="use scaled fp8 for DiT, only for fp8")
+    parser.add_argument("--fp16_safe_patch", action="store_true", help="Apply fp16 safe patch for older GPUs to prevent NaNs by keeping residual stream in fp32")
 
     parser.add_argument("--text_encoder_cpu", action="store_true", help="Inference on CPU for Text Encoders")
     parser.add_argument(
@@ -263,6 +264,7 @@ def load_dit_model(
         args.fp8_scaled and not args.lycoris,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
+        fp16_safe_patch=args.fp16_safe_patch,
     )
     if not args.fp8_scaled:
         # simple cast to dit_weight_dtype
