@@ -135,6 +135,11 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
         + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
     )
+    parser.add_argument(
+        "--fp16_safe_patch",
+        action="store_true",
+        help="Apply fp16 safe patch for older GPUs to prevent NaNs by keeping residual stream in fp32",
+    )
 
 
 # Loss weighting

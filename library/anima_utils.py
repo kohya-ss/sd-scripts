@@ -28,6 +28,43 @@ FP8_OPTIMIZATION_TARGET_KEYS = ["blocks", ""]
 # ".embed." excludes Embedding in LLMAdapter
 FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_embedder", "norm", "adaln", "final_layer", ".embed."]
 
+def apply_fp16_patch(model):
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        device_type = "xpu"
+
+    def make_autocast(dtype, func):
+        @torch.autocast(device_type, dtype=dtype)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+
+    blocks = getattr(model, "blocks", [])
+    if not blocks and hasattr(model, "transformer_blocks"):
+        blocks = model.transformer_blocks
+
+    for block in blocks:
+        if hasattr(block, 'adaln_modulation_self_attn'):
+            block.adaln_modulation_self_attn.forward = make_autocast(torch.float16, block.adaln_modulation_self_attn.forward)
+        if hasattr(block, 'adaln_modulation_cross_attn'):
+            block.adaln_modulation_cross_attn.forward = make_autocast(torch.float16, block.adaln_modulation_cross_attn.forward)
+        if hasattr(block, 'adaln_modulation'):
+            block.adaln_modulation.forward = make_autocast(torch.float16, block.adaln_modulation.forward)
+
+        if hasattr(block, 'self_attn'):
+            block.self_attn.forward = make_autocast(torch.float16, block.self_attn.forward)
+        if hasattr(block, 'cross_attn'):
+            block.cross_attn.forward = make_autocast(torch.float16, block.cross_attn.forward)
+        if hasattr(block, 'mlp'):
+            block.mlp.forward = make_autocast(torch.float16, block.mlp.forward)
+
+        block.forward = make_autocast(torch.float32, block.forward)
+
+    torch.set_float32_matmul_precision("high")
+    if hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_fp16_accumulation = True
+    logger.info("[anima fp16 patch] patch applied to Anima model")
+
 
 def load_anima_model(
     device: Union[str, torch.device],
@@ -39,6 +76,7 @@ def load_anima_model(
     fp8_scaled: bool = False,
     lora_weights_list: Optional[List[Dict[str, torch.Tensor]]] = None,
     lora_multipliers: Optional[list[float]] = None,
+    fp16_safe_patch: bool = False,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -125,6 +163,9 @@ def load_anima_model(
             logger.info(f"Moving weights to {loading_device}")
             for key in sd.keys():
                 sd[key] = sd[key].to(loading_device)
+
+    if fp16_safe_patch:
+        apply_fp16_patch(model)
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     if missing:
@@ -307,3 +348,4 @@ def save_anima_model(
 
     save_file(prefixed_sd, save_path, metadata=metadata)  # safetensors.save_file cosumes a lot of memory, but Anima is small enough
     logger.info(f"Saved Anima model to {save_path}")
+

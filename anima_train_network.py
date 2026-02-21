@@ -118,6 +118,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             loading_device,
             loading_dtype,
             args.fp8_scaled,
+            fp16_safe_patch=getattr(args, "fp16_safe_patch", False),
         )
 
         # Store unsloth preference so that when the base NetworkTrainer calls
