@@ -60,11 +60,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **引数:** DiTモデルのパスには共通引数`--pretrained_model_name_or_path`を、Qwen3テキストエンコーダーには`--qwen3`を、Qwen-Image VAEには`--vae`を使用します。LLM AdapterとT5トークナイザーはそれぞれ`--llm_adapter_path`、`--t5_tokenizer_path`で個別に指定できます。
 * **一部引数の非互換性:** Stable Diffusion v1/v2向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）は使用されません。`--fp8_base`はサポートされていません。
 * **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`）を使用します。
-<<<<<<< HEAD
-* **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/アルファ/学習率制御（`network_reg_dims`、`network_reg_alphas`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します
-=======
 * **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します。
->>>>>>> de05fce (Remove network_reg_alphas)
 </details>
 
 ## 3. Preparation / 準備
@@ -334,41 +330,20 @@ Example to additionally exclude MLP layers:
 --network_args "exclude_patterns=['.*mlp.*']"
 ```
 
-<<<<<<< HEAD
-### 5.2. Regex-based Rank, Alpha, and Learning Rate Control / 正規表現によるランク・アルファ・学習率の制御
- 
-You can specify different ranks (network_dim), alphas (network_alpha), and learning rates for modules matching specific regex patterns:
- 
-=======
 ### 5.2. Regex-based Rank and Learning Rate Control / 正規表現によるランク・学習率の制御
 
 You can specify different ranks (network_dim) and learning rates for modules matching specific regex patterns:
 
->>>>>>> de05fce (Remove network_reg_alphas)
 * `network_reg_dims`: Specify ranks for modules matching a regular expression. The format is a comma-separated string of `pattern=rank`.
     * Example: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
     * This sets the rank to 8 for self-attention modules, 4 for cross-attention modules, and 8 for MLP modules.
 * `network_reg_lrs`: Specify learning rates for modules matching a regular expression. The format is a comma-separated string of `pattern=lr`.
     * Example: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
     * This sets the learning rate to `1e-4` for self-attention modules and `5e-5` for cross-attention modules.
-<<<<<<< HEAD
- 
-**Priority order:**
- 
-1. `network_reg_dims` sets the rank for matched modules. If `network_reg_alphas` is also specified and matches the same module, that alpha is used; otherwise the global `--network_alpha` is used.
-2. `network_reg_alphas` can override the alpha independently, even for modules not matched by `network_reg_dims`.
-3. Modules not matched by any regex pattern fall back to the global `--network_dim` and `--network_alpha`.
-4. `network_reg_lrs` overrides the learning rate independently of rank/alpha settings.
- 
-**Notes:**
- 
-* Settings via `network_reg_dims`, `network_reg_alphas`, and `network_reg_lrs` take precedence over the global `--network_dim`, `--network_alpha`, and `--learning_rate` settings.
-=======
 
 **Notes:**
 
 * Settings via `network_reg_dims` and `network_reg_lrs` take precedence over the global `--network_dim` and `--learning_rate` settings.
->>>>>>> de05fce (Remove network_reg_alphas)
 * Patterns are matched using `re.fullmatch()` against the module's original name (e.g., `blocks.0.self_attn.q_proj`).
 
 ### 5.3. LLM Adapter LoRA / LLM Adapter LoRA
@@ -414,33 +389,15 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 
 パターンは`re.fullmatch()`を使用して完全なモジュール名に対してマッチングされます。
 
-<<<<<<< HEAD
-### 5.2. 正規表現によるランク・アルファ・学習率の制御
- 
-正規表現にマッチするモジュールに対して、異なるランク、アルファ、学習率を指定できます：
- 
-=======
 ### 5.2. 正規表現によるランク・学習率の制御
 
 正規表現にマッチするモジュールに対して、異なるランクや学習率を指定できます：
 
->>>>>>> de05fce (Remove network_reg_alphas)
 * `network_reg_dims`: 正規表現にマッチするモジュールに対してランクを指定します。`pattern=rank`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_dims=.*self_attn.*=8,.*cross_attn.*=4,.*mlp.*=8"`
 * `network_reg_lrs`: 正規表現にマッチするモジュールに対して学習率を指定します。`pattern=lr`形式の文字列をカンマで区切って指定します。
     * 例: `--network_args "network_reg_lrs=.*self_attn.*=1e-4,.*cross_attn.*=5e-5"`
-<<<<<<< HEAD
- 
-**優先順位:**
- 
-1. `network_reg_dims`はマッチしたモジュールのランクを設定します。`network_reg_alphas`も指定されており同じモジュールにマッチする場合はそのアルファが使用されます。マッチしない場合はグローバルの`--network_alpha`が使用されます。
-2. `network_reg_alphas`は、`network_reg_dims`にマッチしていないモジュールに対してもアルファを独立して上書きできます。
-3. どの正規表現パターンにもマッチしないモジュールは、グローバルの`--network_dim`と`--network_alpha`にフォールバックします。
-4. `network_reg_lrs`はランク/アルファの設定とは独立して学習率を上書きします。
- 
-=======
 
->>>>>>> de05fce (Remove network_reg_alphas)
 **注意点:**
 * `network_reg_dims`および`network_reg_lrs`での設定は、全体設定である`--network_dim`や`--learning_rate`よりも優先されます。
 * パターンはモジュールのオリジナル名（例: `blocks.0.self_attn.q_proj`）に対して`re.fullmatch()`でマッチングされます。
