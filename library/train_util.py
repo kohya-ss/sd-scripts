@@ -360,6 +360,30 @@ class BucketManager:
             bucket_height = resized_size[1] - resized_size[1] % self.reso_steps
             # logger.info(f"use arbitrary {image_width}, {image_height}, {resized_size}, {bucket_width}, {bucket_height}")
 
+            # If a dimension is too small for no_upscale, fall back to upscaling to nearest bucket
+            if bucket_width < self.reso_steps or bucket_height < self.reso_steps:
+                logger.warning(
+                    f"Image {image_width}x{image_height} is too small for no_upscale with reso_steps={self.reso_steps}, "
+                    f"falling back to nearest predefined bucket (will upscale)"
+                )
+
+                # In no_upscale mode, predefined buckets may not exist yet — create them if needed
+                if not hasattr(self, 'predefined_aspect_ratios') or self.predefined_aspect_ratios is None:
+                    resos = model_util.make_bucket_resolutions(self.max_reso, self.min_size, self.max_size, self.reso_steps)
+                    self.set_predefined_resos(resos)
+
+                ar_errors = self.predefined_aspect_ratios - aspect_ratio
+                predefined_bucket_id = np.abs(ar_errors).argmin()
+                reso = self.predefined_resos[predefined_bucket_id]
+                ar_reso = reso[0] / reso[1]
+                if aspect_ratio > ar_reso:
+                    scale = reso[1] / image_height
+                else:
+                    scale = reso[0] / image_width
+                resized_size = (int(image_width * scale + 0.5), int(image_height * scale + 0.5))
+            else:
+                reso = (bucket_width, bucket_height)
+
             reso = (bucket_width, bucket_height)
 
         self.add_if_new_reso(reso)
@@ -2985,6 +3009,9 @@ def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
 
 
 def load_image(image_path, alpha=False):
+    from PIL import PngImagePlugin
+    # Some PNGs have large embedded ICC profiles that exceed PIL's default chunk limit
+    PngImagePlugin.MAX_TEXT_CHUNK = 100 * 1024 * 1024  # 100 MB
     try:
         with Image.open(image_path) as image:
             if alpha:
@@ -6246,8 +6273,8 @@ def get_noise_noisy_latents_and_timesteps(
 
     if flow_model_enabled:
         # Flow Matching. Timestep is calculated here, through sigma. 
-        # Reason for max_timestep -= 1 is not known yet.
-        max_timestep = max_timestep - 1
+        # Reason for max_timestep -= 1 is not known yet... It is removed by author.
+        # max_timestep = max_timestep - 1
         # distribution refers to SD3's weighting_scheme such as logit_normal and cosmap.
         distribution = args.flow_timestep_distribution
         if distribution == "logit_normal":
@@ -6277,7 +6304,8 @@ def get_noise_noisy_latents_and_timesteps(
             t_ref = sigmas
             sigmas = ratios * t_ref / (1 + (ratios - 1) * t_ref)
     
-        timesteps = torch.clamp((sigmas * max_timestep).long(), 0, max_timestep)
+        # Clamp "-1" as the reverted change.
+        timesteps = torch.clamp((sigmas * max_timestep).long(), 0, max_timestep - 1)
 
         # Forward for Flow Matching. TODO: args.flow_use_ot
         sigmas_view = sigmas.view(-1, 1, 1, 1)
