@@ -65,6 +65,7 @@ def load_safetensors_with_lora_and_fp8(
         fp8_optimization (bool): Whether to apply FP8 optimization.
         calc_device (torch.device): Device to calculate on.
         move_to_device (bool): Whether to move tensors to the calculation device after loading.
+        dit_weight_dtype (Optional[torch.dtype]): Dtype to load weights in when not using FP8 optimization.
         target_keys (Optional[List[str]]): Keys to target for optimization.
         exclude_keys (Optional[List[str]]): Keys to exclude from optimization.
         disable_numpy_memmap (bool): Whether to disable numpy memmap when loading safetensors.
