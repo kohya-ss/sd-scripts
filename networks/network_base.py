@@ -1,8 +1,6 @@
 # Shared network base for additional network modules (like LyCORIS-family modules: LoHa, LoKr, etc).
 # Provides architecture detection and a generic AdditionalNetwork class.
 
-import ast
-import math
 import os
 import re
 from dataclasses import dataclass, field
