@@ -34,18 +34,18 @@ from library import custom_offloading_utils
 try:
     from flash_attn import flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
-except:
+except ImportError:
     # flash_attn may not be available but it is not required
     pass
 
 try:
     from sageattention import sageattn
-except:
+except ImportError:
     pass
 
 try:
     from apex.normalization import FusedRMSNorm as RMSNorm
-except:
+except ImportError:
     import warnings
 
     warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
@@ -98,7 +98,7 @@ except:
             x_dtype = x.dtype
             # To handle float8 we need to convert the tensor to float
             x = x.float()
-            rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
+            rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
             return ((x * rrms) * self.weight.float()).to(dtype=x_dtype)
 
 
@@ -370,7 +370,7 @@ class JointAttention(nn.Module):
         if self.use_sage_attn:
             # Handle GQA (Grouped Query Attention) if needed
             n_rep = self.n_local_heads // self.n_local_kv_heads
-            if n_rep >= 1:
+            if n_rep > 1:
                 xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
                 xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
 
@@ -379,7 +379,7 @@ class JointAttention(nn.Module):
             output = self.flash_attn(xq, xk, xv, x_mask, softmax_scale)
         else:
             n_rep = self.n_local_heads // self.n_local_kv_heads
-            if n_rep >= 1:
+            if n_rep > 1:
                 xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
                 xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
 
@@ -456,51 +456,47 @@ class JointAttention(nn.Module):
             bsz = q.shape[0]
             seqlen = q.shape[1]
 
-            # Transpose tensors to match SageAttention's expected format (HND layout)
-            q_transposed = q.permute(0, 2, 1, 3)  # [batch, heads, seq_len, head_dim]
-            k_transposed = k.permute(0, 2, 1, 3)  # [batch, heads, seq_len, head_dim]
-            v_transposed = v.permute(0, 2, 1, 3)  # [batch, heads, seq_len, head_dim]
-            
-            # Handle masking for SageAttention
-            # We need to filter out masked positions - this approach handles variable sequence lengths
-            outputs = []
-            for b in range(bsz):
-                # Find valid token positions from the mask
-                valid_indices = torch.nonzero(x_mask[b], as_tuple=False).squeeze(-1)
-                if valid_indices.numel() == 0:
-                    # If all tokens are masked, create a zero output
-                    batch_output = torch.zeros(
-                        seqlen, self.n_local_heads, self.head_dim, 
-                        device=q.device, dtype=q.dtype
-                    )
-                else:
-                    # Extract only valid tokens for this batch
-                    batch_q = q_transposed[b, :, valid_indices, :]
-                    batch_k = k_transposed[b, :, valid_indices, :]
-                    batch_v = v_transposed[b, :, valid_indices, :]
-                    
-                    # Run SageAttention on valid tokens only
+            # Transpose to SageAttention's expected HND layout: [batch, heads, seq_len, head_dim]
+            q_transposed = q.permute(0, 2, 1, 3)
+            k_transposed = k.permute(0, 2, 1, 3)
+            v_transposed = v.permute(0, 2, 1, 3)
+
+            # Fast path: if all tokens are valid, run batched SageAttention directly
+            if x_mask.all():
+                output = sageattn(
+                    q_transposed, k_transposed, v_transposed,
+                    tensor_layout="HND", is_causal=False, sm_scale=softmax_scale,
+                )
+                # output: [batch, heads, seq_len, head_dim] -> [batch, seq_len, heads, head_dim]
+                output = output.permute(0, 2, 1, 3)
+            else:
+                # Slow path: per-batch loop to handle variable-length masking
+                # SageAttention does not support attention masks natively
+                outputs = []
+                for b in range(bsz):
+                    valid_indices = x_mask[b].nonzero(as_tuple=True)[0]
+                    if valid_indices.numel() == 0:
+                        outputs.append(torch.zeros(
+                            seqlen, self.n_local_heads, self.head_dim,
+                            device=q.device, dtype=q.dtype,
+                        ))
+                        continue
+
                     batch_output_valid = sageattn(
-                        batch_q.unsqueeze(0),  # Add batch dimension back
-                        batch_k.unsqueeze(0), 
-                        batch_v.unsqueeze(0), 
-                        tensor_layout="HND",
-                        is_causal=False,
-                        sm_scale=softmax_scale
+                        q_transposed[b:b+1, :, valid_indices, :],
+                        k_transposed[b:b+1, :, valid_indices, :],
+                        v_transposed[b:b+1, :, valid_indices, :],
+                        tensor_layout="HND", is_causal=False, sm_scale=softmax_scale,
                     )
-                    
-                    # Create output tensor with zeros for masked positions
+
                     batch_output = torch.zeros(
-                        seqlen, self.n_local_heads, self.head_dim, 
-                        device=q.device, dtype=q.dtype
+                        seqlen, self.n_local_heads, self.head_dim,
+                        device=q.device, dtype=q.dtype,
                     )
-                    # Place valid outputs back in the right positions
                     batch_output[valid_indices] = batch_output_valid.squeeze(0).permute(1, 0, 2)
-                    
-                outputs.append(batch_output)
-            
-            # Stack batch outputs and reshape to expected format
-            output = torch.stack(outputs, dim=0)  # [batch, seq_len, heads, head_dim]
+                    outputs.append(batch_output)
+
+                output = torch.stack(outputs, dim=0)
         except NameError as e:
             raise RuntimeError(
                 f"Could not load Sage Attention. Please install https://github.com/thu-ml/SageAttention. / Sage Attention を読み込めませんでした。https://github.com/thu-ml/SageAttention をインストールしてください。 / {e}"
@@ -1113,10 +1109,9 @@ class NextDiT(nn.Module):
 
         x = x.view(bsz, channels, height // pH, pH, width // pW, pW).permute(0, 2, 4, 3, 5, 1).flatten(3).flatten(1, 2)
 
-        x_mask = torch.zeros(bsz, image_seq_len, dtype=torch.bool, device=device)
-        for i in range(bsz):
-            x[i, :image_seq_len] = x[i]
-            x_mask[i, :image_seq_len] = True
+        # x.shape[1] == image_seq_len after patchify, so this was assigning to itself.
+        # The mask can be set without a loop since all samples have the same image_seq_len.
+        x_mask = torch.ones(bsz, image_seq_len, dtype=torch.bool, device=device)
 
         x = self.x_embedder(x)
 
