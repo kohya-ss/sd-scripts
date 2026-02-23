@@ -115,7 +115,7 @@ The following `--network_args` options are available for both LoHa and LoKr, sam
 | `rank_dropout=0.1` | Apply dropout to the rank dimension during training |
 | `module_dropout=0.1` | Randomly skip entire modules during training |
 | `exclude_patterns=[r'...']` | Exclude modules matching the regex patterns (in addition to architecture defaults) |
-| `include_patterns=[r'...']` | Include only modules matching the regex patterns |
+| `include_patterns=[r'...']` | Override excludes: modules matching these regex patterns will be included even if they match `exclude_patterns` |
 | `network_reg_lrs=regex1=lr1,regex2=lr2` | Set per-module learning rates using regex patterns |
 | `network_reg_dims=regex1=dim1,regex2=dim2` | Set per-module dimensions (rank) using regex patterns |
 
