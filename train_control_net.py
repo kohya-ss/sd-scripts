@@ -381,6 +381,7 @@ def train(args):
         beta_schedule="scaled_linear",
         num_train_timesteps=1000,
         clip_sample=False,
+        prediction_type="v_prediction" if args.v_parameterization else "epsilon",
     )
     if accelerator.is_main_process:
         init_kwargs = {}
