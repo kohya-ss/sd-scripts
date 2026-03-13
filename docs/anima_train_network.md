@@ -115,6 +115,7 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
   --output_name="my_anima_lora" \
   --save_model_as=safetensors \
   --network_module=networks.lora_anima \
+  # or --network_type=lokr (equivalent to --network_module=networks.lokr_anima) \
   --network_dim=8 \
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
@@ -295,6 +296,31 @@ After setting the required arguments, run the command to begin training. The ove
 
 </details>
 
+
+## 5. LoRA / LoKr Target Modules / LoRA / LoKrの学習対象モジュール
+
+`anima_train_network.py` supports both Anima LoRA and Anima LoKr adapters.
+
+* **LoRA**: `--network_module=networks.lora_anima`
+* **LoKr**: `--network_module=networks.lokr_anima`
+* **Shortcut**: `--network_type=lora|lokr` (auto-fills `--network_module` when omitted)
+
+LoKr behavior:
+
+* By default, LoKr targets **all Linear / Conv2d modules** in Anima DiT.
+* You can exclude modules with regex via `--network_args "exclude_patterns=['...']"`.
+* You can re-include excluded modules via `--network_args "include_patterns=['...']"`.
+* If `--network_dim` is set to a very large value (e.g. `100000`), LoKr switches to **full matrix mode** for that module (dense delta weight instead of Kronecker low-rank factors).
+
+Example:
+
+```bash
+--network_type=lokr \
+--network_dim=8 \
+--network_alpha=8 \
+--network_args "exclude_patterns=['.*final_layer.*','.*norm.*']"
+```
+
 ## 5. LoRA Target Modules / LoRAの学習対象モジュール
 
 When training LoRA with `anima_train_network.py`, the following modules are targeted by default:
@@ -418,6 +444,18 @@ LLM AdapterブロックにLoRAを適用するには：`--network_args "train_llm
 * `loraplus_text_encoder_lr_ratio` - テキストエンコーダー専用のLoRA+学習率比率
 
 </details>
+
+
+### 5.5. Caption Dropout Debug Logging / キャプションdropoutデバッグログ
+
+To verify caption dropout / caption tag dropout behavior during training, you can print the effective captions in the training batch:
+
+```bash
+--log_captions_every_n_steps=100 \
+--log_captions_max_count=8
+```
+
+When text encoder output cache is used in Anima, logs also include `dropped=True/False` per caption for cache-time caption dropout application.
 
 ## 6. Using the Trained Model / 学習済みモデルの利用
 
@@ -653,3 +691,19 @@ The following metadata is saved in the LoRA model file:
 * `ss_discrete_flow_shift`
 
 </details>
+
+## 11. GitHub Upload FAQ (CLI vs Web UI) / GitHubアップロードFAQ（CLIとWeb UIの違い）
+
+When you run commands like `git remote add origin ...` or `git push ...`, they must be executed inside a **local cloned repository folder** (a directory containing `.git`).
+
+If you only work on github.com in the browser and run those commands from an unrelated CMD/PowerShell location, Git prints:
+
+`fatal: not a git repository (or any of the parent directories): .git`
+
+Typical workflow to push from your PC:
+
+1. Clone the repository to your machine.
+2. Open terminal in that cloned folder.
+3. Run `git status` / `git remote -v` / `git push`.
+
+If you prefer browser-only workflow, use GitHub Web features such as **Add file → Upload files** or direct file edits and commit on the website.

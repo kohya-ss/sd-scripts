@@ -113,7 +113,8 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         t5_input_ids: torch.Tensor,
         t5_attn_mask: torch.Tensor,
         caption_dropout_rates: Optional[torch.Tensor] = None,
-    ) -> List[torch.Tensor]:
+        return_drop_mask: bool = False,
+    ) -> Union[List[torch.Tensor], Tuple[List[torch.Tensor], torch.Tensor]]:
         """Apply dropout to cached text encoder outputs.
 
         Called during training when using cached outputs.
@@ -121,7 +122,11 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         to match diffusion-pipe-main behavior.
         """
         if caption_dropout_rates is None or torch.all(caption_dropout_rates == 0.0).item():
-            return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
+            outputs = [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
+            if return_drop_mask:
+                drop_mask = torch.zeros(prompt_embeds.shape[0], dtype=torch.bool, device=prompt_embeds.device)
+                return outputs, drop_mask
+            return outputs
 
         # Clone to avoid in-place modification of cached tensors
         prompt_embeds = prompt_embeds.clone()
@@ -132,8 +137,10 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         if t5_attn_mask is not None:
             t5_attn_mask = t5_attn_mask.clone()
 
+        drop_mask = torch.zeros(prompt_embeds.shape[0], dtype=torch.bool, device=prompt_embeds.device)
         for i in range(prompt_embeds.shape[0]):
             if random.random() < caption_dropout_rates[i].item():
+                drop_mask[i] = True
                 # Use pre-cached unconditional embeddings
                 prompt_embeds[i] = 0
                 if attn_mask is not None:
@@ -145,7 +152,10 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
                     t5_attn_mask[i, 0] = 1
                     t5_attn_mask[i, 1:] = 0
 
-        return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
+        outputs = [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask]
+        if return_drop_mask:
+            return outputs, drop_mask
+        return outputs
 
 
 class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):

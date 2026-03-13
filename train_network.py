@@ -166,6 +166,44 @@ class NetworkTrainer:
         for tracker in other_trackers:
             tracker.log(logs, step=step_value)
 
+    def maybe_log_batch_captions(self, args: argparse.Namespace, accelerator: Accelerator, global_step: int, batch: dict):
+        every_n = getattr(args, "log_captions_every_n_steps", 0)
+        if every_n is None or every_n <= 0:
+            return
+        if global_step % every_n != 0:
+            return
+        if not accelerator.is_main_process:
+            return
+
+        captions = batch.get("captions", None)
+        if captions is None:
+            return
+
+        max_count = max(1, int(getattr(args, "log_captions_max_count", 4)))
+        captions = list(captions)
+        if len(captions) > max_count:
+            captions = captions[:max_count]
+
+        msg_lines = [f"[caption-debug] step={global_step}, batch_size={len(batch.get('captions', []))}"]
+
+        drop_mask = batch.get("caption_dropout_applied_mask", None)
+        if drop_mask is not None:
+            try:
+                drop_mask = drop_mask.detach().cpu().tolist()
+            except Exception:
+                drop_mask = list(drop_mask)
+
+        for i, cap in enumerate(captions):
+            cap_s = str(cap).replace("\n", "\\n")
+            if len(cap_s) > 400:
+                cap_s = cap_s[:400] + " ..."
+            if drop_mask is not None and i < len(drop_mask):
+                msg_lines.append(f"  [{i}] dropped={bool(drop_mask[i])} caption='{cap_s}'")
+            else:
+                msg_lines.append(f"  [{i}] caption='{cap_s}'")
+
+        logger.info("\n".join(msg_lines))
+
     def assert_extra_args(
         self,
         args,
@@ -1487,6 +1525,8 @@ class NetworkTrainer:
                     progress_bar.update(1)
                     global_step += 1
 
+                    self.maybe_log_batch_captions(args, accelerator, global_step, batch)
+
                     optimizer_eval_fn()
                     self.sample_images(
                         accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
@@ -1813,6 +1853,18 @@ def setup_parser() -> argparse.ArgumentParser:
         "--network_train_text_encoder_only",
         action="store_true",
         help="only training Text Encoder part / Text Encoder関連部分のみ学習する",
+    )
+    parser.add_argument(
+        "--log_captions_every_n_steps",
+        type=int,
+        default=0,
+        help="log processed batch captions every N optimizer steps for dropout/debug verification (0 to disable)",
+    )
+    parser.add_argument(
+        "--log_captions_max_count",
+        type=int,
+        default=4,
+        help="maximum number of captions to print per caption debug log",
     )
     parser.add_argument(
         "--training_comment",
