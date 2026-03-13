@@ -157,7 +157,9 @@ def train(args):
     ) = sdxl_train_util.load_target_model(args, accelerator, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, weight_dtype)
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+    train_util.replace_unet_modules(
+        unet, args.mem_eff_attn, args.xformers, args.sdpa, args.mem_eff_attn_stable, args.mem_eff_attn_stable_beta
+    )
 
     # 学習を準備する
     if cache_latents:

@@ -150,7 +150,9 @@ def train(args):
         use_safetensors = args.use_safetensors or ("safetensors" in args.save_model_as.lower())
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+    train_util.replace_unet_modules(
+        unet, args.mem_eff_attn, args.xformers, args.sdpa, args.mem_eff_attn_stable, args.mem_eff_attn_stable_beta
+    )
 
     # 学習を準備する
     if cache_latents:

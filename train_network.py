@@ -53,6 +53,36 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class EMAModel:
+    def __init__(self, parameters, decay: float):
+        self.decay = decay
+        self.shadow_params = [p.detach().clone().float() for p in parameters]
+        self.collected_params = None
+
+    @torch.no_grad()
+    def update(self, parameters):
+        one_minus_decay = 1.0 - self.decay
+        for s_param, param in zip(self.shadow_params, parameters):
+            s_param.mul_(self.decay).add_(param.detach().float(), alpha=one_minus_decay)
+
+    @torch.no_grad()
+    def store(self, parameters):
+        self.collected_params = [param.detach().clone() for param in parameters]
+
+    @torch.no_grad()
+    def copy_to(self, parameters):
+        for s_param, param in zip(self.shadow_params, parameters):
+            param.copy_(s_param.to(device=param.device, dtype=param.dtype))
+
+    @torch.no_grad()
+    def restore(self, parameters):
+        if self.collected_params is None:
+            return
+        for c_param, param in zip(self.collected_params, parameters):
+            param.copy_(c_param)
+        self.collected_params = None
+
+
 class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
@@ -218,7 +248,9 @@ class NetworkTrainer:
         text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
         # モデルに xformers とか memory efficient attention を組み込む
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        train_util.replace_unet_modules(
+            unet, args.mem_eff_attn, args.xformers, args.sdpa, args.mem_eff_attn_stable, args.mem_eff_attn_stable_beta
+        )
         if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
             vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
@@ -953,7 +985,17 @@ class NetworkTrainer:
 
         del t_enc
 
-        accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
+        unwrapped_network = accelerator.unwrap_model(network)
+        unwrapped_network.prepare_grad_etc(text_encoder, unet)
+
+        ema_model = None
+        ema_target_params = None
+        if args.network_ema_decay is not None:
+            ema_target_params = [param for param in unwrapped_network.parameters() if param.requires_grad]
+            if len(ema_target_params) == 0:
+                raise ValueError("--network_ema_decay is enabled but no trainable network parameters were found")
+            ema_model = EMAModel(ema_target_params, args.network_ema_decay)
+            accelerator.print(f"enable network EMA (decay={args.network_ema_decay})")
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
@@ -1344,7 +1386,13 @@ class NetworkTrainer:
             sai_metadata = self.get_sai_model_spec(args)
             metadata_to_save.update(sai_metadata)
 
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            if ema_model is not None and ema_target_params is not None and args.network_ema_save:
+                ema_model.store(ema_target_params)
+                ema_model.copy_to(ema_target_params)
+                unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+                ema_model.restore(ema_target_params)
+            else:
+                unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
             if args.huggingface_repo_id is not None:
                 huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 
@@ -1367,7 +1415,12 @@ class NetworkTrainer:
 
         # For --sample_at_first
         optimizer_eval_fn()
+        if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+            ema_model.store(ema_target_params)
+            ema_model.copy_to(ema_target_params)
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+            ema_model.restore(ema_target_params)
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
@@ -1520,6 +1573,9 @@ class NetworkTrainer:
                         mean_combined_norm = None
                         max_mean_logs = {}
 
+                if ema_model is not None and ema_target_params is not None and accelerator.sync_gradients:
+                    ema_model.update(ema_target_params)
+
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
@@ -1528,9 +1584,14 @@ class NetworkTrainer:
                     self.maybe_log_batch_captions(args, accelerator, global_step, batch)
 
                     optimizer_eval_fn()
+                    if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                        ema_model.store(ema_target_params)
+                        ema_model.copy_to(ema_target_params)
                     self.sample_images(
                         accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
                     )
+                    if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                        ema_model.restore(ema_target_params)
                     progress_bar.unpause()
 
                     # 指定ステップごとにモデルを保存
@@ -1577,6 +1638,9 @@ class NetworkTrainer:
                 if accelerator.sync_gradients and validation_steps > 0 and should_validate_step:
                     optimizer_eval_fn()
                     accelerator.unwrap_model(network).eval()
+                    if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                        ema_model.store(ema_target_params)
+                        ema_model.copy_to(ema_target_params)
                     rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
                     val_progress_bar = tqdm(
@@ -1639,6 +1703,8 @@ class NetworkTrainer:
                     args.min_timestep = original_args_min_timestep
                     args.max_timestep = original_args_max_timestep
                     optimizer_train_fn()
+                    if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                        ema_model.restore(ema_target_params)
                     accelerator.unwrap_model(network).train()
                     progress_bar.unpause()
 
@@ -1653,6 +1719,9 @@ class NetworkTrainer:
             if should_validate_epoch and len(val_dataloader) > 0:
                 optimizer_eval_fn()
                 accelerator.unwrap_model(network).eval()
+                if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                    ema_model.store(ema_target_params)
+                    ema_model.copy_to(ema_target_params)
                 rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
                 val_progress_bar = tqdm(
@@ -1718,6 +1787,8 @@ class NetworkTrainer:
                 args.min_timestep = original_args_min_timestep
                 args.max_timestep = original_args_max_timestep
                 optimizer_train_fn()
+                if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                    ema_model.restore(ema_target_params)
                 accelerator.unwrap_model(network).train()
                 progress_bar.unpause()
 
@@ -1744,7 +1815,12 @@ class NetworkTrainer:
                     if args.save_state:
                         train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
+            if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                ema_model.store(ema_target_params)
+                ema_model.copy_to(ema_target_params)
             self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+            if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
+                ema_model.restore(ema_target_params)
             progress_bar.unpause()
             optimizer_train_fn()
 
@@ -1855,6 +1931,22 @@ def setup_parser() -> argparse.ArgumentParser:
         help="only training Text Encoder part / Text Encoder関連部分のみ学習する",
     )
     parser.add_argument(
+        "--network_ema_decay",
+        type=float,
+        default=None,
+        help="enable EMA for network parameters with decay (e.g. 0.999, 0.9999). Disabled if not set / ネットワークパラメータのEMAを有効にする（減衰率、例: 0.999, 0.9999）。未指定時は無効",
+    )
+    parser.add_argument(
+        "--network_ema_for_eval",
+        action="store_true",
+        help="use EMA weights for sampling and validation forward during training / 学習中のサンプリングおよび検証forwardでEMA重みを使用する",
+    )
+    parser.add_argument(
+        "--network_ema_save",
+        action="store_true",
+        help="save checkpoints with EMA weights instead of raw network weights / チェックポイント保存時に通常重みではなくEMA重みを保存する",
+    )
+    parser.add_argument(
         "--log_captions_every_n_steps",
         type=int,
         default=0,
@@ -1958,8 +2050,12 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
+
+    if args.network_ema_decay is not None and not (0.0 < args.network_ema_decay < 1.0):
+        raise ValueError("--network_ema_decay must be in range (0, 1)")
 
     trainer = NetworkTrainer()
     trainer.train(args)

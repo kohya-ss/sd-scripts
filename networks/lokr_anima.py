@@ -29,6 +29,7 @@ class LoKrModule(torch.nn.Module):
         multiplier: float = 1.0,
         lokr_dim: int = 4,
         alpha: float = 1.0,
+        lokr_factor: Optional[int] = 8,
         module_dropout: Optional[float] = None,
     ):
         super().__init__()
@@ -54,8 +55,8 @@ class LoKrModule(torch.nn.Module):
             self.org_dilation = org_module.dilation
             self.org_groups = org_module.groups
 
-        self.out_a, self.out_b = self._factor_pair(out_dim)
-        self.in_a, self.in_b = self._factor_pair(in_dim)
+        self.out_a, self.out_b = self._factor_pair(out_dim, lokr_factor)
+        self.in_a, self.in_b = self._factor_pair(in_dim, lokr_factor)
 
         self.lokr_dim = max(1, int(lokr_dim))
 
@@ -85,7 +86,12 @@ class LoKrModule(torch.nn.Module):
             torch.nn.init.zeros_(self.lokr_w2_b)
 
     @staticmethod
-    def _factor_pair(dim: int) -> Tuple[int, int]:
+    def _factor_pair(dim: int, preferred_factor: Optional[int] = 8) -> Tuple[int, int]:
+        if preferred_factor is not None:
+            preferred_factor = int(preferred_factor)
+            if preferred_factor > 1 and dim % preferred_factor == 0:
+                return preferred_factor, dim // preferred_factor
+
         r = int(math.sqrt(dim))
         while r > 1 and dim % r != 0:
             r -= 1
@@ -147,7 +153,9 @@ class LoKrNetwork(torch.nn.Module):
         modules_alpha: Optional[Dict[str, float]] = None,
         exclude_patterns: Optional[List[str]] = None,
         include_patterns: Optional[List[str]] = None,
+        lokr_factor: Optional[int] = 8,
         module_dropout: Optional[float] = None,
+        train_llm_adapter: bool = False,
         train_text_encoder: bool = False,
         verbose: bool = False,
     ):
@@ -155,11 +163,13 @@ class LoKrNetwork(torch.nn.Module):
         self.multiplier = multiplier
         self.lokr_dim = lokr_dim
         self.alpha = alpha
+        self.lokr_factor = lokr_factor
+        self.train_llm_adapter = train_llm_adapter
 
         if modules_dim is not None:
             logger.info("create LoKr network from weights")
         else:
-            logger.info(f"create LoKr network. base dim: {lokr_dim}, alpha: {alpha}")
+            logger.info(f"create LoKr network. base dim: {lokr_dim}, alpha: {alpha}, factor: {lokr_factor}")
 
         def compile_patterns(patterns: Optional[List[str]]) -> List[re.Pattern]:
             out = []
@@ -188,6 +198,11 @@ class LoKrNetwork(torch.nn.Module):
                 original_name = name
                 lokr_name = f"{prefix}.{original_name}".replace(".", "_")
 
+                if not self.train_llm_adapter and original_name.startswith("llm_adapter"):
+                    if verbose:
+                        logger.info(f"exclude llm_adapter module: {original_name}")
+                    continue
+
                 if not should_use(original_name):
                     if verbose:
                         logger.info(f"exclude: {original_name}")
@@ -210,6 +225,7 @@ class LoKrNetwork(torch.nn.Module):
                     multiplier=multiplier,
                     lokr_dim=int(dim),
                     alpha=float(alpha_val),
+                    lokr_factor=lokr_factor,
                     module_dropout=module_dropout,
                 )
                 adapters.append(adapter)
@@ -362,9 +378,18 @@ def create_network(
     if isinstance(train_text_encoder, str):
         train_text_encoder = train_text_encoder.lower() == "true"
 
+    train_llm_adapter = kwargs.get("train_llm_adapter", "false")
+    if isinstance(train_llm_adapter, str):
+        train_llm_adapter = train_llm_adapter.lower() == "true"
+
     verbose = kwargs.get("verbose", "false")
     if isinstance(verbose, str):
         verbose = verbose.lower() == "true"
+
+    lokr_factor = kwargs.get("lokr_factor", 8)
+    lokr_factor = int(lokr_factor) if lokr_factor is not None else None
+    if lokr_factor is not None and lokr_factor <= 0:
+        raise ValueError("lokr_factor must be positive")
 
     network = LoKrNetwork(
         text_encoders=text_encoders,
@@ -374,7 +399,9 @@ def create_network(
         alpha=float(network_alpha),
         exclude_patterns=exclude_patterns,
         include_patterns=include_patterns,
+        lokr_factor=lokr_factor,
         module_dropout=module_dropout,
+        train_llm_adapter=train_llm_adapter,
         train_text_encoder=train_text_encoder,
         verbose=verbose,
     )
@@ -412,6 +439,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoders, unet, weig
         multiplier=multiplier,
         modules_dim=modules_dim,
         modules_alpha=modules_alpha,
+        lokr_factor=None,
         train_text_encoder=True,
     )
     return network, weights_sd

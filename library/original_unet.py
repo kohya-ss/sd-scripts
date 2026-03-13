@@ -146,6 +146,8 @@ UP_BLOCK_TYPES = ["UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "Cros
 # constants
 
 EPSILON = 1e-6
+LOW_PRECISION_STABLE_FLASH_ATTN = False
+LOW_PRECISION_STABLE_FLASH_ATTN_BETA = 1e-3
 
 # helper functions
 
@@ -156,6 +158,16 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+
+def set_mem_eff_attention_stability(enabled: bool, beta: float = 1e-3):
+    """Configure low precision stabilization for the custom FlashAttention kernel."""
+
+    global LOW_PRECISION_STABLE_FLASH_ATTN
+    global LOW_PRECISION_STABLE_FLASH_ATTN_BETA
+
+    LOW_PRECISION_STABLE_FLASH_ATTN = enabled
+    LOW_PRECISION_STABLE_FLASH_ATTN_BETA = beta
 
 
 # flash attention forwards and backwards
@@ -217,6 +229,15 @@ class FlashAttentionFunction(torch.autograd.Function):
                     attn_weights.masked_fill_(causal_mask, max_neg_value)
 
                 block_row_maxes = attn_weights.amax(dim=-1, keepdims=True)
+
+                # Mitigate low precision rounding bias when multiple logits are close to the row max.
+                if LOW_PRECISION_STABLE_FLASH_ATTN:
+                    close_to_max = attn_weights >= (block_row_maxes - LOW_PRECISION_STABLE_FLASH_ATTN_BETA)
+                    num_close_to_max = close_to_max.sum(dim=-1, keepdims=True)
+                    has_ties = num_close_to_max > 1
+                    block_row_maxes = torch.where(has_ties & (block_row_maxes > 0), 2.0 * block_row_maxes, block_row_maxes)
+                    block_row_maxes = torch.where(has_ties & (block_row_maxes < 0), torch.zeros_like(block_row_maxes), block_row_maxes)
+
                 attn_weights -= block_row_maxes
                 exp_weights = torch.exp(attn_weights)
 

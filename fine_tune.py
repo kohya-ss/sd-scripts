@@ -171,7 +171,9 @@ def train(args):
         # Windows版のxformersはfloatで学習できないのでxformersを使わない設定も可能にしておく必要がある
         accelerator.print("Disable Diffusers' xformers")
         set_diffusers_xformers_flag(unet, False)
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        train_util.replace_unet_modules(
+            unet, args.mem_eff_attn, args.xformers, args.sdpa, args.mem_eff_attn_stable, args.mem_eff_attn_stable_beta
+        )
 
     # 学習を準備する
     if cache_latents:

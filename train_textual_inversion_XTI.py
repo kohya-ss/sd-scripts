@@ -282,7 +282,9 @@ def train(args):
         ), "when caching latents, either color_aug or random_crop cannot be used / latentをキャッシュするときはcolor_augとrandom_cropは使えません"
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+    train_util.replace_unet_modules(
+        unet, args.mem_eff_attn, args.xformers, args.sdpa, args.mem_eff_attn_stable, args.mem_eff_attn_stable_beta
+    )
     original_unet.UNet2DConditionModel.forward = unet_forward_XTI
     original_unet.CrossAttnDownBlock2D.forward = downblock_forward_XTI
     original_unet.CrossAttnUpBlock2D.forward = upblock_forward_XTI

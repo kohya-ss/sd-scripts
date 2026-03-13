@@ -308,6 +308,8 @@ After setting the required arguments, run the command to begin training. The ove
 LoKr behavior:
 
 * By default, LoKr targets **all Linear / Conv2d modules** in Anima DiT.
+* You can set `lokr_factor` via `--network_args` (default: `8`).
+* **LLM Adapter Blocks (`LLMAdapterTransformerBlock`)**: Only when `--network_args "train_llm_adapter=True"` is specified.
 * You can exclude modules with regex via `--network_args "exclude_patterns=['...']"`.
 * You can re-include excluded modules via `--network_args "include_patterns=['...']"`.
 * If `--network_dim` is set to a very large value (e.g. `100000`), LoKr switches to **full matrix mode** for that module (dense delta weight instead of Kronecker low-rank factors).
@@ -318,6 +320,7 @@ Example:
 --network_type=lokr \
 --network_dim=8 \
 --network_alpha=8 \
+--network_args "lokr_factor=8" \
 --network_args "exclude_patterns=['.*final_layer.*','.*norm.*']"
 ```
 

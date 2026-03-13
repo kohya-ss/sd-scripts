@@ -61,6 +61,7 @@ from diffusers import (
     AutoencoderKL,
 )
 from library import custom_train_functions, sd3_utils
+from library import original_unet
 from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
@@ -82,7 +83,6 @@ import logging
 logger = logging.getLogger(__name__)
 # from library.attention_processors import FlashAttnProcessor
 # from library.hypernetwork import replace_attentions_for_hypernetwork
-from library.original_unet import UNet2DConditionModel
 
 HIGH_VRAM = False
 
@@ -3359,7 +3359,18 @@ def get_git_revision_hash() -> str:
 
 
 #     diffusers.models.attention.CrossAttention.forward = forward_xformers
-def replace_unet_modules(unet: UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+def replace_unet_modules(
+    unet: UNet2DConditionModel,
+    mem_eff_attn,
+    xformers,
+    sdpa,
+    mem_eff_attn_stable: bool = False,
+    mem_eff_attn_stable_beta: float = 1e-3,
+):
+    original_unet.set_mem_eff_attention_stability(mem_eff_attn_stable, mem_eff_attn_stable_beta)
+    if mem_eff_attn and mem_eff_attn_stable:
+        logger.info(f"Enable stable mode for memory efficient attention (beta={mem_eff_attn_stable_beta})")
+
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
         unet.set_use_memory_efficient_attention(False, True)
@@ -3911,6 +3922,17 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="use memory efficient attention for CrossAttention / CrossAttentionに省メモリ版attentionを使う",
     )
     parser.add_argument(
+        "--mem_eff_attn_stable",
+        action="store_true",
+        help="stabilize custom memory efficient attention for low precision training by correcting close-logit max ties / 低精度学習時に省メモリAttentionの近接logit最大値の同値を補正して安定化する",
+    )
+    parser.add_argument(
+        "--mem_eff_attn_stable_beta",
+        type=float,
+        default=1e-3,
+        help="tolerance used by --mem_eff_attn_stable when detecting logits close to row max / --mem_eff_attn_stableで行最大値に近いlogitを検出する許容値",
+    )
+    parser.add_argument(
         "--torch_compile", action="store_true", help="use torch.compile (requires PyTorch 2.0) / torch.compile を使う"
     )
     parser.add_argument(
@@ -4352,6 +4374,9 @@ def get_sanitized_config_or_none(args: argparse.Namespace):
 
 # verify command line args for training
 def verify_command_line_training_args(args: argparse.Namespace):
+    if getattr(args, "mem_eff_attn_stable_beta", 1e-3) <= 0:
+        raise ValueError("--mem_eff_attn_stable_beta must be positive")
+
     # if wandb is enabled, the command line is exposed to the public
     # check whether sensitive options are included in the command line arguments
     # if so, warn or inform the user to move them to the configuration file
