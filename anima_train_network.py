@@ -1,4 +1,4 @@
-# Anima LoRA training script
+# Anima network training script (LoRA / LoKr)
 
 import argparse
 from typing import Any, Optional, Union
@@ -350,10 +350,11 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             text_encoder_outputs_list = text_encoder_outputs_list[:-1]
 
             # Apply caption dropout to cached outputs
-            text_encoder_outputs_list = anima_text_encoding_strategy.drop_cached_text_encoder_outputs(
-                *text_encoder_outputs_list, caption_dropout_rates=caption_dropout_rates
+            text_encoder_outputs_list, caption_drop_mask = anima_text_encoding_strategy.drop_cached_text_encoder_outputs(
+                *text_encoder_outputs_list, caption_dropout_rates=caption_dropout_rates, return_drop_mask=True
             )
             batch["text_encoder_outputs_list"] = text_encoder_outputs_list
+            batch["caption_dropout_applied_mask"] = caption_drop_mask.detach().to("cpu")
 
         return super().process_batch(
             batch,
@@ -431,6 +432,13 @@ def setup_parser() -> argparse.ArgumentParser:
         help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
         "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap.",
     )
+    parser.add_argument(
+        "--network_type",
+        type=str,
+        choices=["lora", "lokr"],
+        default=None,
+        help="shortcut to set --network_module for Anima adapters (lora -> networks.lora_anima, lokr -> networks.lokr_anima)",
+    )
     return parser
 
 
@@ -443,6 +451,10 @@ if __name__ == "__main__":
 
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility
+
+    if args.network_module is None and args.network_type is not None:
+        args.network_module = "networks.lora_anima" if args.network_type == "lora" else "networks.lokr_anima"
+        logger.info(f"network_type={args.network_type} -> network_module={args.network_module}")
 
     trainer = AnimaNetworkTrainer()
     trainer.train(args)
