@@ -420,11 +420,14 @@ def create_network_from_weights(multiplier, file, vae, text_encoders, unet, weig
 
     modules_dim = {}
     modules_alpha = {}
+    has_llm_adapter_modules = False
 
     for key, value in weights_sd.items():
         if "." not in key:
             continue
         lokr_name = key.split(".")[0]
+        if lokr_name.startswith(f"{LoKrNetwork.LOKR_PREFIX_ANIMA}_llm_adapter"):
+            has_llm_adapter_modules = True
         if key.endswith(".alpha"):
             modules_alpha[lokr_name] = float(value.item() if torch.is_tensor(value) else value)
         elif key.endswith(".lokr_w1_b"):
@@ -440,6 +443,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoders, unet, weig
         modules_dim=modules_dim,
         modules_alpha=modules_alpha,
         lokr_factor=None,
+        train_llm_adapter=has_llm_adapter_modules,
         train_text_encoder=True,
     )
     return network, weights_sd

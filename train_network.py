@@ -1702,9 +1702,9 @@ class NetworkTrainer:
                     restore_rng_state(rng_states)
                     args.min_timestep = original_args_min_timestep
                     args.max_timestep = original_args_max_timestep
-                    optimizer_train_fn()
                     if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
                         ema_model.restore(ema_target_params)
+                    optimizer_train_fn()
                     accelerator.unwrap_model(network).train()
                     progress_bar.unpause()
 
@@ -1786,9 +1786,9 @@ class NetworkTrainer:
                 restore_rng_state(rng_states)
                 args.min_timestep = original_args_min_timestep
                 args.max_timestep = original_args_max_timestep
-                optimizer_train_fn()
                 if ema_model is not None and ema_target_params is not None and args.network_ema_for_eval:
                     ema_model.restore(ema_target_params)
+                optimizer_train_fn()
                 accelerator.unwrap_model(network).train()
                 progress_bar.unpause()
 
