@@ -115,11 +115,15 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 | `max_bucket_reso` | `1024` | o | o |
 | `min_bucket_reso` | `128` | o | o |
 | `resolution` | `256`, `[512, 512]` | o | o |
+| `skip_image_resolution` | `768`, `[512, 768]` | o | o |
 
 * `batch_size`
     * コマンドライン引数の `--train_batch_size` と同等です。
 * `max_bucket_reso`, `min_bucket_reso`
     * bucketの最大、最小解像度を指定します。`bucket_reso_steps` で割り切れる必要があります。
+* `skip_image_resolution`
+    * 指定した解像度（面積）以下の画像をスキップします。`'サイズ'` または `[幅, 高さ]` で指定します。コマンドライン引数の `--skip_image_resolution` と同等です。
+    * 同じ画像ディレクトリを異なる解像度の複数のデータセットで使い回す場合に、低解像度の元画像を高解像度のデータセットから除外するために使用します。
 
 これらの設定はデータセットごとに固定です。
 つまり、データセットに所属するサブセットはこれらの設定を共有することになります。
@@ -259,6 +263,34 @@ resolution = 768
   image_dir = 'C:\hoge'
 ```
 
+なお、マルチ解像度データセットでは `skip_image_resolution` を使用して、元の画像サイズが小さい画像を高解像度データセットから除外できます。これにより、低解像度画像の拡大を防ぎ、学習品質を向上させることができます。
+
+```toml
+[general]
+enable_bucket = true
+bucket_no_upscale = true
+max_bucket_reso = 1536
+
+[[datasets]]
+resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1024
+skip_image_resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1280
+skip_image_resolution = 1024
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+```
+
+この例では、1024 解像度のデータセットでは元の画像サイズが 768x768 以下の画像がスキップされ、1280 解像度のデータセットでは 1024x1024 以下の画像がスキップされます。
+
 ## コマンドライン引数との併用
 
 設定ファイルのオプションの中には、コマンドライン引数のオプションと役割が重複しているものがあります。
@@ -289,6 +321,7 @@ resolution = 768
 | `--random_crop`                    |                                    |
 | `--resolution`                     |                                    |
 | `--shuffle_caption`                |                                    |
+| `--skip_image_resolution`          |                                    |
 | `--train_batch_size`               | `batch_size`                       |
 
 ## エラーの手引き
