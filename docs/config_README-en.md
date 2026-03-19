@@ -258,7 +258,7 @@ resolution = 768
   image_dir = 'C:\hoge'
 ```
 
-When using multi-resolution datasets, you can use `skip_image_resolution` to exclude images whose original size is too small for higher-resolution datasets. This prevents upscaling of low-resolution images and improves training quality.
+When using multi-resolution datasets, you can use `skip_image_resolution` to exclude images whose original size is too small for higher-resolution datasets. This prevents overlapping of low-resolution images across datasets and improves training quality. This option can also be used to simply exclude low-resolution source images from datasets.
 
 ```toml
 [general]
