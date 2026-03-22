@@ -4569,9 +4569,9 @@ def verify_fm_training_args(args: argparse.Namespace):
     if args.v_pred_like_loss:
         logger.warning("`--v_pred_like_loss` is ignored when Flow Matching is enabled.")
         args.v_pred_like_loss = None
-    if args.flow_use_ot:
-        logger.info("Using cosine optimal transport pairing for Flow Matching batches.")
-        raise NotImplementedError("`--flow_use_ot` is not available in this fork.") 
+    # if args.flow_use_ot:
+    #     logger.info("Using cosine optimal transport pairing for Flow Matching batches.")
+    #     raise NotImplementedError("`--flow_use_ot` is not available in this fork.") 
         
     shift_enabled = args.flow_uniform_shift or args.flow_uniform_static_ratio is not None
     distribution = args.flow_timestep_distribution
