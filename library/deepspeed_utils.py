@@ -62,7 +62,7 @@ def add_deepspeed_arguments(parser: argparse.ArgumentParser):
 
 
 def prepare_deepspeed_args(args: argparse.Namespace):
-    if not args.deepspeed:
+    if not getattr(args, "deepspeed", False):
         return
 
     # To avoid RuntimeError: DataLoader worker exited unexpectedly with exit code 1.
@@ -70,7 +70,7 @@ def prepare_deepspeed_args(args: argparse.Namespace):
 
 
 def prepare_deepspeed_plugin(args: argparse.Namespace):
-    if not args.deepspeed:
+    if not getattr(args, "deepspeed", False):
         return None
 
     try:
