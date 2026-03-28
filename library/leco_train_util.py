@@ -1,14 +1,90 @@
+import argparse
+import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
-import yaml
+import toml
 from torch.utils.checkpoint import checkpoint
 
+from library import train_util
 
-from library import sdxl_train_util
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def build_network_kwargs(args: argparse.Namespace) -> Dict[str, str]:
+    kwargs = {}
+    if args.network_args:
+        for net_arg in args.network_args:
+            key, value = net_arg.split("=", 1)
+            kwargs[key] = value
+    if "dropout" not in kwargs:
+        kwargs["dropout"] = args.network_dropout
+    return kwargs
+
+
+def get_save_extension(args: argparse.Namespace) -> str:
+    if args.save_model_as == "ckpt":
+        return ".ckpt"
+    if args.save_model_as == "pt":
+        return ".pt"
+    return ".safetensors"
+
+
+def save_weights(
+    accelerator,
+    network,
+    args: argparse.Namespace,
+    save_dtype,
+    prompt_settings,
+    global_step: int,
+    last: bool = False,
+    extra_metadata: Optional[Dict[str, str]] = None,
+) -> None:
+    os.makedirs(args.output_dir, exist_ok=True)
+    ext = get_save_extension(args)
+    ckpt_name = train_util.get_last_ckpt_name(args, ext) if last else train_util.get_step_ckpt_name(args, ext, global_step)
+    ckpt_file = os.path.join(args.output_dir, ckpt_name)
+
+    metadata = None
+    if not args.no_metadata:
+        metadata = {
+            "ss_network_module": args.network_module,
+            "ss_network_dim": str(args.network_dim),
+            "ss_network_alpha": str(args.network_alpha),
+            "ss_leco_prompt_count": str(len(prompt_settings)),
+            "ss_leco_prompts_file": os.path.basename(args.prompts_file),
+        }
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        if args.training_comment:
+            metadata["ss_training_comment"] = args.training_comment
+        metadata["ss_leco_preview"] = json.dumps(
+            [
+                {
+                    "target": p.target,
+                    "positive": p.positive,
+                    "unconditional": p.unconditional,
+                    "neutral": p.neutral,
+                    "action": p.action,
+                    "multiplier": p.multiplier,
+                    "weight": p.weight,
+                }
+                for p in prompt_settings[:16]
+            ],
+            ensure_ascii=False,
+        )
+
+    unwrapped = accelerator.unwrap_model(network)
+    unwrapped.save_weights(ckpt_file, save_dtype, metadata)
+    logger.info(f"saved model to: {ckpt_file}")
+
+
 
 ResolutionValue = Union[int, Tuple[int, int]]
 
@@ -26,8 +102,8 @@ class PromptEmbedsCache:
     def __setitem__(self, name: str, value: Any) -> None:
         self.prompts[name] = value
 
-    def __getitem__(self, name: str) -> Optional[Any]:
-        return self.prompts.get(name)
+    def __getitem__(self, name: str) -> Any:
+        return self.prompts[name]
 
 
 @dataclass
@@ -142,146 +218,48 @@ def _expand_slider_target(target: dict[str, Any], neutral: str) -> List[PromptSe
     target_class = str(target.get("target_class", ""))
     positive = str(target.get("positive", "") or "")
     negative = str(target.get("negative", "") or "")
-    guidance_scale = target.get("guidance_scale", 1.0)
-    dynamic_resolution = target.get("dynamic_resolution", False)
-    batch_size = target.get("batch_size", 1)
-    dynamic_crops = target.get("dynamic_crops", False)
     multiplier = target.get("multiplier", 1.0)
-    weight = target.get("weight", 1.0)
     resolutions = _normalize_resolution_values(target.get("resolutions", target.get("resolution", 512)))
 
     if not positive.strip() and not negative.strip():
         raise ValueError("slider target requires either positive or negative prompt")
 
-    prompt_settings: List[PromptSettings] = []
+    base = dict(
+        target=target_class,
+        neutral=neutral,
+        guidance_scale=target.get("guidance_scale", 1.0),
+        dynamic_resolution=target.get("dynamic_resolution", False),
+        batch_size=target.get("batch_size", 1),
+        dynamic_crops=target.get("dynamic_crops", False),
+        weight=target.get("weight", 1.0),
+    )
 
+    # Build bidirectional (positive_prompt, unconditional_prompt, action, multiplier_sign) pairs.
+    # With both positive and negative: 4 pairs; with only one: 2 pairs.
+    pairs: list[tuple[str, str, str, float]] = []
+    if positive.strip() and negative.strip():
+        pairs = [
+            (negative, positive, "erase", multiplier),
+            (positive, negative, "enhance", multiplier),
+            (positive, negative, "erase", -multiplier),
+            (negative, positive, "enhance", -multiplier),
+        ]
+    elif negative.strip():
+        pairs = [
+            (negative, "", "erase", multiplier),
+            (negative, "", "enhance", -multiplier),
+        ]
+    else:
+        pairs = [
+            (positive, "", "enhance", multiplier),
+            (positive, "", "erase", -multiplier),
+        ]
+
+    prompt_settings: List[PromptSettings] = []
     for resolution in resolutions:
-        if positive.strip() and negative.strip():
-            prompt_settings.extend(
-                [
-                    PromptSettings(
-                        target=target_class,
-                        positive=negative,
-                        unconditional=positive,
-                        neutral=neutral,
-                        action="erase",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=multiplier,
-                        weight=weight,
-                    ),
-                    PromptSettings(
-                        target=target_class,
-                        positive=positive,
-                        unconditional=negative,
-                        neutral=neutral,
-                        action="enhance",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=multiplier,
-                        weight=weight,
-                    ),
-                    PromptSettings(
-                        target=target_class,
-                        positive=positive,
-                        unconditional=negative,
-                        neutral=neutral,
-                        action="erase",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=-multiplier,
-                        weight=weight,
-                    ),
-                    PromptSettings(
-                        target=target_class,
-                        positive=negative,
-                        unconditional=positive,
-                        neutral=neutral,
-                        action="enhance",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=-multiplier,
-                        weight=weight,
-                    ),
-                ]
-            )
-        elif negative.strip():
-            prompt_settings.extend(
-                [
-                    PromptSettings(
-                        target=target_class,
-                        positive=negative,
-                        unconditional="",
-                        neutral=neutral,
-                        action="erase",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=multiplier,
-                        weight=weight,
-                    ),
-                    PromptSettings(
-                        target=target_class,
-                        positive=negative,
-                        unconditional="",
-                        neutral=neutral,
-                        action="enhance",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=-multiplier,
-                        weight=weight,
-                    ),
-                ]
-            )
-        else:
-            prompt_settings.extend(
-                [
-                    PromptSettings(
-                        target=target_class,
-                        positive=positive,
-                        unconditional="",
-                        neutral=neutral,
-                        action="enhance",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=multiplier,
-                        weight=weight,
-                    ),
-                    PromptSettings(
-                        target=target_class,
-                        positive=positive,
-                        unconditional="",
-                        neutral=neutral,
-                        action="erase",
-                        guidance_scale=guidance_scale,
-                        resolution=resolution,
-                        dynamic_resolution=dynamic_resolution,
-                        batch_size=batch_size,
-                        dynamic_crops=dynamic_crops,
-                        multiplier=-multiplier,
-                        weight=weight,
-                    ),
-                ]
+        for pos, uncond, action, mult in pairs:
+            prompt_settings.append(
+                PromptSettings(**base, positive=pos, unconditional=uncond, action=action, resolution=resolution, multiplier=mult)
             )
 
     return prompt_settings
@@ -290,9 +268,9 @@ def _expand_slider_target(target: dict[str, Any], neutral: str) -> List[PromptSe
 def load_prompt_settings(path: Union[str, Path]) -> List[PromptSettings]:
     path = Path(path)
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        data = toml.load(f)
 
-    if data is None:
+    if not data:
         raise ValueError("prompt file is empty")
 
     default_prompt_values = {
@@ -318,60 +296,54 @@ def load_prompt_settings(path: Union[str, Path]) -> List[PromptSettings]:
         for neutral in neutral_values:
             prompt_settings.extend(_expand_slider_target(merged, neutral))
 
-    if isinstance(data, list):
-        for item in data:
+    if "prompts" in data:
+        defaults = {**default_prompt_values, **{k: v for k, v in data.items() if k in _recognized_prompt_keys()}}
+        for item in data["prompts"]:
             if "target_class" in item:
-                append_slider_item(item, default_prompt_values, [str(item.get("neutral", "") or "")])
+                append_slider_item(item, defaults, [str(item.get("neutral", "") or "")])
             else:
-                append_prompt_item(item, default_prompt_values)
-    elif isinstance(data, dict):
-        if "prompts" in data:
-            defaults = {**default_prompt_values, **{k: v for k, v in data.items() if k in _recognized_prompt_keys()}}
-            for item in data["prompts"]:
+                append_prompt_item(item, defaults)
+    else:
+        slider_config = data.get("slider", data)
+        targets = slider_config.get("targets")
+        if targets is None:
+            if "target_class" in slider_config:
+                targets = [slider_config]
+            elif "target" in slider_config:
+                targets = [slider_config]
+            else:
+                raise ValueError("prompt file does not contain prompts or slider targets")
+        if len(targets) == 0:
+            raise ValueError("prompt file contains an empty targets list")
+
+        if "target" in targets[0]:
+            defaults = {**default_prompt_values, **{k: v for k, v in slider_config.items() if k in _recognized_prompt_keys()}}
+            for item in targets:
                 append_prompt_item(item, defaults)
         else:
-            slider_config = data.get("slider", data)
-            targets = slider_config.get("targets")
-            if targets is None:
-                if "target_class" in slider_config:
-                    targets = [slider_config]
-                elif "target" in slider_config:
-                    targets = [slider_config]
-                else:
-                    raise ValueError("prompt file does not contain prompts or slider targets")
-            if len(targets) == 0:
-                raise ValueError("prompt file contains an empty targets list")
+            defaults = {**default_prompt_values, **{k: v for k, v in slider_config.items() if k in _recognized_slider_keys()}}
+            neutral_values: List[str] = []
+            if "neutrals" in slider_config:
+                neutral_values.extend(str(v) for v in slider_config["neutrals"])
+            if "neutral_prompt_file" in slider_config:
+                neutral_values.extend(_read_non_empty_lines(path.parent / slider_config["neutral_prompt_file"]))
+            if "prompt_file" in slider_config:
+                neutral_values.extend(_read_non_empty_lines(path.parent / slider_config["prompt_file"]))
+            if not neutral_values:
+                neutral_values = [str(slider_config.get("neutral", "") or "")]
 
-            if "target" in targets[0]:
-                defaults = {**default_prompt_values, **{k: v for k, v in slider_config.items() if k in _recognized_prompt_keys()}}
-                for item in targets:
-                    append_prompt_item(item, defaults)
-            else:
-                defaults = {**default_prompt_values, **{k: v for k, v in slider_config.items() if k in _recognized_slider_keys()}}
-                neutral_values: List[str] = []
-                if "neutrals" in slider_config:
-                    neutral_values.extend(str(v) for v in slider_config["neutrals"])
-                if "neutral_prompt_file" in slider_config:
-                    neutral_values.extend(_read_non_empty_lines(path.parent / slider_config["neutral_prompt_file"]))
-                if "prompt_file" in slider_config:
-                    neutral_values.extend(_read_non_empty_lines(path.parent / slider_config["prompt_file"]))
-                if not neutral_values:
-                    neutral_values = [str(slider_config.get("neutral", "") or "")]
+            for item in targets:
+                item_neutrals = neutral_values
+                if "neutrals" in item:
+                    item_neutrals = [str(v) for v in item["neutrals"]]
+                elif "neutral_prompt_file" in item:
+                    item_neutrals = _read_non_empty_lines(path.parent / item["neutral_prompt_file"])
+                elif "prompt_file" in item:
+                    item_neutrals = _read_non_empty_lines(path.parent / item["prompt_file"])
+                elif "neutral" in item:
+                    item_neutrals = [str(item["neutral"] or "")]
 
-                for item in targets:
-                    item_neutrals = neutral_values
-                    if "neutrals" in item:
-                        item_neutrals = [str(v) for v in item["neutrals"]]
-                    elif "neutral_prompt_file" in item:
-                        item_neutrals = _read_non_empty_lines(path.parent / item["neutral_prompt_file"])
-                    elif "prompt_file" in item:
-                        item_neutrals = _read_non_empty_lines(path.parent / item["prompt_file"])
-                    elif "neutral" in item:
-                        item_neutrals = [str(item["neutral"] or "")]
-
-                    append_slider_item(item, defaults, item_neutrals)
-    else:
-        raise ValueError("prompt file must be a list or mapping")
+                append_slider_item(item, defaults, item_neutrals)
 
     if not prompt_settings:
         raise ValueError("no prompt settings found")
@@ -412,6 +384,11 @@ def concat_embeddings_xl(unconditional: PromptEmbedsXL, conditional: PromptEmbed
     text_embeds = torch.cat([unconditional.text_embeds, conditional.text_embeds], dim=0).repeat_interleave(batch_size, dim=0)
     pooled_embeds = torch.cat([unconditional.pooled_embeds, conditional.pooled_embeds], dim=0).repeat_interleave(batch_size, dim=0)
     return PromptEmbedsXL(text_embeds=text_embeds, pooled_embeds=pooled_embeds)
+
+
+def batch_add_time_ids(add_time_ids: torch.Tensor, batch_size: int) -> torch.Tensor:
+    """Duplicate add_time_ids for CFG (unconditional + conditional) and repeat for the batch."""
+    return torch.cat([add_time_ids, add_time_ids], dim=0).repeat_interleave(batch_size, dim=0)
 
 
 def _run_with_checkpoint(function, *args):
@@ -488,6 +465,8 @@ def predict_noise_xl(
     orig_size = add_time_ids[:, :2]
     crop_size = add_time_ids[:, 2:4]
     target_size = add_time_ids[:, 4:6]
+    from library import sdxl_train_util
+
     size_embeddings = sdxl_train_util.get_size_embeddings(orig_size, crop_size, target_size, latent_model_input.device)
     vector_embedding = torch.cat([prompt_embeds.pooled_embeds, size_embeddings.to(prompt_embeds.pooled_embeds.dtype)], dim=1)
 

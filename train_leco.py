@@ -1,9 +1,6 @@
 import argparse
 import importlib
-import json
-import os
 import random
-from typing import Dict
 
 import torch
 from accelerate.utils import set_seed
@@ -19,13 +16,16 @@ from library.custom_train_functions import apply_snr_weight, prepare_scheduler_f
 from library.leco_train_util import (
     PromptEmbedsCache,
     apply_noise_offset,
+    build_network_kwargs,
     concat_embeddings,
     diffusion,
     encode_prompt_sd,
     get_initial_latents,
     get_random_resolution,
+    get_save_extension,
     load_prompt_settings,
     predict_noise,
+    save_weights,
 )
 from library.utils import add_logging_arguments, setup_logging
 
@@ -52,7 +52,7 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata in output model / メタデータを保存しない")
 
-    parser.add_argument("--prompts_file", type=str, required=True, help="LECO prompt yaml / LECO用のprompt yaml")
+    parser.add_argument("--prompts_file", type=str, required=True, help="LECO prompt toml / LECO用のprompt toml")
     parser.add_argument(
         "--max_denoising_steps",
         type=int,
@@ -86,72 +86,12 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dim_from_weights", action="store_true", help="infer network dim from network_weights")
     parser.add_argument("--unet_lr", type=float, default=None, help="learning rate for U-Net / U-Netの学習率")
 
+    # dummy arguments required by train_util.verify_training_args / deepspeed_utils (LECO does not use datasets or deepspeed)
+    parser.add_argument("--cache_latents", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--cache_latents_to_disk", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--deepspeed", action="store_true", default=False, help=argparse.SUPPRESS)
+
     return parser
-
-
-def build_network_kwargs(args: argparse.Namespace) -> Dict[str, str]:
-    kwargs = {}
-    if args.network_args:
-        for net_arg in args.network_args:
-            key, value = net_arg.split("=", 1)
-            kwargs[key] = value
-    if "dropout" not in kwargs:
-        kwargs["dropout"] = args.network_dropout
-    return kwargs
-
-
-def get_save_extension(args: argparse.Namespace) -> str:
-    if args.save_model_as == "ckpt":
-        return ".ckpt"
-    if args.save_model_as == "pt":
-        return ".pt"
-    return ".safetensors"
-
-
-def save_weights(
-    accelerator,
-    network,
-    args: argparse.Namespace,
-    save_dtype,
-    prompt_settings,
-    global_step: int,
-    last: bool = False,
-) -> None:
-    os.makedirs(args.output_dir, exist_ok=True)
-    ext = get_save_extension(args)
-    ckpt_name = train_util.get_last_ckpt_name(args, ext) if last else train_util.get_step_ckpt_name(args, ext, global_step)
-    ckpt_file = os.path.join(args.output_dir, ckpt_name)
-
-    metadata = None
-    if not args.no_metadata:
-        metadata = {
-            "ss_network_module": args.network_module,
-            "ss_network_dim": str(args.network_dim),
-            "ss_network_alpha": str(args.network_alpha),
-            "ss_leco_prompt_count": str(len(prompt_settings)),
-            "ss_leco_prompts_file": os.path.basename(args.prompts_file),
-        }
-        if args.training_comment:
-            metadata["ss_training_comment"] = args.training_comment
-        metadata["ss_leco_preview"] = json.dumps(
-            [
-                {
-                    "target": p.target,
-                    "positive": p.positive,
-                    "unconditional": p.unconditional,
-                    "neutral": p.neutral,
-                    "action": p.action,
-                    "multiplier": p.multiplier,
-                    "weight": p.weight,
-                }
-                for p in prompt_settings[:16]
-            ],
-            ensure_ascii=False,
-        )
-
-    unwrapped = accelerator.unwrap_model(network)
-    unwrapped.save_weights(ckpt_file, save_dtype, metadata)
-    logger.info(f"saved model to: {ckpt_file}")
 
 
 def main():

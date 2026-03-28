@@ -6,12 +6,13 @@ from library.leco_train_util import load_prompt_settings
 
 
 def test_load_prompt_settings_with_original_format(tmp_path: Path):
-    prompt_file = tmp_path / "prompts.yaml"
+    prompt_file = tmp_path / "prompts.toml"
     prompt_file.write_text(
         """
-- target: "van gogh"
-  guidance_scale: 1.5
-  resolution: 512
+[[prompts]]
+target = "van gogh"
+guidance_scale = 1.5
+resolution = 512
 """.strip(),
         encoding="utf-8",
     )
@@ -28,18 +29,19 @@ def test_load_prompt_settings_with_original_format(tmp_path: Path):
 
 
 def test_load_prompt_settings_with_slider_targets(tmp_path: Path):
-    prompt_file = tmp_path / "slider.yaml"
+    prompt_file = tmp_path / "slider.toml"
     prompt_file.write_text(
         """
-targets:
-  - target_class: ""
-    positive: "high detail"
-    negative: "low detail"
-    multiplier: 1.25
-    weight: 0.5
-guidance_scale: 2.0
-resolution: 768
-neutral: ""
+guidance_scale = 2.0
+resolution = 768
+neutral = ""
+
+[[targets]]
+target_class = ""
+positive = "high detail"
+negative = "low detail"
+multiplier = 1.25
+weight = 0.5
 """.strip(),
         encoding="utf-8",
     )

@@ -4461,7 +4461,7 @@ def verify_command_line_training_args(args: argparse.Namespace):
 
 
 def enable_high_vram(args: argparse.Namespace):
-    if getattr(args, "highvram", False):
+    if args.highvram:
         logger.info("highvram is enabled / highvramが有効です")
         global HIGH_VRAM
         HIGH_VRAM = True
@@ -4474,10 +4474,10 @@ def verify_training_args(args: argparse.Namespace):
     """
     enable_high_vram(args)
 
-    if getattr(args, "v2", False) and getattr(args, "clip_skip", None) is not None:
+    if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected / v2でclip_skipを使用することは想定されていません")
 
-    if getattr(args, "cache_latents_to_disk", False) and not getattr(args, "cache_latents", False):
+    if args.cache_latents_to_disk and not args.cache_latents:
         args.cache_latents = True
         logger.warning(
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
@@ -4496,32 +4496,32 @@ def verify_training_args(args: argparse.Namespace):
     #         "perlin_noise and multires_noise_iterations cannot be enabled at the same time / perlin_noiseとmultires_noise_iterationsを同時に有効にできません"
     #     )
 
-    if getattr(args, "adaptive_noise_scale", None) is not None and getattr(args, "noise_offset", None) is None:
+    if args.adaptive_noise_scale is not None and args.noise_offset is None:
         raise ValueError("adaptive_noise_scale requires noise_offset / adaptive_noise_scaleを使用するにはnoise_offsetが必要です")
 
-    if getattr(args, "scale_v_pred_loss_like_noise_pred", False) and not getattr(args, "v_parameterization", False):
+    if args.scale_v_pred_loss_like_noise_pred and not args.v_parameterization:
         raise ValueError(
             "scale_v_pred_loss_like_noise_pred can be enabled only with v_parameterization / scale_v_pred_loss_like_noise_predはv_parameterizationが有効なときのみ有効にできます"
         )
 
-    if getattr(args, "v_pred_like_loss", None) and getattr(args, "v_parameterization", False):
+    if args.v_pred_like_loss and args.v_parameterization:
         raise ValueError(
             "v_pred_like_loss cannot be enabled with v_parameterization / v_pred_like_lossはv_parameterizationが有効なときには有効にできません"
         )
 
-    if getattr(args, "zero_terminal_snr", False) and not getattr(args, "v_parameterization", False):
+    if args.zero_terminal_snr and not args.v_parameterization:
         logger.warning(
             f"zero_terminal_snr is enabled, but v_parameterization is not enabled. training will be unexpected"
             + " / zero_terminal_snrが有効ですが、v_parameterizationが有効ではありません。学習結果は想定外になる可能性があります"
         )
 
-    if getattr(args, "sample_every_n_epochs", None) is not None and args.sample_every_n_epochs <= 0:
+    if args.sample_every_n_epochs is not None and args.sample_every_n_epochs <= 0:
         logger.warning(
             "sample_every_n_epochs is less than or equal to 0, so it will be disabled / sample_every_n_epochsに0以下の値が指定されたため無効になります"
         )
         args.sample_every_n_epochs = None
 
-    if getattr(args, "sample_every_n_steps", None) is not None and args.sample_every_n_steps <= 0:
+    if args.sample_every_n_steps is not None and args.sample_every_n_steps <= 0:
         logger.warning(
             "sample_every_n_steps is less than or equal to 0, so it will be disabled / sample_every_n_stepsに0以下の値が指定されたため無効になります"
         )
