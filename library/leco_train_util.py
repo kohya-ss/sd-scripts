@@ -320,10 +320,10 @@ def load_prompt_settings(path: Union[str, Path]) -> List[PromptSettings]:
 
     if isinstance(data, list):
         for item in data:
-                if "target_class" in item:
-                    append_slider_item(item, default_prompt_values, [str(item.get("neutral", "") or "")])
-                else:
-                    append_prompt_item(item, default_prompt_values)
+            if "target_class" in item:
+                append_slider_item(item, default_prompt_values, [str(item.get("neutral", "") or "")])
+            else:
+                append_prompt_item(item, default_prompt_values)
     elif isinstance(data, dict):
         if "prompts" in data:
             defaults = {**default_prompt_values, **{k: v for k, v in data.items() if k in _recognized_prompt_keys()}}
@@ -406,11 +406,11 @@ def get_initial_latents(scheduler, batch_size: int, height: int, width: int, n_p
 
 def concat_embeddings(unconditional: torch.Tensor, conditional: torch.Tensor, batch_size: int) -> torch.Tensor:
     return torch.cat([unconditional, conditional], dim=0).repeat_interleave(batch_size, dim=0)
+
+
 def concat_embeddings_xl(unconditional: PromptEmbedsXL, conditional: PromptEmbedsXL, batch_size: int) -> PromptEmbedsXL:
     text_embeds = torch.cat([unconditional.text_embeds, conditional.text_embeds], dim=0).repeat_interleave(batch_size, dim=0)
-    pooled_embeds = torch.cat([unconditional.pooled_embeds, conditional.pooled_embeds], dim=0).repeat_interleave(
-        batch_size, dim=0
-    )
+    pooled_embeds = torch.cat([unconditional.pooled_embeds, conditional.pooled_embeds], dim=0).repeat_interleave(batch_size, dim=0)
     return PromptEmbedsXL(text_embeds=text_embeds, pooled_embeds=pooled_embeds)
 
 
@@ -497,7 +497,6 @@ def predict_noise_xl(
     noise_pred = _run_with_checkpoint(run_unet, latent_model_input, prompt_embeds.text_embeds, vector_embedding)
     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
     return noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
 
 
 def diffusion_xl(
