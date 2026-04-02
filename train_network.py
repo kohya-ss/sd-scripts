@@ -930,6 +930,22 @@ class NetworkTrainer:
                             latents = torch.nan_to_num(latents, 0, out=latents)
                     latents = latents * self.vae_scale_factor
 
+                    if batch["masks"] is not None:
+                      masked_latents = vae.encode(
+                          batch["masked_images"].reshape(batch["images"].shape).to(dtype=weight_dtype)
+                      ).latent_dist.sample()
+                      masked_latents = masked_latents * self.vae_scale_factor
+
+                      masks = batch["masks"]
+                      # Resize the mask to latents shape as we concatenate the mask to the latents
+                      mask = torch.stack(
+                          [
+                              torch.nn.functional.interpolate(mask, size=(args.resolution // 8, args.resolution // 8))
+                              for mask in masks
+                          ]
+                      )
+                      mask = mask.reshape(-1, 1, args.resolution // 8, args.resolution // 8)
+
                     # get multiplier for each sample
                     if network_has_multiplier:
                         multipliers = batch["network_multipliers"]
@@ -962,6 +978,9 @@ class NetworkTrainer:
                     noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(
                         args, noise_scheduler, latents
                     )
+                    if batch["masks"] is not None:
+                      # Concatenate the noised latents with the mask and the masked latents
+                      noisy_latents = torch.cat([noisy_latents, mask, masked_latents], dim=1)
 
                     # ensure the hidden state will require grad
                     if args.gradient_checkpointing:

@@ -108,6 +108,7 @@ class BaseDatasetParams:
     max_token_length: int = None
     resolution: Optional[Tuple[int, int]] = None
     network_multiplier: float = 1.0
+    train_inpainting: bool = False
     debug_dataset: bool = False
 
 
@@ -247,6 +248,7 @@ class ConfigSanitizer:
     # options handled by argparse but not handled by user config
     ARGPARSE_SPECIFIC_SCHEMA = {
         "debug_dataset": bool,
+        "train_inpainting": bool,
         "max_token_length": Any(None, int),
         "prior_loss_weight": Any(float, int),
     }

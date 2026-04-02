@@ -66,7 +66,7 @@ from library import custom_train_functions
 from library.original_unet import UNet2DConditionModel
 from huggingface_hub import hf_hub_download
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 import imagesize
 import cv2
 import safetensors.torch
@@ -385,6 +385,7 @@ class BaseSubset:
         caption_suffix: Optional[str],
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
+        train_inpainting: bool,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
@@ -438,6 +439,7 @@ class DreamBoothSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        train_inpainting
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -462,6 +464,7 @@ class DreamBoothSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
+            train_inpainting,
         )
 
         self.is_reg = is_reg
@@ -501,6 +504,7 @@ class FineTuningSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        train_inpainting,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -605,6 +609,7 @@ class BaseDataset(torch.utils.data.Dataset):
         max_token_length: int,
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
+        train_inpainting: bool,
         debug_dataset: bool,
     ) -> None:
         super().__init__()
@@ -639,6 +644,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self.current_step: int = 0
         self.max_train_steps: int = 0
         self.seed: int = 0
+        
+        #inpainting
+        self.train_inpainting = train_inpainting
 
         # augmentation
         self.aug_helper = AugHelper()
@@ -1248,6 +1256,8 @@ class BaseDataset(torch.utils.data.Dataset):
         text_encoder_outputs1_list = []
         text_encoder_outputs2_list = []
         text_encoder_pool2_list = []
+        masks = []
+        masked_images = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
@@ -1337,6 +1347,14 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 img = img[:, :, :3]  # remove alpha channel
 
+                if self.train_inpainting:
+                  pil_image = transforms.functional.to_pil_image(img)
+                  mask = self.random_mask(pil_image.size, 1, False)
+                  mask, masked_image = self.prepare_mask_and_masked_image(pil_image, mask)
+                  
+                  masks.append(mask)
+                  masked_images.append(masked_image)
+                  
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
                 del img
@@ -1453,6 +1471,10 @@ class BaseDataset(torch.utils.data.Dataset):
             images = None
         example["images"] = images
 
+        example['masks'] = torch.stack(masks) if masks else None
+        example['masked_images'] = torch.stack(masked_images) if masked_images else None
+
+
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
         example["captions"] = captions
 
@@ -1533,6 +1555,49 @@ class BaseDataset(torch.utils.data.Dataset):
         example["bucket_reso"] = bucket_reso
         return example
 
+    @staticmethod
+    def prepare_mask_and_masked_image(image, mask):
+        image = np.array(image.convert("RGB"))
+        image = image[None].transpose(0, 3, 1, 2)
+        image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+
+        mask = np.array(mask.convert("L"))
+        mask = mask.astype(np.float32) / 255.0
+        mask = mask[None, None]
+        mask[mask < 0.5] = 0
+        mask[mask >= 0.5] = 1
+        mask = torch.from_numpy(mask)
+
+        masked_image = image * (mask < 0.5)
+
+        return mask, masked_image
+
+
+    # generate random masks
+    @staticmethod
+    def random_mask(im_shape, ratio=1, mask_full_image=False):
+        mask = Image.new("L", im_shape, 0)
+        draw = ImageDraw.Draw(mask)
+        size = (random.randint(0, int(im_shape[0] * ratio)), random.randint(0, int(im_shape[1] * ratio)))
+        # use this to always mask the whole image
+        if mask_full_image:
+          size = (int(im_shape[0] * ratio), int(im_shape[1] * ratio))
+        limits = (im_shape[0] - size[0] // 2, im_shape[1] - size[1] // 2)
+        center = (random.randint(size[0] // 2, limits[0]), random.randint(size[1] // 2, limits[1]))
+        draw_type = random.randint(0, 1)
+        if draw_type == 0 or mask_full_image:
+          draw.rectangle(
+              (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
+              fill=255,
+          )
+        else:
+          draw.ellipse(
+              (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
+              fill=255,
+          )
+
+        return mask
+
 
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
@@ -1551,9 +1616,10 @@ class DreamBoothDataset(BaseDataset):
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
         prior_loss_weight: float,
+        train_inpainting: bool,
         debug_dataset: bool,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, train_inpainting, debug_dataset)
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
@@ -1769,9 +1835,10 @@ class FineTuningDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
+        train_inpainting: bool,
         debug_dataset: bool,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, train_inpainting, debug_dataset)
 
         self.batch_size = batch_size
 
@@ -1997,9 +2064,10 @@ class ControlNetDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
+        train_inpainting: bool,
         debug_dataset: float,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, train_inpainting, debug_dataset)
 
         db_subsets = []
         for subset in subsets:
@@ -2415,8 +2483,8 @@ def glob_images_pathlib(dir_path, recursive):
 
 
 class MinimalDataset(BaseDataset):
-    def __init__(self, tokenizer, max_token_length, resolution, network_multiplier, debug_dataset=False):
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+    def __init__(self, tokenizer, max_token_length, resolution, network_multiplier, train_inpainting=False, debug_dataset=False):
+        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, train_inpainting, debug_dataset)
 
         self.num_train_images = 0  # update in subclass
         self.num_reg_images = 0  # update in subclass
@@ -3914,6 +3982,13 @@ def add_dataset_arguments(
         default=None,
         help="dataset class for arbitrary dataset (package.module.Class) / 任意のデータセットを用いるときのクラス名 (package.module.Class)",
     )
+
+    parser.add_argument(
+        "--train_inpainting",
+        action="store_true",
+        help="train an inpainting model / インペイントモデルを学習する",
+    )
+
 
     if support_caption_dropout:
         # Textual Inversion はcaptionのdropoutをsupportしない
