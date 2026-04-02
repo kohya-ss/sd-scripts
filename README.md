@@ -47,6 +47,9 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Version 0.10.3 (2026-04-02):**
+    - Stability when training with fp16 on Anima has been further improved. See [PR #2302](https://github.com/kohya-ss/sd-scripts/pull/2302) for details. We deeply appreciate those who reported the issue.
+
 - **Version 0.10.2 (2026-03-30):**
     - LECO training for SD/SDXL is now supported. Many thanks to umisetokikaze for [PR #2285](https://github.com/kohya-ss/sd-scripts/pull/2285) and [PR #2294](https://github.com/kohya-ss/sd-scripts/pull/2294).
         - Please refer to the [documentation](./docs/train_leco.md) for details.
