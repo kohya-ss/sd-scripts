@@ -1003,6 +1003,12 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
     unet_config = create_unet_diffusers_config(v2, unet_use_linear_projection_in_v2)
     converted_unet_checkpoint = convert_ldm_unet_checkpoint(v2, state_dict, unet_config)
 
+    # Inpainting checkpoints have conv_in with 9 input channels instead of 4.
+    # Detect this from the converted weights and update the config accordingly.
+    actual_in_channels = converted_unet_checkpoint["conv_in.weight"].shape[1]
+    if actual_in_channels != UNET_PARAMS_IN_CHANNELS:
+        unet_config["in_channels"] = actual_in_channels
+
     unet = UNet2DConditionModel(**unet_config).to(device)
     info = unet.load_state_dict(converted_unet_checkpoint)
     logger.info(f"loading u-net: {info}")

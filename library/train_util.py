@@ -385,7 +385,6 @@ class BaseSubset:
         caption_suffix: Optional[str],
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
-        train_inpainting: bool,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
@@ -439,7 +438,6 @@ class DreamBoothSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
-        train_inpainting
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -464,7 +462,6 @@ class DreamBoothSubset(BaseSubset):
             caption_suffix,
             token_warmup_min,
             token_warmup_step,
-            train_inpainting,
         )
 
         self.is_reg = is_reg
@@ -504,7 +501,6 @@ class FineTuningSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
-        train_inpainting,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -1576,27 +1572,11 @@ class BaseDataset(torch.utils.data.Dataset):
     # generate random masks
     @staticmethod
     def random_mask(im_shape, ratio=1, mask_full_image=False):
-        mask = Image.new("L", im_shape, 0)
-        draw = ImageDraw.Draw(mask)
-        size = (random.randint(0, int(im_shape[0] * ratio)), random.randint(0, int(im_shape[1] * ratio)))
-        # use this to always mask the whole image
+        from library.mask_generator import random_mask as _random_mask, cloud_mask
+        w, h = im_shape
         if mask_full_image:
-          size = (int(im_shape[0] * ratio), int(im_shape[1] * ratio))
-        limits = (im_shape[0] - size[0] // 2, im_shape[1] - size[1] // 2)
-        center = (random.randint(size[0] // 2, limits[0]), random.randint(size[1] // 2, limits[1]))
-        draw_type = random.randint(0, 1)
-        if draw_type == 0 or mask_full_image:
-          draw.rectangle(
-              (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
-              fill=255,
-          )
-        else:
-          draw.ellipse(
-              (center[0] - size[0] // 2, center[1] - size[1] // 2, center[0] + size[0] // 2, center[1] + size[1] // 2),
-              fill=255,
-          )
-
-        return mask
+            return cloud_mask(w, h, threshold=0.99)
+        return _random_mask(w, h)
 
 
 class DreamBoothDataset(BaseDataset):
@@ -3778,6 +3758,14 @@ def verify_training_args(args: argparse.Namespace):
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
         )
 
+    if getattr(args, "train_inpainting", False) and getattr(args, "cache_latents", False):
+        raise ValueError(
+            "train_inpainting and cache_latents cannot be used together. "
+            "Inpainting masks are generated randomly per step from the original image, "
+            "so the image must be read on every step. "
+            "Disable cache_latents (and cache_latents_to_disk) when using --train_inpainting."
+        )
+
     # noise_offset, perlin_noise, multires_noise_iterations cannot be enabled at the same time
     # # Listを使って数えてもいいけど並べてしまえ
     # if args.noise_offset is not None and args.multires_noise_iterations is not None:
@@ -5491,6 +5479,11 @@ def line_to_prompt_dict(line: str) -> dict:
                 prompt_dict["controlnet_image"] = m.group(1)
                 continue
 
+            m = re.match(r"img (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["image"] = m.group(1).strip()
+                continue
+
         except ValueError as ex:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
             logger.error(ex)
@@ -5684,8 +5677,8 @@ def sample_image_inference(
         controlnet_image = Image.open(controlnet_image).convert("RGB")
         controlnet_image = controlnet_image.resize((width, height), Image.LANCZOS)
 
-    height = max(64, height - height % 8)  # round to divisible by 8
-    width = max(64, width - width % 8)  # round to divisible by 8
+    height = max(64, height - height % 64)  # round down to divisible by 64 (SDXL requires latents divisible by 8)
+    width = max(64, width - width % 64)  # round down to divisible by 64
     logger.info(f"prompt: {prompt}")
     logger.info(f"negative_prompt: {negative_prompt}")
     logger.info(f"height: {height}")
@@ -5695,6 +5688,28 @@ def sample_image_inference(
     logger.info(f"sample_sampler: {sampler_name}")
     if seed is not None:
         logger.info(f"seed: {seed}")
+
+    # Prepare inpainting source image and mask when training an inpainting model.
+    # The prompt line should include "--img /path/to/image.jpg".
+    # The mask is generated reproducibly from the prompt seed (or randomly if no seed).
+    inpaint_image = None
+    inpaint_mask = None
+    if getattr(args, "train_inpainting", False):
+        image_path = prompt_dict.get("image")
+        if image_path:
+            from library.mask_generator import random_mask as _gen_mask
+            if not os.path.exists(image_path):
+                logger.warning(f"inpaint image not found, skipping sample: {image_path}")
+                return
+            inpaint_image = Image.open(image_path).convert("RGB").resize((width, height), Image.LANCZOS)
+            inpaint_mask = _gen_mask(width, height, seed=seed)
+            logger.info(f"inpaint image: {image_path}")
+        else:
+            logger.warning(
+                "train_inpainting is set but no source image specified in the prompt line. "
+                "Add '--img /path/to/image.jpg' to the prompt to enable inpainting sampling."
+            )
+
     with accelerator.autocast():
         latents = pipeline(
             prompt=prompt,
@@ -5705,6 +5720,8 @@ def sample_image_inference(
             negative_prompt=negative_prompt,
             controlnet=controlnet,
             controlnet_image=controlnet_image,
+            inpaint_image=inpaint_image,
+            inpaint_mask=inpaint_mask,
         )
 
     if torch.cuda.is_available():

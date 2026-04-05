@@ -577,11 +577,11 @@ class TextualInversionTrainer:
                           # Resize the mask to latents shape as we concatenate the mask to the latents
                           mask = torch.stack(
                               [
-                                  torch.nn.functional.interpolate(mask, size=(args.resolution // 8, args.resolution // 8))
+                                  torch.nn.functional.interpolate(mask, size=latents.shape[2:])
                                   for mask in masks
                               ]
                           )
-                          mask = mask.reshape(-1, 1, args.resolution // 8, args.resolution // 8)
+                          mask = mask.reshape(-1, 1, latents.shape[2], latents.shape[3]).to(weight_dtype)
 
                     # Get the text embedding for conditioning
                     text_encoder_conds = self.get_text_cond(args, accelerator, batch, tokenizers, text_encoders, weight_dtype)
