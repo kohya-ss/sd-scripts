@@ -1,9 +1,11 @@
 import logging
 import sys
 import threading
-import torch
-from torchvision import transforms
 from typing import *
+
+import torch
+import torch.nn as nn
+from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
@@ -14,6 +16,9 @@ import numpy as np
 
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
+
+
+# region Logging
 
 
 def add_logging_arguments(parser):
@@ -82,7 +87,114 @@ def setup_logging(args=None, log_level=None, reset=False):
         logger.info(msg_init)
 
 
-def pil_resize(image, size, interpolation=Image.LANCZOS):
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# endregion
+
+# region PyTorch utils
+
+
+def swap_weight_devices(layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
+    assert layer_to_cpu.__class__ == layer_to_cuda.__class__
+
+    weight_swap_jobs = []
+    for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
+        if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
+            weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
+
+    torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
+
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        # cuda to cpu
+        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
+            cuda_data_view.record_stream(stream)
+            module_to_cpu.weight.data = cuda_data_view.data.to("cpu", non_blocking=True)
+
+        stream.synchronize()
+
+        # cpu to cuda
+        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
+            cuda_data_view.copy_(module_to_cuda.weight.data, non_blocking=True)
+            module_to_cuda.weight.data = cuda_data_view
+
+    stream.synchronize()
+    torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
+
+
+def weighs_to_device(layer: nn.Module, device: torch.device):
+    for module in layer.modules():
+        if hasattr(module, "weight") and module.weight is not None:
+            module.weight.data = module.weight.data.to(device, non_blocking=True)
+
+
+def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) -> torch.dtype:
+    """
+    Convert a string to a torch.dtype
+
+    Args:
+        s: string representation of the dtype
+        default_dtype: default dtype to return if s is None
+
+    Returns:
+        torch.dtype: the corresponding torch.dtype
+
+    Raises:
+        ValueError: if the dtype is not supported
+
+    Examples:
+        >>> str_to_dtype("float32")
+        torch.float32
+        >>> str_to_dtype("fp32")
+        torch.float32
+        >>> str_to_dtype("float16")
+        torch.float16
+        >>> str_to_dtype("fp16")
+        torch.float16
+        >>> str_to_dtype("bfloat16")
+        torch.bfloat16
+        >>> str_to_dtype("bf16")
+        torch.bfloat16
+        >>> str_to_dtype("fp8")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fn")
+        torch.float8_e4m3fn
+        >>> str_to_dtype("fp8_e4m3fnuz")
+        torch.float8_e4m3fnuz
+        >>> str_to_dtype("fp8_e5m2")
+        torch.float8_e5m2
+        >>> str_to_dtype("fp8_e5m2fnuz")
+        torch.float8_e5m2fnuz
+    """
+    if s is None:
+        return default_dtype
+    if s in ["bf16", "bfloat16"]:
+        return torch.bfloat16
+    elif s in ["fp16", "float16"]:
+        return torch.float16
+    elif s in ["fp32", "float32", "float"]:
+        return torch.float32
+    elif s in ["fp8_e4m3fn", "e4m3fn", "float8_e4m3fn"]:
+        return torch.float8_e4m3fn
+    elif s in ["fp8_e4m3fnuz", "e4m3fnuz", "float8_e4m3fnuz"]:
+        return torch.float8_e4m3fnuz
+    elif s in ["fp8_e5m2", "e5m2", "float8_e5m2"]:
+        return torch.float8_e5m2
+    elif s in ["fp8_e5m2fnuz", "e5m2fnuz", "float8_e5m2fnuz"]:
+        return torch.float8_e5m2fnuz
+    elif s in ["fp8", "float8"]:
+        return torch.float8_e4m3fn  # default fp8
+    else:
+        raise ValueError(f"Unsupported dtype: {s}")
+
+
+# endregion
+
+# region Image utils
+
+
+def pil_resize(image, size, interpolation):
     has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
 
     if has_alpha:
@@ -90,7 +202,7 @@ def pil_resize(image, size, interpolation=Image.LANCZOS):
     else:
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
-    resized_pil = pil_image.resize(size, interpolation)
+    resized_pil = pil_image.resize(size, resample=interpolation)
 
     # Convert back to cv2 format
     if has_alpha:
@@ -101,9 +213,130 @@ def pil_resize(image, size, interpolation=Image.LANCZOS):
     return resized_cv2
 
 
+def resize_image(
+    image: np.ndarray,
+    width: int,
+    height: int,
+    resized_width: int,
+    resized_height: int,
+    resize_interpolation: Optional[str] = None,
+):
+    """
+    Resize image with resize interpolation. Default interpolation to AREA if image is smaller, else LANCZOS.
+
+    Args:
+        image: numpy.ndarray
+        width: int Original image width
+        height: int Original image height
+        resized_width: int Resized image width
+        resized_height: int Resized image height
+        resize_interpolation: Optional[str] Resize interpolation method "lanczos", "area", "bilinear", "bicubic", "nearest", "box"
+
+    Returns:
+        image
+    """
+
+    # Ensure all size parameters are actual integers
+    width = int(width)
+    height = int(height)
+    resized_width = int(resized_width)
+    resized_height = int(resized_height)
+
+    if resize_interpolation is None:
+        if width >= resized_width and height >= resized_height:
+            resize_interpolation = "area"
+        else:
+            resize_interpolation = "lanczos"
+
+    # we use PIL for lanczos (for backward compatibility) and box, cv2 for others
+    use_pil = resize_interpolation in ["lanczos", "lanczos4", "box"]
+
+    resized_size = (resized_width, resized_height)
+    if use_pil:
+        interpolation = get_pil_interpolation(resize_interpolation)
+        image = pil_resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (PIL)")
+    else:
+        interpolation = get_cv2_interpolation(resize_interpolation)
+        image = cv2.resize(image, resized_size, interpolation=interpolation)
+        logger.debug(f"resize image using {resize_interpolation} (cv2)")
+
+    return image
+
+
+def get_cv2_interpolation(interpolation: Optional[str]) -> Optional[int]:
+    """
+    Convert interpolation value to cv2 interpolation integer
+
+    https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga5bb5a1fea74ea38e1a5445ca803ff121
+    """
+    if interpolation is None:
+        return None
+
+    if interpolation == "lanczos" or interpolation == "lanczos4":
+        # Lanczos interpolation over 8x8 neighborhood
+        return cv2.INTER_LANCZOS4
+    elif interpolation == "nearest":
+        # Bit exact nearest neighbor interpolation. This will produce same results as the nearest neighbor method in PIL, scikit-image or Matlab.
+        return cv2.INTER_NEAREST_EXACT
+    elif interpolation == "bilinear" or interpolation == "linear":
+        # bilinear interpolation
+        return cv2.INTER_LINEAR
+    elif interpolation == "bicubic" or interpolation == "cubic":
+        # bicubic interpolation
+        return cv2.INTER_CUBIC
+    elif interpolation == "area":
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
+        return cv2.INTER_AREA
+    elif interpolation == "box":
+        # resampling using pixel area relation. It may be a preferred method for image decimation, as it gives moire'-free results. But when the image is zoomed, it is similar to the INTER_NEAREST method.
+        return cv2.INTER_AREA
+    else:
+        return None
+
+
+def get_pil_interpolation(interpolation: Optional[str]) -> Optional[Image.Resampling]:
+    """
+    Convert interpolation value to PIL interpolation
+
+    https://pillow.readthedocs.io/en/stable/handbook/concepts.html#concept-filters
+    """
+    if interpolation is None:
+        return None
+
+    if interpolation == "lanczos":
+        return Image.Resampling.LANCZOS
+    elif interpolation == "nearest":
+        # Pick one nearest pixel from the input image. Ignore all other input pixels.
+        return Image.Resampling.NEAREST
+    elif interpolation == "bilinear" or interpolation == "linear":
+        # For resize calculate the output pixel value using linear interpolation on all pixels that may contribute to the output value. For other transformations linear interpolation over a 2x2 environment in the input image is used.
+        return Image.Resampling.BILINEAR
+    elif interpolation == "bicubic" or interpolation == "cubic":
+        # For resize calculate the output pixel value using cubic interpolation on all pixels that may contribute to the output value. For other transformations cubic interpolation over a 4x4 environment in the input image is used.
+        return Image.Resampling.BICUBIC
+    elif interpolation == "area":
+        # Image.Resampling.BOX may be more appropriate if upscaling
+        # Area interpolation is related to cv2.INTER_AREA
+        # Produces a sharper image than Resampling.BILINEAR, doesn’t have dislocations on local level like with Resampling.BOX.
+        return Image.Resampling.HAMMING
+    elif interpolation == "box":
+        # Each pixel of source image contributes to one pixel of the destination image with identical weights. For upscaling is equivalent of Resampling.NEAREST.
+        return Image.Resampling.BOX
+    else:
+        return None
+
+
+def validate_interpolation_fn(interpolation_str: str) -> bool:
+    """
+    Check if a interpolation function is supported
+    """
+    return interpolation_str in ["lanczos", "nearest", "bilinear", "linear", "bicubic", "cubic", "area", "box"]
+
+
+# endregion
+
 # TODO make inf_utils.py
-
-
 # region Gradual Latent hires fix
 
 
@@ -234,7 +467,9 @@ class EulerAncestralDiscreteSchedulerGL(EulerAncestralDiscreteScheduler):
         elif self.config.prediction_type == "sample":
             raise NotImplementedError("prediction_type not implemented yet: sample")
         else:
-            raise ValueError(f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, or `v_prediction`")
+            raise ValueError(
+                f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, or `v_prediction`"
+            )
 
         sigma_from = self.sigmas[self.step_index]
         sigma_to = self.sigmas[self.step_index + 1]

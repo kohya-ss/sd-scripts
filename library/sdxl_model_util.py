@@ -8,7 +8,7 @@ from typing import List
 from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionModel
 from library import model_util
 from library import sdxl_original_unet
-from .utils import setup_logging
+from library.utils import setup_logging
 
 setup_logging()
 import logging

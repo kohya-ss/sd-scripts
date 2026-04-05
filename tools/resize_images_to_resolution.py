@@ -6,7 +6,7 @@ import shutil
 import math
 from PIL import Image
 import numpy as np
-from library.utils import setup_logging, pil_resize
+from library.utils import setup_logging, resize_image
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
@@ -21,14 +21,6 @@ def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divi
   # Create destination folder if it does not exist
   if not os.path.exists(dst_img_folder):
     os.makedirs(dst_img_folder)
-
-  # Select interpolation method
-  if interpolation == 'lanczos4':
-    pil_interpolation = Image.LANCZOS
-  elif interpolation == 'cubic':
-    pil_interpolation = Image.BICUBIC
-  else:
-    cv2_interpolation = cv2.INTER_AREA
 
   # Iterate through all files in src_img_folder
   img_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp")                   # copy from train_util.py
@@ -63,11 +55,7 @@ def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divi
         new_height = int(img.shape[0] * math.sqrt(scale_factor))
         new_width = int(img.shape[1] * math.sqrt(scale_factor))
 
-        # Resize image
-        if cv2_interpolation:
-          img = cv2.resize(img, (new_width, new_height), interpolation=cv2_interpolation)
-        else:
-          img = pil_resize(img, (new_width, new_height), interpolation=pil_interpolation)
+        img = resize_image(img,  img.shape[0], img.shape[1], new_height, new_width, interpolation)
       else:
         new_height, new_width = img.shape[0:2]
 
@@ -113,8 +101,8 @@ def setup_parser() -> argparse.ArgumentParser:
                       help='Maximum resolution(s) in the format "512x512,384x384, etc, etc" / 最大画像サイズをカンマ区切りで指定 ("512x512,384x384, etc, etc" など)', default="512x512,384x384,256x256,128x128")
   parser.add_argument('--divisible_by', type=int,
                       help='Ensure new dimensions are divisible by this value / リサイズ後の画像のサイズをこの値で割り切れるようにします', default=1)
-  parser.add_argument('--interpolation', type=str, choices=['area', 'cubic', 'lanczos4'],
-                      default='area', help='Interpolation method for resizing / リサイズ時の補完方法')
+  parser.add_argument('--interpolation', type=str, choices=['area', 'cubic', 'lanczos4', 'nearest', 'linear', 'box'],
+                      default=None, help='Interpolation method for resizing. Default to area if smaller, lanczos if larger / サイズ変更の補間方法。小さい場合はデフォルトでエリア、大きい場合はランチョスになります。')
   parser.add_argument('--save_as_png', action='store_true', help='Save as png format / png形式で保存')
   parser.add_argument('--copy_associated_files', action='store_true',
                       help='Copy files with same base name to images (captions etc) / 画像と同じファイル名（拡張子を除く）のファイルもコピーする')

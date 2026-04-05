@@ -15,7 +15,7 @@ import os
 from anime_face_detector import create_detector
 from tqdm import tqdm
 import numpy as np
-from library.utils import setup_logging, pil_resize
+from library.utils import setup_logging, resize_image
 setup_logging()
 import logging
 logger = logging.getLogger(__name__)
@@ -170,12 +170,9 @@ def process(args):
             scale = max(cur_crop_width / w, cur_crop_height / h)
 
         if scale != 1.0:
-          w = int(w * scale + .5)
-          h = int(h * scale + .5)
-          if scale < 1.0:
-            face_img = cv2.resize(face_img, (w, h), interpolation=cv2.INTER_AREA)
-          else:
-            face_img = pil_resize(face_img, (w, h))
+          rw = int(w * scale + .5)
+          rh = int(h * scale + .5)
+          face_img = resize_image(face_img, w, h, rw, rh)
           cx = int(cx * scale + .5)
           cy = int(cy * scale + .5)
           fw = int(fw * scale + .5)

@@ -1,9 +1,6 @@
-Original Source by kohya-ss
+First version: A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
 
-First version:
-A.I Translation by Model: NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO, editing by Darkstorm2150
-
-Some parts are manually added.
+Document is updated and maintained manually.
 
 # Config Readme
 
@@ -125,11 +122,15 @@ These are options related to the configuration of the data set. They cannot be d
 | `max_bucket_reso` | `1024` | o | o |
 | `min_bucket_reso` | `128` | o | o |
 | `resolution` | `256`, `[512, 512]` | o | o |
+| `skip_image_resolution` | `768`, `[512, 768]` | o | o |
 
 * `batch_size`
     * This corresponds to the command-line argument `--train_batch_size`.
 * `max_bucket_reso`, `min_bucket_reso`
     * Specify the maximum and minimum resolutions of the bucket. It must be divisible by `bucket_reso_steps`.
+* `skip_image_resolution`
+    * Images whose original resolution (area) is equal to or smaller than the specified resolution will be skipped. Specify as `'size'` or `[width, height]`. This corresponds to the command-line argument `--skip_image_resolution`.
+    * Useful when sharing the same image directory across multiple datasets with different resolutions, to exclude low-resolution source images from higher-resolution datasets.
 
 These settings are fixed per dataset. That means that subsets belonging to the same dataset will share these settings. For example, if you want to prepare datasets with different resolutions, you can define them as separate datasets as shown in the example above, and set different resolutions for each.
 
@@ -152,6 +153,7 @@ These options are related to subset configuration.
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `resize_interpolation` | (not specified) | o | o | o |
 
 * `num_repeats`
     * Specifies the number of repeats for images in a subset. This is equivalent to `--dataset_repeats` in fine-tuning but can be specified for any training method.
@@ -165,6 +167,8 @@ These options are related to subset configuration.
     * Specifies an additional separator. The part separated by this separator is treated as one tag and is shuffled and dropped. It is then replaced by `caption_separator`. For example, if you specify `aaa;;;bbb;;;ccc`, it will be replaced by `aaa,bbb,ccc` or dropped together.
 * `enable_wildcard`
     * Enables wildcard notation. This will be explained later.
+* `resize_interpolation`
+    * Specifies the interpolation method used when resizing images. Normally, there is no need to specify this. The following options can be specified: `lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box`. By default (when not specified), `area` is used for downscaling, and `lanczos` is used for upscaling. If this option is specified, the same interpolation method will be used for both upscaling and downscaling. When `lanczos` or `box` is specified, PIL is used; for other options, OpenCV is used.
 
 ### DreamBooth-specific options
 
@@ -254,6 +258,34 @@ resolution = 768
   image_dir = 'C:\hoge'
 ```
 
+When using multi-resolution datasets, you can use `skip_image_resolution` to exclude images whose original size is too small for higher-resolution datasets. This prevents overlapping of low-resolution images across datasets and improves training quality. This option can also be used to simply exclude low-resolution source images from datasets.
+
+```toml
+[general]
+enable_bucket = true
+bucket_no_upscale = true
+max_bucket_reso = 1536
+
+[[datasets]]
+resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1024
+skip_image_resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1280
+skip_image_resolution = 1024
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+```
+
+In this example, the 1024-resolution dataset skips images whose original size is 768x768 or smaller, and the 1280-resolution dataset skips images whose original size is 1024x1024 or smaller.
+
 ## Command Line Argument and Configuration File
 
 There are options in the configuration file that have overlapping roles with command line argument options.
@@ -264,10 +296,10 @@ The following command line argument options are ignored if a configuration file 
 * `--reg_data_dir`
 * `--in_json`
 
-The following command line argument options are given priority over the configuration file options if both are specified simultaneously. In most cases, they have the same names as the corresponding options in the configuration file.
+For the command line options listed below, if an option is specified in both the command line arguments and the configuration file, the value from the configuration file will be given priority. Unless otherwise noted, the option names are the same.
 
-| Command Line Argument Option   | Prioritized Configuration File Option |
-| ------------------------------- | ------------------------------------- |
+| Command Line Argument Option   | Corresponding Configuration File Option |
+| ------------------------------- | --------------------------------------- |
 | `--bucket_no_upscale`           |                                       |
 | `--bucket_reso_steps`           |                                       |
 | `--caption_dropout_every_n_epochs` |                                       |
@@ -284,6 +316,7 @@ The following command line argument options are given priority over the configur
 | `--random_crop`                 |                                       |
 | `--resolution`                  |                                       |
 | `--shuffle_caption`             |                                       |
+| `--skip_image_resolution`       |                                       |
 | `--train_batch_size`            | `batch_size`                           |
 
 ## Error Guide

@@ -9,50 +9,83 @@ from accelerate.utils import set_seed
 import torch
 from tqdm import tqdm
 
-from library import config_util
+from library import config_util, flux_train_utils, flux_utils, strategy_base, strategy_flux, strategy_sd, strategy_sdxl
 from library import train_util
 from library import sdxl_train_util
+import library.sai_model_spec as sai_model_spec
 from library.config_util import (
     ConfigSanitizer,
     BlueprintGenerator,
 )
 from library.utils import setup_logging, add_logging_arguments
+
 setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+def set_tokenize_strategy(is_sd: bool, is_sdxl: bool, is_flux: bool, args: argparse.Namespace) -> None:
+    if is_flux:
+        _, is_schnell, _ = flux_utils.check_flux_state_dict_diffusers_schnell(args.pretrained_model_name_or_path)
+    else:
+        is_schnell = False
+
+    if is_sd:
+        tokenize_strategy = strategy_sd.SdTokenizeStrategy(args.v2, args.max_token_length, args.tokenizer_cache_dir)
+    elif is_sdxl:
+        tokenize_strategy = strategy_sdxl.SdxlTokenizeStrategy(args.max_token_length, args.tokenizer_cache_dir)
+    else:
+        if args.t5xxl_max_token_length is None:
+            if is_schnell:
+                t5xxl_max_token_length = 256
+            else:
+                t5xxl_max_token_length = 512
+        else:
+            t5xxl_max_token_length = args.t5xxl_max_token_length
+
+        logger.info(f"t5xxl_max_token_length: {t5xxl_max_token_length}")
+        tokenize_strategy = strategy_flux.FluxTokenizeStrategy(t5xxl_max_token_length, args.tokenizer_cache_dir)
+    strategy_base.TokenizeStrategy.set_strategy(tokenize_strategy)
+
+
 def cache_to_disk(args: argparse.Namespace) -> None:
     setup_logging(args, reset=True)
     train_util.prepare_dataset_args(args, True)
+    train_util.enable_high_vram(args)
 
-    # check cache latents arg
-    assert args.cache_latents_to_disk, "cache_latents_to_disk must be True / cache_latents_to_diskはTrueである必要があります"
+    # assert args.cache_latents_to_disk, "cache_latents_to_disk must be True / cache_latents_to_diskはTrueである必要があります"
+    args.cache_latents = True
+    args.cache_latents_to_disk = True
 
     use_dreambooth_method = args.in_json is None
 
     if args.seed is not None:
         set_seed(args.seed)  # 乱数系列を初期化する
 
-    # tokenizerを準備する：datasetを動かすために必要
-    if args.sdxl:
-        tokenizer1, tokenizer2 = sdxl_train_util.load_tokenizers(args)
-        tokenizers = [tokenizer1, tokenizer2]
+    is_sd = not args.sdxl and not args.flux
+    is_sdxl = args.sdxl
+    is_flux = args.flux
+
+    set_tokenize_strategy(is_sd, is_sdxl, is_flux, args)
+
+    if is_sd or is_sdxl:
+        latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(is_sd, True, args.vae_batch_size, args.skip_cache_check)
     else:
-        tokenizer = train_util.load_tokenizer(args)
-        tokenizers = [tokenizer]
+        latents_caching_strategy = strategy_flux.FluxLatentsCachingStrategy(True, args.vae_batch_size, args.skip_cache_check)
+    strategy_base.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
 
     # データセットを準備する
+    use_user_config = args.dataset_config is not None
     if args.dataset_class is None:
-        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, False, True))
-        if args.dataset_config is not None:
-            logger.info(f"Load dataset config from {args.dataset_config}")
+        blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
+        if use_user_config:
+            logger.info(f"Loading dataset config from {args.dataset_config}")
             user_config = config_util.load_user_config(args.dataset_config)
-            ignored = ["train_data_dir", "in_json"]
+            ignored = ["train_data_dir", "reg_data_dir", "in_json"]
             if any(getattr(args, attr) is not None for attr in ignored):
                 logger.warning(
-                    "ignore following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
+                    "ignoring the following options because config file is found: {0} / 設定ファイルが利用されるため以下のオプションは無視されます: {0}".format(
                         ", ".join(ignored)
                     )
                 )
@@ -83,17 +116,12 @@ def cache_to_disk(args: argparse.Namespace) -> None:
                     ]
                 }
 
-        blueprint = blueprint_generator.generate(user_config, args, tokenizer=tokenizers)
-        train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+        blueprint = blueprint_generator.generate(user_config, args)
+        train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     else:
-        train_dataset_group = train_util.load_arbitrary_dataset(args, tokenizers)
-
-    # datasetのcache_latentsを呼ばなければ、生の画像が返る
-
-    current_epoch = Value("i", 0)
-    current_step = Value("i", 0)
-    ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
-    collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+        # use arbitrary dataset class
+        train_dataset_group = train_util.load_arbitrary_dataset(args)
+        val_dataset_group = None
 
     # acceleratorを準備する
     logger.info("prepare accelerator")
@@ -106,72 +134,27 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 
     # モデルを読み込む
     logger.info("load model")
-    if args.sdxl:
+    if is_sd:
+        _, vae, _, _ = train_util.load_target_model(args, weight_dtype, accelerator)
+    elif is_sdxl:
         (_, _, _, vae, _, _, _) = sdxl_train_util.load_target_model(args, accelerator, "sdxl", weight_dtype)
     else:
-        _, vae, _, _ = train_util.load_target_model(args, weight_dtype, accelerator)
+        vae = flux_utils.load_ae(args.ae, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors)
 
-    if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
-        vae.set_use_memory_efficient_attention_xformers(args.xformers)
+    if is_sd or is_sdxl:
+        if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
+            vae.set_use_memory_efficient_attention_xformers(args.xformers)
+
     vae.to(accelerator.device, dtype=vae_dtype)
     vae.requires_grad_(False)
     vae.eval()
 
-    # dataloaderを準備する
-    train_dataset_group.set_caching_mode("latents")
-
-    # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
-    n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
-
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset_group,
-        batch_size=1,
-        shuffle=True,
-        collate_fn=collator,
-        num_workers=n_workers,
-        persistent_workers=args.persistent_data_loader_workers,
-    )
-
-    # acceleratorを使ってモデルを準備する：マルチGPUで使えるようになるはず
-    train_dataloader = accelerator.prepare(train_dataloader)
-
-    # データ取得のためのループ
-    for batch in tqdm(train_dataloader):
-        b_size = len(batch["images"])
-        vae_batch_size = b_size if args.vae_batch_size is None else args.vae_batch_size
-        flip_aug = batch["flip_aug"]
-        alpha_mask = batch["alpha_mask"]
-        random_crop = batch["random_crop"]
-        bucket_reso = batch["bucket_reso"]
-
-        # バッチを分割して処理する
-        for i in range(0, b_size, vae_batch_size):
-            images = batch["images"][i : i + vae_batch_size]
-            absolute_paths = batch["absolute_paths"][i : i + vae_batch_size]
-            resized_sizes = batch["resized_sizes"][i : i + vae_batch_size]
-
-            image_infos = []
-            for i, (image, absolute_path, resized_size) in enumerate(zip(images, absolute_paths, resized_sizes)):
-                image_info = train_util.ImageInfo(absolute_path, 1, "dummy", False, absolute_path)
-                image_info.image = image
-                image_info.bucket_reso = bucket_reso
-                image_info.resized_size = resized_size
-                image_info.latents_npz = os.path.splitext(absolute_path)[0] + ".npz"
-
-                if args.skip_existing:
-                    if train_util.is_disk_cached_latents_is_expected(
-                        image_info.bucket_reso, image_info.latents_npz, flip_aug, alpha_mask
-                    ):
-                        logger.warning(f"Skipping {image_info.latents_npz} because it already exists.")
-                        continue
-
-                image_infos.append(image_info)
-
-            if len(image_infos) > 0:
-                train_util.cache_batch_latents(vae, True, image_infos, flip_aug, alpha_mask, random_crop)
+    # cache latents with dataset
+    # TODO use DataLoader to speed up
+    train_dataset_group.new_cache_latents(vae, accelerator)
 
     accelerator.wait_for_everyone()
-    accelerator.print(f"Finished caching latents for {len(train_dataset_group)} batches.")
+    accelerator.print(f"Finished caching latents to disk.")
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -179,10 +162,16 @@ def setup_parser() -> argparse.ArgumentParser:
 
     add_logging_arguments(parser)
     train_util.add_sd_models_arguments(parser)
+    sai_model_spec.add_model_spec_arguments(parser)
     train_util.add_training_arguments(parser, True)
     train_util.add_dataset_arguments(parser, True, True, True)
+    train_util.add_masked_loss_arguments(parser)
     config_util.add_config_arguments(parser)
+    train_util.add_dit_training_arguments(parser)
+    flux_train_utils.add_flux_train_arguments(parser)
+
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
+    parser.add_argument("--flux", action="store_true", help="Use FLUX model / FLUXモデルを使用する")
     parser.add_argument(
         "--no_half_vae",
         action="store_true",
@@ -191,7 +180,8 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip_existing",
         action="store_true",
-        help="skip images if npz already exists (both normal and flipped exists if flip_aug is enabled) / npzが既に存在する画像をスキップする（flip_aug有効時は通常、反転の両方が存在する画像をスキップ）",
+        help="[Deprecated] This option does not work. Existing .npz files are always checked. Use `--skip_cache_check` to skip the check."
+        " / [非推奨] このオプションは機能しません。既存の .npz は常に検証されます。`--skip_cache_check` で検証をスキップできます。",
     )
     return parser
 
