@@ -87,6 +87,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * LoRA学習
 * fine-tuning（DreamBooth）：HunyuanImage-2.1以外のモデル
 * Textual Inversion学習：SD/SDXL
+* インペインティングモデル学習：SD1.5およびSDXL
 * 画像生成
 * その他、モデル変換やタグ付け、LoRAマージなどのユーティリティ
 
@@ -109,6 +110,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [ControlNet-LLLite学習](./docs/train_lllite_README-ja.md) / [英語版](./docs/train_lllite_README.md)
 * [Validation](./docs/validation.md)
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
+* [インペインティング学習](./docs/inpainting_training.md)
 
 ### その他のドキュメント
 

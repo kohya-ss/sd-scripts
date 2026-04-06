@@ -84,6 +84,7 @@ If you find this project helpful, please consider supporting its development via
 * LoRA training
 * Fine-tuning (native training, DreamBooth): except for HunyuanImage-2.1
 * Textual Inversion training: SD/SDXL
+* Inpainting model training: SD1.5 and SDXL
 * Image generation
 * Other utilities such as model conversion, image tagging, LoRA merging, etc.
 
@@ -104,6 +105,7 @@ If you find this project helpful, please consider supporting its development via
 * [ControlNet-LLLite Training](./docs/train_lllite_README.md) / [Japanese version](./docs/train_lllite_README-ja.md)
 * [Validation](./docs/validation.md)
 * [Masked Loss Training](./docs/masked_loss_README.md) / [Japanese version](./docs/masked_loss_README-ja.md)
+* [Inpainting Training](./docs/inpainting_training.md)
 
 ### Other Documentation (English and Japanese)
 
