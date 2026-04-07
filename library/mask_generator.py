@@ -185,6 +185,84 @@ def shape_mask(
 
 
 # ---------------------------------------------------------------------------
+# Wobbly ellipse mask (fBm radius variation — good default for sampling)
+# ---------------------------------------------------------------------------
+
+def wobbly_ellipse_mask(
+    width: int,
+    height: int,
+    coverage: float = 0.2,
+    wobble_scale: float = 0.5,
+    octaves: int = 4,
+    persistence: float = 0.5,
+    n_points: int = 128,
+    seed: Optional[int] = None,
+) -> Image.Image:
+    """
+    Ellipse mask whose radius varies along the circumference using periodic
+    fractional Brownian motion noise, producing organic blob-like shapes.
+
+    Unlike cloud masks (which can produce large, fragmented regions), this
+    always yields a single connected region, making it well-suited as a
+    default mask for inpainting sampling and inference.
+
+    Parameters
+    ----------
+    width, height  : output size in pixels
+    coverage       : approximate fraction of the image area to mask (0..1)
+    wobble_scale   : radius variation relative to the base radius.
+                     Default 0.25 means radius varies ±25% around the base.
+    octaves        : number of harmonic layers in the radius noise
+    persistence    : amplitude falloff per octave (0..1)
+    n_points       : number of polygon vertices used to approximate the shape
+    seed           : optional RNG seed for reproducibility
+    """
+    rng = np.random.RandomState(seed if seed is not None else np.random.randint(0, 2**31))
+
+    # Center — biased toward image interior so the ellipse stays mostly inside
+    cx = rng.uniform(0.25, 0.75) * width
+    cy = rng.uniform(0.25, 0.75) * height
+
+    # Ellipse aspect ratio and rotation
+    aspect = rng.uniform(0.6, 1.4)   # ratio of semi-major to semi-minor
+    rotation = rng.uniform(0, math.pi)
+
+    # Semi-axes derived from target coverage area (≈ π·a·b)
+    area_target = coverage * width * height
+    r_base = math.sqrt(area_target / (math.pi * aspect))
+    a = r_base * math.sqrt(aspect)   # semi-major axis
+    b = r_base / math.sqrt(aspect)   # semi-minor axis
+
+    # Periodic fBm using harmonic cosines so the noise wraps seamlessly at 0 = 2π
+    thetas = np.linspace(0, 2 * math.pi, n_points, endpoint=False)
+    noise = np.zeros(n_points, dtype=np.float32)
+    amplitude = 1.0
+    total_amplitude = 0.0
+    for k in range(1, octaves + 1):
+        phase = rng.uniform(0, 2 * math.pi)
+        noise += amplitude * np.cos(k * thetas + phase)
+        total_amplitude += amplitude
+        amplitude *= persistence
+    noise /= total_amplitude
+    std = noise.std()
+    if std > 1e-6:
+        noise = noise / std * wobble_scale   # normalise so ±wobble_scale bounds hold approximately
+
+    # Build polygon: for each sample angle, compute the ellipse radius at that
+    # angle (accounting for rotation), then scale by the noise modulation.
+    points = []
+    for i, theta in enumerate(thetas):
+        t_rot = theta - rotation
+        r = (a * b) / math.sqrt((b * math.cos(t_rot)) ** 2 + (a * math.sin(t_rot)) ** 2)
+        r_wobbled = max(r * (1.0 + noise[i]), 1.0)
+        points.append((cx + r_wobbled * math.cos(theta), cy + r_wobbled * math.sin(theta)))
+
+    img = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(img).polygon(points, fill=255)
+    return img
+
+
+# ---------------------------------------------------------------------------
 # Combiner
 # ---------------------------------------------------------------------------
 

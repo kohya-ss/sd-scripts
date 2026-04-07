@@ -45,6 +45,7 @@ from library.mask_generator import (
     shape_mask,
     combine_masks,
     random_mask,
+    wobbly_ellipse_mask,
 )
 
 
@@ -240,6 +241,27 @@ def gallery_combined(size: int, n: int, cols: int, src: ImageSource) -> Image.Im
     return make_grid(samples, cols, size)
 
 
+def gallery_wobbly_ellipse(size: int, n: int, cols: int, src: ImageSource) -> Image.Image:
+    samples = []
+    param_sets = [
+        dict(coverage=0.2,  wobble_scale=0.1),
+        dict(coverage=0.2,  wobble_scale=0.25),
+        dict(coverage=0.2,  wobble_scale=0.5),
+        dict(coverage=0.3,  wobble_scale=0.25),
+        dict(coverage=0.4,  wobble_scale=0.25),
+        dict(coverage=0.5,  wobble_scale=0.25),
+        dict(coverage=0.3,  wobble_scale=0.1),
+        dict(coverage=0.3,  wobble_scale=0.5),
+    ]
+    for i in range(n):
+        p = param_sets[i % len(param_sets)]
+        mask = wobbly_ellipse_mask(size, size, seed=i * 19, **p)
+        image = src.get(i, size, size)
+        lbl = f"cov={p['coverage']} wob={p['wobble_scale']}"
+        samples.append((lbl, mask, image))
+    return make_grid(samples, cols, size)
+
+
 def gallery_random(size: int, n: int, cols: int, src: ImageSource) -> Image.Image:
     samples = []
     for i in range(n):
@@ -270,11 +292,12 @@ def main():
     src = ImageSource(pool)
 
     galleries = [
-        ("cloud_masks.png",      gallery_cloud),
-        ("polygon_masks.png",    gallery_polygon),
-        ("shape_masks.png",      gallery_shape),
-        ("combined_masks.png",   gallery_combined),
-        ("all_random_masks.png", gallery_random),
+        ("cloud_masks.png",          gallery_cloud),
+        ("polygon_masks.png",        gallery_polygon),
+        ("shape_masks.png",          gallery_shape),
+        ("combined_masks.png",       gallery_combined),
+        ("wobbly_ellipse_masks.png", gallery_wobbly_ellipse),
+        ("all_random_masks.png",     gallery_random),
     ]
 
     for filename, fn in galleries:

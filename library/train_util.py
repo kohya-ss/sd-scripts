@@ -6703,7 +6703,7 @@ def sample_image_inference(
     if getattr(args, "train_inpainting", False):
         image_path = prompt_dict.get("image")
         if image_path:
-            from library.mask_generator import random_mask as _gen_mask
+            from library.mask_generator import wobbly_ellipse_mask as _gen_mask
             if not os.path.exists(image_path):
                 logger.warning(f"inpaint image not found, skipping sample: {image_path}")
                 return

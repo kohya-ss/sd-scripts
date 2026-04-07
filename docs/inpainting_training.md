@@ -99,6 +99,37 @@ Note: `cache_latents` must be `false` (the default) when using `train_inpainting
 注意: `train_inpainting` を使用する場合、`cache_latents` は `false`（デフォルト）のままにしてください。
 </details>
 
+## Minimal inference script / 最低限の推論スクリプト
+
+`inpainting_minimal_inference.py` provides a self-contained inference script for testing inpainting models without the full training pipeline. It supports both SD1.5 and SDXL inpainting checkpoints and accepts either a user-supplied mask image or a random procedural mask.
+
+```bash
+# SD1.5 inpainting with a mask image
+python inpainting_minimal_inference.py \
+    --ckpt_path sd-v1-5-inpainting.ckpt \
+    --image input.png \
+    --mask mask.png \
+    --prompt "a yawning cat"
+
+# SDXL inpainting with a random procedural (wobbly ellipse) mask
+python inpainting_minimal_inference.py \
+    --ckpt_path sd_xl_base_1.0_inpainting.safetensors \
+    --sdxl \
+    --image input.png \
+    --prompt "a yawning cat" \
+    --width 1024 --height 1024 \
+    --seed 42
+```
+
+The mask image should be the same size as the source image, with white pixels indicating the region to regenerate and black pixels indicating the region to preserve. If `--mask` is omitted, a random procedural mask is generated using `library/mask_generator.py`.
+
+<details>
+<summary>日本語</summary>
+`inpainting_minimal_inference.py` は、学習パイプライン全体を必要とせずにインペインティングモデルをテストするための、独立した推論スクリプトです。SD1.5 および SDXL のインペインティングチェックポイントに対応しており、ユーザー指定のマスク画像またはランダムなプロシージャルマスクを使用できます。
+
+マスク画像はソース画像と同じサイズで、白いピクセルが再生成する領域、黒いピクセルが保持する領域を示します。`--mask` を省略すると、`library/mask_generator.py` を使ってランダムなプロシージャルマスクが生成されます。
+</details>
+
 ## Loading existing inpainting checkpoints / 既存インペインティングチェックポイントの読み込み
 
 The training scripts automatically detect whether a checkpoint has a 9-channel `conv_in` weight and configure the UNet accordingly. You do not need to pass any extra flags to load an inpainting checkpoint — it is handled transparently.
