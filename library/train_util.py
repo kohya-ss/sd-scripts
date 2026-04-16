@@ -5716,6 +5716,16 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
                 accelerator.device if args.lowram else "cpu",
                 unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
             )
+
+            # Expand 4-channel conv_in to 9 channels when training inpainting from a
+            # standard (non-inpainting) checkpoint.
+            if getattr(args, "train_inpainting", False) and getattr(unet, "in_channels", 4) == 4:
+                logger.info(
+                    "train_inpainting: expanding UNet conv_in from 4 to 9 channels "
+                    "(standard checkpoint → inpainting training from scratch)"
+                )
+                model_util.expand_unet_to_inpainting(unet)
+
             # work on low-ram device
             if args.lowram:
                 text_encoder.to(accelerator.device)
@@ -6377,6 +6387,7 @@ def get_my_scheduler(
         beta_start=SCHEDULER_LINEAR_START,
         beta_end=SCHEDULER_LINEAR_END,
         beta_schedule=SCHEDLER_SCHEDULE,
+        steps_offset=1,
         **sched_init_args,
     )
 

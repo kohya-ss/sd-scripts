@@ -34,13 +34,13 @@ Masks are generated **randomly per training step** using a procedural mask gener
 
 ## Requirements / 必要条件
 
-- An inpainting base or trained model (e.g. `sd-v1-5-inpainting.ckpt`, `sd_xl_base_1.0_inpainting.safetensors`), **or** a standard model checkpoint if you want to train inpainting from scratch.
+- An inpainting base model (e.g. `sd-v1-5-inpainting.ckpt`, `sd_xl_base_1.0_inpainting.safetensors`) for best results, **or** a standard model checkpoint. When a standard checkpoint is used, the UNet `conv_in` layer is automatically expanded from 4 to 9 channels (original weights preserved, extra channels zero-initialised) so training can proceed from scratch.
 - `--cache_latents` and `--cache_latents_to_disk` **cannot** be used with `--train_inpainting`. Masks are generated randomly each step from the source image, so the source image must be available at training time.
 
 <details>
 <summary>日本語</summary>
 
-- インペインティング用のベースモデルまたは学習済みモデル（例: `sd-v1-5-inpainting.ckpt`、`sd_xl_base_1.0_inpainting.safetensors`）、**または**ゼロからインペインティングを学習したい場合は通常のモデルチェックポイント。
+- 最良の結果を得るにはインペインティング用ベースモデル（例: `sd-v1-5-inpainting.ckpt`、`sd_xl_base_1.0_inpainting.safetensors`）、**または**通常のモデルチェックポイント。通常のチェックポイントを使用した場合、UNet の `conv_in` レイヤーは自動的に 4 チャンネルから 9 チャンネルに拡張されます（元の重みを保持し、追加チャンネルはゼロ初期化）。
 - `--train_inpainting` と `--cache_latents` / `--cache_latents_to_disk` は**同時に使用できません**。マスクは各ステップでソース画像からランダムに生成されるため、学習時に元の画像が必要です。
 </details>
 
@@ -176,7 +176,7 @@ a photo of a cat sitting on a sofa
 
 - Inpainting training is compatible with LoRA, DreamBooth, fine-tuning, and textual inversion.
 - The mask is applied at latent resolution (1/8 of image resolution), so very fine details at mask boundaries may be imprecise.
-- For best results, start from a pre-existing inpainting checkpoint rather than a standard model.
+- For best results, start from a pre-existing inpainting checkpoint. Standard checkpoints are supported but will require more training steps to converge.
 - When training SDXL, use `--gradient_checkpointing` and a memory-efficient optimizer (e.g. `Adafactor`) to reduce VRAM usage.
 
 <details>
@@ -184,6 +184,6 @@ a photo of a cat sitting on a sofa
 
 - インペインティング学習は LoRA、DreamBooth、ファインチューニング、テクスチャルインバージョンと互換性があります。
 - マスクは画像解像度の 1/8 の潜在変数解像度で適用されるため、マスク境界の非常に細かいディテールは不正確になる場合があります。
-- 最良の結果を得るには、標準モデルではなく既存のインペインティングチェックポイントから学習を開始することをお勧めします。
+- 最良の結果を得るには、既存のインペインティングチェックポイントから学習を開始することをお勧めします。標準チェックポイントもサポートされていますが、収束までにより多くのステップが必要になります。
 - SDXL を学習する場合は、`--gradient_checkpointing` とメモリ効率の良いオプティマイザー（例: `Adafactor`）を使用して VRAM 使用量を削減してください。
 </details>

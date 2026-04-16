@@ -1,0 +1,64 @@
+# SD1.5 inpainting smoke-test config.
+# Path fields (pretrained_model_name_or_path, train_data_dir, output_dir,
+# output_name, sample_prompts) are overwritten at runtime by the test script.
+
+# --- model / paths (filled in by run_sd15_inpainting_test.sh) ---
+pretrained_model_name_or_path = ""
+train_data_dir = ""
+output_dir = ""
+output_name = ""
+
+# --- precision / memory ---
+mixed_precision = "fp16"
+gradient_checkpointing = true
+mem_eff_attn = true
+xformers = true
+max_data_loader_n_workers = 0
+# cache_latents is incompatible with train_inpainting: masks are generated randomly
+# per step from the original image, so the image must be read on every step.
+cache_latents = false
+cache_latents_to_disk = false
+
+# --- bucketing ---
+enable_bucket = true
+resolution = "512,512"
+min_bucket_reso = 256
+max_bucket_reso = 1024
+bucket_reso_steps = 64
+bucket_no_upscale = true
+
+# --- training ---
+train_batch_size = 1
+max_train_steps = 20
+max_train_epochs = 1
+gradient_accumulation_steps = 1
+train_inpainting = true
+
+# --- optimiser (Adafactor — low VRAM) ---
+optimizer_type = "Adafactor"
+optimizer_args = ["relative_step=False", "scale_parameter=False", "warmup_init=False"]
+learning_rate = 1e-4
+learning_rate_te = 0
+lr_scheduler = "constant"
+
+# --- captions ---
+caption_extension = ".caption"
+shuffle_caption = false
+max_token_length = 75
+clip_skip = 1
+
+# --- noise ---
+loss_type = "l2"
+multires_noise_discount = 0.3
+noise_offset_type = "Original"
+
+# --- saving ---
+save_model_as = "safetensors"
+save_precision = "fp16"
+save_every_n_steps = 20
+save_state = false
+
+# --- sampling (disabled for smoke test) ---
+sample_every_n_steps = 20
+sample_sampler = "euler_a"
+sample_prompts = "prompts.txt"

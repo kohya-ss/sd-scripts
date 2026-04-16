@@ -1319,6 +1319,67 @@ def load_vae(vae_id, dtype):
 # endregion
 
 
+def expand_unet_to_inpainting(unet) -> None:
+    """
+    Expand a standard 4-channel UNet input conv to 9 channels for inpainting training.
+
+    Inpainting UNets expect 9 input channels: 4 noisy latents + 1 mask + 4 masked-image
+    latents.  When starting from a standard (non-inpainting) checkpoint the input conv
+    weight has shape [out, 4, kH, kW].  This function replaces it with a new Conv2d whose
+    weight has shape [out, 9, kH, kW], copying the original 4-channel weights into the
+    first 4 channels and zero-initialising the remaining 5.  The bias (if present) is
+    copied as-is.
+
+    Supports both diffusers-style UNets (unet.conv_in, unet.config) and the custom SDXL
+    UNet (unet.input_blocks[0][0], unet.in_channels).  The replacement is done in-place.
+    """
+    import torch.nn as nn
+
+    # Locate the first conv and choose how to replace it
+    if hasattr(unet, "conv_in"):
+        # Diffusers-style UNet (SD1.5 / SD2)
+        old_conv = unet.conv_in
+        use_conv_in = True
+    elif hasattr(unet, "input_blocks"):
+        # Custom SDXL original UNet
+        old_conv = unet.input_blocks[0][0]
+        use_conv_in = False
+    else:
+        raise AttributeError("Cannot locate input conv on UNet — unknown architecture")
+
+    if old_conv.in_channels == 9:
+        return  # already expanded — nothing to do
+
+    if old_conv.in_channels != 4:
+        raise ValueError(
+            f"Expected input conv to have 4 or 9 input channels, got {old_conv.in_channels}"
+        )
+
+    new_conv = nn.Conv2d(
+        9,
+        old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=old_conv.bias is not None,
+    )
+
+    with torch.no_grad():
+        # Zero-initialise all 9 channels, then copy the original 4
+        new_conv.weight.zero_()
+        new_conv.weight[:, :4] = old_conv.weight
+        if old_conv.bias is not None:
+            new_conv.bias.copy_(old_conv.bias)
+
+    if use_conv_in:
+        unet.conv_in = new_conv
+        if hasattr(unet, "config") and isinstance(unet.config, dict):
+            unet.config["in_channels"] = 9
+    else:
+        unet.input_blocks[0][0] = new_conv
+    unet.in_channels = 9
+
+
 def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64):
     max_width, max_height = max_reso
     max_area = max_width * max_height
