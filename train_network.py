@@ -268,11 +268,9 @@ class NetworkTrainer:
         # For inpainting models: concatenate [noisy_latents, mask, masked_latents] -> 9-channel UNet input
         unet_latents = noisy_latents
         if batch.get("masked_latents") is not None:
-            masks = batch["masks"]
-            mask = torch.stack([
-                torch.nn.functional.interpolate(m, size=noisy_latents.shape[2:])
-                for m in masks
-            ]).reshape(-1, 1, noisy_latents.shape[2], noisy_latents.shape[3]).to(weight_dtype)
+            mask = torch.nn.functional.interpolate(
+                batch["masks"].to(weight_dtype), size=noisy_latents.shape[2:]
+            )
             unet_latents = torch.cat([noisy_latents, mask, batch["masked_latents"].to(weight_dtype)], dim=1)
 
         # Predict the noise residual
@@ -409,7 +407,7 @@ class NetworkTrainer:
             # Prepare inpainting masked_latents if batch contains masks
             if batch.get("masks") is not None:
                 masked_latents = self.encode_images_to_latents(
-                    args, vae, batch["masked_images"].reshape(batch["images"].shape).to(accelerator.device, dtype=vae_dtype)
+                    args, vae, batch["masked_images"].to(accelerator.device, dtype=vae_dtype)
                 )
                 batch["masked_latents"] = self.shift_scale_latents(args, masked_latents)
 

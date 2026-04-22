@@ -366,18 +366,13 @@ def train(args):
                     
                     if batch["masks"] is not None:
                         masked_latents = vae.encode(
-                            batch["masked_images"].reshape(batch["images"].shape).to(dtype=weight_dtype)
+                            batch["masked_images"].to(dtype=weight_dtype)
                         ).latent_dist.sample()
                         masked_latents = masked_latents * 0.18215
-                        masks = batch["masks"]
                         # Resize the mask to latents shape as we concatenate the mask to the latents
-                        mask = torch.stack(
-                            [
-                                torch.nn.functional.interpolate(mask, size=latents.shape[2:])
-                                for mask in masks
-                            ]
+                        mask = torch.nn.functional.interpolate(
+                            batch["masks"].to(weight_dtype), size=latents.shape[2:]
                         )
-                        mask = mask.reshape(-1, 1, latents.shape[2], latents.shape[3]).to(weight_dtype)
 
                 b_size = latents.shape[0]
 

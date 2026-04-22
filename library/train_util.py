@@ -1916,12 +1916,12 @@ class BaseDataset(torch.utils.data.Dataset):
     @staticmethod
     def prepare_mask_and_masked_image(image, mask):
         image = np.array(image.convert("RGB"))
-        image = image[None].transpose(0, 3, 1, 2)
+        image = image.transpose(2, 0, 1)  # HWC -> CHW
         image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
 
         mask = np.array(mask.convert("L"))
         mask = mask.astype(np.float32) / 255.0
-        mask = mask[None, None]
+        mask = mask[None]  # 1,H,W
         mask[mask < 0.5] = 0
         mask[mask >= 0.5] = 1
         mask = torch.from_numpy(mask)

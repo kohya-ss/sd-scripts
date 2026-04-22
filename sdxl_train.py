@@ -707,15 +707,10 @@ def train(args):
                         ).latent_dist.sample().to(weight_dtype)
                         masked_latents = masked_latents * sdxl_model_util.VAE_SCALE_FACTOR
 
-                        masks = batch["masks"]
                         # Resize the mask to latents shape as we concatenate the mask to the latents
-                        mask = torch.stack(
-                            [
-                                torch.nn.functional.interpolate(mask, size=latents.shape[2:])
-                                for mask in masks
-                            ]
+                        mask = torch.nn.functional.interpolate(
+                            batch["masks"].to(weight_dtype), size=latents.shape[2:]
                         )
-                        mask = mask.reshape(-1, 1, latents.shape[2], latents.shape[3]).to(weight_dtype)
                     noisy_latents = torch.cat([noisy_latents, mask, masked_latents], dim=1)
 
                 # Predict the noise residual
