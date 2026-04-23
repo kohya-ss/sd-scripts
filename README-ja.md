@@ -255,6 +255,20 @@ PyTorchは環境によってバージョンが異なるため、requirements.txt
 
 RTX 50シリーズGPUの場合、PyTorch 2.8.0とCUDA 12.8/12.9を使用してください。`requirements.txt`はこのバージョンでも動作します。
 
+### OpenCVなしでのインストール（オプション）
+
+`opencv-python` はデフォルトで `requirements.txt` に含まれていますが、学習・データセット処理パイプラインが利用している OpenCV 機能は限定的です（主に `cv2.resize`、`cv2.cvtColor`、およびデバッグ用の `cv2.imshow`）。OpenCV の大きなインストールを避けたい場合は、代わりに `requirements-no-opencv.txt` を使用してください：
+
+```bash
+pip install --upgrade -r requirements-no-opencv.txt
+```
+
+`opencv-python` がインストールされていない場合、Pillow と NumPy による軽量な代替実装（`library/_cv2_stub`）が自動的に `cv2` として登録されるため、既存のスクリプトはそのまま動作します。ただし以下に注意してください：
+
+- デフォルトの `requirements.txt` では OpenCV がそのまま使われ、こちらが推奨される経路です。特に縮小時の `cv2.INTER_AREA` は Pillow による代替より高画質です。
+- 次のツールは実際の `opencv-python` を必要とし、未インストール時は明確なメッセージで終了します：`tools/canny.py`、`tools/detect_face_rotate.py`、および `gen_img.py` / `sdxl_gen_img.py` の ControlNet `canny` プリプロセッサ。
+- データセット確認時の `cv2.imshow` などデバッグ専用機能は、OpenCV がない場合 no-op になります。
+
 ### xformersのインストール（オプション）
 
 xformersをインストールするには、仮想環境を有効にした状態で以下のコマンドを実行してください。

@@ -224,6 +224,20 @@ The scripts are tested with PyTorch 2.6.0. PyTorch 2.6.0 or later is required.
 
 For RTX 50 series GPUs, PyTorch 2.8.0 with CUDA 12.8/12.9 should be used. `requirements.txt` will work with this version.
 
+### Installing without OpenCV (optional)
+
+`opencv-python` is listed in `requirements.txt` as a default dependency, but the core training / dataset pipeline only uses a small subset of OpenCV (mainly `cv2.resize`, `cv2.cvtColor`, and a debug-only `cv2.imshow`). If you would rather avoid the large OpenCV install, use `requirements-no-opencv.txt` instead:
+
+```bash
+pip install --upgrade -r requirements-no-opencv.txt
+```
+
+When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under `library/_cv2_stub` is automatically registered as `cv2`, so existing scripts continue to work. Note that:
+
+- The default install (`requirements.txt`) keeps OpenCV, which remains the recommended path — `cv2.INTER_AREA` in particular produces better results for downscaling than the Pillow fallback.
+- The following tools still require real `opencv-python` and will exit with a clear message when it is missing: `tools/canny.py`, `tools/detect_face_rotate.py`, and the ControlNet `canny` preprocessor used by `gen_img.py` / `sdxl_gen_img.py`.
+- Debug-only features such as `cv2.imshow` during dataset inspection become no-ops without OpenCV.
+
 ### xformers installation (optional)
 
 To install xformers, run the following command in your activated virtual environment:

@@ -9,6 +9,7 @@ from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 from PIL import Image
 import numpy as np

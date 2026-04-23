@@ -1,4 +1,8 @@
 import argparse
+
+from library import cv2_compat
+
+cv2_compat.require_opencv("tools/canny.py")
 import cv2
 
 import logging
