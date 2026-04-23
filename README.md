@@ -236,7 +236,7 @@ When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under
 
 - The default install (`requirements.txt`) keeps OpenCV, which remains the recommended path — `cv2.INTER_AREA` in particular produces better results for downscaling than the Pillow fallback.
 - The following tools still require real `opencv-python` and will exit with a clear message when it is missing: `tools/canny.py`, `tools/detect_face_rotate.py`, and the ControlNet `canny` preprocessor used by `gen_img.py` / `sdxl_gen_img.py`.
-- Debug-only features such as `cv2.imshow` during dataset inspection become no-ops without OpenCV.
+- Debug-only features such as `cv2.imshow` during dataset inspection fall back to Pillow's default image viewer (`PIL.Image.show`), and `cv2.waitKey` blocks on `input()` in the terminal so you can page through images one at a time.
 
 ### xformers installation (optional)
 

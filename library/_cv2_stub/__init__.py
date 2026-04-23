@@ -13,7 +13,11 @@ is implemented. In particular:
   codebase (the HSV variant follows OpenCV's H=[0,180) convention).
 - ``resize`` is implemented via Pillow, mapping ``INTER_*`` constants to
   their closest ``PIL.Image.Resampling`` equivalents.
-- ``imshow`` / ``waitKey`` / ``destroyAllWindows`` are no-ops (debug-only).
+- ``imshow`` displays the image through Pillow's default image viewer
+  (``PIL.Image.show``). ``waitKey`` blocks on ``input()`` so that the caller
+  can page through images one at a time; it returns ``ord(s[0])`` of the
+  first character typed (or ``13`` for an empty Enter) so existing checks
+  like ``k == ord("e")`` continue to work. ``destroyAllWindows`` is a no-op.
 - ``imwrite`` is implemented via Pillow (BGR -> RGB).
 
 Tools that rely on richer OpenCV functionality (Canny, warpAffine, face
@@ -285,17 +289,59 @@ def resize(
     return np.stack(channels, axis=-1)
 
 
-def imshow(winname: str, mat: np.ndarray) -> None:  # pragma: no cover - no-op
-    if not getattr(imshow, "_warned", False):
-        logger.warning(
-            "cv2 stub: imshow is not supported without opencv-python; window '%s' will not be shown.",
-            winname,
-        )
-        imshow._warned = True  # type: ignore[attr-defined]
+def imshow(winname: str, mat: np.ndarray) -> None:
+    """Display ``mat`` via Pillow's default image viewer.
+
+    OpenCV's ``imshow`` takes BGR(A) input, so the channel order is flipped
+    before handing the array to Pillow. Callers reaching this stub have
+    explicitly opted in to image display (e.g. ``--debug_dataset`` or the
+    interactive viewer in ``gen_img.py``), so surfacing the image is the
+    expected behavior; the accompanying ``waitKey`` call paces the display.
+    """
+    if mat is None:
+        return
+
+    if mat.ndim == 2:
+        pil = Image.fromarray(mat)
+    elif mat.ndim == 3 and mat.shape[2] == 1:
+        pil = Image.fromarray(mat[..., 0])
+    elif mat.ndim == 3 and mat.shape[2] == 3:
+        pil = Image.fromarray(_swap_rgb_bgr_3ch(mat))
+    elif mat.ndim == 3 and mat.shape[2] == 4:
+        pil = Image.fromarray(_swap_rgb_bgr_4ch(mat), mode="RGBA")
+    else:
+        logger.warning("cv2 stub: imshow got unsupported shape %s; skipping.", mat.shape)
+        return
+
+    try:
+        pil.show(title=winname)
+    except Exception as e:  # noqa: BLE001
+        logger.error("cv2 stub: imshow failed to display '%s': %s", winname, e)
 
 
-def waitKey(delay: int = 0) -> int:  # pragma: no cover - no-op
-    return -1
+def waitKey(delay: int = 0) -> int:
+    """Block on ``input()`` in place of OpenCV's key-wait.
+
+    The ``delay`` argument is ignored: in this codebase ``waitKey`` is only
+    used from interactive / debug code paths that want to pause between
+    images. Returns ``ord(s[0])`` of the first typed character so that
+    existing checks such as ``k == ord("e")`` / ``k == ord("s")`` keep
+    working; an empty Enter returns ``13`` (carriage return). ``q`` is
+    remapped to ``27`` (ESC) since ESC cannot be entered through
+    ``input()``, preserving ``k == 27`` branches in callers.
+    """
+    try:
+        s = input("cv2 stub: press Enter to continue (or type 'q' to quit / 'e' / 's'): ")
+    except EOFError:
+        return -1
+    if not s:
+        return 13
+    # 'q' stands in for the ESC key (keycode 27) since ESC cannot be entered
+    # through input(); callers that branch on ``k == 27`` (e.g. the outer
+    # epoch loop in debug_dataset) keep working.
+    if s[0] == "q":
+        return 27
+    return ord(s[0])
 
 
 def destroyAllWindows() -> None:  # pragma: no cover - no-op
