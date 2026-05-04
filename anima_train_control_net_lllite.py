@@ -9,6 +9,10 @@ import os
 from multiprocessing import Value
 from typing import Optional
 
+# bucket 切替で発生しうる稀な断片化 OOM 対策
+# torch import より前に環境変数を設定する必要があるため、ここで setdefault しておく.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import toml
 import numpy as np
 from PIL import Image
@@ -680,7 +684,20 @@ def train(args):
                 loss = loss * loss_weights
                 loss = loss.mean()
 
-                accelerator.backward(loss)
+                try:
+                    accelerator.backward(loss)
+                except torch.cuda.OutOfMemoryError:
+                    logger.error(
+                        f"OOM at step={global_step} epoch={epoch} "
+                        f"latents={tuple(latents.shape)} "
+                        f"prompt_embeds={tuple(prompt_embeds.shape)} "
+                        f"cond_image={tuple(cond_image.shape)}"
+                    )
+                    try:
+                        logger.error(torch.cuda.memory_summary(abbreviated=False))
+                    except Exception as e:
+                        logger.error(f"failed to dump memory_summary: {e}")
+                    raise
 
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                     params_to_clip = list(accelerator.unwrap_model(wrapper).lllite.parameters())
