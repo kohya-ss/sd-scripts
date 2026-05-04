@@ -2543,6 +2543,7 @@ class ControlNetDataset(BaseDataset):
             bucket_reso_steps,
             bucket_no_upscale,
             1.0,
+            train_inpainting,
             debug_dataset,
             validation_split,
             validation_seed,
