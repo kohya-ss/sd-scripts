@@ -580,20 +580,15 @@ class TextualInversionTrainer:
                         latents = latents * self.vae_scale_factor
 
                         if batch["masks"] is not None:
-                          masked_latents = vae.encode(
-                              batch["masked_images"].reshape(batch["images"].shape).to(dtype=weight_dtype)
-                          ).latent_dist.sample()
-                          masked_latents = masked_latents * self.vae_scale_factor
+                            masked_latents = vae.encode(
+                                batch["masked_images"].to(dtype=weight_dtype)
+                            ).latent_dist.sample()
+                            masked_latents = masked_latents * self.vae_scale_factor
 
-                          masks = batch["masks"]
-                          # Resize the mask to latents shape as we concatenate the mask to the latents
-                          mask = torch.stack(
-                              [
-                                  torch.nn.functional.interpolate(mask, size=latents.shape[2:])
-                                  for mask in masks
-                              ]
-                          )
-                          mask = mask.reshape(-1, 1, latents.shape[2], latents.shape[3]).to(weight_dtype)
+                            # Resize the mask to latents shape as we concatenate the mask to the latents
+                            mask = torch.nn.functional.interpolate(
+                                batch["masks"].to(weight_dtype), size=latents.shape[2:]
+                            )
 
                     # Get the text embedding for conditioning
                     input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
