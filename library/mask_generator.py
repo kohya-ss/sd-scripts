@@ -20,7 +20,7 @@ To visually inspect mask output, run:
 
 python3 tests/visualize_masks.py --data-dir /path/to/images --out-dir ./mask_viz
 
-This produces gallery PNGs for each mask type, showing the raw mask alongside the mask applied to
+This produces gallery PNG files for each mask type, showing the raw mask alongside the mask applied to
 source images. If no `--data-dir` is provided (or the directory is empty), synthetic test images
 are used as the background.
 
