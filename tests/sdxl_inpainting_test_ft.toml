@@ -1,0 +1,64 @@
+# SDXL inpainting smoke-test config — ft (full fine-tune) mode.
+#
+# Used by: run_sdxl_inpainting_test.sh --mode ft  →  sdxl_train.py
+#
+# Accepts both SDXL inpainting models (in_channels=9) and standard SDXL base
+# models (in_channels=4 — conv_in is auto-expanded to 9 channels at load time).
+#
+# Per-run path fields (pretrained_model_name_or_path, train_data_dir,
+# output_dir, output_name) and max_train_steps are passed on the command line
+# by the test script and override anything in this file.
+
+# --- precision / memory ---
+mixed_precision = "bf16"
+full_bf16 = true
+gradient_checkpointing = true
+sdpa = true
+max_data_loader_n_workers = 0
+# cache_latents is incompatible with train_inpainting (see SD1.5 ft TOML).
+cache_latents = false
+cache_latents_to_disk = false
+
+# --- bucketing ---
+enable_bucket = true
+resolution = "1024,1024"
+min_bucket_reso = 256
+max_bucket_reso = 2048
+bucket_reso_steps = 64
+bucket_no_upscale = true
+
+# --- training ---
+train_batch_size = 1
+max_train_steps = 20
+gradient_accumulation_steps = 1
+train_inpainting = true
+
+# --- optimiser (Adafactor — low VRAM) ---
+optimizer_type = "Adafactor"
+optimizer_args = ["relative_step=False", "scale_parameter=False", "warmup_init=False"]
+learning_rate = 1e-4
+learning_rate_te1 = 0
+learning_rate_te2 = 0
+lr_scheduler = "constant"
+
+# --- captions ---
+caption_extension = ".caption"
+shuffle_caption = false
+max_token_length = 75
+clip_skip = 1
+
+# --- noise ---
+loss_type = "l2"
+multires_noise_discount = 0.3
+noise_offset_type = "Original"
+
+# --- saving ---
+save_model_as = "safetensors"
+save_precision = "fp16"
+save_every_n_steps = 20
+save_state = false
+
+# --- sampling (disabled for smoke test) ---
+sample_every_n_steps = 0
+#sample_sampler = "dpm_2_a"
+#sample_prompts = "prompts.txt"

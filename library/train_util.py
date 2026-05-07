@@ -685,6 +685,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self,
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
+        train_inpainting: bool,
         debug_dataset: bool,
         resize_interpolation: Optional[str] = None,
         skip_image_resolution: Optional[Tuple[int, int]] = None,
@@ -716,6 +717,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self.current_step: int = 0
         self.max_train_steps: int = 0
         self.seed: int = 0
+        
+        #inpainting
+        self.train_inpainting = train_inpainting
 
         # augmentation
         self.aug_helper = AugHelper()
@@ -1579,6 +1583,8 @@ class BaseDataset(torch.utils.data.Dataset):
         flippeds = []  # 変数名が微妙
         text_encoder_outputs_list = []
         custom_attributes = []
+        masks = []
+        masked_images = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
@@ -1676,6 +1682,14 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 img = img[:, :, :3]  # remove alpha channel
 
+                if self.train_inpainting:
+                  pil_image = transforms.functional.to_pil_image(img)
+                  mask = self.random_mask(pil_image.size)
+                  mask, masked_image = self.prepare_mask_and_masked_image(pil_image, mask)
+                  
+                  masks.append(mask)
+                  masked_images.append(masked_image)
+                  
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
                 del img
@@ -1815,6 +1829,10 @@ class BaseDataset(torch.utils.data.Dataset):
             images = None
         example["images"] = images
 
+        example['masks'] = torch.stack(masks) if masks else None
+        example['masked_images'] = torch.stack(masked_images) if masked_images else None
+
+
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
         example["captions"] = captions
 
@@ -1895,6 +1913,31 @@ class BaseDataset(torch.utils.data.Dataset):
         example["bucket_reso"] = bucket_reso
         return example
 
+    @staticmethod
+    def prepare_mask_and_masked_image(image, mask):
+        image = np.array(image.convert("RGB"))
+        image = image.transpose(2, 0, 1)  # HWC -> CHW
+        image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+
+        mask = np.array(mask.convert("L"))
+        mask = mask.astype(np.float32) / 255.0
+        mask = mask[None]  # 1,H,W
+        mask[mask < 0.5] = 0
+        mask[mask >= 0.5] = 1
+        mask = torch.from_numpy(mask)
+
+        masked_image = image * (mask < 0.5)
+
+        return mask, masked_image
+
+
+    # generate random masks
+    @staticmethod
+    def random_mask(im_shape):
+        from library.mask_generator import random_mask as _random_mask
+        w, h = im_shape
+        return _random_mask(w, h)
+
 
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
@@ -1915,6 +1958,7 @@ class DreamBoothDataset(BaseDataset):
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
         prior_loss_weight: float,
+        train_inpainting: bool,
         debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],
@@ -1924,6 +1968,7 @@ class DreamBoothDataset(BaseDataset):
         super().__init__(
             resolution,
             network_multiplier,
+            train_inpainting,
             debug_dataset,
             resize_interpolation,
             skip_image_resolution,
@@ -2225,6 +2270,7 @@ class FineTuningDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
+        train_inpainting: bool,
         debug_dataset: bool,
         validation_seed: int,
         validation_split: float,
@@ -2234,6 +2280,7 @@ class FineTuningDataset(BaseDataset):
         super().__init__(
             resolution,
             network_multiplier,
+            train_inpainting,
             debug_dataset,
             resize_interpolation,
             skip_image_resolution,
@@ -2432,6 +2479,7 @@ class ControlNetDataset(BaseDataset):
         max_bucket_reso: int,
         bucket_reso_steps: int,
         bucket_no_upscale: bool,
+        train_inpainting: bool,
         debug_dataset: bool,
         validation_split: float,
         validation_seed: Optional[int],
@@ -2441,6 +2489,7 @@ class ControlNetDataset(BaseDataset):
         super().__init__(
             resolution,
             network_multiplier,
+            train_inpainting,
             debug_dataset,
             resize_interpolation,
             skip_image_resolution,
@@ -2492,6 +2541,7 @@ class ControlNetDataset(BaseDataset):
             bucket_reso_steps,
             bucket_no_upscale,
             1.0,
+            train_inpainting,
             debug_dataset,
             validation_split,
             validation_seed,
@@ -2926,8 +2976,8 @@ def glob_images_pathlib(dir_path, recursive):
 
 
 class MinimalDataset(BaseDataset):
-    def __init__(self, resolution, network_multiplier, debug_dataset=False):
-        super().__init__(resolution, network_multiplier, debug_dataset)
+    def __init__(self, resolution, network_multiplier, train_inpainting=False, debug_dataset=False):
+        super().__init__(resolution, network_multiplier, train_inpainting, debug_dataset)
 
         self.num_train_images = 0  # update in subclass
         self.num_reg_images = 0  # update in subclass
@@ -4483,6 +4533,14 @@ def verify_training_args(args: argparse.Namespace):
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
         )
 
+    if getattr(args, "train_inpainting", False) and getattr(args, "cache_latents", False):
+        raise ValueError(
+            "train_inpainting and cache_latents cannot be used together. "
+            "Inpainting masks are generated randomly per step from the original image, "
+            "so the image must be read on every step. "
+            "Disable cache_latents (and cache_latents_to_disk) when using --train_inpainting."
+        )
+
     # noise_offset, perlin_noise, multires_noise_iterations cannot be enabled at the same time
     # # Listを使って数えてもいいけど並べてしまえ
     # if args.noise_offset is not None and args.multires_noise_iterations is not None:
@@ -4706,6 +4764,13 @@ def add_dataset_arguments(
         default=None,
         help="dataset class for arbitrary dataset (package.module.Class) / 任意のデータセットを用いるときのクラス名 (package.module.Class)",
     )
+
+    parser.add_argument(
+        "--train_inpainting",
+        action="store_true",
+        help="train an inpainting model / インペイントモデルを学習する",
+    )
+
 
     if support_caption_dropout:
         # Textual Inversion はcaptionのdropoutをsupportしない
@@ -5650,6 +5715,16 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
                 accelerator.device if args.lowram else "cpu",
                 unet_use_linear_projection_in_v2=unet_use_linear_projection_in_v2,
             )
+
+            # Expand 4-channel conv_in to 9 channels when training inpainting from a
+            # standard (non-inpainting) checkpoint.
+            if getattr(args, "train_inpainting", False) and getattr(unet, "in_channels", 4) == 4:
+                logger.info(
+                    "train_inpainting: expanding UNet conv_in from 4 to 9 channels "
+                    "(standard checkpoint → inpainting training from scratch)"
+                )
+                model_util.expand_unet_to_inpainting(unet)
+
             # work on low-ram device
             if args.lowram:
                 text_encoder.to(accelerator.device)
@@ -6311,6 +6386,7 @@ def get_my_scheduler(
         beta_start=SCHEDULER_LINEAR_START,
         beta_end=SCHEDULER_LINEAR_END,
         beta_schedule=SCHEDLER_SCHEDULE,
+        steps_offset=1,
         **sched_init_args,
     )
 
@@ -6377,6 +6453,11 @@ def line_to_prompt_dict(line: str) -> dict:
             m = re.match(r"cn (.+)", parg, re.IGNORECASE)
             if m:
                 prompt_dict["controlnet_image"] = m.group(1)
+                continue
+
+            m = re.match(r"i (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["image"] = m.group(1).strip()
                 continue
 
             m = re.match(r"ctr (.+)", parg, re.IGNORECASE)
@@ -6617,8 +6698,11 @@ def sample_image_inference(
         controlnet_image = Image.open(controlnet_image).convert("RGB")
         controlnet_image = controlnet_image.resize((width, height), Image.LANCZOS)
 
-    height = max(64, height - height % 8)  # round to divisible by 8
-    width = max(64, width - width % 8)  # round to divisible by 8
+    # Round down so the latent shape is divisible by the UNet's largest stride:
+    # SDXL has 2 downsamples (latent /4 → image /32); SD1.5/2.x has 3 (latent /8 → image /64).
+    divisor = 32 if isinstance(pipeline, SdxlStableDiffusionLongPromptWeightingPipeline) else 64
+    height = max(divisor, height - height % divisor)
+    width = max(divisor, width - width % divisor)
     logger.info(f"prompt: {prompt}")
     logger.info(f"negative_prompt: {negative_prompt}")
     logger.info(f"height: {height}")
@@ -6628,6 +6712,29 @@ def sample_image_inference(
     logger.info(f"sample_sampler: {sampler_name}")
     if seed is not None:
         logger.info(f"seed: {seed}")
+
+    # Prepare inpainting source image and mask when training an inpainting model.
+    # The prompt line should include "--i /path/to/image.jpg".
+    # The mask is generated reproducibly from the prompt seed (or randomly if no seed).
+    inpaint_image = None
+    inpaint_mask = None
+    if getattr(args, "train_inpainting", False):
+        image_path = prompt_dict.get("image")
+        if image_path:
+            from library.mask_generator import wobbly_ellipse_mask as _gen_mask
+            if not os.path.exists(image_path):
+                logger.warning(f"inpaint image not found, skipping sample: {image_path}")
+                return
+            inpaint_image = Image.open(image_path).convert("RGB").resize((width, height), Image.LANCZOS)
+            inpaint_mask = _gen_mask(width, height, seed=seed)
+            logger.info(f"inpaint image: {image_path}")
+        else:
+            logger.warning(
+                "train_inpainting is set but no source image specified in the prompt line; "
+                "skipping sample. Add '--i /path/to/image.jpg' to the prompt to enable inpainting sampling."
+            )
+            return
+
     with accelerator.autocast(), torch.no_grad():
         latents = pipeline(
             prompt=prompt,
@@ -6638,6 +6745,8 @@ def sample_image_inference(
             negative_prompt=negative_prompt,
             controlnet=controlnet,
             controlnet_image=controlnet_image,
+            inpaint_image=inpaint_image,
+            inpaint_mask=inpaint_mask,
         )
 
     if torch.cuda.is_available():

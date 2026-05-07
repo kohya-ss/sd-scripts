@@ -823,11 +823,12 @@ class SdxlUNet2DConditionModel(nn.Module):
 
     def __init__(
         self,
+        in_channels: int = IN_CHANNELS,
         **kwargs,
     ):
         super().__init__()
 
-        self.in_channels = IN_CHANNELS
+        self.in_channels = in_channels
         self.out_channels = OUT_CHANNELS
         self.model_channels = MODEL_CHANNELS
         self.time_embed_dim = TIME_EMBED_DIM

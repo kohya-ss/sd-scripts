@@ -1388,6 +1388,7 @@ class UNet2DConditionModel(nn.Module):
         cross_attention_dim: int = 1280,
         use_linear_projection: bool = False,
         upcast_attention: bool = False,
+        in_channels: int = IN_CHANNELS,
         **kwargs,
     ):
         super().__init__()
@@ -1397,7 +1398,7 @@ class UNet2DConditionModel(nn.Module):
         )
 
         # 外部からの参照用に定義しておく
-        self.in_channels = IN_CHANNELS
+        self.in_channels = in_channels
         self.out_channels = OUT_CHANNELS
 
         self.sample_size = sample_size
@@ -1406,7 +1407,7 @@ class UNet2DConditionModel(nn.Module):
         # state_dictの書式が変わるのでmoduleの持ち方は変えられない
 
         # input
-        self.conv_in = nn.Conv2d(IN_CHANNELS, BLOCK_OUT_CHANNELS[0], kernel_size=3, padding=(1, 1))
+        self.conv_in = nn.Conv2d(in_channels, BLOCK_OUT_CHANNELS[0], kernel_size=3, padding=(1, 1))
 
         # time
         self.time_proj = Timesteps(BLOCK_OUT_CHANNELS[0], TIME_EMBED_FLIP_SIN_TO_COS, TIME_EMBED_FREQ_SHIFT)

@@ -13,3 +13,9 @@ GEMINI.md
 MagicMock
 .codex-tmp
 references
+
+# inpainting test artefacts (synthetic data, training outputs, downloads, mask viz)
+tests/test_data/
+tests/test_output_*/
+tests/downloaded_data/
+tests/mask_viz/

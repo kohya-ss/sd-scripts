@@ -47,8 +47,10 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
-- The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+- **Version 0.10.4 (2026-05-07):**
     - Improved compatibility with Intel GPUs. Thanks to WhitePr for [PR #2307](https://github.com/kohya-ss/sd-scripts/pull/2307).
+    - Support for training inpainting models for SD 1.5/SDXL has been added. Thanks to allanoepping for [PR #2309](https://github.com/kohya-ss/sd-scripts/pull/2309) (followed by [PR #2318](https://github.com/kohya-ss/sd-scripts/pull/2318)).
+        - For details, please refer to the [documentation](./docs/inpainting_training.md).
 
 - **Version 0.10.3 (2026-04-02):**
     - Stability when training with fp16 on Anima has been further improved. See [PR #2302](https://github.com/kohya-ss/sd-scripts/pull/2302) for details. We deeply appreciate those who reported the issue.
@@ -90,6 +92,7 @@ If you find this project helpful, please consider supporting its development via
 * LoRA training
 * Fine-tuning (native training, DreamBooth): except for HunyuanImage-2.1
 * Textual Inversion training: SD/SDXL
+* Inpainting model training: SD1.5 and SDXL
 * Image generation
 * Other utilities such as model conversion, image tagging, LoRA merging, etc.
 
@@ -110,6 +113,7 @@ If you find this project helpful, please consider supporting its development via
 * [ControlNet-LLLite Training](./docs/train_lllite_README.md) / [Japanese version](./docs/train_lllite_README-ja.md)
 * [Validation](./docs/validation.md)
 * [Masked Loss Training](./docs/masked_loss_README.md) / [Japanese version](./docs/masked_loss_README-ja.md)
+* [Inpainting Training](./docs/inpainting_training.md)
 
 ### Other Documentation (English and Japanese)
 

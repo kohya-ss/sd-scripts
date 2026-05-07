@@ -1,0 +1,62 @@
+# SD1.5 inpainting smoke-test config — lora mode.
+#
+# Used by: run_sd15_inpainting_test.sh --mode lora  →  train_network.py
+#
+# Note on model requirement: LoRA does not extend the UNet conv_in, so the
+# base model must already be an SD1.5 inpainting checkpoint (in_channels=9).
+# A standard SD1.5 model will fail at the first UNet forward pass.
+#
+# Per-run path fields (pretrained_model_name_or_path, train_data_dir,
+# output_dir, output_name) and max_train_steps are passed on the command line
+# by the test script and override anything in this file.
+
+# --- precision / memory ---
+mixed_precision = "fp16"
+gradient_checkpointing = true
+sdpa = true
+max_data_loader_n_workers = 0
+# cache_latents is incompatible with train_inpainting (see ft TOML for details).
+cache_latents = false
+cache_latents_to_disk = false
+
+# --- bucketing ---
+enable_bucket = true
+resolution = "512,512"
+min_bucket_reso = 256
+max_bucket_reso = 1024
+bucket_reso_steps = 64
+bucket_no_upscale = true
+
+# --- training ---
+train_batch_size = 1
+max_train_steps = 20
+gradient_accumulation_steps = 1
+train_inpainting = true
+
+# --- network (LoRA) ---
+network_module = "networks.lora"
+network_dim = 4
+network_alpha = 1
+
+# --- optimiser ---
+learning_rate = 1e-4
+lr_scheduler = "constant"
+
+# --- captions ---
+caption_extension = ".caption"
+shuffle_caption = false
+max_token_length = 75
+clip_skip = 1
+
+# --- noise ---
+loss_type = "l2"
+noise_offset_type = "Original"
+
+# --- saving ---
+save_model_as = "safetensors"
+save_precision = "fp16"
+save_every_n_steps = 20
+save_state = false
+
+# --- sampling (disabled for smoke test) ---
+sample_every_n_steps = 0

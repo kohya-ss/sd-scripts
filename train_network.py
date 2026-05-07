@@ -265,13 +265,21 @@ class NetworkTrainer:
             for t in text_encoder_conds:
                 t.requires_grad_(True)
 
+        # For inpainting models: concatenate [noisy_latents, mask, masked_latents] -> 9-channel UNet input
+        unet_latents = noisy_latents
+        if batch.get("masked_latents") is not None:
+            mask = torch.nn.functional.interpolate(
+                batch["masks"].to(weight_dtype), size=noisy_latents.shape[2:]
+            )
+            unet_latents = torch.cat([noisy_latents, mask, batch["masked_latents"].to(weight_dtype)], dim=1)
+
         # Predict the noise residual
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             noise_pred = self.call_unet(
                 args,
                 accelerator,
                 unet,
-                noisy_latents.requires_grad_(train_unet),
+                unet_latents.requires_grad_(train_unet),
                 timesteps,
                 text_encoder_conds,
                 batch,
@@ -395,6 +403,13 @@ class NetworkTrainer:
                     latents = typing.cast(torch.FloatTensor, torch.nan_to_num(latents, 0, out=latents))
 
             latents = self.shift_scale_latents(args, latents)
+
+            # Prepare inpainting masked_latents if batch contains masks
+            if batch.get("masks") is not None:
+                masked_latents = self.encode_images_to_latents(
+                    args, vae, batch["masked_images"].to(accelerator.device, dtype=vae_dtype)
+                )
+                batch["masked_latents"] = self.shift_scale_latents(args, masked_latents)
 
         text_encoder_conds = []
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)

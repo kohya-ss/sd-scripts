@@ -104,6 +104,7 @@ class ControlNetSubsetParams(BaseSubsetParams):
 class BaseDatasetParams:
     resolution: Optional[Tuple[int, int]] = None
     network_multiplier: float = 1.0
+    train_inpainting: bool = False
     debug_dataset: bool = False
     validation_seed: Optional[int] = None
     validation_split: float = 0.0
@@ -251,6 +252,7 @@ class ConfigSanitizer:
     # options handled by argparse but not handled by user config
     ARGPARSE_SPECIFIC_SCHEMA = {
         "debug_dataset": bool,
+        "train_inpainting": bool,
         "max_token_length": Any(None, int),
         "prior_loss_weight": Any(float, int),
     }

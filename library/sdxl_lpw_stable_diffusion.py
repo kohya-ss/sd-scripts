@@ -678,7 +678,7 @@ class SdxlStableDiffusionLongPromptWeightingPipeline:
         if image is None:
             shape = (
                 batch_size,
-                self.unet.in_channels,
+                self.vae.config.latent_channels,  # always 4; unet.in_channels may be 9 for inpainting
                 height // self.vae_scale_factor,
                 width // self.vae_scale_factor,
             )
@@ -734,6 +734,8 @@ class SdxlStableDiffusionLongPromptWeightingPipeline:
         return_dict: bool = True,
         controlnet: sdxl_original_control_net.SdxlControlNet = None,
         controlnet_image=None,
+        inpaint_image: PIL.Image.Image = None,
+        inpaint_mask: PIL.Image.Image = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         is_cancelled_callback: Optional[Callable[[], bool]] = None,
         callback_steps: int = 1,
@@ -920,11 +922,49 @@ class SdxlStableDiffusionLongPromptWeightingPipeline:
             text_embedding = text_embeddings.to(device, dtype)
             vector_embedding = torch.cat([text_pool, embs], dim=1)
 
+        # Prepare 9-channel inpainting inputs (mask + masked image latents) if supplied.
+        # The scheduler and latents always stay 4-channel; concatenation only happens
+        # on the UNet input (latent_model_input) inside the denoising loop.
+        inpaint_mask_latent = None
+        inpaint_masked_image_latent = None
+        if inpaint_image is not None and inpaint_mask is not None:
+            import numpy as np
+            # Encode masked image: image * (1 - mask).
+            # The VAE may run in a different dtype than the UNet (e.g. fp32 with
+            # --no_half_vae, or bf16 to avoid SDXL's fp16 VAE NaN issue), so cast
+            # to self.vae.dtype here — mirroring the existing decode_latents path
+            # (`self.vae.decode(latents.to(self.vae.dtype))`).
+            img_np = np.array(inpaint_image.convert("RGB")).astype(np.float32) / 127.5 - 1.0
+            img_t = torch.from_numpy(img_np).permute(2, 0, 1)[None].to(device=device, dtype=self.vae.dtype)
+            mask_np = np.array(inpaint_mask.convert("L")).astype(np.float32) / 255.0
+            mask_np = (mask_np >= 0.5).astype(np.float32)
+            mask_t = torch.from_numpy(mask_np)[None, None].to(device=device, dtype=self.vae.dtype)
+            masked_img_t = img_t * (1.0 - mask_t)
+            # Disable autocast: under fp16 autocast (set by accelerator.autocast() in
+            # train_util.sample_image_inference), conv kernels run in fp16 even when
+            # weights/inputs are fp32 — and SDXL VAE produces NaN in fp16. This mirrors
+            # how decode_latents() runs *outside* the autocast block in the caller.
+            with torch.autocast(device_type=device.type, enabled=False):
+                inpaint_masked_image_latent = (
+                    self.vae.encode(masked_img_t).latent_dist.sample() * sdxl_model_util.VAE_SCALE_FACTOR
+                )
+            inpaint_mask_latent = torch.nn.functional.interpolate(
+                mask_t, size=(height // 8, width // 8)
+            )
+
         # 8. Denoising loop
         for i, t in enumerate(self.progress_bar(timesteps)):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+            # For 9-channel inpainting UNet: concatenate mask and masked-image latents.
+            # Duplicate for CFG the same way latent_model_input was duplicated.
+            if inpaint_mask_latent is not None:
+                n = latent_model_input.shape[0] // latents.shape[0]  # 2 if CFG, else 1
+                mask_in = inpaint_mask_latent.repeat(n, 1, 1, 1).to(latent_model_input.dtype)
+                masked_in = inpaint_masked_image_latent.repeat(n, 1, 1, 1).to(latent_model_input.dtype)
+                latent_model_input = torch.cat([latent_model_input, mask_in, masked_in], dim=1)
 
             # FIXME SD1 ControlNet is not working
 
