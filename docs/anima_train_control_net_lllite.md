@@ -47,7 +47,7 @@ ControlNet-LLLite は SDXL 向けに導入された LoRA ライクな軽量条�
 | Dataset | DreamBooth / fine-tuning | **ControlNet format** (image + conditioning image) |
 | Network module | `--network_module=networks.lora_anima` | (none — built-in `ControlNetLLLiteDiT`) |
 | Extra inputs at train step | — | `conditioning_images` from each batch |
-| Saved weights | LoRA `.safetensors` | LLLite `.safetensors` (`lllite_conditioning1.*` + `lllite_modules.*`) |
+| Saved weights | LoRA `.safetensors` | LLLite `.safetensors` (`lllite_conditioning1.*` + per-module `{lllite_name}.*`, e.g. `lllite_dit_blocks_0_self_attn_q_proj.*`) |
 
 The dataset format is the same as the existing SDXL ControlNet-LLLite script. See the **Preparing the dataset** section of [`train_lllite_README.md`](./train_lllite_README.md#preparing-the-dataset) ([日本語](./train_lllite_README-ja.md#データセットの準備)) for the directory layout, `conditioning_data_dir`, and dataset synthesis tips.
 
@@ -62,7 +62,7 @@ The dataset format is the same as the existing SDXL ControlNet-LLLite script. Se
 | データセット形式 | DreamBooth / fine-tuning | **ControlNet 形式**（教師画像 + conditioning 画像） |
 | Network module | `--network_module=networks.lora_anima` | （不要、`ControlNetLLLiteDiT` 内蔵） |
 | 学習ステップの追加入力 | — | バッチ内の `conditioning_images` |
-| 保存される重み | LoRA `.safetensors` | LLLite `.safetensors`（`lllite_conditioning1.*` と `lllite_modules.*`） |
+| 保存される重み | LoRA `.safetensors` | LLLite `.safetensors`（`lllite_conditioning1.*` と モジュール毎の `{lllite_name}.*`、例：`lllite_dit_blocks_0_self_attn_q_proj.*`） |
 
 データセット形式は既存の SDXL 向け ControlNet-LLLite と同一です。ディレクトリ構成、`conditioning_data_dir` の指定、データセット合成のヒントなどは [`train_lllite_README-ja.md`](./train_lllite_README-ja.md#データセットの準備) を参照してください。
 
@@ -310,7 +310,7 @@ If `--cn` is omitted (or the file does not exist), the prompt is rendered with t
 
 ## 5. Saved Weights / 保存される重み
 
-The saved `.safetensors` contains only the LLLite-side parameters. The v2 `state_dict` has the following shape (`{i}` indexes the LLLite module, `{j}` the ResBlock):
+The saved `.safetensors` contains only the LLLite-side parameters. On disk the per-module keys use a **named-key format**: each module's tensors are prefixed with its `lllite_name` (e.g. `lllite_dit_blocks_0_self_attn_q_proj`), so a single weight file uniquely identifies which DiT block / Linear each module targets. The internal `state_dict` keys (`lllite_modules.{i}.*` and the stacked `depth_embeds`) are rewritten at save time, and any file that still contains `lllite_modules.*` keys is rejected by `load_lllite_weights` as a legacy format. The on-disk layout is as follows (`{j}` indexes the ResBlock, and `{name}` stands for an `lllite_name` such as `lllite_dit_blocks_0_self_attn_q_proj`):
 
 ```
 # conditioning1 trunk (Conv stride-4 ×2 with an intermediate Conv stride-1)
@@ -331,14 +331,12 @@ lllite_conditioning1.aspp.proj.0.{weight,bias},         lllite_conditioning1.asp
 lllite_conditioning1.proj.{weight,bias}
 lllite_conditioning1.out_norm.{weight,bias}
 
-# per-module depth embeddings (zero-init, shape (N_modules, cond_emb_dim))
-depth_embeds
-
-# per LLLite module
-lllite_modules.{i}.down.{weight,bias}          # Linear(in_dim -> mlp_dim)
-lllite_modules.{i}.mid.{weight,bias}           # Linear(mlp_dim + cond_emb_dim -> mlp_dim)
-lllite_modules.{i}.cond_to_film.{weight,bias}  # Linear(cond_emb_dim -> 2*mlp_dim), zero-init (γ, β)
-lllite_modules.{i}.up.{weight,bias}            # Linear(mlp_dim -> in_dim), zero-init
+# per LLLite module — keys are prefixed with the module's lllite_name
+{name}.depth_embed                  # zero-init, shape (cond_emb_dim,) — split from internal depth_embeds (N, D)
+{name}.down.{weight,bias}           # Linear(in_dim -> mlp_dim)
+{name}.mid.{weight,bias}            # Linear(mlp_dim + cond_emb_dim -> mlp_dim)
+{name}.cond_to_film.{weight,bias}   # Linear(cond_emb_dim -> 2*mlp_dim), zero-init (γ, β)
+{name}.up.{weight,bias}             # Linear(mlp_dim -> in_dim), zero-init
 ```
 
 The metadata records `modelspec.architecture = "anima-preview/control-net-lllite"` plus the following v2-specific keys:
@@ -362,7 +360,7 @@ Save cadence options (`--save_every_n_epochs`, `--save_every_n_steps`, `--save_s
 <details>
 <summary>日本語</summary>
 
-保存される `.safetensors` には LLLite 側のパラメータのみが含まれます。v2 の `state_dict` の構造は以下の通りです（`{i}` は LLLite モジュールの index、`{j}` は ResBlock の index）：
+保存される `.safetensors` には LLLite 側のパラメータのみが含まれます。ディスク上のモジュール毎キーは **named-key 形式** で、各モジュールのテンソルにそのモジュールの `lllite_name`（例：`lllite_dit_blocks_0_self_attn_q_proj`）が prefix として付きます。これにより重みファイル単独で「どの DiT block のどの Linear 用か」が一意に判別できます。内部 `state_dict` のキー（`lllite_modules.{i}.*` および stack された `depth_embeds`）は保存時に書き換えられ、`lllite_modules.*` キーを含むファイルは `load_lllite_weights` で legacy フォーマットとして reject されます。ディスク上の構造は以下の通りです（`{j}` は ResBlock の index、`{name}` は `lllite_dit_blocks_0_self_attn_q_proj` のような `lllite_name`）：
 
 ```
 # conditioning1 trunk (stride-4 Conv ×2、その間に stride-1 Conv)
@@ -383,14 +381,12 @@ lllite_conditioning1.aspp.proj.0.{weight,bias},         lllite_conditioning1.asp
 lllite_conditioning1.proj.{weight,bias}
 lllite_conditioning1.out_norm.{weight,bias}
 
-# モジュール毎の depth embedding (zero-init、shape (N_modules, cond_emb_dim))
-depth_embeds
-
-# 各 LLLite モジュール
-lllite_modules.{i}.down.{weight,bias}          # Linear(in_dim -> mlp_dim)
-lllite_modules.{i}.mid.{weight,bias}           # Linear(mlp_dim + cond_emb_dim -> mlp_dim)
-lllite_modules.{i}.cond_to_film.{weight,bias}  # Linear(cond_emb_dim -> 2*mlp_dim), zero-init (γ, β)
-lllite_modules.{i}.up.{weight,bias}            # Linear(mlp_dim -> in_dim), zero-init
+# 各 LLLite モジュール — 各キーにそのモジュールの lllite_name が prefix される
+{name}.depth_embed                  # zero-init、shape (cond_emb_dim,) — 内部 depth_embeds (N, D) を per-module に split
+{name}.down.{weight,bias}           # Linear(in_dim -> mlp_dim)
+{name}.mid.{weight,bias}            # Linear(mlp_dim + cond_emb_dim -> mlp_dim)
+{name}.cond_to_film.{weight,bias}   # Linear(cond_emb_dim -> 2*mlp_dim), zero-init (γ, β)
+{name}.up.{weight,bias}             # Linear(mlp_dim -> in_dim), zero-init
 ```
 
 メタデータには `modelspec.architecture = "anima-preview/control-net-lllite"` のほか、以下の v2 固有キーが書き込まれます：
