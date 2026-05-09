@@ -2369,10 +2369,6 @@ class FineTuningDataset(BaseDataset):
                     paths = glob_images(os.path.dirname(abs_path), os.path.basename(image_key))
                     if len(paths) > 0:
                         abs_path = paths[0]
-                    else:
-                        logger.warning(
-                            f"image file not found for {abs_path}. This entry will be ignored. If the image file has an extension, please include it in the metadata. / 画像ファイルが見つかりませんでした。このエントリは無視されます。画像ファイルに拡張子がある場合は、メタデータに拡張子を含めてください: {image_key}"
-                        )
                     # If no file is found, we use *.npz file to get image size and for training
 
                 metadata[image_key]["abs_path"] = abs_path
