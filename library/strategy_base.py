@@ -504,9 +504,9 @@ class LatentsCachingStrategy:
         Returns:
             None
         """
-        from library import train_util  # import here to avoid circular import
+        from library import caching
 
-        img_tensor, alpha_masks, original_sizes, crop_ltrbs = train_util.load_images_and_masks_for_caching(
+        img_tensor, alpha_masks, original_sizes, crop_ltrbs = caching.load_images_and_masks_for_caching(
             image_infos, apply_alpha_mask, random_crop
         )
         img_tensor = img_tensor.to(device=vae_device, dtype=vae_dtype)

@@ -16,6 +16,7 @@ init_ipex()
 
 from torchvision import transforms
 
+import library.caching as caching
 import library.model_util as model_util
 import library.train_util as train_util
 from library.utils import setup_logging
@@ -112,7 +113,7 @@ def main(args):
     def process_batch(is_last):
         for bucket in bucket_manager.buckets:
             if (is_last and len(bucket) > 0) or len(bucket) >= args.batch_size:
-                train_util.cache_batch_latents(vae, True, bucket, args.flip_aug, args.alpha_mask, False)
+                caching.cache_batch_latents(vae, True, bucket, args.flip_aug, args.alpha_mask, False)
                 bucket.clear()
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
@@ -175,7 +176,7 @@ def main(args):
         # 既に存在するファイルがあればshape等を確認して同じならskipする
         npz_file_name = get_npz_filename(args.train_data_dir, image_key, args.full_path, args.recursive)
         if args.skip_existing:
-            if train_util.is_disk_cached_latents_is_expected(reso, npz_file_name, args.flip_aug):
+            if caching.is_disk_cached_latents_is_expected(reso, npz_file_name, args.flip_aug):
                 continue
 
         # バッチへ追加
