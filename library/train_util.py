@@ -717,8 +717,8 @@ class BaseDataset(torch.utils.data.Dataset):
         self.current_step: int = 0
         self.max_train_steps: int = 0
         self.seed: int = 0
-        
-        #inpainting
+
+        # inpainting
         self.train_inpainting = train_inpainting
 
         # augmentation
@@ -1683,13 +1683,13 @@ class BaseDataset(torch.utils.data.Dataset):
                 img = img[:, :, :3]  # remove alpha channel
 
                 if self.train_inpainting:
-                  pil_image = transforms.functional.to_pil_image(img)
-                  mask = self.random_mask(pil_image.size)
-                  mask, masked_image = self.prepare_mask_and_masked_image(pil_image, mask)
-                  
-                  masks.append(mask)
-                  masked_images.append(masked_image)
-                  
+                    pil_image = transforms.functional.to_pil_image(img)
+                    mask = self.random_mask(pil_image.size)
+                    mask, masked_image = self.prepare_mask_and_masked_image(pil_image, mask)
+
+                    masks.append(mask)
+                    masked_images.append(masked_image)
+
                 latents = None
                 image = self.image_transforms(img)  # -1.0~1.0のtorch.Tensorになる
                 del img
@@ -1829,9 +1829,8 @@ class BaseDataset(torch.utils.data.Dataset):
             images = None
         example["images"] = images
 
-        example['masks'] = torch.stack(masks) if masks else None
-        example['masked_images'] = torch.stack(masked_images) if masked_images else None
-
+        example["masks"] = torch.stack(masks) if masks else None
+        example["masked_images"] = torch.stack(masked_images) if masked_images else None
 
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
         example["captions"] = captions
@@ -1930,11 +1929,11 @@ class BaseDataset(torch.utils.data.Dataset):
 
         return mask, masked_image
 
-
     # generate random masks
     @staticmethod
     def random_mask(im_shape):
         from library.mask_generator import random_mask as _random_mask
+
         w, h = im_shape
         return _random_mask(w, h)
 
@@ -2364,6 +2363,18 @@ class FineTuningDataset(BaseDataset):
                 else:
                     abs_path = image_key
                     image_dirs.add(os.path.dirname(abs_path))
+
+                # if image_key does not have extension, try to find image file with supported extensions
+                if not os.path.splitext(image_key)[1] or not os.path.exists(abs_path):  # no extension or file does not exist
+                    paths = glob_images(os.path.dirname(abs_path), os.path.basename(image_key))
+                    if len(paths) > 0:
+                        abs_path = paths[0]
+                    else:
+                        logger.warning(
+                            f"image file not found for {abs_path}. This entry will be ignored. If the image file has an extension, please include it in the metadata. / 画像ファイルが見つかりませんでした。このエントリは無視されます。画像ファイルに拡張子がある場合は、メタデータに拡張子を含めてください: {image_key}"
+                        )
+                    # If no file is found, we use *.npz file to get image size and for training
+
                 metadata[image_key]["abs_path"] = abs_path
 
             # Enumerate existing npz files
@@ -4771,7 +4782,6 @@ def add_dataset_arguments(
         help="train an inpainting model / インペイントモデルを学習する",
     )
 
-
     if support_caption_dropout:
         # Textual Inversion はcaptionのdropoutをsupportしない
         # いわゆるtensorのDropoutと紛らわしいのでprefixにcaptionを付けておく　every_n_epochsは他と平仄を合わせてdefault Noneに
@@ -6335,7 +6345,8 @@ def append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names):
             )
             if "effective_lr" in lr_scheduler.optimizers[-1].param_groups[lr_index]:
                 logs["lr/d*eff_lr/" + name] = (
-                    lr_scheduler.optimizers[-1].param_groups[lr_index]["d"] * lr_scheduler.optimizers[-1].param_groups[lr_index]["effective_lr"]
+                    lr_scheduler.optimizers[-1].param_groups[lr_index]["d"]
+                    * lr_scheduler.optimizers[-1].param_groups[lr_index]["effective_lr"]
                 )
 
 
@@ -6722,6 +6733,7 @@ def sample_image_inference(
         image_path = prompt_dict.get("image")
         if image_path:
             from library.mask_generator import wobbly_ellipse_mask as _gen_mask
+
             if not os.path.exists(image_path):
                 logger.warning(f"inpaint image not found, skipping sample: {image_path}")
                 return
