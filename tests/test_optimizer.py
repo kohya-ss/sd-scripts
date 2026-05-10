@@ -1,5 +1,5 @@
 from unittest.mock import patch
-from library.train_util import get_optimizer
+from library.optimizer import get_optimizer
 from train_network import setup_parser
 import torch
 from torch.nn import Parameter
