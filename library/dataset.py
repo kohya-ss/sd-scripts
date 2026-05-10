@@ -20,7 +20,7 @@ remains in ``library.train_util``; this module accesses it lazily via the
 ``_tu()`` helper to avoid an import cycle.
 """
 
-import glob as _glob
+import glob
 import importlib
 import logging
 import math
