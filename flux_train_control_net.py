@@ -34,6 +34,7 @@ from accelerate.utils import set_seed
 import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
+import library.checkpoint_io as checkpoint_io
 import library.sai_model_spec as sai_model_spec
 from library import (
     deepspeed_utils,
@@ -809,7 +810,7 @@ def train(args):
     optimizer_eval_fn()
 
     if args.save_state or args.save_state_on_train_end:
-        train_util.save_state_on_train_end(args, accelerator)
+        checkpoint_io.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
 

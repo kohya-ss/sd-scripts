@@ -23,6 +23,7 @@ from diffusers import DDPMScheduler
 import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
+import library.checkpoint_io as checkpoint_io
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -447,7 +448,7 @@ def train(args):
                     accelerator.wait_for_everyone()
                     if accelerator.is_main_process:
                         src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
-                        train_util.save_sd_model_on_epoch_end_or_stepwise(
+                        checkpoint_io.save_sd_model_on_epoch_end_or_stepwise(
                             args,
                             False,
                             accelerator,
@@ -487,7 +488,7 @@ def train(args):
             if accelerator.is_main_process:
                 # checking for saving is in util
                 src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
-                train_util.save_sd_model_on_epoch_end_or_stepwise(
+                checkpoint_io.save_sd_model_on_epoch_end_or_stepwise(
                     args,
                     True,
                     accelerator,
@@ -515,13 +516,13 @@ def train(args):
     accelerator.end_training()
 
     if is_main_process and (args.save_state or args.save_state_on_train_end):
-        train_util.save_state_on_train_end(args, accelerator)
+        checkpoint_io.save_state_on_train_end(args, accelerator)
 
     del accelerator  # この後メモリを使うのでこれは消す
 
     if is_main_process:
         src_path = src_stable_diffusion_ckpt if save_stable_diffusion_format else src_diffusers_model_path
-        train_util.save_sd_model_on_train_end(
+        checkpoint_io.save_sd_model_on_train_end(
             args, src_path, save_stable_diffusion_format, use_safetensors, save_dtype, epoch, global_step, text_encoder, unet, vae
         )
         logger.info("model saved.")
