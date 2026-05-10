@@ -1957,3 +1957,24 @@ def load_image(image_path, alpha=False):
     except (IOError, OSError) as e:
         logger.error(f"Error loading file: {image_path}")
         raise e
+
+
+# collate_fn 用 epoch, step は multiprocessing.Value
+class collator_class:
+    def __init__(self, epoch, step, dataset):
+        self.current_epoch = epoch
+        self.current_step = step
+        self.dataset = dataset  # not used if worker_info is not None, in case of multiprocessing
+
+    def __call__(self, examples):
+        worker_info = torch.utils.data.get_worker_info()
+        # worker_info is None in the main process
+        if worker_info is not None:
+            dataset = worker_info.dataset
+        else:
+            dataset = self.dataset
+
+        # set epoch and step
+        dataset.set_current_epoch(self.current_epoch.value)
+        dataset.set_current_step(self.current_step.value)
+        return examples[0]

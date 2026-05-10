@@ -14,6 +14,7 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers.generation.utils import GenerationMixin
 
 import library.train_util as train_util
+from finetune.image_loading_dataset import ImageLoadingDataset
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -108,7 +109,7 @@ def main(args):
 
     # 読み込みの高速化のためにDataLoaderを使うオプション
     if args.max_data_loader_n_workers is not None:
-        dataset = train_util.ImageLoadingDataset(image_paths)
+        dataset = ImageLoadingDataset(image_paths)
         data = torch.utils.data.DataLoader(
             dataset,
             batch_size=args.batch_size,

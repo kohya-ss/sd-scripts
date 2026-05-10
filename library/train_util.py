@@ -2,10 +2,6 @@
 
 import logging
 
-import torch
-from torchvision import transforms
-from PIL import Image
-
 from library.device_utils import init_ipex, clean_memory_on_device  # noqa: F401  (clean_memory_on_device re-exported for backward compatibility)
 from library.utils import setup_logging
 
@@ -72,6 +68,7 @@ from library.dataset import (  # noqa: F401, E402
     glob_images,
     glob_images_pathlib,
     load_image,
+    collator_class,
 )
 
 
@@ -99,21 +96,6 @@ from library.caching import (  # noqa: F401, E402
     save_text_encoder_outputs_to_disk,
     load_text_encoder_outputs_from_disk,
 )
-
-
-# constants
-
-EPSILON = 1e-6
-
-# helper functions
-
-
-def exists(val):
-    return val is not None
-
-
-def default(val, d):
-    return val if exists(val) else d
 
 
 # Model I/O, hashing and metadata helpers have moved to library.model_io;
@@ -237,58 +219,4 @@ from library.sampling import (  # noqa: F401, E402
 # Logging / tracker helpers have moved to library.logging_util;
 # re-exported here for backward compatibility.
 # New code should import from library.logging_util directly.
-from library.logging_util import init_trackers  # noqa: F401, E402
-
-
-# region 前処理用
-
-
-class ImageLoadingDataset(torch.utils.data.Dataset):
-    def __init__(self, image_paths):
-        self.images = image_paths
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        img_path = self.images[idx]
-
-        try:
-            image = Image.open(img_path).convert("RGB")
-            # convert to tensor temporarily so dataloader will accept it
-            tensor_pil = transforms.functional.pil_to_tensor(image)
-        except Exception as e:
-            logger.error(f"Could not load image path / 画像を読み込めません: {img_path}, error: {e}")
-            return None
-
-        return (tensor_pil, img_path)
-
-
-# endregion
-
-
-# collate_fn用 epoch,stepはmultiprocessing.Value
-class collator_class:
-    def __init__(self, epoch, step, dataset):
-        self.current_epoch = epoch
-        self.current_step = step
-        self.dataset = dataset  # not used if worker_info is not None, in case of multiprocessing
-
-    def __call__(self, examples):
-        worker_info = torch.utils.data.get_worker_info()
-        # worker_info is None in the main process
-        if worker_info is not None:
-            dataset = worker_info.dataset
-        else:
-            dataset = self.dataset
-
-        # set epoch and step
-        dataset.set_current_epoch(self.current_epoch.value)
-        dataset.set_current_step(self.current_step.value)
-        return examples[0]
-
-
-# LossRecorder has moved to library.logging_util;
-# re-exported here for backward compatibility.
-# New code should import from library.logging_util directly.
-from library.logging_util import LossRecorder  # noqa: F401, E402
+from library.logging_util import init_trackers, LossRecorder  # noqa: F401, E402
