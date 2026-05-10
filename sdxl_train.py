@@ -20,6 +20,7 @@ from diffusers import DDPMScheduler
 from library import deepspeed_utils, sdxl_model_util, strategy_base, strategy_sd, strategy_sdxl, sai_model_spec
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -622,7 +623,7 @@ def train(args):
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1

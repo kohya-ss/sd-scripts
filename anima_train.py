@@ -23,6 +23,7 @@ from accelerate.utils import set_seed
 from library import deepspeed_utils, anima_models, anima_train_utils, anima_utils, strategy_base, strategy_anima, sai_model_spec
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -472,7 +473,7 @@ def train(args):
     if vae is not None:
         logger.info(f"vae device: {vae.device}")
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     epoch = 0
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")

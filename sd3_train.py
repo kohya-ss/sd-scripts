@@ -28,6 +28,7 @@ from library.sdxl_train_util import match_mixed_precision
 # , sdxl_model_util
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -732,7 +733,7 @@ def train(args):
         else "vae is None"
     )
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     epoch = 0  # avoid error when max_train_steps is 0
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")

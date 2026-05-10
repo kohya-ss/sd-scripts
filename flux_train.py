@@ -34,6 +34,7 @@ from library import deepspeed_utils, flux_train_utils, flux_utils, strategy_base
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -578,7 +579,7 @@ def train(args):
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     epoch = 0  # avoid error when max_train_steps is 0
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")

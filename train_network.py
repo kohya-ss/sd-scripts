@@ -28,6 +28,7 @@ from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from library import deepspeed_utils, model_util, sai_model_spec, strategy_base, strategy_sd, sai_model_spec
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 from library.train_util import DreamBoothDataset
 import library.config_util as config_util
 from library.config_util import (
@@ -1276,11 +1277,11 @@ class NetworkTrainer:
 
         noise_scheduler = self.get_noise_scheduler(args, accelerator.device)
 
-        train_util.init_trackers(accelerator, args, "network_train")
+        logging_util.init_trackers(accelerator, args, "network_train")
 
-        loss_recorder = train_util.LossRecorder()
-        val_step_loss_recorder = train_util.LossRecorder()
-        val_epoch_loss_recorder = train_util.LossRecorder()
+        loss_recorder = logging_util.LossRecorder()
+        val_step_loss_recorder = logging_util.LossRecorder()
+        val_epoch_loss_recorder = logging_util.LossRecorder()
 
         del train_dataset_group
         if val_dataset_group is not None:

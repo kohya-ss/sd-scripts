@@ -11,7 +11,7 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from library import custom_train_functions, sdxl_model_util, sdxl_train_util, strategy_sdxl, train_util
+from library import custom_train_functions, logging_util, sdxl_model_util, sdxl_train_util, strategy_sdxl, train_util
 from library.custom_train_functions import apply_snr_weight, prepare_scheduler_for_custom_training
 from library.leco_train_util import (
     PromptEmbedsCache,
@@ -206,7 +206,7 @@ def main():
 
     optimizer_train_fn, _ = train_util.get_optimizer_train_eval_fn(optimizer, args)
     optimizer_train_fn()
-    train_util.init_trackers(accelerator, args, "sdxl_leco_train")
+    logging_util.init_trackers(accelerator, args, "sdxl_leco_train")
 
     progress_bar = tqdm(total=args.max_train_steps, disable=not accelerator.is_local_main_process, desc="steps")
     global_step = 0
