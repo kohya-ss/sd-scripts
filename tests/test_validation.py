@@ -1,4 +1,4 @@
-from library.train_util import split_train_val
+from library.dataset import split_train_val
 
 
 def test_split_train_val():
