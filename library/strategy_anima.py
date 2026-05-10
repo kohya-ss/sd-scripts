@@ -1,4 +1,4 @@
-# Anima Strategy Classes
+﻿# Anima Strategy Classes
 
 import os
 import random
@@ -298,5 +298,5 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
             encode_by_vae, vae_device, vae_dtype, image_infos, flip_aug, alpha_mask, random_crop, multi_resolution=True
         )
 
-        if not train_util.HIGH_VRAM:
+        if not accelerator_setup.HIGH_VRAM:
             train_util.clean_memory_on_device(vae_device)

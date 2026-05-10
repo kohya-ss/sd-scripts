@@ -6,12 +6,12 @@ between memory and ``.npz`` files on disk. Used both during the explicit
 the fly inside ``BaseDataset``.
 
 ``BucketManager`` / ``load_image`` / ``IMAGE_TRANSFORMS`` (and ``ImageInfo`` for
-type checks) live in ``library.dataset``; ``HIGH_VRAM`` still lives in
-``library.train_util``. Both modules import ``library.caching`` at top level for
-the dataset and re-export use cases, so this module pulls those symbols in
-lazily through ``_ds()`` / ``_tu()`` to avoid an import cycle.
-``get_hidden_states_sdxl`` lives in ``library.hidden_states`` and has no cycle
-with this module, so it is imported directly.
+type checks) live in ``library.dataset``; ``library.dataset`` imports
+``library.caching`` at top level so we pull the dataset symbols in lazily
+through ``_ds()`` to avoid an import cycle.
+``HIGH_VRAM`` lives in ``library.accelerator_setup`` and ``get_hidden_states_sdxl``
+in ``library.hidden_states``; neither has a cycle with this module so they are
+imported directly.
 """
 
 import logging
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from diffusers import AutoencoderKL
 
-from library import sd3_utils
+from library import accelerator_setup, sd3_utils
 from library.device_utils import clean_memory_on_device
 from library.hidden_states import get_hidden_states_sdxl
 from library.utils import resize_image  # noqa: F401  (kept for symmetry / debugging)
@@ -35,12 +35,6 @@ if TYPE_CHECKING:
 def _ds():
     """Late-bound ``library.dataset`` accessor (BucketManager / load_image / IMAGE_TRANSFORMS)."""
     import library.dataset as m
-    return m
-
-
-def _tu():
-    """Late-bound ``library.train_util`` accessor (HIGH_VRAM)."""
-    import library.train_util as m
     return m
 
 
@@ -245,7 +239,7 @@ def cache_batch_latents(
                 info.latents_flipped = flipped_latent
             info.alpha_mask = alpha_mask
 
-    if not _tu().HIGH_VRAM:
+    if not accelerator_setup.HIGH_VRAM:
         clean_memory_on_device(vae.device)
 
 

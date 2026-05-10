@@ -795,9 +795,7 @@ def verify_training_args(args: argparse.Namespace):
     Verify training arguments. Also reflect highvram option to global variable
     学習用引数を検証する。あわせて highvram オプションの指定をグローバル変数に反映する
     """
-    # enable_high_vram は accelerator 系のためまだ train_util.py に残っている。
-    # 循環 import 回避のため遅延 import する。
-    from library.train_util import enable_high_vram
+    from library.accelerator_setup import enable_high_vram
 
     enable_high_vram(args)
 

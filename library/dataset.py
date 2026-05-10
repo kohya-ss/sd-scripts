@@ -15,9 +15,9 @@ This module owns the data-loading side of training:
 
 The DreamBooth / FineTuning / ControlNet specializations of ``BaseDataset`` live
 in ``library.train_util`` for now and will move to dedicated modules in PR-1d.
-``HIGH_VRAM`` (a mutable module-level flag toggled by ``enable_high_vram``)
-remains in ``library.train_util``; this module accesses it lazily via the
-``_tu()`` helper to avoid an import cycle.
+``HIGH_VRAM`` (a mutable module-level flag toggled by ``enable_high_vram``) lives
+in ``library.accelerator_setup``; that module has no cycle with this one so it
+is imported directly.
 """
 
 import glob
@@ -43,6 +43,7 @@ from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 import library.model_util as model_util
+from library import accelerator_setup
 from library.caching import (
     cache_batch_latents,
     cache_batch_text_encoder_outputs,
@@ -67,16 +68,6 @@ from library.utils import resize_image, setup_logging, validate_interpolation_fn
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
-
-def _tu():
-    """Late-bound ``library.train_util`` accessor (used for ``HIGH_VRAM``).
-
-    ``HIGH_VRAM`` is mutated by ``train_util.enable_high_vram`` and read in a
-    BaseDataset method; we cannot bind it at module load time.
-    """
-    import library.train_util as m
-    return m
 
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
@@ -911,7 +902,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 if len(batch) > 0 and current_condition != condition:
                     submit_batch(batch, current_condition)
                     batch = []
-                if condition != current_condition and _tu().HIGH_VRAM:  # even with high VRAM, if shape is changed
+                if condition != current_condition and accelerator_setup.HIGH_VRAM:  # even with high VRAM, if shape is changed
                     clean_memory_on_device(accelerator.device)
 
                 if info.image is None:
