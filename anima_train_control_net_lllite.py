@@ -37,6 +37,7 @@ from library import (
 )
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 import library.config_util as config_util
 from library.config_util import ConfigSanitizer, BlueprintGenerator
 from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
@@ -672,8 +673,8 @@ def train(args):
                 weighting = anima_train_utils.compute_loss_weighting_for_anima(
                     weighting_scheme=args.weighting_scheme, sigmas=sigmas
                 )
-                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, None)
-                loss = train_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, None)
+                loss = loss_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])

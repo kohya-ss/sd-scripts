@@ -22,6 +22,7 @@ from diffusers import DDPMScheduler
 
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -386,7 +387,7 @@ def train(args):
 
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
-                noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+                noise, noisy_latents, timesteps = loss_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 
                 if batch["masks"] is not None:
                   # Concatenate the noised latents with the mask and the masked latents
@@ -402,8 +403,8 @@ def train(args):
                 else:
                     target = noise
 
-                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
-                loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                loss = loss_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])
