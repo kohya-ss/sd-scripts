@@ -31,6 +31,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 from library.train_util import DreamBoothDataset
 import library.config_util as config_util
 from library.config_util import (
@@ -221,7 +222,7 @@ class NetworkTrainer:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoder, unet):
-        train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet)
+        sampling.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet)
 
     # region SD/SDXL
 

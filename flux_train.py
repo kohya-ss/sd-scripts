@@ -37,6 +37,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -253,7 +254,7 @@ def train(args):
 
             text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-            prompts = train_util.load_prompts(args.sample_prompts)
+            prompts = sampling.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:

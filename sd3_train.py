@@ -31,6 +31,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -296,7 +297,7 @@ def train(args):
         # cache sample prompt's embeddings to free text encoder's memory
         if args.sample_prompts is not None:
             logger.info(f"cache Text Encoder outputs for sample prompt: {args.sample_prompts}")
-            prompts = train_util.load_prompts(args.sample_prompts)
+            prompts = sampling.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:

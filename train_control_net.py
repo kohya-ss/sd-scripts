@@ -27,6 +27,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -432,7 +433,7 @@ def train(args):
             os.remove(old_ckpt_file)
 
     # For --sample_at_first
-    train_util.sample_images(
+    sampling.sample_images(
         accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet, controlnet=controlnet
     )
     if len(accelerator.trackers) > 0:
@@ -535,7 +536,7 @@ def train(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                train_util.sample_images(
+                sampling.sample_images(
                     accelerator,
                     args,
                     None,
@@ -600,7 +601,7 @@ def train(args):
                 if args.save_state:
                     checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
-        train_util.sample_images(
+        sampling.sample_images(
             accelerator,
             args,
             epoch + 1,

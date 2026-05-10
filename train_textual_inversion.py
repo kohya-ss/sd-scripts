@@ -21,6 +21,7 @@ from library import deepspeed_utils, model_util, strategy_base, strategy_sd, sai
 import library.train_util as train_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 import library.huggingface_util as huggingface_util
 import library.config_util as config_util
 from library.config_util import (
@@ -139,7 +140,7 @@ class TextualInversionTrainer:
     def sample_images(
         self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoders, unet, prompt_replacement
     ):
-        train_util.sample_images(
+        sampling.sample_images(
             accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoders[0], unet, prompt_replacement
         )
 

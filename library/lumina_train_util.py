@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import lumina_models, strategy_base, strategy_lumina, checkpoint_io, train_util
+from library import lumina_models, strategy_base, strategy_lumina, checkpoint_io, sampling, train_util
 from library.flux_models import AutoEncoder
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
@@ -176,7 +176,7 @@ def sample_images(
     #     controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = train_util.load_prompts(args.sample_prompts)
+    prompts = sampling.load_prompts(args.sample_prompts)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)

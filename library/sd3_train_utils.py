@@ -28,7 +28,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library import sd3_models, sd3_utils, strategy_base, checkpoint_io, train_util
+from library import sd3_models, sd3_utils, strategy_base, checkpoint_io, sampling, train_util
 
 
 def save_models(
@@ -409,7 +409,7 @@ def sample_images(
     text_encoders = None if text_encoders is None else [accelerator.unwrap_model(te) for te in text_encoders]
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = train_util.load_prompts(args.sample_prompts)
+    prompts = sampling.load_prompts(args.sample_prompts)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
