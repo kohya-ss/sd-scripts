@@ -1,10 +1,10 @@
-import glob
+﻿import glob
 import os
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
 from transformers import AutoTokenizer, AutoModel, Gemma2Model, GemmaTokenizerFast
-from library import train_util
+from library import accelerator_setup, train_util
 from library.strategy_base import (
     LatentsCachingStrategy,
     TokenizeStrategy,
@@ -371,5 +371,5 @@ class LuminaLatentsCachingStrategy(LatentsCachingStrategy):
             multi_resolution=True,
         )
 
-        if not train_util.HIGH_VRAM:
+        if not accelerator_setup.HIGH_VRAM:
             train_util.clean_memory_on_device(model.device)
