@@ -6,11 +6,12 @@ between memory and ``.npz`` files on disk. Used both during the explicit
 the fly inside ``BaseDataset``.
 
 ``BucketManager`` / ``load_image`` / ``IMAGE_TRANSFORMS`` (and ``ImageInfo`` for
-type checks) live in ``library.dataset``; ``HIGH_VRAM`` and
-``get_hidden_states_sdxl`` still live in ``library.train_util``. Both modules
-import ``library.caching`` at top level for the dataset and re-export use cases,
-so this module pulls those symbols in lazily through ``_ds()`` / ``_tu()`` to
-avoid an import cycle.
+type checks) live in ``library.dataset``; ``HIGH_VRAM`` still lives in
+``library.train_util``. Both modules import ``library.caching`` at top level for
+the dataset and re-export use cases, so this module pulls those symbols in
+lazily through ``_ds()`` / ``_tu()`` to avoid an import cycle.
+``get_hidden_states_sdxl`` lives in ``library.hidden_states`` and has no cycle
+with this module, so it is imported directly.
 """
 
 import logging
@@ -24,6 +25,7 @@ from diffusers import AutoencoderKL
 
 from library import sd3_utils
 from library.device_utils import clean_memory_on_device
+from library.hidden_states import get_hidden_states_sdxl
 from library.utils import resize_image  # noqa: F401  (kept for symmetry / debugging)
 
 if TYPE_CHECKING:
@@ -37,7 +39,7 @@ def _ds():
 
 
 def _tu():
-    """Late-bound ``library.train_util`` accessor (HIGH_VRAM / get_hidden_states_sdxl)."""
+    """Late-bound ``library.train_util`` accessor (HIGH_VRAM)."""
     import library.train_util as m
     return m
 
@@ -254,7 +256,7 @@ def cache_batch_text_encoder_outputs(
     input_ids2 = input_ids2.to(text_encoders[1].device)
 
     with torch.no_grad():
-        b_hidden_state1, b_hidden_state2, b_pool2 = _tu().get_hidden_states_sdxl(
+        b_hidden_state1, b_hidden_state2, b_pool2 = get_hidden_states_sdxl(
             max_token_length,
             input_ids1,
             input_ids2,
