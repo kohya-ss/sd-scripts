@@ -4,7 +4,7 @@ import argparse
 import math
 import os
 import typing
-from typing import Any, List, Union, Optional
+from typing import Any, List, Literal, Union, Optional
 import sys
 import random
 import time
@@ -746,6 +746,112 @@ class NetworkTrainer:
                 minimum_metadata[key] = metadata[key]
 
         return metadata, minimum_metadata
+
+    def _run_validation_loop(
+        self,
+        *,
+        mode: Literal["step", "epoch"],
+        accelerator: Accelerator,
+        args: argparse.Namespace,
+        network,
+        text_encoders,
+        unet,
+        vae,
+        noise_scheduler,
+        vae_dtype,
+        weight_dtype,
+        text_encoding_strategy: strategy_base.TextEncodingStrategy,
+        tokenize_strategy: strategy_base.TokenizeStrategy,
+        val_dataloader,
+        validation_steps: int,
+        validation_timesteps,
+        validation_total_steps: int,
+        train_text_encoder: bool,
+        train_unet: bool,
+        epoch: int,
+        global_step: int,
+        is_tracking: bool,
+        loss_recorder: "logging_util.LossRecorder",
+        train_loss_recorder: "logging_util.LossRecorder",
+    ) -> None:
+        """Run one validation pass: dataloader x validation_timesteps.
+
+        ``mode`` selects the per-step vs per-epoch variant which only differs in
+        tqdm desc / progress postfix key / log keys / log function. The core
+        evaluation loop and ``on_step_start`` -> ``args.min/max_timestep``
+        assignment order are identical across modes.
+
+        Caller is responsible for the surrounding setup/teardown:
+        ``optimizer_eval_fn`` / ``network.eval()`` / ``switch_rng_state`` before,
+        and ``restore_rng_state`` / restoring ``args.min/max_timestep`` /
+        ``optimizer_train_fn`` / ``network.train()`` / ``progress_bar.unpause()``
+        after.
+        """
+        if mode == "step":
+            tqdm_desc = "validation steps"
+            progress_postfix_key = "val_avg_loss"
+            log_key_average = "loss/validation/step_average"
+            log_key_divergence = "loss/validation/step_divergence"
+            log_fn = self.step_logging
+        else:  # mode == "epoch"
+            tqdm_desc = "epoch validation steps"
+            progress_postfix_key = "val_epoch_avg_loss"
+            log_key_average = "loss/validation/epoch_average"
+            log_key_divergence = "loss/validation/epoch_divergence"
+            log_fn = self.epoch_logging
+
+        val_progress_bar = tqdm(
+            range(validation_total_steps),
+            smoothing=0,
+            disable=not accelerator.is_local_main_process,
+            desc=tqdm_desc,
+        )
+
+        val_timesteps_step = 0
+        for val_step, batch in enumerate(val_dataloader):
+            if val_step >= validation_steps:
+                break
+
+            for timestep in validation_timesteps:
+                self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
+
+                args.min_timestep = args.max_timestep = timestep  # dirty hack to change timestep
+
+                loss = self.process_batch(
+                    batch,
+                    text_encoders,
+                    unet,
+                    network,
+                    vae,
+                    noise_scheduler,
+                    vae_dtype,
+                    weight_dtype,
+                    accelerator,
+                    args,
+                    text_encoding_strategy,
+                    tokenize_strategy,
+                    is_train=False,
+                    train_text_encoder=train_text_encoder,  # this is needed for validation because Text Encoders must be called if train_text_encoder is True
+                    train_unet=train_unet,
+                )
+
+                current_loss = loss.detach().item()
+                loss_recorder.add(epoch=epoch, step=val_timesteps_step, loss=current_loss)
+                val_progress_bar.update(1)
+                val_progress_bar.set_postfix(
+                    {progress_postfix_key: loss_recorder.moving_average, "timestep": timestep}
+                )
+
+                self.on_validation_step_end(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
+                val_timesteps_step += 1
+
+        if is_tracking:
+            loss_validation_divergence = loss_recorder.moving_average - train_loss_recorder.moving_average
+            logs = {
+                log_key_average: loss_recorder.moving_average,
+                log_key_divergence: loss_validation_divergence,
+            }
+            log_fn(accelerator, logs, global_step, epoch + 1)
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1587,61 +1693,31 @@ class NetworkTrainer:
                     accelerator.unwrap_model(network).eval()
                     rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
-                    val_progress_bar = tqdm(
-                        range(validation_total_steps),
-                        smoothing=0,
-                        disable=not accelerator.is_local_main_process,
-                        desc="validation steps",
+                    self._run_validation_loop(
+                        mode="step",
+                        accelerator=accelerator,
+                        args=args,
+                        network=network,
+                        text_encoders=text_encoders,
+                        unet=unet,
+                        vae=vae,
+                        noise_scheduler=noise_scheduler,
+                        vae_dtype=vae_dtype,
+                        weight_dtype=weight_dtype,
+                        text_encoding_strategy=text_encoding_strategy,
+                        tokenize_strategy=tokenize_strategy,
+                        val_dataloader=val_dataloader,
+                        validation_steps=validation_steps,
+                        validation_timesteps=validation_timesteps,
+                        validation_total_steps=validation_total_steps,
+                        train_text_encoder=train_text_encoder,
+                        train_unet=train_unet,
+                        epoch=epoch,
+                        global_step=global_step,
+                        is_tracking=is_tracking,
+                        loss_recorder=val_step_loss_recorder,
+                        train_loss_recorder=loss_recorder,
                     )
-                    val_timesteps_step = 0
-                    for val_step, batch in enumerate(val_dataloader):
-                        if val_step >= validation_steps:
-                            break
-
-                        for timestep in validation_timesteps:
-                            self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
-
-                            args.min_timestep = args.max_timestep = timestep  # dirty hack to change timestep
-
-                            loss = self.process_batch(
-                                batch,
-                                text_encoders,
-                                unet,
-                                network,
-                                vae,
-                                noise_scheduler,
-                                vae_dtype,
-                                weight_dtype,
-                                accelerator,
-                                args,
-                                text_encoding_strategy,
-                                tokenize_strategy,
-                                is_train=False,
-                                train_text_encoder=train_text_encoder,  # this is needed for validation because Text Encoders must be called if train_text_encoder is True
-                                train_unet=train_unet,
-                            )
-
-                            current_loss = loss.detach().item()
-                            val_step_loss_recorder.add(epoch=epoch, step=val_timesteps_step, loss=current_loss)
-                            val_progress_bar.update(1)
-                            val_progress_bar.set_postfix(
-                                {"val_avg_loss": val_step_loss_recorder.moving_average, "timestep": timestep}
-                            )
-
-                            # if is_tracking:
-                            #     logs = {f"loss/validation/step_current_{timestep}": current_loss}
-                            #     self.val_logging(accelerator, logs, global_step, epoch + 1, val_step)
-
-                            self.on_validation_step_end(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
-                            val_timesteps_step += 1
-
-                    if is_tracking:
-                        loss_validation_divergence = val_step_loss_recorder.moving_average - loss_recorder.moving_average
-                        logs = {
-                            "loss/validation/step_average": val_step_loss_recorder.moving_average,
-                            "loss/validation/step_divergence": loss_validation_divergence,
-                        }
-                        self.step_logging(accelerator, logs, global_step, epoch=epoch + 1)
 
                     restore_rng_state(rng_states)
                     args.min_timestep = original_args_min_timestep
@@ -1663,64 +1739,31 @@ class NetworkTrainer:
                 accelerator.unwrap_model(network).eval()
                 rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
-                val_progress_bar = tqdm(
-                    range(validation_total_steps),
-                    smoothing=0,
-                    disable=not accelerator.is_local_main_process,
-                    desc="epoch validation steps",
+                self._run_validation_loop(
+                    mode="epoch",
+                    accelerator=accelerator,
+                    args=args,
+                    network=network,
+                    text_encoders=text_encoders,
+                    unet=unet,
+                    vae=vae,
+                    noise_scheduler=noise_scheduler,
+                    vae_dtype=vae_dtype,
+                    weight_dtype=weight_dtype,
+                    text_encoding_strategy=text_encoding_strategy,
+                    tokenize_strategy=tokenize_strategy,
+                    val_dataloader=val_dataloader,
+                    validation_steps=validation_steps,
+                    validation_timesteps=validation_timesteps,
+                    validation_total_steps=validation_total_steps,
+                    train_text_encoder=train_text_encoder,
+                    train_unet=train_unet,
+                    epoch=epoch,
+                    global_step=global_step,
+                    is_tracking=is_tracking,
+                    loss_recorder=val_epoch_loss_recorder,
+                    train_loss_recorder=loss_recorder,
                 )
-
-                val_timesteps_step = 0
-                for val_step, batch in enumerate(val_dataloader):
-                    if val_step >= validation_steps:
-                        break
-
-                    for timestep in validation_timesteps:
-                        args.min_timestep = args.max_timestep = timestep
-
-                        # temporary, for batch processing
-                        self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=False)
-
-                        loss = self.process_batch(
-                            batch,
-                            text_encoders,
-                            unet,
-                            network,
-                            vae,
-                            noise_scheduler,
-                            vae_dtype,
-                            weight_dtype,
-                            accelerator,
-                            args,
-                            text_encoding_strategy,
-                            tokenize_strategy,
-                            is_train=False,
-                            train_text_encoder=train_text_encoder,
-                            train_unet=train_unet,
-                        )
-
-                        current_loss = loss.detach().item()
-                        val_epoch_loss_recorder.add(epoch=epoch, step=val_timesteps_step, loss=current_loss)
-                        val_progress_bar.update(1)
-                        val_progress_bar.set_postfix(
-                            {"val_epoch_avg_loss": val_epoch_loss_recorder.moving_average, "timestep": timestep}
-                        )
-
-                        # if is_tracking:
-                        #     logs = {f"loss/validation/epoch_current_{timestep}": current_loss}
-                        #     self.val_logging(accelerator, logs, global_step, epoch + 1, val_step)
-
-                        self.on_validation_step_end(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
-                        val_timesteps_step += 1
-
-                if is_tracking:
-                    avr_loss: float = val_epoch_loss_recorder.moving_average
-                    loss_validation_divergence = val_epoch_loss_recorder.moving_average - loss_recorder.moving_average
-                    logs = {
-                        "loss/validation/epoch_average": avr_loss,
-                        "loss/validation/epoch_divergence": loss_validation_divergence,
-                    }
-                    self.epoch_logging(accelerator, logs, global_step, epoch + 1)
 
                 restore_rng_state(rng_states)
                 args.min_timestep = original_args_min_timestep
