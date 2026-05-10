@@ -37,6 +37,7 @@ from library import (
 
 import library.model_util as model_util
 import library.train_util as train_util
+import library.logging_util as logging_util
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
@@ -384,7 +385,7 @@ def train(args):
             init_kwargs=init_kwargs,
         )
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     del train_dataset_group
 
     # function for saving/removing

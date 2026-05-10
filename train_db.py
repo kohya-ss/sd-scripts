@@ -21,6 +21,7 @@ from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
 
 import library.train_util as train_util
+import library.logging_util as logging_util
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -323,7 +324,7 @@ def train(args):
         # log empty object to commit the sample images to wandb
         accelerator.log({}, step=0)
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
         current_epoch.value = epoch + 1

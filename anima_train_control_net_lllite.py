@@ -36,6 +36,7 @@ from library import (
     sai_model_spec,
 )
 import library.train_util as train_util
+import library.logging_util as logging_util
 import library.config_util as config_util
 from library.config_util import ConfigSanitizer, BlueprintGenerator
 from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
@@ -584,7 +585,7 @@ def train(args):
             if os.path.exists(old_ckpt):
                 os.remove(old_ckpt)
 
-    loss_recorder = train_util.LossRecorder()
+    loss_recorder = logging_util.LossRecorder()
     epoch = 0
     for epoch in range(num_train_epochs):
         accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
