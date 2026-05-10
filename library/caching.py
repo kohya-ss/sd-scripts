@@ -5,11 +5,12 @@ between memory and ``.npz`` files on disk. Used both during the explicit
 ``cache_latents`` / ``cache_text_encoder_outputs`` preprocessing passes and on
 the fly inside ``BaseDataset``.
 
-The dataset classes (``ImageInfo``, ``BucketManager``, ``load_image``,
-``IMAGE_TRANSFORMS``) live in ``library.train_util`` for now and will move to
-``library.dataset`` in a follow-up PR. To avoid an import cycle, this module
-references the few symbols it needs through the partially-loaded
-``library.train_util`` module at call time.
+``BucketManager`` / ``load_image`` / ``IMAGE_TRANSFORMS`` (and ``ImageInfo`` for
+type checks) live in ``library.dataset``; ``HIGH_VRAM`` and
+``get_hidden_states_sdxl`` still live in ``library.train_util``. Both modules
+import ``library.caching`` at top level for the dataset and re-export use cases,
+so this module pulls those symbols in lazily through ``_ds()`` / ``_tu()`` to
+avoid an import cycle.
 """
 
 import logging
@@ -20,39 +21,28 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 import numpy as np
 import torch
 from diffusers import AutoencoderKL
-from torchvision import transforms
 
 from library import sd3_utils
 from library.device_utils import clean_memory_on_device
 from library.utils import resize_image  # noqa: F401  (kept for symmetry / debugging)
 
 if TYPE_CHECKING:
-    from library.train_util import ImageInfo
+    from library.dataset import ImageInfo
+
+
+def _ds():
+    """Late-bound ``library.dataset`` accessor (BucketManager / load_image / IMAGE_TRANSFORMS)."""
+    import library.dataset as m
+    return m
 
 
 def _tu():
-    """Late-bound ``library.train_util`` to avoid an import cycle.
-
-    Caching depends on ``BucketManager``, ``load_image``, ``HIGH_VRAM`` and
-    ``get_hidden_states_sdxl`` which currently live in ``train_util.py``;
-    ``train_util.py`` in turn re-exports the caching functions for backward
-    compatibility, so a top-level import would cycle.
-    """
+    """Late-bound ``library.train_util`` accessor (HIGH_VRAM / get_hidden_states_sdxl)."""
     import library.train_util as m
     return m
 
 
 logger = logging.getLogger(__name__)
-
-
-# Local copy of the BaseDataset image transform. The version in train_util.py is functionally
-# identical; both will collapse to a single definition once BaseDataset moves to library.dataset.
-IMAGE_TRANSFORMS = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
 
 
 def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alpha_mask: bool):
@@ -114,7 +104,7 @@ def trim_and_resize_if_required(
     # random cropの場合のcropされた値をどうcrop left/topに反映するべきか全くアイデアがない
     # I have no idea how to reflect the cropped value in crop left/top in the case of random crop
 
-    crop_ltrb = _tu().BucketManager.get_crop_ltrb(reso, original_size)
+    crop_ltrb = _ds().BucketManager.get_crop_ltrb(reso, original_size)
 
     assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
     return image, original_size, crop_ltrb
@@ -140,7 +130,7 @@ def load_images_and_masks_for_caching(
     crop_ltrbs: List[Tuple[int, int, int, int]] = []
     for info in image_infos:
         image = (
-            _tu().load_image(info.absolute_path, use_alpha_mask)
+            _ds().load_image(info.absolute_path, use_alpha_mask)
             if info.image is None
             else np.array(info.image, np.uint8)
         )
@@ -164,7 +154,7 @@ def load_images_and_masks_for_caching(
         alpha_masks.append(alpha_mask)
 
         image = image[:, :, :3]  # remove alpha channel if exists
-        image = IMAGE_TRANSFORMS(image)
+        image = _ds().IMAGE_TRANSFORMS(image)
         images.append(image)
 
     img_tensor = torch.stack(images, dim=0)
@@ -192,7 +182,7 @@ def cache_batch_latents(
     alpha_masks: List[np.ndarray] = []
     for info in image_infos:
         image = (
-            _tu().load_image(info.absolute_path, use_alpha_mask)
+            _ds().load_image(info.absolute_path, use_alpha_mask)
             if info.image is None
             else np.array(info.image, np.uint8)
         )
@@ -216,7 +206,7 @@ def cache_batch_latents(
         alpha_masks.append(alpha_mask)
 
         image = image[:, :, :3]  # remove alpha channel if exists
-        image = IMAGE_TRANSFORMS(image)
+        image = _ds().IMAGE_TRANSFORMS(image)
         images.append(image)
 
     img_tensors = torch.stack(images, dim=0)

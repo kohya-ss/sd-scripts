@@ -17,6 +17,7 @@ init_ipex()
 from torchvision import transforms
 
 import library.caching as caching
+import library.dataset as dataset
 import library.model_util as model_util
 import library.train_util as train_util
 from library.utils import setup_logging
@@ -97,7 +98,7 @@ def main(args):
         len(max_reso) == 2
     ), f"illegal resolution (not 'width,height') / 画像サイズに誤りがあります。'幅,高さ'で指定してください: {args.max_resolution}"
 
-    bucket_manager = train_util.BucketManager(
+    bucket_manager = dataset.BucketManager(
         args.bucket_no_upscale, max_reso, args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps
     )
     if not args.bucket_no_upscale:
@@ -180,7 +181,7 @@ def main(args):
                 continue
 
         # バッチへ追加
-        image_info = train_util.ImageInfo(image_key, 1, "", False, image_path)
+        image_info = dataset.ImageInfo(image_key, 1, "", False, image_path)
         image_info.latents_npz = npz_file_name
         image_info.bucket_reso = reso
         image_info.resized_size = resized_size
