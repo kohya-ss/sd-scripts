@@ -19,6 +19,7 @@ from library import (
     sd3_train_utils,
     strategy_base,
     strategy_flux,
+    sampling,
     train_util,
 )
 from library.utils import setup_logging
@@ -258,7 +259,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
                 tokenize_strategy: strategy_flux.FluxTokenizeStrategy = strategy_base.TokenizeStrategy.get_strategy()
                 text_encoding_strategy: strategy_flux.FluxTextEncodingStrategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-                prompts = train_util.load_prompts(args.sample_prompts)
+                prompts = sampling.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in prompts:

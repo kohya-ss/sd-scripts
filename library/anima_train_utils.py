@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
-from library import anima_models, anima_utils, checkpoint_io, train_util, qwen_image_autoencoder_kl
+from library import anima_models, anima_utils, checkpoint_io, sampling, train_util, qwen_image_autoencoder_kl
 
 init_ipex()
 
@@ -430,7 +430,7 @@ def sample_images(
 
     dit.switch_block_swap_for_inference()
 
-    prompts = train_util.load_prompts(args.sample_prompts)
+    prompts = sampling.load_prompts(args.sample_prompts)
     save_dir = os.path.join(args.output_dir, "sample")
     os.makedirs(save_dir, exist_ok=True)
 

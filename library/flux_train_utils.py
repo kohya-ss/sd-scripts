@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import flux_models, flux_utils, strategy_base, checkpoint_io, train_util
+from library import flux_models, flux_utils, strategy_base, checkpoint_io, sampling, train_util
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.safetensors_utils import mem_eff_save_file
 
@@ -73,7 +73,7 @@ def sample_images(
         controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = train_util.load_prompts(args.sample_prompts)
+    prompts = sampling.load_prompts(args.sample_prompts)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)

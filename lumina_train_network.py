@@ -20,6 +20,7 @@ from library import (
     sd3_train_utils,
     strategy_base,
     strategy_lumina,
+    sampling,
     train_util,
 )
 from library.utils import setup_logging
@@ -159,7 +160,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
                 assert isinstance(tokenize_strategy, strategy_lumina.LuminaTokenizeStrategy)
                 assert isinstance(text_encoding_strategy, strategy_lumina.LuminaTextEncodingStrategy)
 
-                sample_prompts = train_util.load_prompts(args.sample_prompts)
+                sample_prompts = sampling.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in sample_prompts:

@@ -29,6 +29,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -342,7 +343,7 @@ def train(args):
         )
 
     # For --sample_at_first
-    train_util.sample_images(
+    sampling.sample_images(
         accelerator, args, 0, global_step, accelerator.device, vae, tokenize_strategy.tokenizer, text_encoder, unet
     )
     if len(accelerator.trackers) > 0:
@@ -446,7 +447,7 @@ def train(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                train_util.sample_images(
+                sampling.sample_images(
                     accelerator, args, None, global_step, accelerator.device, vae, tokenize_strategy.tokenizer, text_encoder, unet
                 )
 
@@ -510,7 +511,7 @@ def train(args):
                     vae,
                 )
 
-        train_util.sample_images(
+        sampling.sample_images(
             accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenize_strategy.tokenizer, text_encoder, unet
         )
 

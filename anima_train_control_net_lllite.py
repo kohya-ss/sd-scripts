@@ -39,6 +39,7 @@ import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
+import library.sampling as sampling
 import library.config_util as config_util
 from library.config_util import ConfigSanitizer, BlueprintGenerator
 from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
@@ -330,7 +331,7 @@ def train(args):
 
         if args.sample_prompts is not None:
             logger.info(f"Cache Text Encoder outputs for sample prompts: {args.sample_prompts}")
-            prompts = train_util.load_prompts(args.sample_prompts)
+            prompts = sampling.load_prompts(args.sample_prompts)
             sample_prompts_te_outputs = {}
             with accelerator.autocast(), torch.no_grad():
                 for prompt_dict in prompts:

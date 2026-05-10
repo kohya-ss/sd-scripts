@@ -19,6 +19,7 @@ from library import (
     sd3_train_utils,
     strategy_anima,
     strategy_base,
+    sampling,
     train_util,
 )
 import train_network
@@ -191,7 +192,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
                 tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
                 text_encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
 
-                prompts = train_util.load_prompts(args.sample_prompts)
+                prompts = sampling.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in prompts:

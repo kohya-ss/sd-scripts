@@ -12,7 +12,7 @@ import torch.nn as nn
 from PIL import Image
 from accelerate import Accelerator, PartialState
 
-from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, train_util
+from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, sampling, train_util
 from library.device_utils import clean_memory_on_device, init_ipex
 
 init_ipex()
@@ -82,7 +82,7 @@ def sample_images(
         text_encoders = [(accelerator.unwrap_model(te) if te is not None else None) for te in text_encoders]
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = train_util.load_prompts(args.sample_prompts)
+    prompts = sampling.load_prompts(args.sample_prompts)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
@@ -473,7 +473,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
                     strategy_base.TextEncodingStrategy.get_strategy()
                 )
 
-                prompts = train_util.load_prompts(args.sample_prompts)
+                prompts = sampling.load_prompts(args.sample_prompts)
                 sample_prompts_te_outputs = {}  # key: prompt, value: text encoder outputs
                 with accelerator.autocast(), torch.no_grad():
                     for prompt_dict in prompts:
