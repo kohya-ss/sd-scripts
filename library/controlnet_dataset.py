@@ -27,18 +27,9 @@ from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 import library.model_util as model_util
-from library.caching import (
-    cache_batch_latents,
-    cache_batch_text_encoder_outputs,
-    cache_batch_text_encoder_outputs_sd3,
-    is_disk_cached_latents_is_expected,
-    trim_and_resize_if_required,
-)
 from library.dataset import (
     IMAGE_EXTENSIONS,
     IMAGE_TRANSFORMS,
-    TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX,
-    TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3,
     BaseDataset,
     BucketManager,
     ImageInfo,

@@ -9,9 +9,8 @@ the fly inside ``BaseDataset``.
 type checks) live in ``library.dataset``; ``library.dataset`` imports
 ``library.caching`` at top level so we pull the dataset symbols in lazily
 through ``_ds()`` to avoid an import cycle.
-``HIGH_VRAM`` lives in ``library.accelerator_setup`` and ``get_hidden_states_sdxl``
-in ``library.hidden_states``; neither has a cycle with this module so they are
-imported directly.
+``HIGH_VRAM`` lives in ``library.accelerator_setup``; it has no cycle with this
+module so it is imported directly.
 """
 
 import logging
@@ -23,9 +22,8 @@ import numpy as np
 import torch
 from diffusers import AutoencoderKL
 
-from library import accelerator_setup, sd3_utils
+from library import accelerator_setup
 from library.device_utils import clean_memory_on_device
-from library.hidden_states import get_hidden_states_sdxl
 from library.utils import resize_image  # noqa: F401  (kept for symmetry / debugging)
 
 if TYPE_CHECKING:
@@ -241,80 +239,3 @@ def cache_batch_latents(
 
     if not accelerator_setup.HIGH_VRAM:
         clean_memory_on_device(vae.device)
-
-
-def cache_batch_text_encoder_outputs(
-    image_infos, tokenizers, text_encoders, max_token_length, cache_to_disk, input_ids1, input_ids2, dtype
-):
-    input_ids1 = input_ids1.to(text_encoders[0].device)
-    input_ids2 = input_ids2.to(text_encoders[1].device)
-
-    with torch.no_grad():
-        b_hidden_state1, b_hidden_state2, b_pool2 = get_hidden_states_sdxl(
-            max_token_length,
-            input_ids1,
-            input_ids2,
-            tokenizers[0],
-            tokenizers[1],
-            text_encoders[0],
-            text_encoders[1],
-            dtype,
-        )
-
-        # ここでcpuに移動しておかないと、上書きされてしまう
-        b_hidden_state1 = b_hidden_state1.detach().to("cpu")  # b,n*75+2,768
-        b_hidden_state2 = b_hidden_state2.detach().to("cpu")  # b,n*75+2,1280
-        b_pool2 = b_pool2.detach().to("cpu")  # b,1280
-
-    for info, hidden_state1, hidden_state2, pool2 in zip(image_infos, b_hidden_state1, b_hidden_state2, b_pool2):
-        if cache_to_disk:
-            save_text_encoder_outputs_to_disk(info.text_encoder_outputs_npz, hidden_state1, hidden_state2, pool2)
-        else:
-            info.text_encoder_outputs1 = hidden_state1
-            info.text_encoder_outputs2 = hidden_state2
-            info.text_encoder_pool2 = pool2
-
-
-def cache_batch_text_encoder_outputs_sd3(
-    image_infos, tokenizer, text_encoders, max_token_length, cache_to_disk, input_ids, output_dtype
-):
-    # make input_ids for each text encoder
-    l_tokens, g_tokens, t5_tokens = input_ids
-
-    clip_l, clip_g, t5xxl = text_encoders
-    with torch.no_grad():
-        b_lg_out, b_t5_out, b_pool = sd3_utils.get_cond_from_tokens(
-            l_tokens, g_tokens, t5_tokens, clip_l, clip_g, t5xxl, "cpu", output_dtype
-        )
-        b_lg_out = b_lg_out.detach()
-        b_t5_out = b_t5_out.detach()
-        b_pool = b_pool.detach()
-
-    for info, lg_out, t5_out, pool in zip(image_infos, b_lg_out, b_t5_out, b_pool):
-        # debug: NaN check
-        if torch.isnan(lg_out).any() or torch.isnan(t5_out).any() or torch.isnan(pool).any():
-            raise RuntimeError(f"NaN detected in text encoder outputs: {info.absolute_path}")
-
-        if cache_to_disk:
-            save_text_encoder_outputs_to_disk(info.text_encoder_outputs_npz, lg_out, t5_out, pool)
-        else:
-            info.text_encoder_outputs1 = lg_out
-            info.text_encoder_outputs2 = t5_out
-            info.text_encoder_pool2 = pool
-
-
-def save_text_encoder_outputs_to_disk(npz_path, hidden_state1, hidden_state2, pool2):
-    np.savez(
-        npz_path,
-        hidden_state1=hidden_state1.cpu().float().numpy(),
-        hidden_state2=hidden_state2.cpu().float().numpy(),
-        pool2=pool2.cpu().float().numpy(),
-    )
-
-
-def load_text_encoder_outputs_from_disk(npz_path):
-    with np.load(npz_path) as f:
-        hidden_state1 = torch.from_numpy(f["hidden_state1"])
-        hidden_state2 = torch.from_numpy(f["hidden_state2"]) if "hidden_state2" in f else None
-        pool2 = torch.from_numpy(f["pool2"]) if "pool2" in f else None
-    return hidden_state1, hidden_state2, pool2

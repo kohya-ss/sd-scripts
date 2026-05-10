@@ -44,13 +44,7 @@ from transformers import CLIPTokenizer
 
 import library.model_util as model_util
 from library import accelerator_setup
-from library.caching import (
-    cache_batch_latents,
-    cache_batch_text_encoder_outputs,
-    cache_batch_text_encoder_outputs_sd3,
-    is_disk_cached_latents_is_expected,
-    trim_and_resize_if_required,
-)
+from library.caching import trim_and_resize_if_required
 from library.device_utils import clean_memory_on_device
 from library.strategy_base import (
     LatentsCachingStrategy,
@@ -977,7 +971,6 @@ class BaseDataset(torch.utils.data.Dataset):
         # iterate batches
         logger.info("caching Text Encoder outputs...")
         for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            # cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.alpha_mask, subset.random_crop)
             caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, batch)
 
     def get_image_size(self, image_path):
