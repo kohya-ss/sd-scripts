@@ -91,10 +91,6 @@ from library.caching import (  # noqa: F401, E402
     trim_and_resize_if_required,
     load_images_and_masks_for_caching,
     cache_batch_latents,
-    cache_batch_text_encoder_outputs,
-    cache_batch_text_encoder_outputs_sd3,
-    save_text_encoder_outputs_to_disk,
-    load_text_encoder_outputs_from_disk,
 )
 
 
