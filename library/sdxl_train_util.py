@@ -11,7 +11,7 @@ init_ipex()
 from accelerate import init_empty_weights
 from tqdm import tqdm
 from transformers import CLIPTokenizer
-from library import model_util, sdxl_model_util, train_util, sdxl_original_unet
+from library import model_util, sdxl_model_util, checkpoint_io, train_util, sdxl_original_unet
 from .utils import setup_logging
 
 setup_logging()
@@ -269,7 +269,7 @@ def save_sd_model_on_train_end(
             save_dtype=save_dtype,
         )
 
-    train_util.save_sd_model_on_train_end_common(
+    checkpoint_io.save_sd_model_on_train_end_common(
         args, save_stable_diffusion_format, use_safetensors, epoch, global_step, sd_saver, diffusers_saver
     )
 
@@ -322,7 +322,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
             save_dtype=save_dtype,
         )
 
-    train_util.save_sd_model_on_epoch_end_or_stepwise_common(
+    checkpoint_io.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
         on_epoch_end,
         accelerator,

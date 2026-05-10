@@ -25,6 +25,7 @@ from library import deepspeed_utils, anima_models, anima_train_utils, anima_util
 import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
+import library.checkpoint_io as checkpoint_io
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -696,7 +697,7 @@ def train(args):
     optimizer_eval_fn()
 
     if args.save_state or args.save_state_on_train_end:
-        train_util.save_state_on_train_end(args, accelerator)
+        checkpoint_io.save_state_on_train_end(args, accelerator)
 
     del accelerator
 

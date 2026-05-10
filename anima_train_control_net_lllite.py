@@ -38,6 +38,7 @@ from library import (
 import library.train_util as train_util
 import library.logging_util as logging_util
 import library.loss as loss_util
+import library.checkpoint_io as checkpoint_io
 import library.config_util as config_util
 from library.config_util import ConfigSanitizer, BlueprintGenerator
 from library.custom_train_functions import apply_masked_loss, add_custom_train_arguments
@@ -553,17 +554,17 @@ def train(args):
         accelerator.wait_for_everyone()
         if not accelerator.is_main_process:
             return
-        ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step_)
+        ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, global_step_)
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         _save_lllite(ckpt_file)
         if args.save_state:
-            train_util.save_and_remove_state_stepwise(args, accelerator, global_step_)
-        remove_step_no = train_util.get_remove_step_no(args, global_step_)
+            checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step_)
+        remove_step_no = checkpoint_io.get_remove_step_no(args, global_step_)
         if remove_step_no is not None:
             old_ckpt = os.path.join(
-                args.output_dir, train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
+                args.output_dir, checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
             )
             if os.path.exists(old_ckpt):
                 os.remove(old_ckpt)
@@ -571,17 +572,17 @@ def train(args):
     def _save_epoch(epoch_no: int):
         if not accelerator.is_main_process:
             return
-        ckpt_name = train_util.get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
+        ckpt_name = checkpoint_io.get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         _save_lllite(ckpt_file)
         if args.save_state:
-            train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
-        remove_epoch_no = train_util.get_remove_epoch_no(args, epoch_no)
+            checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
+        remove_epoch_no = checkpoint_io.get_remove_epoch_no(args, epoch_no)
         if remove_epoch_no is not None:
             old_ckpt = os.path.join(
-                args.output_dir, train_util.get_epoch_ckpt_name(args, "." + args.save_model_as, remove_epoch_no)
+                args.output_dir, checkpoint_io.get_epoch_ckpt_name(args, "." + args.save_model_as, remove_epoch_no)
             )
             if os.path.exists(old_ckpt):
                 os.remove(old_ckpt)
@@ -751,10 +752,10 @@ def train(args):
     optimizer_eval_fn()
 
     if args.save_state or args.save_state_on_train_end:
-        train_util.save_state_on_train_end(args, accelerator)
+        checkpoint_io.save_state_on_train_end(args, accelerator)
 
     if is_main_process:
-        ckpt_name = train_util.get_last_ckpt_name(args, "." + args.save_model_as)
+        ckpt_name = checkpoint_io.get_last_ckpt_name(args, "." + args.save_model_as)
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
         accelerator.print(f"\nsaving final checkpoint: {ckpt_file}")

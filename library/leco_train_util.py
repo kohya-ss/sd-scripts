@@ -10,7 +10,7 @@ import torch
 import toml
 from torch.utils.checkpoint import checkpoint
 
-from library import train_util
+from library import checkpoint_io, train_util
 
 import logging
 
@@ -48,7 +48,7 @@ def save_weights(
 ) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     ext = get_save_extension(args)
-    ckpt_name = train_util.get_last_ckpt_name(args, ext) if last else train_util.get_step_ckpt_name(args, ext, global_step)
+    ckpt_name = checkpoint_io.get_last_ckpt_name(args, ext) if last else checkpoint_io.get_step_ckpt_name(args, ext, global_step)
     ckpt_file = os.path.join(args.output_dir, ckpt_name)
 
     metadata = None

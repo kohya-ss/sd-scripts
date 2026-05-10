@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import lumina_models, strategy_base, strategy_lumina, train_util
+from library import lumina_models, strategy_base, strategy_lumina, checkpoint_io, train_util
 from library.flux_models import AutoEncoder
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
@@ -962,7 +962,7 @@ def save_lumina_model_on_train_end(
         )
         save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save)
 
-    train_util.save_sd_model_on_train_end_common(
+    checkpoint_io.save_sd_model_on_train_end_common(
         args, True, True, epoch, global_step, sd_saver, None
     )
 
@@ -1005,7 +1005,7 @@ def save_lumina_model_on_epoch_end_or_stepwise(
         )
         save_models(ckpt_file, lumina, sai_metadata, save_dtype, args.mem_eff_save)
 
-    train_util.save_sd_model_on_epoch_end_or_stepwise_common(
+    checkpoint_io.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
         on_epoch_end,
         accelerator,

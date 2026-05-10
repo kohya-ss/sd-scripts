@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import flux_models, flux_utils, strategy_base, train_util
+from library import flux_models, flux_utils, strategy_base, checkpoint_io, train_util
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.safetensors_utils import mem_eff_save_file
 
@@ -578,7 +578,7 @@ def save_flux_model_on_train_end(
         sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
         save_models(ckpt_file, flux, sai_metadata, save_dtype, args.mem_eff_save)
 
-    train_util.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
+    checkpoint_io.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
 
 
 # epochとstepの保存、メタデータにepoch/stepが含まれ引数が同じになるため、統合している
@@ -597,7 +597,7 @@ def save_flux_model_on_epoch_end_or_stepwise(
         sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
         save_models(ckpt_file, flux, sai_metadata, save_dtype, args.mem_eff_save)
 
-    train_util.save_sd_model_on_epoch_end_or_stepwise_common(
+    checkpoint_io.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
         on_epoch_end,
         accelerator,

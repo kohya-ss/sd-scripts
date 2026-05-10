@@ -14,7 +14,7 @@ from tqdm import tqdm
 from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
-from library import anima_models, anima_utils, train_util, qwen_image_autoencoder_kl
+from library import anima_models, anima_utils, checkpoint_io, train_util, qwen_image_autoencoder_kl
 
 init_ipex()
 
@@ -264,7 +264,7 @@ def save_anima_model_on_train_end(
         # Save with 'net.' prefix for ComfyUI compatibility
         anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
-    train_util.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
+    checkpoint_io.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
 
 
 def save_anima_model_on_epoch_end_or_stepwise(
@@ -286,7 +286,7 @@ def save_anima_model_on_epoch_end_or_stepwise(
         dit_sd = dit.state_dict()
         anima_utils.save_anima_model(ckpt_file, dit_sd, sai_metadata, save_dtype)
 
-    train_util.save_sd_model_on_epoch_end_or_stepwise_common(
+    checkpoint_io.save_sd_model_on_epoch_end_or_stepwise_common(
         args,
         on_epoch_end,
         accelerator,
