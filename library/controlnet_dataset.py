@@ -201,9 +201,6 @@ class ControlNetDataset(BaseDataset):
         self.bucket_manager = self.dreambooth_dataset_delegate.bucket_manager
         self.buckets_indices = self.dreambooth_dataset_delegate.buckets_indices
 
-    def cache_latents(self, vae, vae_batch_size=1, cache_to_disk=False, is_main_process=True):
-        return self.dreambooth_dataset_delegate.cache_latents(vae, vae_batch_size, cache_to_disk, is_main_process)
-
     def new_cache_latents(self, model: Any, accelerator: Accelerator):
         return self.dreambooth_dataset_delegate.new_cache_latents(model, accelerator)
 

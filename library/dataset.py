@@ -924,81 +924,6 @@ class BaseDataset(torch.utils.data.Dataset):
         finally:
             executor.shutdown()
 
-    def cache_latents(self, vae, vae_batch_size=1, cache_to_disk=False, is_main_process=True, file_suffix=".npz"):
-        # マルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
-        logger.info("caching latents.")
-
-        image_infos = list(self.image_data.values())
-
-        # sort by resolution
-        image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
-
-        # split by resolution and some conditions
-        class Condition:
-            def __init__(self, reso, flip_aug, alpha_mask, random_crop):
-                self.reso = reso
-                self.flip_aug = flip_aug
-                self.alpha_mask = alpha_mask
-                self.random_crop = random_crop
-
-            def __eq__(self, other):
-                return (
-                    self.reso == other.reso
-                    and self.flip_aug == other.flip_aug
-                    and self.alpha_mask == other.alpha_mask
-                    and self.random_crop == other.random_crop
-                )
-
-        batches: List[Tuple[Condition, List[ImageInfo]]] = []
-        batch: List[ImageInfo] = []
-        current_condition = None
-
-        logger.info("checking cache validity...")
-        for info in tqdm(image_infos):
-            subset = self.image_to_subset[info.image_key]
-
-            if info.latents_npz is not None:  # fine tuning dataset
-                continue
-
-            # check disk cache exists and size of latents
-            if cache_to_disk:
-                info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
-                if not is_main_process:  # store to info only
-                    continue
-
-                cache_available = is_disk_cached_latents_is_expected(
-                    info.bucket_reso, info.latents_npz, subset.flip_aug, subset.alpha_mask
-                )
-
-                if cache_available:  # do not add to batch
-                    continue
-
-            # if batch is not empty and condition is changed, flush the batch. Note that current_condition is not None if batch is not empty
-            condition = Condition(info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop)
-            if len(batch) > 0 and current_condition != condition:
-                batches.append((current_condition, batch))
-                batch = []
-
-            batch.append(info)
-            current_condition = condition
-
-            # if number of data in batch is enough, flush the batch
-            if len(batch) >= vae_batch_size:
-                batches.append((current_condition, batch))
-                batch = []
-                current_condition = None
-
-        if len(batch) > 0:
-            batches.append((current_condition, batch))
-
-        if cache_to_disk and not is_main_process:  # if cache to disk, don't cache latents in non-main process, set to info only
-            return
-
-        # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
-        logger.info("caching latents...")
-        for condition, batch in tqdm(batches, smoothing=1, total=len(batches)):
-            cache_batch_latents(vae, cache_to_disk, batch, condition.flip_aug, condition.alpha_mask, condition.random_crop)
-
     def new_cache_text_encoder_outputs(self, models: List[Any], accelerator: Accelerator):
         r"""
         a brand new method to cache text encoder outputs. This method caches text encoder outputs with caching strategy.
@@ -1054,131 +979,6 @@ class BaseDataset(torch.utils.data.Dataset):
         for batch in tqdm(batches, smoothing=1, total=len(batches)):
             # cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.alpha_mask, subset.random_crop)
             caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, batch)
-
-    # if weight_dtype is specified, Text Encoder itself and output will be converted to the dtype
-    # this method is only for SDXL, but it should be implemented here because it needs to be a method of dataset
-    # to support SD1/2, it needs a flag for v2, but it is postponed
-    def cache_text_encoder_outputs(
-        self, tokenizers, text_encoders, device, output_dtype, cache_to_disk=False, is_main_process=True
-    ):
-        assert len(tokenizers) == 2, "only support SDXL"
-        return self.cache_text_encoder_outputs_common(
-            tokenizers, text_encoders, [device, device], output_dtype, [output_dtype], cache_to_disk, is_main_process
-        )
-
-    # same as above, but for SD3
-    def cache_text_encoder_outputs_sd3(
-        self, tokenizer, text_encoders, devices, output_dtype, te_dtypes, cache_to_disk=False, is_main_process=True, batch_size=None
-    ):
-        return self.cache_text_encoder_outputs_common(
-            [tokenizer],
-            text_encoders,
-            devices,
-            output_dtype,
-            te_dtypes,
-            cache_to_disk,
-            is_main_process,
-            TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3,
-            batch_size,
-        )
-
-    def cache_text_encoder_outputs_common(
-        self,
-        tokenizers,
-        text_encoders,
-        devices,
-        output_dtype,
-        te_dtypes,
-        cache_to_disk=False,
-        is_main_process=True,
-        file_suffix=TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX,
-        batch_size=None,
-    ):
-        # latentsのキャッシュと同様に、ディスクへのキャッシュに対応する
-        # またマルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
-        logger.info("caching text encoder outputs.")
-
-        tokenize_strategy = TokenizeStrategy.get_strategy()
-
-        if batch_size is None:
-            batch_size = self.batch_size
-
-        image_infos = list(self.image_data.values())
-
-        logger.info("checking cache existence...")
-        image_infos_to_cache = []
-        for info in tqdm(image_infos):
-            # subset = self.image_to_subset[info.image_key]
-            if cache_to_disk:
-                te_out_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
-                info.text_encoder_outputs_npz = te_out_npz
-
-                if not is_main_process:  # store to info only
-                    continue
-
-                if os.path.exists(te_out_npz):
-                    # TODO check varidity of cache here
-                    continue
-
-            image_infos_to_cache.append(info)
-
-        if cache_to_disk and not is_main_process:  # if cache to disk, don't cache latents in non-main process, set to info only
-            return
-
-        # prepare tokenizers and text encoders
-        for text_encoder, device, te_dtype in zip(text_encoders, devices, te_dtypes):
-            text_encoder.to(device)
-            if te_dtype is not None:
-                text_encoder.to(dtype=te_dtype)
-
-        # create batch
-        is_sd3 = len(tokenizers) == 1
-        batch = []
-        batches = []
-        for info in image_infos_to_cache:
-            if not is_sd3:
-                input_ids1 = self.get_input_ids(info.caption, tokenizers[0])
-                input_ids2 = self.get_input_ids(info.caption, tokenizers[1])
-                batch.append((info, input_ids1, input_ids2))
-            else:
-                l_tokens, g_tokens, t5_tokens = tokenize_strategy.tokenize(info.caption)
-                batch.append((info, l_tokens, g_tokens, t5_tokens))
-
-            if len(batch) >= batch_size:
-                batches.append(batch)
-                batch = []
-
-        if len(batch) > 0:
-            batches.append(batch)
-
-        # iterate batches: call text encoder and cache outputs for memory or disk
-        logger.info("caching text encoder outputs...")
-        if not is_sd3:
-            for batch in tqdm(batches):
-                infos, input_ids1, input_ids2 = zip(*batch)
-                input_ids1 = torch.stack(input_ids1, dim=0)
-                input_ids2 = torch.stack(input_ids2, dim=0)
-                cache_batch_text_encoder_outputs(
-                    infos, tokenizers, text_encoders, self.max_token_length, cache_to_disk, input_ids1, input_ids2, output_dtype
-                )
-        else:
-            for batch in tqdm(batches):
-                infos, l_tokens, g_tokens, t5_tokens = zip(*batch)
-
-                # stack tokens
-                # l_tokens = [tokens[0] for tokens in l_tokens]
-                # g_tokens = [tokens[0] for tokens in g_tokens]
-                # t5_tokens = [tokens[0] for tokens in t5_tokens]
-
-                cache_batch_text_encoder_outputs_sd3(
-                    infos,
-                    tokenizers[0],
-                    text_encoders,
-                    self.max_token_length,
-                    cache_to_disk,
-                    (l_tokens, g_tokens, t5_tokens),
-                    output_dtype,
-                )
 
     def get_image_size(self, image_path):
         if image_path.endswith(".jxl") or image_path.endswith(".JXL"):
@@ -1674,32 +1474,11 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         for dataset in self.datasets:
             dataset.enable_XTI(*args, **kwargs)
 
-    def cache_latents(self, vae, vae_batch_size=1, cache_to_disk=False, is_main_process=True, file_suffix=".npz"):
-        for i, dataset in enumerate(self.datasets):
-            logger.info(f"[Dataset {i}]")
-            dataset.cache_latents(vae, vae_batch_size, cache_to_disk, is_main_process, file_suffix)
-
     def new_cache_latents(self, model: Any, accelerator: Accelerator):
         for i, dataset in enumerate(self.datasets):
             logger.info(f"[Dataset {i}]")
             dataset.new_cache_latents(model, accelerator)
         accelerator.wait_for_everyone()
-
-    def cache_text_encoder_outputs(
-        self, tokenizers, text_encoders, device, weight_dtype, cache_to_disk=False, is_main_process=True
-    ):
-        for i, dataset in enumerate(self.datasets):
-            logger.info(f"[Dataset {i}]")
-            dataset.cache_text_encoder_outputs(tokenizers, text_encoders, device, weight_dtype, cache_to_disk, is_main_process)
-
-    def cache_text_encoder_outputs_sd3(
-        self, tokenizer, text_encoders, device, output_dtype, te_dtypes, cache_to_disk=False, is_main_process=True, batch_size=None
-    ):
-        for i, dataset in enumerate(self.datasets):
-            logger.info(f"[Dataset {i}]")
-            dataset.cache_text_encoder_outputs_sd3(
-                tokenizer, text_encoders, device, output_dtype, te_dtypes, cache_to_disk, is_main_process, batch_size
-            )
 
     def new_cache_text_encoder_outputs(self, models: List[Any], accelerator: Accelerator):
         for i, dataset in enumerate(self.datasets):
