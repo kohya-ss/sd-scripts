@@ -4,6 +4,11 @@ Hosts the SD/SDXL text-encoder forward routines used by the training and
 sampling code (``get_hidden_states``, ``get_hidden_states_sdxl``) along with
 ``pool_workaround`` for CLIP's pooled-output bug. Extracted from
 ``library.train_util`` and re-exported there for backward compatibility.
+
+Note: ``get_hidden_states_sdxl`` is no longer called from anywhere in this
+repository (SDXL training now goes through
+``library.strategy_sdxl.SdxlTextEncodingStrategy``). It is retained only for
+fork compatibility — see the function-level comment for details.
 """
 
 import argparse
@@ -106,6 +111,12 @@ def pool_workaround(
     return pooled_output
 
 
+# NOTE: get_hidden_states_sdxl is no longer called from anywhere in this repository.
+# SDXL text-encoder hidden-state extraction has moved to
+# library.strategy_sdxl.SdxlTextEncodingStrategy._get_hidden_states_sdxl.
+# This function (and its train_util re-export shim) is kept only for backward
+# compatibility with external forks that may still import it. It can be removed
+# in a future cleanup once that compatibility is no longer a concern.
 def get_hidden_states_sdxl(
     max_token_length: int,
     input_ids1: torch.Tensor,
