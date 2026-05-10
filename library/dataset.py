@@ -430,9 +430,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.replacements = {}
 
-        # caching
-        self.caching_mode = None  # None, 'latents', 'text'
-
         self.tokenize_strategy = None
         self.text_encoder_output_caching_strategy = None
         self.latents_caching_strategy = None
@@ -472,9 +469,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def set_seed(self, seed):
         self.seed = seed
-
-    def set_caching_mode(self, mode):
-        self.caching_mode = mode
 
     def set_current_epoch(self, epoch):
         if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
@@ -628,55 +622,6 @@ class BaseDataset(torch.utils.data.Dataset):
                     caption = caption.replace(str_from, str_to)
 
         return caption
-
-    def get_input_ids(self, caption, tokenizer=None):
-        if tokenizer is None:
-            tokenizer = self.tokenizers[0]
-
-        input_ids = tokenizer(
-            caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
-        ).input_ids
-
-        if self.tokenizer_max_length > tokenizer.model_max_length:
-            input_ids = input_ids.squeeze(0)
-            iids_list = []
-            if tokenizer.pad_token_id == tokenizer.eos_token_id:
-                # v1
-                # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
-                # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
-                for i in range(
-                    1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
-                ):  # (1, 152, 75)
-                    ids_chunk = (
-                        input_ids[0].unsqueeze(0),
-                        input_ids[i : i + tokenizer.model_max_length - 2],
-                        input_ids[-1].unsqueeze(0),
-                    )
-                    ids_chunk = torch.cat(ids_chunk)
-                    iids_list.append(ids_chunk)
-            else:
-                # v2 or SDXL
-                # 77以上の時は "<BOS> .... <EOS> <PAD> <PAD>..." でトータル227とかになっているので、"<BOS>...<EOS> <PAD> <PAD> ..."の三連に変換する
-                for i in range(1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2):
-                    ids_chunk = (
-                        input_ids[0].unsqueeze(0),  # BOS
-                        input_ids[i : i + tokenizer.model_max_length - 2],
-                        input_ids[-1].unsqueeze(0),
-                    )  # PAD or EOS
-                    ids_chunk = torch.cat(ids_chunk)
-
-                    # 末尾が <EOS> <PAD> または <PAD> <PAD> の場合は、何もしなくてよい
-                    # 末尾が x <PAD/EOS> の場合は末尾を <EOS> に変える（x <EOS> なら結果的に変化なし）
-                    if ids_chunk[-2] != tokenizer.eos_token_id and ids_chunk[-2] != tokenizer.pad_token_id:
-                        ids_chunk[-1] = tokenizer.eos_token_id
-                    # 先頭が <BOS> <PAD> ... の場合は <BOS> <EOS> <PAD> ... に変える
-                    if ids_chunk[1] == tokenizer.pad_token_id:
-                        ids_chunk[1] = tokenizer.eos_token_id
-
-                    iids_list.append(ids_chunk)
-
-            input_ids = torch.stack(iids_list)  # 3,77
-        return input_ids
 
     def register_image(self, info: ImageInfo, subset: BaseSubset):
         self.image_data[info.image_key] = info
@@ -1058,9 +1003,6 @@ class BaseDataset(torch.utils.data.Dataset):
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
         image_index = self.buckets_indices[index].batch_index * bucket_batch_size
 
-        if self.caching_mode is not None:  # return batch for latents/text encoder outputs caching
-            return self.get_item_for_caching(bucket, bucket_batch_size, image_index)
-
         loss_weights = []
         captions = []
         input_ids_list = []
@@ -1225,31 +1167,6 @@ class BaseDataset(torch.utils.data.Dataset):
             if tokenization_required:
                 caption = self.process_caption(subset, image_info.caption)
                 input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
-                # if self.XTI_layers:
-                #     caption_layer = []
-                #     for layer in self.XTI_layers:
-                #         token_strings_from = " ".join(self.token_strings)
-                #         token_strings_to = " ".join([f"{x}_{layer}" for x in self.token_strings])
-                #         caption_ = caption.replace(token_strings_from, token_strings_to)
-                #         caption_layer.append(caption_)
-                #     captions.append(caption_layer)
-                # else:
-                #     captions.append(caption)
-
-                # if not self.token_padding_disabled:  # this option might be omitted in future
-                #     # TODO get_input_ids must support SD3
-                #     if self.XTI_layers:
-                #         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
-                #     else:
-                #         token_caption = self.get_input_ids(caption, self.tokenizers[0])
-                #     input_ids_list.append(token_caption)
-
-                #     if len(self.tokenizers) > 1:
-                #         if self.XTI_layers:
-                #             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
-                #         else:
-                #             token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
-                #         input_ids2_list.append(token_caption2)
 
             input_ids_list.append(input_ids)
             captions.append(caption)
@@ -1336,72 +1253,6 @@ class BaseDataset(torch.utils.data.Dataset):
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]
         return example
 
-    def get_item_for_caching(self, bucket, bucket_batch_size, image_index):
-        captions = []
-        images = []
-        input_ids1_list = []
-        input_ids2_list = []
-        absolute_paths = []
-        resized_sizes = []
-        bucket_reso = None
-        flip_aug = None
-        alpha_mask = None
-        random_crop = None
-
-        for image_key in bucket[image_index : image_index + bucket_batch_size]:
-            image_info = self.image_data[image_key]
-            subset = self.image_to_subset[image_key]
-
-            if flip_aug is None:
-                flip_aug = subset.flip_aug
-                alpha_mask = subset.alpha_mask
-                random_crop = subset.random_crop
-                bucket_reso = image_info.bucket_reso
-            else:
-                # TODO そもそも混在してても動くようにしたほうがいい
-                assert flip_aug == subset.flip_aug, "flip_aug must be same in a batch"
-                assert alpha_mask == subset.alpha_mask, "alpha_mask must be same in a batch"
-                assert random_crop == subset.random_crop, "random_crop must be same in a batch"
-                assert bucket_reso == image_info.bucket_reso, "bucket_reso must be same in a batch"
-
-            caption = image_info.caption  # TODO cache some patterns of dropping, shuffling, etc.
-
-            if self.caching_mode == "latents":
-                image = load_image(image_info.absolute_path)
-            else:
-                image = None
-
-            if self.caching_mode == "text":
-                input_ids1 = self.get_input_ids(caption, self.tokenizers[0])
-                input_ids2 = self.get_input_ids(caption, self.tokenizers[1])
-            else:
-                input_ids1 = None
-                input_ids2 = None
-
-            captions.append(caption)
-            images.append(image)
-            input_ids1_list.append(input_ids1)
-            input_ids2_list.append(input_ids2)
-            absolute_paths.append(image_info.absolute_path)
-            resized_sizes.append(image_info.resized_size)
-
-        example = {}
-
-        if images[0] is None:
-            images = None
-        example["images"] = images
-
-        example["captions"] = captions
-        example["input_ids1_list"] = input_ids1_list
-        example["input_ids2_list"] = input_ids2_list
-        example["absolute_paths"] = absolute_paths
-        example["resized_sizes"] = resized_sizes
-        example["flip_aug"] = flip_aug
-        example["alpha_mask"] = alpha_mask
-        example["random_crop"] = random_crop
-        example["bucket_reso"] = bucket_reso
-        return example
-
     @staticmethod
     def prepare_mask_and_masked_image(image, mask):
         image = np.array(image.convert("RGB"))
@@ -1478,10 +1329,6 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             logger.info(f"[Dataset {i}]")
             dataset.new_cache_text_encoder_outputs(models, accelerator)
         accelerator.wait_for_everyone()
-
-    def set_caching_mode(self, caching_mode):
-        for dataset in self.datasets:
-            dataset.set_caching_mode(caching_mode)
 
     def verify_bucket_reso_steps(self, min_steps: int):
         for dataset in self.datasets:
@@ -1681,7 +1528,7 @@ class MinimalDataset(BaseDataset):
                 images.append(img_tensor)
 
                 caption = ...  # str
-                input_ids = self.get_input_ids(caption)
+                input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]
                 input_ids_list.append(input_ids)
 
                 captions.append(caption)
