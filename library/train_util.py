@@ -1,95 +1,26 @@
-﻿# common functions for training
+# common functions for training
 
-import argparse
-import ast
-import asyncio
-from concurrent.futures import Future, ThreadPoolExecutor
-import datetime
-import importlib
-import json
 import logging
-import pathlib
-import re
-import shutil
-import time
-import typing
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
-from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParallelKwargs, PartialState
-import glob
-import math
-import os
-import random
-import hashlib
-import subprocess
-from io import BytesIO
-import toml
-
-# from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from tqdm import tqdm
-from packaging.version import Version
 
 import torch
-from library.device_utils import init_ipex, clean_memory_on_device
-from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy, TextEncodingStrategy
+from torchvision import transforms
+from PIL import Image
+
+from library.device_utils import init_ipex, clean_memory_on_device  # noqa: F401  (clean_memory_on_device re-exported for backward compatibility)
+from library.utils import setup_logging
 
 init_ipex()
-
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import Optimizer
-from torchvision import transforms
-from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
-import transformers
-from diffusers.optimization import (
-    SchedulerType as DiffusersSchedulerType,
-    TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
-)
-from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
-from diffusers import (
-    StableDiffusionPipeline,
-    DDPMScheduler,
-    EulerAncestralDiscreteScheduler,
-    DPMSolverMultistepScheduler,
-    DPMSolverSinglestepScheduler,
-    LMSDiscreteScheduler,
-    PNDMScheduler,
-    DDIMScheduler,
-    EulerDiscreteScheduler,
-    HeunDiscreteScheduler,
-    KDPM2DiscreteScheduler,
-    KDPM2AncestralDiscreteScheduler,
-    AutoencoderKL,
-)
-from library import custom_train_functions, sd3_utils
-from library.original_unet import UNet2DConditionModel
-from huggingface_hub import hf_hub_download
-import numpy as np
-from PIL import Image
-import imagesize
-import cv2
-import safetensors.torch
-from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
-from library.sdxl_lpw_stable_diffusion import SdxlStableDiffusionLongPromptWeightingPipeline
-import library.model_util as model_util
-import library.huggingface_util as huggingface_util
-import library.sai_model_spec as sai_model_spec
-import library.deepspeed_utils as deepspeed_utils
-from library.utils import setup_logging, resize_image, validate_interpolation_fn
-
 setup_logging()
-import logging
 
 logger = logging.getLogger(__name__)
-# from library.attention_processors import FlashAttnProcessor
-# from library.hypernetwork import replace_attentions_for_hypernetwork
-from library.original_unet import UNet2DConditionModel
+
 
 # Accelerator setup helpers have moved to library.accelerator_setup;
 # re-exported here for backward compatibility.
 # New code should import from library.accelerator_setup directly.
 # HIGH_VRAM is mutated by enable_high_vram(); for legacy ``train_util.HIGH_VRAM``
 # attribute reads we forward through a module-level __getattr__ below.
-from library.accelerator_setup import (  # noqa: F401
+from library.accelerator_setup import (  # noqa: F401, E402
     enable_high_vram,
     prepare_dataset_args,
     prepare_accelerator,
@@ -108,7 +39,7 @@ def __getattr__(name):
 # Checkpoint filename templates and save / rotate helpers have moved to
 # library.checkpoint_io; re-exported here for backward compatibility.
 # New code should import from library.checkpoint_io directly.
-from library.checkpoint_io import (  # noqa: F401
+from library.checkpoint_io import (  # noqa: F401, E402
     EPOCH_STATE_NAME,
     EPOCH_FILE_NAME,
     EPOCH_DIFFUSERS_DIR_NAME,
@@ -123,7 +54,7 @@ from library.checkpoint_io import (  # noqa: F401
 
 # Dataset core has moved to library.dataset; re-exported here for backward compatibility.
 # New code should import from library.dataset directly.
-from library.dataset import (  # noqa: F401
+from library.dataset import (  # noqa: F401, E402
     IMAGE_EXTENSIONS,
     IMAGE_TRANSFORMS,
     TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX,
@@ -144,32 +75,21 @@ from library.dataset import (  # noqa: F401
 )
 
 
-
-
-
-
-
-
-
-
-
-
 # Subset classes have moved to library.subset; re-exported here for backward compatibility.
 # New code should import from library.subset directly.
-from library.subset import BaseSubset, DreamBoothSubset, FineTuningSubset, ControlNetSubset  # noqa: F401
-
+from library.subset import BaseSubset, DreamBoothSubset, FineTuningSubset, ControlNetSubset  # noqa: F401, E402
 
 
 # DreamBooth / FineTuning / ControlNet datasets have moved to dedicated modules;
 # re-exported here for backward compatibility. New code should import from library.* directly.
-from library.dreambooth_dataset import DreamBoothDataset  # noqa: F401
-from library.finetuning_dataset import FineTuningDataset  # noqa: F401
-from library.controlnet_dataset import ControlNetDataset  # noqa: F401
+from library.dreambooth_dataset import DreamBoothDataset  # noqa: F401, E402
+from library.finetuning_dataset import FineTuningDataset  # noqa: F401, E402
+from library.controlnet_dataset import ControlNetDataset  # noqa: F401, E402
 
 
 # Caching functions have moved to library.caching; re-exported here for backward compatibility.
 # New code should import from library.caching directly.
-from library.caching import (  # noqa: F401
+from library.caching import (  # noqa: F401, E402
     is_disk_cached_latents_is_expected,
     trim_and_resize_if_required,
     load_images_and_masks_for_caching,
@@ -180,54 +100,6 @@ from library.caching import (  # noqa: F401
     load_text_encoder_outputs_from_disk,
 )
 
-
-# 戻り値は、latents_tensor, (original_size width, original_size height), (crop left, crop top)
-# TODO update to use CachingStrategy
-# def load_latents_from_disk(
-#     npz_path,
-# ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
-#     npz = np.load(npz_path)
-#     if "latents" not in npz:
-#         raise ValueError(f"error: npz is old format. please re-generate {npz_path}")
-
-#     latents = npz["latents"]
-#     original_size = npz["original_size"].tolist()
-#     crop_ltrb = npz["crop_ltrb"].tolist()
-#     flipped_latents = npz["latents_flipped"] if "latents_flipped" in npz else None
-#     alpha_mask = npz["alpha_mask"] if "alpha_mask" in npz else None
-#     return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
-
-
-# def save_latents_to_disk(npz_path, latents_tensor, original_size, crop_ltrb, flipped_latents_tensor=None, alpha_mask=None):
-#     kwargs = {}
-#     if flipped_latents_tensor is not None:
-#         kwargs["latents_flipped"] = flipped_latents_tensor.float().cpu().numpy()
-#     if alpha_mask is not None:
-#         kwargs["alpha_mask"] = alpha_mask.float().cpu().numpy()
-#     np.savez(
-#         npz_path,
-#         latents=latents_tensor.float().cpu().numpy(),
-#         original_size=np.array(original_size),
-#         crop_ltrb=np.array(crop_ltrb),
-#         **kwargs,
-#     )
-
-
-
-
-# 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
-
-
-# endregion
-
-# region モジュール入れ替え部
-"""
-高速化のためのモジュール入れ替え
-"""
-
-# FlashAttentionを使うCrossAttention
-# based on https://github.com/lucidrains/memory-efficient-attention-pytorch/blob/main/memory_efficient_attention_pytorch/flash_attention.py
-# LICENSE MIT https://github.com/lucidrains/memory-efficient-attention-pytorch/blob/main/LICENSE
 
 # constants
 
@@ -247,7 +119,7 @@ def default(val, d):
 # Model I/O, hashing and metadata helpers have moved to library.model_io;
 # re-exported here for backward compatibility.
 # New code should import from library.model_io directly.
-from library.model_io import (  # noqa: F401
+from library.model_io import (  # noqa: F401, E402
     model_hash,
     calculate_sha256,
     precalculate_safetensors_hashes,
@@ -271,129 +143,10 @@ from library.model_io import (  # noqa: F401
 )
 
 
-
-# def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers):
-#     replace_attentions_for_hypernetwork()
-#     # unet is not used currently, but it is here for future use
-#     unet.enable_xformers_memory_efficient_attention()
-#     return
-#     if mem_eff_attn:
-#         unet.set_attn_processor(FlashAttnProcessor())
-#     elif xformers:
-#         unet.enable_xformers_memory_efficient_attention()
-
-
-# def replace_unet_cross_attn_to_xformers():
-#     logger.info("CrossAttention.forward has been replaced to enable xformers.")
-#     try:
-#         import xformers.ops
-#     except ImportError:
-#         raise ImportError("No xformers / xformersがインストールされていないようです")
-
-#     def forward_xformers(self, x, context=None, mask=None):
-#         h = self.heads
-#         q_in = self.to_q(x)
-
-#         context = default(context, x)
-#         context = context.to(x.dtype)
-
-#         if hasattr(self, "hypernetwork") and self.hypernetwork is not None:
-#             context_k, context_v = self.hypernetwork.forward(x, context)
-#             context_k = context_k.to(x.dtype)
-#             context_v = context_v.to(x.dtype)
-#         else:
-#             context_k = context
-#             context_v = context
-
-#         k_in = self.to_k(context_k)
-#         v_in = self.to_v(context_v)
-
-#         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b n h d", h=h), (q_in, k_in, v_in))
-#         del q_in, k_in, v_in
-
-#         q = q.contiguous()
-#         k = k.contiguous()
-#         v = v.contiguous()
-#         out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)  # 最適なのを選んでくれる
-
-#         out = rearrange(out, "b n h d -> b n (h d)", h=h)
-
-#         # diffusers 0.7.0~
-#         out = self.to_out[0](out)
-#         out = self.to_out[1](out)
-#         return out
-
-
-#     diffusers.models.attention.CrossAttention.forward = forward_xformers
-
-"""
-def replace_vae_modules(vae: diffusers.models.AutoencoderKL, mem_eff_attn, xformers):
-    # vae is not used currently, but it is here for future use
-    if mem_eff_attn:
-        replace_vae_attn_to_memory_efficient()
-    elif xformers:
-        # とりあえずDiffusersのxformersを使う。AttentionがあるのはMidBlockのみ
-        logger.info("Use Diffusers xformers for VAE")
-        vae.encoder.mid_block.attentions[0].set_use_memory_efficient_attention_xformers(True)
-        vae.decoder.mid_block.attentions[0].set_use_memory_efficient_attention_xformers(True)
-
-
-def replace_vae_attn_to_memory_efficient():
-    logger.info("AttentionBlock.forward has been replaced to FlashAttention (not xformers)")
-    flash_func = FlashAttentionFunction
-
-    def forward_flash_attn(self, hidden_states):
-        logger.info("forward_flash_attn")
-        q_bucket_size = 512
-        k_bucket_size = 1024
-
-        residual = hidden_states
-        batch, channel, height, width = hidden_states.shape
-
-        # norm
-        hidden_states = self.group_norm(hidden_states)
-
-        hidden_states = hidden_states.view(batch, channel, height * width).transpose(1, 2)
-
-        # proj to q, k, v
-        query_proj = self.query(hidden_states)
-        key_proj = self.key(hidden_states)
-        value_proj = self.value(hidden_states)
-
-        query_proj, key_proj, value_proj = map(
-            lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.num_heads), (query_proj, key_proj, value_proj)
-        )
-
-        out = flash_func.apply(query_proj, key_proj, value_proj, None, False, q_bucket_size, k_bucket_size)
-
-        out = rearrange(out, "b h n d -> b n (h d)")
-
-        # compute next hidden_states
-        hidden_states = self.proj_attn(hidden_states)
-        hidden_states = hidden_states.transpose(-1, -2).reshape(batch, channel, height, width)
-
-        # res connect and rescale
-        hidden_states = (hidden_states + residual) / self.rescale_output_factor
-        return hidden_states
-
-    diffusers.models.attention.AttentionBlock.forward = forward_flash_attn
-"""
-
-
-# endregion
-
-
-# region arguments
-
-
-
-
-
-
 # Argument definitions and configuration helpers have moved to library.args;
 # re-exported here for backward compatibility.
 # New code should import from library.args directly.
-from library.args import (  # noqa: F401
+from library.args import (  # noqa: F401, E402
     add_sd_models_arguments,
     add_optimizer_arguments,
     add_training_arguments,
@@ -409,16 +162,10 @@ from library.args import (  # noqa: F401
 )
 
 
-# endregion
-
-# region utils
-
-
-
 # Optimizer / scheduler / LR-logging helpers have moved to library.optimizer;
 # re-exported here for backward compatibility.
 # New code should import from library.optimizer directly.
-from library.optimizer import (  # noqa: F401
+from library.optimizer import (  # noqa: F401, E402
     get_optimizer,
     get_optimizer_train_eval_fn,
     is_schedulefree_optimizer,
@@ -429,12 +176,10 @@ from library.optimizer import (  # noqa: F401
 )
 
 
-
-
 # Text encoder hidden-state helpers have moved to library.hidden_states;
 # re-exported here for backward compatibility.
 # New code should import from library.hidden_states directly.
-from library.hidden_states import (  # noqa: F401
+from library.hidden_states import (  # noqa: F401, E402
     get_hidden_states,
     pool_workaround,
     get_hidden_states_sdxl,
@@ -444,7 +189,7 @@ from library.hidden_states import (  # noqa: F401
 # Checkpoint save / rotate helpers have moved to library.checkpoint_io;
 # re-exported here for backward compatibility.
 # New code should import from library.checkpoint_io directly.
-from library.checkpoint_io import (  # noqa: F401
+from library.checkpoint_io import (  # noqa: F401, E402
     default_if_none,
     get_epoch_ckpt_name,
     get_step_ckpt_name,
@@ -461,18 +206,15 @@ from library.checkpoint_io import (  # noqa: F401
 )
 
 
-
-
 # Loss / noise scheduling helpers have moved to library.loss;
 # re-exported here for backward compatibility.
 # New code should import from library.loss directly.
-from library.loss import (  # noqa: F401
+from library.loss import (  # noqa: F401, E402
     get_timesteps,
     get_noise_noisy_latents_and_timesteps,
     get_huber_threshold_if_needed,
     conditional_loss,
 )
-
 
 
 # Sampling helpers (default scheduler, prompt parsing, sample generation)
@@ -496,9 +238,6 @@ from library.sampling import (  # noqa: F401, E402
 # re-exported here for backward compatibility.
 # New code should import from library.logging_util directly.
 from library.logging_util import init_trackers  # noqa: F401, E402
-
-
-# endregion
 
 
 # region 前処理用
