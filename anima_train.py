@@ -24,6 +24,7 @@ from library import deepspeed_utils, anima_models, anima_train_utils, anima_util
 
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -571,8 +572,8 @@ def train(args):
                 )
 
                 # Loss
-                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, None)
-                loss = train_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, None)
+                loss = loss_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
                 loss = loss.mean([1, 2, 3])  # (B, C, H, W) -> (B,)

@@ -37,6 +37,7 @@ from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 
 from library.utils import setup_logging, add_logging_arguments
 
@@ -765,10 +766,10 @@ def train(args):
                 target = latents - noise
 
                 # calculate loss
-                huber_c = train_util.get_huber_threshold_if_needed(
+                huber_c = loss_util.get_huber_threshold_if_needed(
                     args, 1000 - timesteps, noise_scheduler
                 )
-                loss = train_util.conditional_loss(
+                loss = loss_util.conditional_loss(
                     model_pred.float(), target.float(), args.loss_type, "none", huber_c
                 )
                 if weighting is not None:

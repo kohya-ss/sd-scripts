@@ -19,6 +19,7 @@ from transformers import CLIPTokenizer
 from library import deepspeed_utils, model_util, strategy_base, strategy_sd, sai_model_spec
 
 import library.train_util as train_util
+import library.loss as loss_util
 import library.huggingface_util as huggingface_util
 import library.config_util as config_util
 from library.config_util import (
@@ -600,7 +601,7 @@ class TextualInversionTrainer:
 
                     # Sample noise, sample a random timestep for each image, and add noise to the latents,
                     # with noise offset and/or multires noise if specified
-                    noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
+                    noise, noisy_latents, timesteps = loss_util.get_noise_noisy_latents_and_timesteps(
                         args, noise_scheduler, latents
                     )
                     if batch["masks"] is not None:
@@ -619,8 +620,8 @@ class TextualInversionTrainer:
                     else:
                         target = noise
 
-                    huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
-                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                    huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                    loss = loss_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                     if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])

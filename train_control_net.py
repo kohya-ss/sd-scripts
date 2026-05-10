@@ -25,6 +25,7 @@ from safetensors.torch import load_file
 import library.model_util as model_util
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 import library.config_util as config_util
 import library.sai_model_spec as sai_model_spec
 from library.config_util import (
@@ -471,7 +472,7 @@ def train(args):
                     )
 
                 # Sample a random timestep for each image
-                timesteps = train_util.get_timesteps(0, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
+                timesteps = loss_util.get_timesteps(0, noise_scheduler.config.num_train_timesteps, b_size, latents.device)
 
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
@@ -503,8 +504,8 @@ def train(args):
                 else:
                     target = noise
 
-                huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
-                loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+                huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
+                loss = loss_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 loss = loss.mean([1, 2, 3])
 
                 loss_weights = batch["loss_weights"]  # 各sampleごとのweight

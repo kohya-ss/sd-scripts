@@ -33,6 +33,7 @@ from accelerate.utils import set_seed
 
 import library.train_util as train_util
 import library.logging_util as logging_util
+import library.loss as loss_util
 import library.sai_model_spec as sai_model_spec
 from library import (
     deepspeed_utils,
@@ -693,7 +694,7 @@ def train(args):
                 target = noise - latents
 
                 # calculate loss
-                loss = train_util.conditional_loss(
+                loss = loss_util.conditional_loss(
                     model_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=None
                 )
                 if weighting is not None:
