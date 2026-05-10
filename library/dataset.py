@@ -27,6 +27,8 @@ import math
 import os
 import pathlib
 import random
+import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import cv2
@@ -37,6 +39,7 @@ from PIL import Image
 from accelerate import Accelerator
 from diffusers import AutoencoderKL
 from torchvision import transforms
+from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 import library.model_util as model_util
@@ -908,7 +911,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 if len(batch) > 0 and current_condition != condition:
                     submit_batch(batch, current_condition)
                     batch = []
-                if condition != current_condition and HIGH_VRAM:  # even with high VRAM, if shape is changed
+                if condition != current_condition and _tu().HIGH_VRAM:  # even with high VRAM, if shape is changed
                     clean_memory_on_device(accelerator.device)
 
                 if info.image is None:
