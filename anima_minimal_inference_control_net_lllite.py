@@ -74,6 +74,31 @@ def _load_control_image(
     return t.to(device=device, dtype=dtype)
 
 
+def _load_mask_image(
+    path: str, height: int, width: int, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    """Load and binarize a mask image to a (1, 1, H, W) tensor in {0, 1}.
+    1.0 = inpaint area (穴), 0.0 = keep.
+    """
+    img = Image.open(path).convert("L")
+    if img.size != (width, height):
+        img = img.resize((width, height), Image.NEAREST)
+    arr = np.asarray(img).astype(np.float32) / 255.0
+    arr = (arr >= 0.5).astype(np.float32)
+    t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).contiguous()
+    return t.to(device=device, dtype=dtype)
+
+
+def _build_inpaint_cond_image(
+    rgb: torch.Tensor, mask: torch.Tensor, masked_input: bool
+) -> torch.Tensor:
+    """rgb: (B, 3, H, W) in [-1, 1], mask: (B, 1, H, W) in {0, 1}. Return (B, 4, H, W)."""
+    if masked_input:
+        keep = (mask < 0.5).to(rgb.dtype)
+        rgb = rgb * keep
+    return torch.cat([rgb, mask.to(rgb.dtype)], dim=1)
+
+
 # ---------------------------------------------------------------------------
 # parse_args (replaces ami.parse_args)
 # ---------------------------------------------------------------------------
@@ -161,6 +186,21 @@ def parse_args() -> argparse.Namespace:
         "--lllite_use_aspp", type=str, default=None, choices=["true", "false"],
         help="override use_aspp from weights metadata (true/false)",
     )
+    parser.add_argument(
+        "--mask_image", type=str, default=None,
+        help=(
+            "[inpaint] global mask image. Required for single-prompt inpainting (cond_in_channels=4). "
+            "Per-prompt override: --mk <path>."
+        ),
+    )
+    parser.add_argument(
+        "--lllite_cond_in_channels", type=int, default=None,
+        help="override cond_in_channels from weights metadata (3 or 4)",
+    )
+    parser.add_argument(
+        "--lllite_inpaint_masked_input", type=str, default=None, choices=["true", "false"],
+        help="override inpaint_masked_input from weights metadata (true/false)",
+    )
 
     args = parser.parse_args()
 
@@ -221,6 +261,8 @@ def parse_prompt_line(line: str) -> Dict[str, Any]:
             overrides["negative_prompt"] = value
         elif option == "cn":
             overrides["control_image"] = value
+        elif option == "mk":
+            overrides["mask_image"] = value
         elif option == "am":
             overrides["lllite_multiplier"] = float(value)
 
@@ -274,12 +316,26 @@ def load_dit_model(args, device, dit_weight_dtype=None):
     else:
         from networks.control_net_lllite_anima import ASPP_DEFAULT_DILATIONS as _ASPP_DD
         aspp_dilations = _ASPP_DD
+    cond_in_channels = (
+        args.lllite_cond_in_channels
+        if args.lllite_cond_in_channels is not None
+        else int(meta.get("lllite.cond_in_channels", 3))
+    )
+    if args.lllite_inpaint_masked_input is not None:
+        inpaint_masked_input = args.lllite_inpaint_masked_input == "true"
+    else:
+        inpaint_masked_input = (
+            meta.get("lllite.inpaint_masked_input", "false").lower() == "true"
+        )
     version = meta.get("lllite.version", "?")
+    inpaint_log = (
+        f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
+    )
     logger.info(
         f"LLLite config (v{version}): cond_emb_dim={cond_emb_dim}, mlp_dim={mlp_dim}, "
         f"target_layers={target_layers}, cond_dim={cond_dim}, cond_resblocks={cond_resblocks}, "
         f"use_aspp={use_aspp}{(' dilations=' + str(list(aspp_dilations))) if use_aspp else ''}, "
-        f"multiplier={args.lllite_multiplier}"
+        f"cond_in_channels={cond_in_channels}{inpaint_log}, multiplier={args.lllite_multiplier}"
     )
 
     lllite = ControlNetLLLiteDiT(
@@ -292,6 +348,8 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         cond_resblocks=cond_resblocks,
         use_aspp=use_aspp,
         aspp_dilations=aspp_dilations,
+        cond_in_channels=cond_in_channels,
+        inpaint_masked_input=inpaint_masked_input,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -331,6 +389,23 @@ def generate_body(
 
     if not hasattr(anima, "lllite"):
         raise RuntimeError("DiT has no .lllite attribute; load_dit_model patch was not applied")
+
+    # inpainting (4ch): require a mask image; concat to cond_image as 4th channel
+    if anima.lllite.cond_in_channels == 4:
+        mk_path = getattr(args, "mask_image", None)
+        if mk_path is None:
+            raise ValueError(
+                "mask_image is required for 4-channel (inpaint) LLLite. "
+                "Specify --mask_image globally, or --mk per prompt in --from_file mode."
+            )
+        mask = _load_mask_image(mk_path, height, width, device, torch.bfloat16)
+        cond_image = _build_inpaint_cond_image(
+            cond_image, mask, anima.lllite.inpaint_masked_input
+        )
+        logger.info(
+            f"Loaded mask image: {mk_path} -> 4ch cond_image {tuple(cond_image.shape)}"
+            f" (masked_input={anima.lllite.inpaint_masked_input})"
+        )
 
     # honor per-prompt override of multiplier
     anima.lllite.set_multiplier(args.lllite_multiplier)

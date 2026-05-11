@@ -8,7 +8,7 @@ call periodically (every N steps / epochs) to produce preview images:
   ``--sample_sampler`` (ddim / pndm / euler / dpmsolver / ...).
 - :func:`line_to_prompt_dict` / :func:`load_prompts` — parse prompt files
   (``.txt`` / ``.toml`` / ``.json``) into prompt dicts. ``--w / --h /
-  --d / --s / --l / --g / --n / --ss / --cn / --i / --ctr / --rcfg /
+  --d / --s / --l / --g / --n / --ss / --cn / --mk / --i / --ctr / --rcfg /
   --fs / --am`` flags are recognised.
 - :func:`sample_images` / :func:`sample_images_common` /
   :func:`sample_image_inference` — orchestrate one round of sample
@@ -176,6 +176,11 @@ def line_to_prompt_dict(line: str) -> dict:
             m = re.match(r"cn (.+)", parg, re.IGNORECASE)
             if m:
                 prompt_dict["controlnet_image"] = m.group(1)
+                continue
+
+            m = re.match(r"mk (.+)", parg, re.IGNORECASE)
+            if m:
+                prompt_dict["mask_image"] = m.group(1)
                 continue
 
             m = re.match(r"i (.+)", parg, re.IGNORECASE)

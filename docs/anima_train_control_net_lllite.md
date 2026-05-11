@@ -352,6 +352,8 @@ The metadata records `modelspec.architecture = "anima-preview/control-net-lllite
 | `lllite.mlp_dim` | per-module MLP / FiLM hidden dim |
 | `lllite.target_layers` | the user-supplied `--lllite_target_layers` string verbatim |
 | `lllite.target_atomics` | resolved canonical atomic specifier list (comma-separated) |
+| `lllite.cond_in_channels` | conditioning1 input channel count (`"3"` standard, `"4"` inpaint) |
+| `lllite.inpaint_masked_input` | `"true"` if RGB was masked before concat at train time (inpaint only) |
 
 The inference script (Section 6) reads these back, so you normally do not need to specify the architecture options on the command line again. Currently the inference script **requires** the metadata to reconstruct the architecture: state-dict-only auto-detection (e.g. for hand-edited weight files) is not implemented.
 
@@ -402,6 +404,8 @@ lllite_conditioning1.out_norm.{weight,bias}
 | `lllite.mlp_dim` | LLLite モジュール毎の MLP / FiLM 中間次元 |
 | `lllite.target_layers` | ユーザが指定した `--lllite_target_layers` 文字列をそのまま記録 |
 | `lllite.target_atomics` | 解決後の canonical atomic specifier 列（カンマ区切り） |
+| `lllite.cond_in_channels` | conditioning1 入力チャネル数（`"3"` 通常、`"4"` inpainting） |
+| `lllite.inpaint_masked_input` | 学習時 RGB を mask 域で 0 化してから concat したか（inpaint 専用、`"true"`/`"false"`） |
 
 これらは推論スクリプト（第 6 節）で自動的に読み出されるため、通常はコマンドラインで再指定する必要はありません。現在の推論スクリプトはアーキテクチャ復元に**メタデータが必須**で、state_dict 単独からの自動判定（手編集された重みファイル等）には対応していません。
 
@@ -480,7 +484,138 @@ CFG 推論（cond / uncond の 2 pass）は両 pass に同じ `cond_emb` を配�
 
 </details>
 
-## 7. Tips & Limitations / 補足と制限
+## 7. Inpainting Support / Inpainting 対応
+
+> **Status:** experimental. Adds an optional 4-channel conditioning path (RGB + 1ch binary mask). When enabled, LLLite is trained to fill in the masked region of an image given the rest of it as conditioning.
+
+When `--lllite_cond_in_channels=4` is passed, the LLLite `conditioning1` trunk accepts a 4-channel input instead of the default 3 channels: `[R, G, B, mask]`. The training script generates a fresh random mask per sample at every step (via `library.mask_generator.random_mask`) and concatenates it with the conditioning RGB image. At inference time you pass the control image and the mask separately (the script concatenates them internally).
+
+The default 3-channel behavior (no mask, generic ControlNet usage) is unchanged. The same code path is intentionally generic so that future 4-channel conditioning (e.g. user-supplied control masks for lighting / region control) can reuse the same trunk; for the initial release only inpainting is wired up.
+
+### 7.1. Mask Convention / マスク規約
+
+* `white` (1.0) = **inpaint area** — the region the model should fill in / 生成すべき穴.
+* `black` (0.0) = **keep** — the region whose pixels are preserved.
+
+The mask is binarized at 0.5 on load and fed to the network as `{0.0, 1.0}` (it is **not** rescaled to `[-1, 1]`; GroupNorm inside the trunk normalizes the scale).
+
+### 7.2. Dataset Setup / データセット設定
+
+For inpainting, **the conditioning image is the original training image itself**. The simplest way to wire this up without modifying the dataset code is to point `conditioning_data_dir` at the same directory as `image_dir` (or a symlink / copy of it). The same image is then loaded twice per step (once as the training target, once as the LLLite conditioning), and the random mask is generated on the fly inside the training script.
+
+Minimal TOML:
+
+```toml
+[general]
+caption_extension = ".txt"
+shuffle_caption = false
+
+[[datasets]]
+resolution = 1024
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = "/path/to/training_images"
+  conditioning_data_dir = "/path/to/training_images"  # same as image_dir for inpainting
+  num_repeats = 1
+```
+
+The CLI form `--train_data_dir <dir> --conditioning_data_dir <dir>` works analogously (point both at the same directory).
+
+### 7.3. Training-Specific Arguments / 学習引数
+
+* `--lllite_cond_in_channels=<int>` (default `3`)
+  * `3` = standard ControlNet-LLLite (RGB-only conditioning, no mask).
+  * `4` = inpainting (RGB + 1ch mask). Activates random-mask generation per step.
+
+* `--lllite_inpaint_masked_input` (flag, default off)
+  * Only effective when `--lllite_cond_in_channels=4`. If set, the RGB channels of the conditioning image are zeroed in the mask region **before** being concatenated with the mask channel (so the model never sees the ground-truth pixels behind the hole). Without this flag, the model sees the full RGB image plus the mask channel — the model is expected to learn to ignore the masked region from the mask signal. The flag is recorded in the saved metadata as `lllite.inpaint_masked_input`.
+
+Example command (one line in practice; line continuations as in Section 3):
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 anima_train_control_net_lllite.py \
+  --pretrained_model_name_or_path="<path to Anima DiT model>" \
+  --qwen3="<path to Qwen3-0.6B model or directory>" \
+  --vae="<path to Qwen-Image VAE model>" \
+  --dataset_config="my_anima_lllite_inpaint.toml" \
+  --output_dir="<output directory>" \
+  --output_name="my_anima_lllite_inpaint" \
+  --save_model_as=safetensors \
+  --cond_emb_dim=32 --lllite_mlp_dim=64 --lllite_cond_dim=64 \
+  --lllite_target_layers=self_attn_q \
+  --lllite_cond_in_channels=4 \
+  --learning_rate=1e-4 --optimizer_type="AdamW8bit" --lr_scheduler="constant" \
+  --timestep_sampling="shift" --discrete_flow_shift=3.0 \
+  --max_train_epochs=10 --save_every_n_epochs=1 \
+  --mixed_precision="bf16" --gradient_checkpointing \
+  --cache_latents --cache_text_encoder_outputs \
+  --vae_chunk_size=64 --vae_disable_cache
+```
+
+### 7.4. Sample Image Generation / 学習中のサンプル生成
+
+The sample prompt line accepts an additional flag in inpainting mode:
+
+* `--mk <path>` — per-prompt mask image (white=inpaint, black=keep).
+
+In inpaint mode (`cond_in_channels=4`), if `--mk` is omitted (or the file is not found) the prompt is rendered with the base DiT (LLLite cond cleared) and a warning is logged. The `--cn <path>` flag is still required (it supplies the RGB conditioning image).
+
+Example `prompts.txt`:
+
+```
+a cat in a forest --w 1024 --h 1024 --cn original_a.png --mk mask_a.png --d 42
+a sunset over mountains --w 1024 --h 1024 --cn original_b.png --mk mask_b.png
+```
+
+### 7.5. Inference / 推論
+
+The inference script auto-detects the 4-channel mode from the saved metadata (`lllite.cond_in_channels`, `lllite.inpaint_masked_input`) and requires a mask alongside the control image:
+
+* `--mask_image <path>` — global mask image (required for single-prompt inference when `cond_in_channels=4`).
+* Prompt-line `--mk <path>` — per-prompt mask override in `--from_file` / `--interactive` mode.
+* `--lllite_cond_in_channels {3,4}` / `--lllite_inpaint_masked_input {true,false}` — manual metadata overrides (usually unnecessary).
+
+Single-prompt example:
+
+```bash
+python anima_minimal_inference_control_net_lllite.py \
+  --dit "<path to Anima DiT>" --vae "<path to Qwen-Image VAE>" --text_encoder "<path to Qwen3-0.6B>" \
+  --lllite_weights "out/my_anima_lllite_inpaint-last.safetensors" \
+  --control_image "original.png" --mask_image "mask.png" \
+  --prompt "a cat in a forest" --image_size 1024 1024 \
+  --infer_steps 50 --guidance_scale 3.5 --save_path "out/"
+```
+
+### 7.6. Limitations / 制限
+
+* The model architecture is otherwise unchanged — the DiT itself is not modified for inpainting. All "where to fill" information must flow through the LLLite conditioning path.
+* Only random masks are supported during training in this release; future versions may allow user-provided masks via dataset configuration.
+* The 4-channel feature is implementation-orthogonal to ASPP, ResBlock count, target_layers, etc. Combine freely.
+* `cond_in_channels` other than `3` and `4` are accepted by the architecture (it is generic), but only `4` is wired up to the random-mask training path. Custom values are intended for future user-supplied channels.
+
+<details>
+<summary>日本語</summary>
+
+`--lllite_cond_in_channels=4` を指定すると、`conditioning1` の入力チャネルが 3 → 4 になり、`[R, G, B, mask]` を受け付けるようになります。学習時は `library.mask_generator.random_mask` でステップ毎にランダム mask を生成し、`conditioning_images` (= 元画像) と concat して渡します。3ch のデフォルト動作は変更されません。
+
+**マスク規約**: 白 (1.0) = inpaint 対象 (穴) / 黒 (0.0) = 保持。ロード時に 0.5 で二値化し、`{0.0, 1.0}` のままトランクに入力します。
+
+**データセット**: inpainting では「conditioning 画像 = 元画像」となるため、`conditioning_data_dir` には `image_dir` と同じパス (もしくは symlink / コピー) を指定してください。データセットコード側は無改修です。
+
+**学習引数**:
+- `--lllite_cond_in_channels=4`: inpainting モードを有効化 (ステップ毎ランダム mask 生成 + 4ch 化)。
+- `--lllite_inpaint_masked_input`: フラグ。立てると RGB を mask 域で 0 化してから concat します (穴の中の真値は見せない)。OFF だと RGB はそのまま渡し、mask チャネル経由で「どこが穴か」を学習させます。メタデータ `lllite.inpaint_masked_input` に記録されます。
+
+**サンプル画像生成**: prompt 行に `--mk <path>` を追加できます。inpaint モードで `--mk` が指定されない／ファイルが見つからない場合は LLLite cond をクリアし素の DiT で生成し warning を出します。
+
+**推論**: メタデータから自動的に 4ch モードを検出します。`--mask_image <path>` (グローバル) または prompt 行 `--mk <path>` (per-prompt) で mask を指定してください。
+
+**制限**: DiT 本体は無改修なので、「どこを埋めるか」の情報は LLLite cond 経路を通る必要があります。現状ランダム mask のみ対応 (将来的にはユーザー指定 mask に対応予定)。`cond_in_channels` の `3`/`4` 以外も構築可能ですが、本リリースでは `4` のみが random-mask 学習パスに接続されています。
+
+</details>
+
+## 8. Tips & Limitations / 補足と制限
 
 * **Resolution alignment.** The conditioning encoder uses fixed stride 16, so `cond_image` HW must equal `latent HW × 8` (i.e. the original training image size) (the latent is patchified with patch size=2, so stride is 8*2=16). The DataLoader for the ControlNet dataset already resizes the conditioning image to match the training image, so in practice you only need to make sure the control image you pass at inference time matches the requested `--image_size`.
 * **`T=1` only.** Video-style multi-frame inputs are not supported — the wrapper asserts `T==1` at forward time.

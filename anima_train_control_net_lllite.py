@@ -55,6 +55,7 @@ from networks.control_net_lllite_anima import (
     PRESETS as LLLITE_PRESETS,
     ATOMIC_SPECIFIERS as LLLITE_ATOMIC_SPECIFIERS,
 )
+from library.mask_generator import random_mask as _gen_random_mask
 
 setup_logging()
 import logging
@@ -70,12 +71,60 @@ def _load_control_image(path: str, width: int, height: int, device, dtype) -> to
     return tensor.to(device=device, dtype=dtype)
 
 
+def _load_mask_image(path: str, width: int, height: int, device, dtype) -> torch.Tensor:
+    """Load a mask image and return (1, 1, H, W) in {0, 1}.
+    1.0 = inpaint area (穴), 0.0 = keep.
+    """
+    img = Image.open(path).convert("L").resize((width, height), Image.NEAREST)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    arr = (arr >= 0.5).astype(np.float32)
+    tensor = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).contiguous()  # (1, 1, H, W)
+    return tensor.to(device=device, dtype=dtype)
+
+
+def _build_inpaint_cond_image(
+    rgb: torch.Tensor,
+    masks: torch.Tensor,
+    masked_input: bool,
+) -> torch.Tensor:
+    """rgb: (B, 3, H, W) in [-1, 1], masks: (B, 1, H, W) in {0, 1} (1=inpaint).
+    Returns (B, 4, H, W).
+
+    masked_input=True のとき、RGB を mask 域で 0 に潰してから concat する。
+    """
+    if masked_input:
+        keep = (masks < 0.5).to(rgb.dtype)  # (B, 1, H, W)
+        rgb = rgb * keep
+    return torch.cat([rgb, masks.to(rgb.dtype)], dim=1)
+
+
+def _generate_random_masks_for_batch(
+    batch_size: int, height: int, width: int, device, dtype
+) -> torch.Tensor:
+    """library.mask_generator.random_mask を使ってバッチ分のランダム mask を生成する.
+    返り値: (B, 1, H, W) in {0, 1} (1=inpaint, 0=keep)."""
+    masks_np = np.empty((batch_size, 1, height, width), dtype=np.float32)
+    for i in range(batch_size):
+        pil = _gen_random_mask(width, height)  # PIL "L", 0=keep / 255=inpaint
+        arr = np.asarray(pil, dtype=np.float32) / 255.0
+        arr = (arr >= 0.5).astype(np.float32)
+        masks_np[i, 0] = arr
+    return torch.from_numpy(masks_np).to(device=device, dtype=dtype)
+
+
 def _make_lllite_sample_hooks(args, lllite, dit_dtype):
     """Build (on_prompt_start, on_prompt_end) callbacks that wire control image / multiplier
     into the LLLite module before each sample prompt is rendered. The pre-sample multiplier is
     saved and restored so that, e.g., `--am 0` for inspection does not leak into training (which
     would otherwise hit the multiplier==0 short-circuit in LLLiteModuleDiT.forward and break
-    backward by yielding a graph with no grad)."""
+    backward by yielding a graph with no grad).
+
+    In inpainting mode (cond_in_channels=4) the prompt line additionally accepts `--mk <path>`
+    for the mask image. If the mask is missing/not found the prompt is rendered without LLLite cond
+    (warning logged), so users can intentionally inspect the base DiT.
+    """
+
+    is_inpaint = lllite.cond_in_channels == 4
 
     saved = {"multiplier": None}
 
@@ -109,7 +158,28 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype):
         h = prompt_dict.get("height", 512)
         h = max(64, h - h % 16)
         w = max(64, w - w % 16)
-        cond_image = _load_control_image(ci_path, w, h, accelerator.device, dit_dtype)
+        rgb = _load_control_image(ci_path, w, h, accelerator.device, dit_dtype)
+
+        if is_inpaint:
+            mk_path = prompt_dict.get("mask_image")
+            if mk_path is None:
+                logger.warning(
+                    "inpaint LLLite: no mask image for sample prompt (use '--mk <path>'); "
+                    "running base DiT without LLLite cond"
+                )
+                lllite.clear_cond_image()
+                return
+            if not os.path.isfile(mk_path):
+                logger.warning(
+                    f"inpaint LLLite: mask image not found: {mk_path}; running base DiT without LLLite cond"
+                )
+                lllite.clear_cond_image()
+                return
+            mask = _load_mask_image(mk_path, w, h, accelerator.device, dit_dtype)
+            cond_image = _build_inpaint_cond_image(rgb, mask, args.lllite_inpaint_masked_input)
+        else:
+            cond_image = rgb
+
         lllite.set_cond_image(cond_image)
 
     def on_prompt_end(prompt_dict: dict):
@@ -179,6 +249,25 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="pretrained LLLite weights to resume from / 学習を再開する LLLite の初期重み",
+    )
+    parser.add_argument(
+        "--lllite_cond_in_channels",
+        type=int,
+        default=3,
+        help=(
+            "number of input channels for the LLLite conditioning1 trunk (default: 3, RGB only). "
+            "Set to 4 to enable inpainting mode (RGB + 1ch mask). "
+            "/ LLLite の conditioning1 入力チャネル数。デフォルト 3 (RGB)、4 で inpainting 用 (RGB+mask)"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_inpaint_masked_input",
+        action="store_true",
+        help=(
+            "[inpaint] additionally zero out RGB inside the mask region before concatenating with mask. "
+            "Only effective when --lllite_cond_in_channels=4. "
+            "/ inpainting 時、RGB の mask 域を 0 で穴埋めしてから concat する (cond_in_channels=4 のときのみ有効)"
+        ),
     )
     # --conditioning_data_dir は train_util.add_dataset_arguments 側で既に定義済み
 
@@ -378,6 +467,16 @@ def train(args):
 
     dit.requires_grad_(False)
 
+    # inpainting (4ch) フラグの早期検証
+    if args.lllite_cond_in_channels < 1:
+        raise ValueError(f"--lllite_cond_in_channels must be >= 1, got {args.lllite_cond_in_channels}")
+    if args.lllite_inpaint_masked_input and args.lllite_cond_in_channels != 4:
+        logger.warning(
+            f"--lllite_inpaint_masked_input is only effective when --lllite_cond_in_channels=4 "
+            f"(got {args.lllite_cond_in_channels}); flag will be ignored at runtime"
+        )
+    is_inpaint = args.lllite_cond_in_channels == 4
+
     # Build LLLite (DiT を走査して各 Attention Linear に貼る)
     logger.info("Building ControlNet-LLLite (Anima)...")
     lllite = ControlNetLLLiteDiT(
@@ -390,6 +489,8 @@ def train(args):
         cond_dim=args.lllite_cond_dim,
         cond_resblocks=args.lllite_cond_resblocks,
         use_aspp=args.lllite_use_aspp,
+        cond_in_channels=args.lllite_cond_in_channels,
+        inpaint_masked_input=args.lllite_inpaint_masked_input,
     )
 
     if args.network_weights is not None:
@@ -549,6 +650,10 @@ def train(args):
         sai_metadata["lllite.use_aspp"] = "true" if args.lllite_use_aspp else "false"
         if args.lllite_use_aspp:
             sai_metadata["lllite.aspp_dilations"] = ",".join(str(d) for d in unwrapped.aspp_dilations)
+        sai_metadata["lllite.cond_in_channels"] = str(args.lllite_cond_in_channels)
+        sai_metadata["lllite.inpaint_masked_input"] = (
+            "true" if args.lllite_inpaint_masked_input else "false"
+        )
         save_lllite_model(ckpt_file, unwrapped, dtype=save_dtype, metadata=sai_metadata)
 
     def _save_step(global_step_: int, epoch_: int):
@@ -653,6 +758,16 @@ def train(args):
 
                 # cond image: dataset 側で IMAGE_TRANSFORMS により [-1,1] 正規化済み
                 cond_image = batch["conditioning_images"].to(accelerator.device, dtype=dit_weight_dtype)
+
+                # inpainting: ランダム mask をバッチ毎に生成し、cond_image を 4ch (RGB + mask) 化
+                if is_inpaint:
+                    bs_c, _, h_c, w_c = cond_image.shape
+                    mask = _generate_random_masks_for_batch(
+                        bs_c, h_c, w_c, accelerator.device, dit_weight_dtype
+                    )
+                    cond_image = _build_inpaint_cond_image(
+                        cond_image, mask, args.lllite_inpaint_masked_input
+                    )
 
                 # 5D化
                 noisy_model_input = noisy_model_input.unsqueeze(2)  # (B, C, 1, H, W)
