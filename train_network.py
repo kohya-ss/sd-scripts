@@ -508,11 +508,12 @@ class NetworkTrainer:
         val_dataset_group,
         use_user_config: bool,
         use_dreambooth_method: bool,
-    ) -> tuple[dict, dict]:
+    ) -> None:
         """Build training metadata dict and the minimum_metadata subset.
 
-        Returns (metadata, minimum_metadata). The returned ``metadata`` dict is later
-        mutated by ``save_model`` (ss_training_finished_at / ss_steps / ss_epoch).
+        Stores the result on ``self._metadata`` / ``self._minimum_metadata``. The
+        ``_metadata`` dict is later mutated by ``_save_model`` (ss_training_finished_at /
+        ss_steps / ss_epoch).
         """
         # TODO refactor metadata creation and move to util
         metadata = {
@@ -745,7 +746,8 @@ class NetworkTrainer:
             if key in metadata:
                 minimum_metadata[key] = metadata[key]
 
-        return metadata, minimum_metadata
+        self._metadata = metadata
+        self._minimum_metadata = minimum_metadata
 
     def _run_validation_loop(
         self,
@@ -852,6 +854,40 @@ class NetworkTrainer:
                 log_key_divergence: loss_validation_divergence,
             }
             log_fn(accelerator, logs, global_step, epoch + 1)
+
+    def _save_model(
+        self,
+        *,
+        args: argparse.Namespace,
+        accelerator: Accelerator,
+        save_dtype,
+        ckpt_name: str,
+        unwrapped_nw,
+        steps: int,
+        epoch_no: int,
+        force_sync_upload: bool = False,
+    ):
+        os.makedirs(args.output_dir, exist_ok=True)
+        ckpt_file = os.path.join(args.output_dir, ckpt_name)
+
+        accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
+        self._metadata["ss_training_finished_at"] = str(time.time())
+        self._metadata["ss_steps"] = str(steps)
+        self._metadata["ss_epoch"] = str(epoch_no)
+
+        metadata_to_save = self._minimum_metadata if args.no_metadata else self._metadata
+        sai_metadata = self.get_sai_model_spec(args)
+        metadata_to_save.update(sai_metadata)
+
+        unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+        if args.huggingface_repo_id is not None:
+            huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
+
+    def _remove_model(self, *, args: argparse.Namespace, accelerator: Accelerator, old_ckpt_name: str):
+        old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
+        if os.path.exists(old_ckpt_file):
+            accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
+            os.remove(old_ckpt_file)
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -1364,7 +1400,7 @@ class NetworkTrainer:
         accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
         accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
-        metadata, minimum_metadata = self._build_metadata(
+        self._build_metadata(
             args,
             session_id=session_id,
             training_started_at=training_started_at,
@@ -1445,30 +1481,6 @@ class NetworkTrainer:
             on_step_start_for_network = accelerator.unwrap_model(network).on_step_start
         else:
             on_step_start_for_network = lambda *args, **kwargs: None
-
-        # function for saving/removing
-        def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
-            os.makedirs(args.output_dir, exist_ok=True)
-            ckpt_file = os.path.join(args.output_dir, ckpt_name)
-
-            accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
-            metadata["ss_training_finished_at"] = str(time.time())
-            metadata["ss_steps"] = str(steps)
-            metadata["ss_epoch"] = str(epoch_no)
-
-            metadata_to_save = minimum_metadata if args.no_metadata else metadata
-            sai_metadata = self.get_sai_model_spec(args)
-            metadata_to_save.update(sai_metadata)
-
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
-            if args.huggingface_repo_id is not None:
-                huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
-
-        def remove_model(old_ckpt_name):
-            old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
-            if os.path.exists(old_ckpt_file):
-                accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
-                os.remove(old_ckpt_file)
 
         # if text_encoder is not needed for training, delete it to save memory.
         # TODO this can be automated after SDXL sample prompt cache is implemented
@@ -1556,7 +1568,7 @@ class NetworkTrainer:
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
 
-            metadata["ss_epoch"] = str(epoch + 1)
+            self._metadata["ss_epoch"] = str(epoch + 1)
 
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)  # network.train() is called here
 
@@ -1652,7 +1664,15 @@ class NetworkTrainer:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
-                            save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
+                            self._save_model(
+                                args=args,
+                                accelerator=accelerator,
+                                save_dtype=save_dtype,
+                                ckpt_name=ckpt_name,
+                                unwrapped_nw=accelerator.unwrap_model(network),
+                                steps=global_step,
+                                epoch_no=epoch,
+                            )
 
                             if args.save_state:
                                 checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step)
@@ -1660,7 +1680,7 @@ class NetworkTrainer:
                             remove_step_no = checkpoint_io.get_remove_step_no(args, global_step)
                             if remove_step_no is not None:
                                 remove_ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
-                                remove_model(remove_ckpt_name)
+                                self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
                     optimizer_train_fn()
 
                 current_loss = loss.detach().item()
@@ -1785,12 +1805,20 @@ class NetworkTrainer:
                 saving = (epoch + 1) % args.save_every_n_epochs == 0 and (epoch + 1) < num_train_epochs
                 if is_main_process and saving:
                     ckpt_name = checkpoint_io.get_epoch_ckpt_name(args, "." + args.save_model_as, epoch + 1)
-                    save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
+                    self._save_model(
+                        args=args,
+                        accelerator=accelerator,
+                        save_dtype=save_dtype,
+                        ckpt_name=ckpt_name,
+                        unwrapped_nw=accelerator.unwrap_model(network),
+                        steps=global_step,
+                        epoch_no=epoch + 1,
+                    )
 
                     remove_epoch_no = checkpoint_io.get_remove_epoch_no(args, epoch + 1)
                     if remove_epoch_no is not None:
                         remove_ckpt_name = checkpoint_io.get_epoch_ckpt_name(args, "." + args.save_model_as, remove_epoch_no)
-                        remove_model(remove_ckpt_name)
+                        self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
 
                     if args.save_state:
                         checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
@@ -1802,7 +1830,7 @@ class NetworkTrainer:
             # end of epoch
 
         # metadata["ss_epoch"] = str(num_train_epochs)
-        metadata["ss_training_finished_at"] = str(time.time())
+        self._metadata["ss_training_finished_at"] = str(time.time())
 
         if is_main_process:
             network = accelerator.unwrap_model(network)
@@ -1815,7 +1843,16 @@ class NetworkTrainer:
 
         if is_main_process:
             ckpt_name = checkpoint_io.get_last_ckpt_name(args, "." + args.save_model_as)
-            save_model(ckpt_name, network, global_step, num_train_epochs, force_sync_upload=True)
+            self._save_model(
+                args=args,
+                accelerator=accelerator,
+                save_dtype=save_dtype,
+                ckpt_name=ckpt_name,
+                unwrapped_nw=network,
+                steps=global_step,
+                epoch_no=num_train_epochs,
+                force_sync_upload=True,
+            )
 
             logger.info("model saved.")
 
