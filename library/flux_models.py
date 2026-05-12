@@ -307,7 +307,7 @@ class DiagonalGaussian(nn.Module):
         mean, logvar = torch.chunk(z, 2, dim=self.chunk_dim)
         if self.sample:
             std = torch.exp(0.5 * logvar)
-            return mean + std * torch.randn_like(mean)
+            return mean + std * torch.randn_like(mean, pin_memory=True)
         else:
             return mean
 
@@ -532,7 +532,7 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     """
     t = time_factor * t
     half = dim // 2
-    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(t.device)
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, pin_memory=True) / half).to(t.device, non_blocking=True)
 
     args = t[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -600,7 +600,7 @@ class QKNorm(torch.nn.Module):
     def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         q = self.query_norm(q)
         k = self.key_norm(k)
-        return q.to(v), k.to(v)
+        return q.to(v, non_blocking=True), k.to(v, non_blocking=True)
 
 
 class SelfAttention(nn.Module):
@@ -997,7 +997,7 @@ class Flux(nn.Module):
             self.double_blocks = None
             self.single_blocks = None
 
-        self.to(device)
+        self = self.to(device, non_blocking=True)
 
         if self.blocks_to_swap:
             self.double_blocks = save_double_blocks
@@ -1081,8 +1081,8 @@ class Flux(nn.Module):
         img = img[:, txt.shape[1] :, ...]
 
         if self.training and self.cpu_offload_checkpointing:
-            img = img.to(self.device)
-            vec = vec.to(self.device)
+            img = img.to(self.device, non_blocking=True)
+            vec = vec.to(self.device, non_blocking=True)
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
 
@@ -1243,7 +1243,7 @@ class ControlNetFlux(nn.Module):
             self.double_blocks = nn.ModuleList()
             self.single_blocks = nn.ModuleList()
 
-        self.to(device)
+        self = self.to(device, non_blocking=True)
 
         if self.blocks_to_swap:
             self.double_blocks = save_double_blocks
