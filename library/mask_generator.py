@@ -136,8 +136,11 @@ def polygon_mask(
 
     for _ in range(n_polygons):
         radius = rng.uniform(min_r, max_r)
-        cx = rng.uniform(radius * 0.2, width - radius * 0.2)
-        cy = rng.uniform(radius * 0.2, height - radius * 0.2)
+        # Center uniformly anywhere on the canvas; vertices that fall outside are clipped by PIL.
+        # This is intentional: large polygons centered near edges/corners give edge-region masks,
+        # which the previous radius*0.2 margin suppressed.
+        cx = rng.uniform(0, width)
+        cy = rng.uniform(0, height)
         pts = _random_convex_polygon(cx, cy, radius, n_points, irregularity, rng)
         draw.polygon(pts, fill=255)
 
@@ -171,8 +174,10 @@ def shape_mask(
     size_w = rng.randint(int(width * min_coverage ** 0.5), int(width * max_coverage ** 0.5))
     size_h = rng.randint(int(height * min_coverage ** 0.5), int(height * max_coverage ** 0.5))
 
-    x1 = rng.randint(0, width - size_w)
-    y1 = rng.randint(0, height - size_h)
+    # Allow the shape's bbox to overhang the canvas by up to half its size, so its center is
+    # uniform in [0, width) x [0, height). Off-canvas portions are clipped by PIL.
+    x1 = rng.randint(-size_w // 2, width - size_w // 2)
+    y1 = rng.randint(-size_h // 2, height - size_h // 2)
     x2, y2 = x1 + size_w, y1 + size_h
 
     use_ellipse = (shape == "ellipse") or (shape == "random" and rng.random() < 0.5)

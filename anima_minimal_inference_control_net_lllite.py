@@ -92,11 +92,16 @@ def _load_mask_image(
 def _build_inpaint_cond_image(
     rgb: torch.Tensor, mask: torch.Tensor, masked_input: bool
 ) -> torch.Tensor:
-    """rgb: (B, 3, H, W) in [-1, 1], mask: (B, 1, H, W) in {0, 1}. Return (B, 4, H, W)."""
+    """rgb: (B, 3, H, W) in [-1, 1], mask: (B, 1, H, W) in {0, 1}. Return (B, 4, H, W).
+
+    The mask channel is normalized to [-1, 1] (= (mask - 0.5) * 2) to match the RGB range.
+    """
     if masked_input:
         keep = (mask < 0.5).to(rgb.dtype)
         rgb = rgb * keep
-    return torch.cat([rgb, mask.to(rgb.dtype)], dim=1)
+    # mask channel: {0, 1} -> {-1, 1}. matches transforms.Normalize([0.5], [0.5])
+    mask_pm1 = mask.to(rgb.dtype) * 2.0 - 1.0
+    return torch.cat([rgb, mask_pm1], dim=1)
 
 
 # ---------------------------------------------------------------------------

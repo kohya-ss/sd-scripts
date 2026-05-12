@@ -88,14 +88,16 @@ def _build_inpaint_cond_image(
     masked_input: bool,
 ) -> torch.Tensor:
     """rgb: (B, 3, H, W) in [-1, 1], masks: (B, 1, H, W) in {0, 1} (1=inpaint).
-    Returns (B, 4, H, W).
+    Returns (B, 4, H, W) with the mask channel normalized to [-1, 1] to match the RGB range.
 
     masked_input=True のとき、RGB を mask 域で 0 に潰してから concat する。
     """
     if masked_input:
         keep = (masks < 0.5).to(rgb.dtype)  # (B, 1, H, W)
         rgb = rgb * keep
-    return torch.cat([rgb, masks.to(rgb.dtype)], dim=1)
+    # mask channel: {0, 1} -> {-1, 1} (= (mask - 0.5) * 2). matches transforms.Normalize([0.5], [0.5])
+    mask_pm1 = masks.to(rgb.dtype) * 2.0 - 1.0
+    return torch.cat([rgb, mask_pm1], dim=1)
 
 
 def _generate_random_masks_for_batch(
