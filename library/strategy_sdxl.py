@@ -296,7 +296,7 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             pool2_i = pool2[i]
 
             if self.cache_to_disk:
-                np.savez(
+                self.save_outputs_npz(
                     info.text_encoder_outputs_npz,
                     hidden_state1=hidden_state1_i,
                     hidden_state2=hidden_state2_i,

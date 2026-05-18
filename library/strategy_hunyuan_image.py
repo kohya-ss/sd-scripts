@@ -159,7 +159,7 @@ class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStr
             ocr_mask_i = ocr_mask[i]
 
             if self.cache_to_disk:
-                np.savez(
+                self.save_outputs_npz(
                     info.text_encoder_outputs_npz,
                     vlm_embed=vlm_embed_i,
                     vlm_mask=vlm_mask_i,

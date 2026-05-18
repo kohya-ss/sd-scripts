@@ -235,7 +235,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             caption_dropout_rate = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
 
             if self.cache_to_disk:
-                np.savez(
+                self.save_outputs_npz(
                     info.text_encoder_outputs_npz,
                     prompt_embeds=prompt_embeds_i,
                     attn_mask=attn_mask_i,

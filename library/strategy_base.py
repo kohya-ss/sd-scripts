@@ -20,6 +20,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _write_npz(npz_path: str, kwargs: dict):
+    np.savez(npz_path, **kwargs)
+
+
 class TokenizeStrategy:
     _strategy = None  # strategy instance: actual strategy class
 
@@ -371,6 +375,31 @@ class TextEncoderOutputsCachingStrategy:
     def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
         raise NotImplementedError
 
+    def set_async_write_executor(self, executor):
+        self._write_executor = executor
+        self._write_futures = []
+
+    def wait_for_async_writes(self):
+        for f in getattr(self, "_write_futures", []):
+            f.result()
+        self._write_futures = []
+
+    def submit_async_write(self, fn, *args):
+        executor = getattr(self, "_write_executor", None)
+        if executor is not None:
+            if not hasattr(self, "_write_futures"):
+                self._write_futures = []
+            future = executor.submit(fn, *args)
+            self._write_futures.append(future)
+            self._write_futures = [f for f in self._write_futures if not f.done()]
+        else:
+            fn(*args)
+
+    def save_outputs_npz(self, npz_path: str, **kwargs):
+        """Save text encoder outputs to npz, async if executor is set. Copies numpy arrays to prevent races."""
+        safe_kwargs = {k: (v.copy() if isinstance(v, np.ndarray) else v) for k, v in kwargs.items()}
+        self.submit_async_write(_write_npz, npz_path, safe_kwargs)
+
     def cache_batch_outputs(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, batch: List
     ):
@@ -609,6 +638,15 @@ class LatentsCachingStrategy:
         alpha_mask = npz["alpha_mask" + key_reso_suffix] if "alpha_mask" + key_reso_suffix in npz else None
         return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
 
+    def set_async_write_executor(self, executor):
+        self._write_executor = executor
+        self._write_futures = []
+
+    def wait_for_async_writes(self):
+        for f in getattr(self, "_write_futures", []):
+            f.result()
+        self._write_futures = []
+
     def save_latents_to_disk(
         self,
         npz_path,
@@ -619,19 +657,34 @@ class LatentsCachingStrategy:
         alpha_mask=None,
         key_reso_suffix="",
     ):
-        """
-        Args:
-            npz_path (str): Path to the npz file.
-            latents_tensor (torch.Tensor): Latent tensor
-            original_size (List[int]): Original size of the image
-            crop_ltrb (List[int]): Crop left top right bottom
-            flipped_latents_tensor (Optional[torch.Tensor]): Flipped latent tensor
-            alpha_mask (Optional[torch.Tensor]): Alpha mask
-            key_reso_suffix (str): Key resolution suffix
+        executor = getattr(self, "_write_executor", None)
+        if executor is not None:
+            latents_copy = latents_tensor.float().cpu().clone()
+            flipped_copy = flipped_latents_tensor.float().cpu().clone() if flipped_latents_tensor is not None else None
+            alpha_copy = alpha_mask.float().cpu().clone() if alpha_mask is not None else None
+            future = executor.submit(
+                self._save_latents_to_disk_impl,
+                npz_path, latents_copy, original_size, crop_ltrb, flipped_copy, alpha_copy, key_reso_suffix,
+            )
+            if not hasattr(self, "_write_futures"):
+                self._write_futures = []
+            self._write_futures.append(future)
+            self._write_futures = [f for f in self._write_futures if not f.done()]
+        else:
+            self._save_latents_to_disk_impl(
+                npz_path, latents_tensor, original_size, crop_ltrb, flipped_latents_tensor, alpha_mask, key_reso_suffix
+            )
 
-        Returns:
-            None
-        """
+    def _save_latents_to_disk_impl(
+        self,
+        npz_path,
+        latents_tensor,
+        original_size,
+        crop_ltrb,
+        flipped_latents_tensor=None,
+        alpha_mask=None,
+        key_reso_suffix="",
+    ):
         kwargs = {}
 
         if os.path.exists(npz_path):

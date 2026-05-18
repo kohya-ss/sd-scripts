@@ -181,7 +181,7 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             apply_t5_attn_mask_i = self.apply_t5_attn_mask
 
             if self.cache_to_disk:
-                np.savez(
+                self.save_outputs_npz(
                     info.text_encoder_outputs_npz,
                     l_pooled=l_pooled_i,
                     t5_out=t5_out_i,

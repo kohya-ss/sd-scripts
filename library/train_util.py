@@ -1156,6 +1156,23 @@ class BaseDataset(torch.utils.data.Dataset):
         num_processes = accelerator.num_processes
         process_index = accelerator.process_index
 
+        # Diagnostic: show how many images this process will actually encode
+        total_images = len(image_infos)
+        if caching_strategy.cache_to_disk and num_processes > 1:
+            my_image_count = sum(1 for i in range(total_images) if i % num_processes == process_index)
+        else:
+            my_image_count = total_images
+        logger.info(
+            f"[Process {process_index + 1}/{num_processes}] device={accelerator.device}, "
+            f"will encode {my_image_count}/{total_images} images"
+        )
+        if num_processes == 1 and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            logger.warning(
+                f"Only 1 process running while {torch.cuda.device_count()} GPUs are visible. "
+                f"Launch with 'accelerate launch --num_processes {torch.cuda.device_count()}' "
+                f"to distribute caching across all GPUs."
+            )
+
         # define a function to submit a batch to cache
         def submit_batch(batch, cond):
             for info in batch:
@@ -1172,6 +1189,15 @@ class BaseDataset(torch.utils.data.Dataset):
         max_workers = max(1, max_workers // num_processes)  # consider multi-gpu
         max_workers = min(max_workers, caching_strategy.batch_size)  # max_workers should be less than batch_size
         executor = ThreadPoolExecutor(max_workers)
+
+        # Background thread pool for disk writes: lets the GPU encode the next batch
+        # while the previous batch's latents are being written to disk.
+        write_executor = None
+        if caching_strategy.cache_to_disk:
+            write_workers = max(1, os.cpu_count() // num_processes)
+            write_workers = min(write_workers, caching_strategy.batch_size)
+            write_executor = ThreadPoolExecutor(max_workers=write_workers)
+            caching_strategy.set_async_write_executor(write_executor)
 
         try:
             # iterate images
@@ -1224,8 +1250,14 @@ class BaseDataset(torch.utils.data.Dataset):
             if len(batch) > 0:
                 submit_batch(batch, current_condition)
 
+            if write_executor is not None:
+                caching_strategy.wait_for_async_writes()
+
         finally:
             executor.shutdown()
+            if write_executor is not None:
+                caching_strategy.set_async_write_executor(None)
+                write_executor.shutdown(wait=True)
 
     def cache_latents(self, vae, vae_batch_size=1, cache_to_disk=False, is_main_process=True, file_suffix=".npz"):
         # マルチGPUには対応していないので、そちらはtools/cache_latents.pyを使うこと
@@ -1352,11 +1384,26 @@ class BaseDataset(torch.utils.data.Dataset):
             logger.info("no Text Encoder outputs to cache")
             return
 
-        # iterate batches
-        logger.info("caching Text Encoder outputs...")
-        for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            # cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.alpha_mask, subset.random_crop)
-            caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, batch)
+        # Background thread pool for disk writes (same pattern as VAE latent caching)
+        write_executor = None
+        if caching_strategy.cache_to_disk:
+            write_workers = max(1, os.cpu_count() // num_processes)
+            write_workers = min(write_workers, batch_size)
+            write_executor = ThreadPoolExecutor(max_workers=write_workers)
+            caching_strategy.set_async_write_executor(write_executor)
+
+        try:
+            # iterate batches
+            logger.info("caching Text Encoder outputs...")
+            for batch in tqdm(batches, smoothing=1, total=len(batches)):
+                caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, batch)
+
+            if write_executor is not None:
+                caching_strategy.wait_for_async_writes()
+        finally:
+            if write_executor is not None:
+                caching_strategy.set_async_write_executor(None)
+                write_executor.shutdown(wait=True)
 
     # if weight_dtype is specified, Text Encoder itself and output will be converted to the dtype
     # this method is only for SDXL, but it should be implemented here because it needs to be a method of dataset

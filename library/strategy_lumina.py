@@ -267,7 +267,7 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
 
             if self.cache_to_disk:
                 assert info.text_encoder_outputs_npz is not None, f"Text encoder cache outputs to disk not found for image {info.image_key}"
-                np.savez(
+                self.save_outputs_npz(
                     info.text_encoder_outputs_npz,
                     hidden_state=hidden_state_i,
                     attention_mask=attention_mask_i,
