@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from accelerate import Accelerator
+from accelerate import Accelerator, PartialState
 from tqdm import tqdm
 from PIL import Image
 
@@ -430,6 +430,8 @@ def sample_images(
 
     dit.switch_block_swap_for_inference()
 
+    distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
+
     prompts = sampling.load_prompts(args.sample_prompts)
     save_dir = os.path.join(args.output_dir, "sample")
     os.makedirs(save_dir, exist_ok=True)
@@ -442,30 +444,44 @@ def sample_images(
     except Exception:
         pass
 
-    with torch.no_grad(), accelerator.autocast():
-        for prompt_dict in prompts:
-            dit.prepare_block_swap_before_forward()
-            if on_prompt_start is not None:
-                on_prompt_start(prompt_dict, accelerator)
-            try:
-                _sample_image_inference(
-                    accelerator,
-                    args,
-                    dit,
-                    text_encoder,
-                    vae,
-                    tokenize_strategy,
-                    text_encoding_strategy,
-                    save_dir,
-                    prompt_dict,
-                    epoch,
-                    steps,
-                    sample_prompts_te_outputs,
-                    prompt_replacement,
-                )
-            finally:
-                if on_prompt_end is not None:
-                    on_prompt_end(prompt_dict)
+    def _run_one(prompt_dict):
+        dit.prepare_block_swap_before_forward()
+        if on_prompt_start is not None:
+            on_prompt_start(prompt_dict, accelerator)
+        try:
+            _sample_image_inference(
+                accelerator,
+                args,
+                dit,
+                text_encoder,
+                vae,
+                tokenize_strategy,
+                text_encoding_strategy,
+                save_dir,
+                prompt_dict,
+                epoch,
+                steps,
+                sample_prompts_te_outputs,
+                prompt_replacement,
+            )
+        finally:
+            if on_prompt_end is not None:
+                on_prompt_end(prompt_dict)
+
+    if distributed_state.num_processes <= 1:
+        with torch.no_grad(), accelerator.autocast():
+            for prompt_dict in prompts:
+                _run_one(prompt_dict)
+    else:
+        # Distribute prompts across processes. Each process handles prompts[i :: num_processes].
+        per_process_prompts = []  # list of lists
+        for i in range(distributed_state.num_processes):
+            per_process_prompts.append(prompts[i :: distributed_state.num_processes])
+
+        with torch.no_grad(), accelerator.autocast():
+            with distributed_state.split_between_processes(per_process_prompts) as prompt_dict_lists:
+                for prompt_dict in prompt_dict_lists[0]:
+                    _run_one(prompt_dict)
 
     # Restore RNG state
     torch.set_rng_state(rng_state)
