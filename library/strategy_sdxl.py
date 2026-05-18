@@ -1,4 +1,5 @@
 import os
+import random
 from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
@@ -258,24 +259,33 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         hidden_state1 = data["hidden_state1"]
         hidden_state2 = data["hidden_state2"]
         pool2 = data["pool2"]
+
+        # multi-caption: hidden_state1 is (N, seq_len, 768) with ndim==3
+        if hidden_state1.ndim == 3:
+            idx = random.randint(0, hidden_state1.shape[0] - 1)
+            hidden_state1 = hidden_state1[idx]
+            hidden_state2 = hidden_state2[idx]
+            pool2 = pool2[idx]
+
         return [hidden_state1, hidden_state2, pool2]
 
-    def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
-    ):
-        sdxl_text_encoding_strategy = text_encoding_strategy  # type: SdxlTextEncodingStrategy
-        captions = [info.caption for info in infos]
-
+    def _encode_captions(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: "SdxlTextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.is_weighted:
             tokens_list, weights_list = tokenize_strategy.tokenize_with_weights(captions)
             with torch.no_grad():
-                hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens_with_weights(
+                hidden_state1, hidden_state2, pool2 = text_encoding_strategy.encode_tokens_with_weights(
                     tokenize_strategy, models, tokens_list, weights_list
                 )
         else:
             tokens1, tokens2 = tokenize_strategy.tokenize(captions)
             with torch.no_grad():
-                hidden_state1, hidden_state2, pool2 = sdxl_text_encoding_strategy.encode_tokens(
+                hidden_state1, hidden_state2, pool2 = text_encoding_strategy.encode_tokens(
                     tokenize_strategy, models, [tokens1, tokens2]
                 )
 
@@ -286,21 +296,38 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         if pool2.dtype == torch.bfloat16:
             pool2 = pool2.float()
 
-        hidden_state1 = hidden_state1.cpu().numpy()
-        hidden_state2 = hidden_state2.cpu().numpy()
-        pool2 = pool2.cpu().numpy()
+        return hidden_state1.cpu().numpy(), hidden_state2.cpu().numpy(), pool2.cpu().numpy()
 
-        for i, info in enumerate(infos):
-            hidden_state1_i = hidden_state1[i]
-            hidden_state2_i = hidden_state2[i]
-            pool2_i = pool2[i]
+    def cache_batch_outputs(
+        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
+    ):
+        sdxl_text_encoding_strategy = text_encoding_strategy  # type: SdxlTextEncodingStrategy
+
+        for info in infos:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
+
+            hidden_state1, hidden_state2, pool2 = self._encode_captions(
+                tokenize_strategy, models, sdxl_text_encoding_strategy, caption_lines
+            )
+
+            if num_captions == 1:
+                hidden_state1_out = hidden_state1[0]
+                hidden_state2_out = hidden_state2[0]
+                pool2_out = pool2[0]
+            else:
+                hidden_state1_out = hidden_state1
+                hidden_state2_out = hidden_state2
+                pool2_out = pool2
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    hidden_state1=hidden_state1_i,
-                    hidden_state2=hidden_state2_i,
-                    pool2=pool2_i,
+                    hidden_state1=hidden_state1_out,
+                    hidden_state2=hidden_state2_out,
+                    pool2=pool2_out,
                 )
             else:
-                info.text_encoder_outputs = [hidden_state1_i, hidden_state2_i, pool2_i]
+                info.text_encoder_outputs = [hidden_state1_out, hidden_state2_out, pool2_out]
+                info.num_caption_variants = num_captions

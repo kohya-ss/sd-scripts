@@ -1,5 +1,6 @@
 import os
 import glob
+import random
 from typing import Any, List, Optional, Tuple, Union
 import torch
 import numpy as np
@@ -139,8 +140,44 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         t5_out = data["t5_out"]
         txt_ids = data["txt_ids"]
         t5_attn_mask = data["t5_attn_mask"]
+
+        # multi-caption: t5_out is (N, seq_len, 4096) with ndim==3
+        if t5_out.ndim == 3:
+            idx = random.randint(0, t5_out.shape[0] - 1)
+            l_pooled = l_pooled[idx]
+            t5_out = t5_out[idx]
+            txt_ids = txt_ids[idx]
+            t5_attn_mask = t5_attn_mask[idx]
+
         # apply_t5_attn_mask should be same as self.apply_t5_attn_mask
         return [l_pooled, t5_out, txt_ids, t5_attn_mask]
+
+    def _encode_captions(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: "FluxTextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        tokens_and_masks = tokenize_strategy.tokenize(captions)
+        with torch.no_grad():
+            l_pooled, t5_out, txt_ids, _ = text_encoding_strategy.encode_tokens(
+                tokenize_strategy, models, tokens_and_masks
+            )
+
+        if l_pooled.dtype == torch.bfloat16:
+            l_pooled = l_pooled.float()
+        if t5_out.dtype == torch.bfloat16:
+            t5_out = t5_out.float()
+        if txt_ids.dtype == torch.bfloat16:
+            txt_ids = txt_ids.float()
+
+        return (
+            l_pooled.cpu().numpy(),
+            t5_out.cpu().numpy(),
+            txt_ids.cpu().numpy(),
+            tokens_and_masks[2].cpu().numpy(),
+        )
 
     def cache_batch_outputs(
         self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
@@ -154,44 +191,39 @@ class FluxTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             self.warn_fp8_weights = True
 
         flux_text_encoding_strategy: FluxTextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
 
-        tokens_and_masks = tokenize_strategy.tokenize(captions)
-        with torch.no_grad():
-            # attn_mask is applied in text_encoding_strategy.encode_tokens if apply_t5_attn_mask is True
-            l_pooled, t5_out, txt_ids, _ = flux_text_encoding_strategy.encode_tokens(tokenize_strategy, models, tokens_and_masks)
+        for info in infos:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
 
-        if l_pooled.dtype == torch.bfloat16:
-            l_pooled = l_pooled.float()
-        if t5_out.dtype == torch.bfloat16:
-            t5_out = t5_out.float()
-        if txt_ids.dtype == torch.bfloat16:
-            txt_ids = txt_ids.float()
+            l_pooled, t5_out, txt_ids, t5_attn_mask = self._encode_captions(
+                tokenize_strategy, models, flux_text_encoding_strategy, caption_lines
+            )
 
-        l_pooled = l_pooled.cpu().numpy()
-        t5_out = t5_out.cpu().numpy()
-        txt_ids = txt_ids.cpu().numpy()
-        t5_attn_mask = tokens_and_masks[2].cpu().numpy()
-
-        for i, info in enumerate(infos):
-            l_pooled_i = l_pooled[i]
-            t5_out_i = t5_out[i]
-            txt_ids_i = txt_ids[i]
-            t5_attn_mask_i = t5_attn_mask[i]
-            apply_t5_attn_mask_i = self.apply_t5_attn_mask
+            if num_captions == 1:
+                l_pooled_out = l_pooled[0]
+                t5_out_out = t5_out[0]
+                txt_ids_out = txt_ids[0]
+                t5_attn_mask_out = t5_attn_mask[0]
+            else:
+                l_pooled_out = l_pooled
+                t5_out_out = t5_out
+                txt_ids_out = txt_ids
+                t5_attn_mask_out = t5_attn_mask
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    l_pooled=l_pooled_i,
-                    t5_out=t5_out_i,
-                    txt_ids=txt_ids_i,
-                    t5_attn_mask=t5_attn_mask_i,
-                    apply_t5_attn_mask=apply_t5_attn_mask_i,
+                    l_pooled=l_pooled_out,
+                    t5_out=t5_out_out,
+                    txt_ids=txt_ids_out,
+                    t5_attn_mask=t5_attn_mask_out,
+                    apply_t5_attn_mask=self.apply_t5_attn_mask,
                 )
             else:
-                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
-                info.text_encoder_outputs = (l_pooled_i, t5_out_i, txt_ids_i, t5_attn_mask_i)
+                info.text_encoder_outputs = (l_pooled_out, t5_out_out, txt_ids_out, t5_attn_mask_out)
+                info.num_caption_variants = num_captions
 
 
 class FluxLatentsCachingStrategy(LatentsCachingStrategy):

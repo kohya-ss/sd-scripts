@@ -1,4 +1,5 @@
 import os
+import random
 from typing import Any, List, Optional, Tuple, Union
 import torch
 import numpy as np
@@ -121,22 +122,33 @@ class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStr
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
         data = np.load(npz_path)
-        vln_embed = data["vlm_embed"]
+        vlm_embed = data["vlm_embed"]
         vlm_mask = data["vlm_mask"]
         byt5_embed = data["byt5_embed"]
         byt5_mask = data["byt5_mask"]
         ocr_mask = data["ocr_mask"]
-        return [vln_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask]
 
-    def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
-    ):
-        huyuan_image_text_encoding_strategy: HunyuanImageTextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
+        # multi-caption: vlm_embed is (N, seq_len, hidden_size) with ndim==3
+        if vlm_embed.ndim == 3:
+            idx = random.randint(0, vlm_embed.shape[0] - 1)
+            vlm_embed = vlm_embed[idx]
+            vlm_mask = vlm_mask[idx]
+            byt5_embed = byt5_embed[idx]
+            byt5_mask = byt5_mask[idx]
+            ocr_mask = ocr_mask[idx]
 
+        return [vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask]
+
+    def _encode_captions(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: "HunyuanImageTextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
-            vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask = huyuan_image_text_encoding_strategy.encode_tokens(
+            vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask = text_encoding_strategy.encode_tokens(
                 tokenize_strategy, models, tokens_and_masks
             )
 
@@ -145,30 +157,53 @@ class HunyuanImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStr
         if byt5_embed.dtype == torch.bfloat16:
             byt5_embed = byt5_embed.float()
 
-        vlm_embed = vlm_embed.cpu().numpy()
-        vlm_mask = vlm_mask.cpu().numpy()
-        byt5_embed = byt5_embed.cpu().numpy()
-        byt5_mask = byt5_mask.cpu().numpy()
-        ocr_mask = ocr_mask.cpu().numpy()
+        return (
+            vlm_embed.cpu().numpy(),
+            vlm_mask.cpu().numpy(),
+            byt5_embed.cpu().numpy(),
+            byt5_mask.cpu().numpy(),
+            ocr_mask.cpu().numpy(),
+        )
 
-        for i, info in enumerate(infos):
-            vlm_embed_i = vlm_embed[i]
-            vlm_mask_i = vlm_mask[i]
-            byt5_embed_i = byt5_embed[i]
-            byt5_mask_i = byt5_mask[i]
-            ocr_mask_i = ocr_mask[i]
+    def cache_batch_outputs(
+        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
+    ):
+        hunyuan_image_text_encoding_strategy: HunyuanImageTextEncodingStrategy = text_encoding_strategy
+
+        for info in infos:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
+
+            vlm_embed, vlm_mask, byt5_embed, byt5_mask, ocr_mask = self._encode_captions(
+                tokenize_strategy, models, hunyuan_image_text_encoding_strategy, caption_lines
+            )
+
+            if num_captions == 1:
+                vlm_embed_out = vlm_embed[0]
+                vlm_mask_out = vlm_mask[0]
+                byt5_embed_out = byt5_embed[0]
+                byt5_mask_out = byt5_mask[0]
+                ocr_mask_out = ocr_mask[0]
+            else:
+                vlm_embed_out = vlm_embed
+                vlm_mask_out = vlm_mask
+                byt5_embed_out = byt5_embed
+                byt5_mask_out = byt5_mask
+                ocr_mask_out = ocr_mask
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    vlm_embed=vlm_embed_i,
-                    vlm_mask=vlm_mask_i,
-                    byt5_embed=byt5_embed_i,
-                    byt5_mask=byt5_mask_i,
-                    ocr_mask=ocr_mask_i,
+                    vlm_embed=vlm_embed_out,
+                    vlm_mask=vlm_mask_out,
+                    byt5_embed=byt5_embed_out,
+                    byt5_mask=byt5_mask_out,
+                    ocr_mask=ocr_mask_out,
                 )
             else:
-                info.text_encoder_outputs = (vlm_embed_i, vlm_mask_i, byt5_embed_i, byt5_mask_i, ocr_mask_i)
+                info.text_encoder_outputs = (vlm_embed_out, vlm_mask_out, byt5_embed_out, byt5_mask_out, ocr_mask_out)
+                info.num_caption_variants = num_captions
 
 
 class HunyuanImageLatentsCachingStrategy(LatentsCachingStrategy):

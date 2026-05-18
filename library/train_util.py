@@ -209,6 +209,7 @@ class ImageInfo:
         self.text_encoder_outputs2: Optional[torch.Tensor] = None
         self.text_encoder_pool2: Optional[torch.Tensor] = None
 
+        self.num_caption_variants: int = 1  # number of caption variants for multi-caption caching
         self.alpha_mask: Optional[torch.Tensor] = None  # alpha mask can be flipped in runtime
         self.resize_interpolation: Optional[str] = None
 
@@ -1723,6 +1724,12 @@ class BaseDataset(torch.utils.data.Dataset):
             if image_info.text_encoder_outputs is not None:
                 # cached
                 text_encoder_outputs = image_info.text_encoder_outputs
+                if image_info.num_caption_variants > 1:
+                    idx = random.randint(0, image_info.num_caption_variants - 1)
+                    text_encoder_outputs = [
+                        arr[idx] if hasattr(arr, "ndim") and arr.ndim > 0 else arr
+                        for arr in text_encoder_outputs
+                    ]
             elif image_info.text_encoder_outputs_npz is not None:
                 # on disk
                 text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(

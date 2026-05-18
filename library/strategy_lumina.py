@@ -1,5 +1,6 @@
 import glob
 import os
+import random
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
@@ -198,7 +199,8 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
         """
-        Load outputs from a npz file
+        Load outputs from a npz file. If the arrays have an extra leading
+        dimension (multi-caption), randomly select one variant.
 
         Returns:
             List[np.ndarray]: hidden_state, input_ids, attention_mask
@@ -207,7 +209,38 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         hidden_state = data["hidden_state"]
         attention_mask = data["attention_mask"]
         input_ids = data["input_ids"]
+
+        # multi-caption: hidden_state is (N, seq_len, hidden_size) with ndim==3
+        if hidden_state.ndim == 3:
+            idx = random.randint(0, hidden_state.shape[0] - 1)
+            hidden_state = hidden_state[idx]
+            attention_mask = attention_mask[idx]
+            input_ids = input_ids[idx]
+
         return [hidden_state, input_ids, attention_mask]
+
+    def _encode_captions(
+        self,
+        tokenize_strategy: "LuminaTokenizeStrategy",
+        models: List[Any],
+        text_encoding_strategy: "LuminaTextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if self.is_weighted:
+            tokens, attention_masks, weights_list = tokenize_strategy.tokenize_with_weights(captions)
+            hidden_state, input_ids, attention_masks = text_encoding_strategy.encode_tokens_with_weights(
+                tokenize_strategy, models, (tokens, attention_masks), weights_list
+            )
+        else:
+            tokens = tokenize_strategy.tokenize(captions)
+            hidden_state, input_ids, attention_masks = text_encoding_strategy.encode_tokens(
+                tokenize_strategy, models, tokens
+            )
+
+        if hidden_state.dtype != torch.float32:
+            hidden_state = hidden_state.float()
+
+        return hidden_state.cpu().numpy(), input_ids.cpu().numpy(), attention_masks.cpu().numpy()
 
     @torch.no_grad()
     def cache_batch_outputs(
@@ -217,68 +250,40 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         text_encoding_strategy: TextEncodingStrategy,
         batch: List[train_util.ImageInfo],
     ) -> None:
-        """
-        Args:
-            tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
-            models (List[Any]): Text encoders
-            text_encoding_strategy (LuminaTextEncodingStrategy):
-            infos (List): List of ImageInfo
-
-        Returns:
-            None
-        """
         assert isinstance(text_encoding_strategy, LuminaTextEncodingStrategy)
         assert isinstance(tokenize_strategy, LuminaTokenizeStrategy)
 
-        captions = [info.caption for info in batch]
+        for info in batch:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
 
-        if self.is_weighted:
-            tokens, attention_masks, weights_list = (
-                tokenize_strategy.tokenize_with_weights(captions)
-            )
-            hidden_state, input_ids, attention_masks = (
-                text_encoding_strategy.encode_tokens_with_weights(
-                    tokenize_strategy,
-                    models,
-                    (tokens, attention_masks),
-                    weights_list,
-                )
-            )
-        else:
-            tokens = tokenize_strategy.tokenize(captions)
-            hidden_state, input_ids, attention_masks = (
-                text_encoding_strategy.encode_tokens(
-                    tokenize_strategy, models, tokens
-                )
+            hidden_state, input_ids, attention_mask = self._encode_captions(
+                tokenize_strategy, models, text_encoding_strategy, caption_lines
             )
 
-        if hidden_state.dtype != torch.float32:
-            hidden_state = hidden_state.float()
-
-        hidden_state = hidden_state.cpu().numpy()
-        attention_mask = attention_masks.cpu().numpy() # (B, S)
-        input_ids = input_ids.cpu().numpy() # (B, S) 
-
-
-        for i, info in enumerate(batch):
-            hidden_state_i = hidden_state[i]
-            attention_mask_i = attention_mask[i]
-            input_ids_i = input_ids[i]
+            if num_captions == 1:
+                hidden_state_out = hidden_state[0]
+                input_ids_out = input_ids[0]
+                attention_mask_out = attention_mask[0]
+            else:
+                hidden_state_out = hidden_state
+                input_ids_out = input_ids
+                attention_mask_out = attention_mask
 
             if self.cache_to_disk:
-                assert info.text_encoder_outputs_npz is not None, f"Text encoder cache outputs to disk not found for image {info.image_key}"
+                assert info.text_encoder_outputs_npz is not None, (
+                    f"Text encoder cache outputs to disk not found for image {info.image_key}"
+                )
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    hidden_state=hidden_state_i,
-                    attention_mask=attention_mask_i,
-                    input_ids=input_ids_i,
+                    hidden_state=hidden_state_out,
+                    attention_mask=attention_mask_out,
+                    input_ids=input_ids_out,
                 )
             else:
-                info.text_encoder_outputs = [
-                    hidden_state_i,
-                    input_ids_i,
-                    attention_mask_i,
-                ]
+                info.text_encoder_outputs = [hidden_state_out, input_ids_out, attention_mask_out]
+                info.num_caption_variants = num_captions
 
 
 class LuminaLatentsCachingStrategy(LatentsCachingStrategy):

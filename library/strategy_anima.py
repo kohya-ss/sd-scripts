@@ -201,7 +201,40 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         t5_input_ids = data["t5_input_ids"]
         t5_attn_mask = data["t5_attn_mask"]
         caption_dropout_rate = data["caption_dropout_rate"]
+
+        # multi-caption: prompt_embeds is (N, seq_len, hidden_size) with ndim==3
+        # caption_dropout_rate is a scalar shared across variants — do NOT index it
+        if prompt_embeds.ndim == 3:
+            idx = random.randint(0, prompt_embeds.shape[0] - 1)
+            prompt_embeds = prompt_embeds[idx]
+            attn_mask = attn_mask[idx]
+            t5_input_ids = t5_input_ids[idx]
+            t5_attn_mask = t5_attn_mask[idx]
+
         return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, caption_dropout_rate]
+
+    def _encode_captions(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: "AnimaTextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        tokens_and_masks = tokenize_strategy.tokenize(captions)
+        with torch.no_grad():
+            prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = text_encoding_strategy.encode_tokens(
+                tokenize_strategy, models, tokens_and_masks
+            )
+
+        if prompt_embeds.dtype == torch.bfloat16:
+            prompt_embeds = prompt_embeds.float()
+
+        return (
+            prompt_embeds.cpu().numpy(),
+            attn_mask.cpu().numpy(),
+            t5_input_ids.cpu().numpy().astype(np.int32),
+            t5_attn_mask.cpu().numpy().astype(np.int32),
+        )
 
     def cache_batch_outputs(
         self,
@@ -211,40 +244,42 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         infos: List,
     ):
         anima_text_encoding_strategy: AnimaTextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
 
-        tokens_and_masks = tokenize_strategy.tokenize(captions)
-        with torch.no_grad():
-            prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = anima_text_encoding_strategy.encode_tokens(
-                tokenize_strategy, models, tokens_and_masks
+        for info in infos:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
+
+            prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = self._encode_captions(
+                tokenize_strategy, models, anima_text_encoding_strategy, caption_lines
             )
-
-        # Convert to numpy for caching
-        if prompt_embeds.dtype == torch.bfloat16:
-            prompt_embeds = prompt_embeds.float()
-        prompt_embeds = prompt_embeds.cpu().numpy()
-        attn_mask = attn_mask.cpu().numpy()
-        t5_input_ids = t5_input_ids.cpu().numpy().astype(np.int32)
-        t5_attn_mask = t5_attn_mask.cpu().numpy().astype(np.int32)
-
-        for i, info in enumerate(infos):
-            prompt_embeds_i = prompt_embeds[i]
-            attn_mask_i = attn_mask[i]
-            t5_input_ids_i = t5_input_ids[i]
-            t5_attn_mask_i = t5_attn_mask[i]
             caption_dropout_rate = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
+
+            if num_captions == 1:
+                prompt_embeds_out = prompt_embeds[0]
+                attn_mask_out = attn_mask[0]
+                t5_input_ids_out = t5_input_ids[0]
+                t5_attn_mask_out = t5_attn_mask[0]
+            else:
+                prompt_embeds_out = prompt_embeds
+                attn_mask_out = attn_mask
+                t5_input_ids_out = t5_input_ids
+                t5_attn_mask_out = t5_attn_mask
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    prompt_embeds=prompt_embeds_i,
-                    attn_mask=attn_mask_i,
-                    t5_input_ids=t5_input_ids_i,
-                    t5_attn_mask=t5_attn_mask_i,
+                    prompt_embeds=prompt_embeds_out,
+                    attn_mask=attn_mask_out,
+                    t5_input_ids=t5_input_ids_out,
+                    t5_attn_mask=t5_attn_mask_out,
                     caption_dropout_rate=caption_dropout_rate,
                 )
             else:
-                info.text_encoder_outputs = (prompt_embeds_i, attn_mask_i, t5_input_ids_i, t5_attn_mask_i, caption_dropout_rate)
+                info.text_encoder_outputs = (
+                    prompt_embeds_out, attn_mask_out, t5_input_ids_out, t5_attn_mask_out, caption_dropout_rate
+                )
+                info.num_caption_variants = num_captions
 
 
 class AnimaLatentsCachingStrategy(LatentsCachingStrategy):

@@ -313,24 +313,33 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         lg_out = data["lg_out"]
         lg_pooled = data["lg_pooled"]
         t5_out = data["t5_out"]
-
         l_attn_mask = data["clip_l_attn_mask"]
         g_attn_mask = data["clip_g_attn_mask"]
         t5_attn_mask = data["t5_attn_mask"]
 
+        # multi-caption: lg_out is (N, seq_len, 2048) with ndim==3
+        if lg_out.ndim == 3:
+            idx = random.randint(0, lg_out.shape[0] - 1)
+            lg_out = lg_out[idx]
+            lg_pooled = lg_pooled[idx]
+            t5_out = t5_out[idx]
+            l_attn_mask = l_attn_mask[idx]
+            g_attn_mask = g_attn_mask[idx]
+            t5_attn_mask = t5_attn_mask[idx]
+
         # apply_t5_attn_mask and apply_lg_attn_mask are same as self.apply_t5_attn_mask and self.apply_lg_attn_mask
         return [lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask]
 
-    def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
-    ):
-        sd3_text_encoding_strategy: Sd3TextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
-
+    def _encode_captions(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: "Sd3TextEncodingStrategy",
+        captions: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():
-            # always disable dropout during caching
-            lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask = sd3_text_encoding_strategy.encode_tokens(
+            lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask = text_encoding_strategy.encode_tokens(
                 tokenize_strategy,
                 models,
                 tokens_and_masks,
@@ -346,39 +355,51 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         if t5_out.dtype == torch.bfloat16:
             t5_out = t5_out.float()
 
-        lg_out = lg_out.cpu().numpy()
-        lg_pooled = lg_pooled.cpu().numpy()
-        t5_out = t5_out.cpu().numpy()
+        return (
+            lg_out.cpu().numpy(),
+            t5_out.cpu().numpy(),
+            lg_pooled.cpu().numpy(),
+            tokens_and_masks[3].cpu().numpy(),
+            tokens_and_masks[4].cpu().numpy(),
+            tokens_and_masks[5].cpu().numpy(),
+        )
 
-        l_attn_mask = tokens_and_masks[3].cpu().numpy()
-        g_attn_mask = tokens_and_masks[4].cpu().numpy()
-        t5_attn_mask = tokens_and_masks[5].cpu().numpy()
+    def cache_batch_outputs(
+        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, infos: List
+    ):
+        sd3_text_encoding_strategy: Sd3TextEncodingStrategy = text_encoding_strategy
 
-        for i, info in enumerate(infos):
-            lg_out_i = lg_out[i]
-            t5_out_i = t5_out[i]
-            lg_pooled_i = lg_pooled[i]
-            l_attn_mask_i = l_attn_mask[i]
-            g_attn_mask_i = g_attn_mask[i]
-            t5_attn_mask_i = t5_attn_mask[i]
-            apply_lg_attn_mask = self.apply_lg_attn_mask
-            apply_t5_attn_mask = self.apply_t5_attn_mask
+        for info in infos:
+            caption_lines = info.caption.split("\n") if "\n" in info.caption else [info.caption]
+            caption_lines = [line.strip() for line in caption_lines if line.strip()]
+            num_captions = len(caption_lines)
+
+            lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask = self._encode_captions(
+                tokenize_strategy, models, sd3_text_encoding_strategy, caption_lines
+            )
+
+            if num_captions == 1:
+                lg_out_o, t5_out_o, lg_pooled_o = lg_out[0], t5_out[0], lg_pooled[0]
+                l_attn_mask_o, g_attn_mask_o, t5_attn_mask_o = l_attn_mask[0], g_attn_mask[0], t5_attn_mask[0]
+            else:
+                lg_out_o, t5_out_o, lg_pooled_o = lg_out, t5_out, lg_pooled
+                l_attn_mask_o, g_attn_mask_o, t5_attn_mask_o = l_attn_mask, g_attn_mask, t5_attn_mask
 
             if self.cache_to_disk:
                 np.savez(
                     info.text_encoder_outputs_npz,
-                    lg_out=lg_out_i,
-                    lg_pooled=lg_pooled_i,
-                    t5_out=t5_out_i,
-                    clip_l_attn_mask=l_attn_mask_i,
-                    clip_g_attn_mask=g_attn_mask_i,
-                    t5_attn_mask=t5_attn_mask_i,
-                    apply_lg_attn_mask=apply_lg_attn_mask,
-                    apply_t5_attn_mask=apply_t5_attn_mask,
+                    lg_out=lg_out_o,
+                    lg_pooled=lg_pooled_o,
+                    t5_out=t5_out_o,
+                    clip_l_attn_mask=l_attn_mask_o,
+                    clip_g_attn_mask=g_attn_mask_o,
+                    t5_attn_mask=t5_attn_mask_o,
+                    apply_lg_attn_mask=self.apply_lg_attn_mask,
+                    apply_t5_attn_mask=self.apply_t5_attn_mask,
                 )
             else:
-                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
-                info.text_encoder_outputs = (lg_out_i, t5_out_i, lg_pooled_i, l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i)
+                info.text_encoder_outputs = (lg_out_o, t5_out_o, lg_pooled_o, l_attn_mask_o, g_attn_mask_o, t5_attn_mask_o)
+                info.num_caption_variants = num_captions
 
 
 class Sd3LatentsCachingStrategy(LatentsCachingStrategy):
