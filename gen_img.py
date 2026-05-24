@@ -542,10 +542,20 @@ class PipelineLike:
                 uncond_embeddings = torch.cat([uncond_embeddings, tes_uncond_embs[i]], dim=2)  # n,77,2048
 
         if do_classifier_free_guidance:
+            lcm = uncond_embeddings.shape[1] * text_embeddings.shape[1] // math.gcd(uncond_embeddings.shape[1], text_embeddings.shape[1])
+            
             if negative_scale is None:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+                text_embeddings = torch.cat([
+                    uncond_embeddings.repeat(1, lcm // uncond_embeddings.shape[1], 1), 
+                    text_embeddings.repeat(1, lcm // text_embeddings.shape[1], 1),
+                ])
             else:
-                text_embeddings = torch.cat([uncond_embeddings, text_embeddings, real_uncond_embeddings])
+                lcm = real_uncond_embeddings.shape[1] * text_embeddings.shape[1] // math.gcd(real_uncond_embeddings.shape[1], text_embeddings.shape[1])
+                text_embeddings = torch.cat([
+                    uncond_embeddings.repeat(1, lcm // uncond_embeddings.shape[1], 1), 
+                    text_embeddings.repeat(1, lcm // text_embeddings.shape[1], 1), 
+                    real_uncond_embeddings.repeat(1, lcm // real_uncond_embeddings.shape[1], 1)
+                ])
 
         if self.control_net_lllites or (self.control_nets and self.is_sdxl):
             # ControlNetのhintにguide imageを流用する。ControlNetの場合はControlNet側で行う
@@ -1105,22 +1115,17 @@ def pad_tokens_and_weights(tokens, weights, max_length, bos, eos, pad, no_boseos
     """
     max_embeddings_multiples = (max_length - 2) // (chunk_length - 2)
     weights_length = max_length if no_boseos_middle else max_embeddings_multiples * chunk_length
+    lcm = chunk_length
     for i in range(len(tokens)):
-        tokens[i] = [bos] + tokens[i] + [eos] + [pad] * (max_length - 2 - len(tokens[i]))
-        if no_boseos_middle:
-            weights[i] = [1.0] + weights[i] + [1.0] * (max_length - 1 - len(weights[i]))
-        else:
-            w = []
-            if len(weights[i]) == 0:
-                w = [1.0] * weights_length
-            else:
-                for j in range(max_embeddings_multiples):
-                    w.append(1.0)  # weight for starting token in this chunk
-                    w += weights[i][j * (chunk_length - 2) : min(len(weights[i]), (j + 1) * (chunk_length - 2))]
-                    w.append(1.0)  # weight for ending token in this chunk
-                w += [1.0] * (weights_length - len(w))
-            weights[i] = w[:]
-
+        target_length = ((len(tokens[i]) + 2) // chunk_length + 1) * chunk_length
+        lcm = target_length * lcm // math.gcd(target_length, lcm)
+        tokens[i] = [bos] + tokens[i] + [eos] + [pad] * (target_length - 2 - len(tokens[i]))
+        weights[i] = [1.0] + weights[i] + [1.0] * (target_length - 1 - len(weights[i]))
+            
+    for i in range(len(tokens)):
+        tokens[i] = tokens[i] * (lcm // len(tokens[i]))
+        weights[i] = weights[i] * (lcm // len(weights[i]))
+    
     return tokens, weights
 
 
@@ -1138,56 +1143,21 @@ def get_unweighted_text_embeddings(
     When the length of tokens is a multiple of the capacity of the text encoder,
     it should be split into chunks and sent to the text encoder individually.
     """
-    max_embeddings_multiples = (text_input.shape[1] - 2) // (chunk_length - 2)
-    if max_embeddings_multiples > 1:
-        text_embeddings = []
-        pool = None
-        for i in range(max_embeddings_multiples):
-            # extract the i-th chunk
-            text_input_chunk = text_input[:, i * (chunk_length - 2) : (i + 1) * (chunk_length - 2) + 2].clone()
-
-            # cover the head and the tail by the starting and the ending tokens
-            text_input_chunk[:, 0] = text_input[0, 0]
-            if pad == eos:  # v1
-                text_input_chunk[:, -1] = text_input[0, -1]
-            else:  # v2
-                for j in range(len(text_input_chunk)):
-                    if text_input_chunk[j, -1] != eos and text_input_chunk[j, -1] != pad:  # 最後に普通の文字がある
-                        text_input_chunk[j, -1] = eos
-                    if text_input_chunk[j, 1] == pad:  # BOSだけであとはPAD
-                        text_input_chunk[j, 1] = eos
-
-            # in sdxl, value of clip_skip is same for Text Encoder 1 and 2
-            enc_out = text_encoder(text_input_chunk, output_hidden_states=True, return_dict=True)
-            text_embedding = enc_out["hidden_states"][-clip_skip]
-            if not is_sdxl:  # SD 1.5 requires final_layer_norm
-                text_embedding = text_encoder.text_model.final_layer_norm(text_embedding)
-            if pool is None:
-                pool = enc_out.get("text_embeds", None)  # use 1st chunk, if provided
-                if pool is not None:
-                    pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input_chunk, eos)
-
-            if no_boseos_middle:
-                if i == 0:
-                    # discard the ending token
-                    text_embedding = text_embedding[:, :-1]
-                elif i == max_embeddings_multiples - 1:
-                    # discard the starting token
-                    text_embedding = text_embedding[:, 1:]
-                else:
-                    # discard both starting and ending tokens
-                    text_embedding = text_embedding[:, 1:-1]
-
-            text_embeddings.append(text_embedding)
-        text_embeddings = torch.concat(text_embeddings, axis=1)
-    else:
-        enc_out = text_encoder(text_input, output_hidden_states=True, return_dict=True)
-        text_embeddings = enc_out["hidden_states"][-clip_skip]
+    pool = None
+    text_embeddings = []
+    
+    for chunk in text_input.chunk(text_input.shape[1] // chunk_length, dim=1):
+        enc_out = text_encoder(chunk, output_hidden_states=True, return_dict=True)
+        text_embedding = enc_out["hidden_states"][-clip_skip]
         if not is_sdxl:  # SD 1.5 requires final_layer_norm
-            text_embeddings = text_encoder.text_model.final_layer_norm(text_embeddings)
-        pool = enc_out.get("text_embeds", None)  # text encoder 1 doesn't return this
-        if pool is not None:
-            pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input, eos)
+            text_embedding = text_encoder.text_model.final_layer_norm(text_embedding)
+        text_embeddings.append(text_embedding)
+        if pool is None:
+            pool = enc_out.get("text_embeds", None)  # text encoder 1 doesn't return this
+            if pool is not None:
+                pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input, eos)
+        
+    text_embeddings = torch.cat(text_embeddings, dim=1)
     return text_embeddings, pool
 
 
