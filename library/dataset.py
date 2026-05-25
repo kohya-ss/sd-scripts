@@ -34,6 +34,7 @@ import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 import imagesize
 import numpy as np

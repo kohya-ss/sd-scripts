@@ -30,6 +30,7 @@ import math
 import random
 from typing import Optional, Tuple
 
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
