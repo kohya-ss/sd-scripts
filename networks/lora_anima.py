@@ -148,7 +148,6 @@ class LoRAInfModule(LoRAModule):
         weight = org_sd["weight"]
         org_dtype = weight.dtype
         org_device = weight.device
-        weight = weight.to(torch.float)  # calc in float
 
         if dtype is None:
             dtype = org_dtype
@@ -158,6 +157,9 @@ class LoRAInfModule(LoRAModule):
         # get up/down weight
         down_weight = sd["lora_down.weight"].to(torch.float).to(device)
         up_weight = sd["lora_up.weight"].to(torch.float).to(device)
+
+        # weight
+        weight = weight.to(torch.float).to(device)  # calc in float
 
         # merge weight
         if len(weight.size()) == 2:
