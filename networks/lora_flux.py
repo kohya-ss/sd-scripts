@@ -340,12 +340,13 @@ class LoRAInfModule(LoRAModule):
         weight = org_sd["weight"]
         org_dtype = weight.dtype
         org_device = weight.device
-        weight = weight.to(torch.float)  # calc in float
 
         if dtype is None:
             dtype = org_dtype
         if device is None:
             device = org_device
+
+        weight = weight.to(torch.float).to(device)  # calc in float
 
         if self.split_dims is None:
             # get up/down weight

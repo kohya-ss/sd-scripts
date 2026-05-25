@@ -183,7 +183,7 @@ class LoRAInfModule(LoRAModule):
 
         # extract weight from org_module
         org_sd = self.org_module.state_dict()
-        weight = org_sd["weight"].to(torch.float)
+        weight = org_sd["weight"].to(torch.float).to(device)
 
         # merge weight
         if len(weight.size()) == 2:
