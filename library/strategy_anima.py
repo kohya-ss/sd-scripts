@@ -155,6 +155,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     """
 
     ANIMA_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_anima_te.npz"
+    ANIMA_TEXT_ENCODER_OUTPUTS_ST_SUFFIX = "_anima_te.safetensors"
 
     def __init__(
         self,
@@ -166,7 +167,8 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial)
 
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
-        return os.path.splitext(image_abs_path)[0] + self.ANIMA_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        suffix = self.ANIMA_TEXT_ENCODER_OUTPUTS_ST_SUFFIX if self.cache_format == "safetensors" else self.ANIMA_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        return os.path.splitext(image_abs_path)[0] + suffix
 
     def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
         if not self.cache_to_disk:
@@ -177,17 +179,34 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             return True
 
         try:
-            npz = np.load(npz_path)
-            if "prompt_embeds" not in npz:
-                return False
-            if "attn_mask" not in npz:
-                return False
-            if "t5_input_ids" not in npz:
-                return False
-            if "t5_attn_mask" not in npz:
-                return False
-            if "caption_dropout_rate" not in npz:
-                return False
+            if npz_path.endswith(".safetensors"):
+                from library.safetensors_utils import MemoryEfficientSafeOpen
+                from library.strategy_base import _find_tensor_by_prefix
+
+                with MemoryEfficientSafeOpen(npz_path) as f:
+                    keys = f.keys()
+                    if not _find_tensor_by_prefix(keys, "prompt_embeds"):
+                        return False
+                    if "attn_mask" not in keys:
+                        return False
+                    if "t5_input_ids" not in keys:
+                        return False
+                    if "t5_attn_mask" not in keys:
+                        return False
+                    if "caption_dropout_rate" not in keys:
+                        return False
+            else:
+                npz = np.load(npz_path)
+                if "prompt_embeds" not in npz:
+                    return False
+                if "attn_mask" not in npz:
+                    return False
+                if "t5_input_ids" not in npz:
+                    return False
+                if "t5_attn_mask" not in npz:
+                    return False
+                if "caption_dropout_rate" not in npz:
+                    return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
             raise e
@@ -195,6 +214,19 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         return True
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+        if npz_path.endswith(".safetensors"):
+            from library.safetensors_utils import MemoryEfficientSafeOpen
+            from library.strategy_base import _find_tensor_by_prefix
+
+            with MemoryEfficientSafeOpen(npz_path) as f:
+                keys = f.keys()
+                prompt_embeds = f.get_tensor(_find_tensor_by_prefix(keys, "prompt_embeds")).numpy()
+                attn_mask = f.get_tensor("attn_mask").numpy()
+                t5_input_ids = f.get_tensor("t5_input_ids").numpy()
+                t5_attn_mask = f.get_tensor("t5_attn_mask").numpy()
+                caption_dropout_rate = f.get_tensor("caption_dropout_rate").numpy()
+            return [prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, caption_dropout_rate]
+
         data = np.load(npz_path)
         prompt_embeds = data["prompt_embeds"]
         attn_mask = data["attn_mask"]
@@ -219,32 +251,75 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 tokenize_strategy, models, tokens_and_masks
             )
 
-        # Convert to numpy for caching
-        if prompt_embeds.dtype == torch.bfloat16:
-            prompt_embeds = prompt_embeds.float()
-        prompt_embeds = prompt_embeds.cpu().numpy()
-        attn_mask = attn_mask.cpu().numpy()
-        t5_input_ids = t5_input_ids.cpu().numpy().astype(np.int32)
-        t5_attn_mask = t5_attn_mask.cpu().numpy().astype(np.int32)
+        if self.cache_format == "safetensors":
+            self._cache_batch_outputs_safetensors(prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, infos)
+        else:
+            # Convert to numpy for caching
+            if prompt_embeds.dtype == torch.bfloat16:
+                prompt_embeds = prompt_embeds.float()
+            prompt_embeds = prompt_embeds.cpu().numpy()
+            attn_mask = attn_mask.cpu().numpy()
+            t5_input_ids = t5_input_ids.cpu().numpy().astype(np.int32)
+            t5_attn_mask = t5_attn_mask.cpu().numpy().astype(np.int32)
+
+            for i, info in enumerate(infos):
+                prompt_embeds_i = prompt_embeds[i]
+                attn_mask_i = attn_mask[i]
+                t5_input_ids_i = t5_input_ids[i]
+                t5_attn_mask_i = t5_attn_mask[i]
+                caption_dropout_rate = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
+
+                if self.cache_to_disk:
+                    np.savez(
+                        info.text_encoder_outputs_npz,
+                        prompt_embeds=prompt_embeds_i,
+                        attn_mask=attn_mask_i,
+                        t5_input_ids=t5_input_ids_i,
+                        t5_attn_mask=t5_attn_mask_i,
+                        caption_dropout_rate=caption_dropout_rate,
+                    )
+                else:
+                    info.text_encoder_outputs = (prompt_embeds_i, attn_mask_i, t5_input_ids_i, t5_attn_mask_i, caption_dropout_rate)
+
+    def _cache_batch_outputs_safetensors(self, prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, infos):
+        from library.safetensors_utils import mem_eff_save_file, MemoryEfficientSafeOpen
+        from library.strategy_base import _dtype_to_str, TE_OUTPUTS_CACHE_FORMAT_VERSION
+
+        prompt_embeds = prompt_embeds.cpu()
+        attn_mask = attn_mask.cpu()
+        t5_input_ids = t5_input_ids.cpu().to(torch.int32)
+        t5_attn_mask = t5_attn_mask.cpu().to(torch.int32)
 
         for i, info in enumerate(infos):
-            prompt_embeds_i = prompt_embeds[i]
-            attn_mask_i = attn_mask[i]
-            t5_input_ids_i = t5_input_ids[i]
-            t5_attn_mask_i = t5_attn_mask[i]
-            caption_dropout_rate = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
-
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    prompt_embeds=prompt_embeds_i,
-                    attn_mask=attn_mask_i,
-                    t5_input_ids=t5_input_ids_i,
-                    t5_attn_mask=t5_attn_mask_i,
-                    caption_dropout_rate=caption_dropout_rate,
-                )
+                tensors = {}
+                if self.is_partial and os.path.exists(info.text_encoder_outputs_npz):
+                    with MemoryEfficientSafeOpen(info.text_encoder_outputs_npz) as f:
+                        for key in f.keys():
+                            tensors[key] = f.get_tensor(key)
+
+                pe = prompt_embeds[i]
+                tensors[f"prompt_embeds_{_dtype_to_str(pe.dtype)}"] = pe
+                tensors["attn_mask"] = attn_mask[i]
+                tensors["t5_input_ids"] = t5_input_ids[i]
+                tensors["t5_attn_mask"] = t5_attn_mask[i]
+                tensors["caption_dropout_rate"] = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
+
+                metadata = {
+                    "architecture": "anima",
+                    "caption1": info.caption,
+                    "format_version": TE_OUTPUTS_CACHE_FORMAT_VERSION,
+                }
+                mem_eff_save_file(tensors, info.text_encoder_outputs_npz, metadata=metadata)
             else:
-                info.text_encoder_outputs = (prompt_embeds_i, attn_mask_i, t5_input_ids_i, t5_attn_mask_i, caption_dropout_rate)
+                caption_dropout_rate = torch.tensor(info.caption_dropout_rate, dtype=torch.float32)
+                info.text_encoder_outputs = (
+                    prompt_embeds[i].numpy(),
+                    attn_mask[i].numpy(),
+                    t5_input_ids[i].numpy(),
+                    t5_attn_mask[i].numpy(),
+                    caption_dropout_rate,
+                )
 
 
 class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
@@ -255,16 +330,20 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
     """
 
     ANIMA_LATENTS_NPZ_SUFFIX = "_anima.npz"
+    ANIMA_LATENTS_ST_SUFFIX = "_anima.safetensors"
 
     def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
 
     @property
     def cache_suffix(self) -> str:
-        return self.ANIMA_LATENTS_NPZ_SUFFIX
+        return self.ANIMA_LATENTS_ST_SUFFIX if self.cache_format == "safetensors" else self.ANIMA_LATENTS_NPZ_SUFFIX
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.ANIMA_LATENTS_NPZ_SUFFIX
+        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.cache_suffix
+
+    def _get_architecture_name(self) -> str:
+        return "anima"
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
         return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)

@@ -156,6 +156,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         text_encoder.eval()
 
     # build text encoder outputs caching strategy
+    strategy_base.set_cache_format(args.cache_format)
+
     if is_sdxl:
         text_encoder_outputs_caching_strategy = strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
             args.cache_text_encoder_outputs_to_disk, None, args.skip_cache_check, is_weighted=args.weighted_captions

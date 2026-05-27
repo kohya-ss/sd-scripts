@@ -138,24 +138,32 @@ class SdSdxlLatentsCachingStrategy(LatentsCachingStrategy):
     SD_OLD_LATENTS_NPZ_SUFFIX = ".npz"
     SD_LATENTS_NPZ_SUFFIX = "_sd.npz"
     SDXL_LATENTS_NPZ_SUFFIX = "_sdxl.npz"
+    SD_LATENTS_ST_SUFFIX = "_sd.safetensors"
+    SDXL_LATENTS_ST_SUFFIX = "_sdxl.safetensors"
 
-    def __init__(self, sd: bool, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
+    def __init__(
+        self, sd: bool, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool
+    ) -> None:
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
         self.sd = sd
-        self.suffix = (
-            SdSdxlLatentsCachingStrategy.SD_LATENTS_NPZ_SUFFIX if sd else SdSdxlLatentsCachingStrategy.SDXL_LATENTS_NPZ_SUFFIX
-        )
 
     @property
     def cache_suffix(self) -> str:
-        return self.suffix
+        if self.cache_format == "safetensors":
+            return self.SD_LATENTS_ST_SUFFIX if self.sd else self.SDXL_LATENTS_ST_SUFFIX
+        else:
+            return self.SD_LATENTS_NPZ_SUFFIX if self.sd else self.SDXL_LATENTS_NPZ_SUFFIX
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
-        # support old .npz
-        old_npz_file = os.path.splitext(absolute_path)[0] + SdSdxlLatentsCachingStrategy.SD_OLD_LATENTS_NPZ_SUFFIX
-        if os.path.exists(old_npz_file):
-            return old_npz_file
-        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.suffix
+        if self.cache_format != "safetensors":
+            # support old .npz
+            old_npz_file = os.path.splitext(absolute_path)[0] + SdSdxlLatentsCachingStrategy.SD_OLD_LATENTS_NPZ_SUFFIX
+            if os.path.exists(old_npz_file):
+                return old_npz_file
+        return os.path.splitext(absolute_path)[0] + f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.cache_suffix
+
+    def _get_architecture_name(self) -> str:
+        return "sd" if self.sd else "sdxl"
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
         return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)

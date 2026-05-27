@@ -69,6 +69,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
 
     set_tokenize_strategy(is_sd, is_sdxl, is_flux, args)
 
+    strategy_base.set_cache_format(args.cache_format)
+
     if is_sd or is_sdxl:
         latents_caching_strategy = strategy_sd.SdSdxlLatentsCachingStrategy(is_sd, True, args.vae_batch_size, args.skip_cache_check)
     else:

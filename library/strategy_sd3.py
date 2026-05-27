@@ -255,6 +255,7 @@ class Sd3TextEncodingStrategy(TextEncodingStrategy):
 
 class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     SD3_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_sd3_te.npz"
+    SD3_TEXT_ENCODER_OUTPUTS_ST_SUFFIX = "_sd3_te.safetensors"
 
     def __init__(
         self,
@@ -270,7 +271,8 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         self.apply_t5_attn_mask = apply_t5_attn_mask
 
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
-        return os.path.splitext(image_abs_path)[0] + Sd3TextEncoderOutputsCachingStrategy.SD3_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        suffix = self.SD3_TEXT_ENCODER_OUTPUTS_ST_SUFFIX if self.cache_format == "safetensors" else self.SD3_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        return os.path.splitext(image_abs_path)[0] + suffix
 
     def is_disk_cached_outputs_expected(self, npz_path: str):
         if not self.cache_to_disk:
@@ -281,27 +283,54 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             return True
 
         try:
-            npz = np.load(npz_path)
-            if "lg_out" not in npz:
-                return False
-            if "lg_pooled" not in npz:
-                return False
-            if "clip_l_attn_mask" not in npz or "clip_g_attn_mask" not in npz:  # necessary even if not used
-                return False
-            if "apply_lg_attn_mask" not in npz:
-                return False
-            if "t5_out" not in npz:
-                return False
-            if "t5_attn_mask" not in npz:
-                return False
-            npz_apply_lg_attn_mask = npz["apply_lg_attn_mask"]
-            if npz_apply_lg_attn_mask != self.apply_lg_attn_mask:
-                return False
-            if "apply_t5_attn_mask" not in npz:
-                return False
-            npz_apply_t5_attn_mask = npz["apply_t5_attn_mask"]
-            if npz_apply_t5_attn_mask != self.apply_t5_attn_mask:
-                return False
+            if npz_path.endswith(".safetensors"):
+                from library.safetensors_utils import MemoryEfficientSafeOpen
+                from library.strategy_base import _find_tensor_by_prefix
+
+                with MemoryEfficientSafeOpen(npz_path) as f:
+                    keys = f.keys()
+                    if not _find_tensor_by_prefix(keys, "lg_out"):
+                        return False
+                    if not _find_tensor_by_prefix(keys, "lg_pooled"):
+                        return False
+                    if "clip_l_attn_mask" not in keys or "clip_g_attn_mask" not in keys:
+                        return False
+                    if not _find_tensor_by_prefix(keys, "t5_out"):
+                        return False
+                    if "t5_attn_mask" not in keys:
+                        return False
+                    if "apply_lg_attn_mask" not in keys:
+                        return False
+                    apply_lg = f.get_tensor("apply_lg_attn_mask").item()
+                    if bool(apply_lg) != self.apply_lg_attn_mask:
+                        return False
+                    if "apply_t5_attn_mask" not in keys:
+                        return False
+                    apply_t5 = f.get_tensor("apply_t5_attn_mask").item()
+                    if bool(apply_t5) != self.apply_t5_attn_mask:
+                        return False
+            else:
+                npz = np.load(npz_path)
+                if "lg_out" not in npz:
+                    return False
+                if "lg_pooled" not in npz:
+                    return False
+                if "clip_l_attn_mask" not in npz or "clip_g_attn_mask" not in npz:
+                    return False
+                if "apply_lg_attn_mask" not in npz:
+                    return False
+                if "t5_out" not in npz:
+                    return False
+                if "t5_attn_mask" not in npz:
+                    return False
+                npz_apply_lg_attn_mask = npz["apply_lg_attn_mask"]
+                if npz_apply_lg_attn_mask != self.apply_lg_attn_mask:
+                    return False
+                if "apply_t5_attn_mask" not in npz:
+                    return False
+                npz_apply_t5_attn_mask = npz["apply_t5_attn_mask"]
+                if npz_apply_t5_attn_mask != self.apply_t5_attn_mask:
+                    return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
             raise e
@@ -309,6 +338,20 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         return True
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+        if npz_path.endswith(".safetensors"):
+            from library.safetensors_utils import MemoryEfficientSafeOpen
+            from library.strategy_base import _find_tensor_by_prefix
+
+            with MemoryEfficientSafeOpen(npz_path) as f:
+                keys = f.keys()
+                lg_out = f.get_tensor(_find_tensor_by_prefix(keys, "lg_out")).numpy()
+                lg_pooled = f.get_tensor(_find_tensor_by_prefix(keys, "lg_pooled")).numpy()
+                t5_out = f.get_tensor(_find_tensor_by_prefix(keys, "t5_out")).numpy()
+                l_attn_mask = f.get_tensor("clip_l_attn_mask").numpy()
+                g_attn_mask = f.get_tensor("clip_g_attn_mask").numpy()
+                t5_attn_mask = f.get_tensor("t5_attn_mask").numpy()
+            return [lg_out, t5_out, lg_pooled, l_attn_mask, g_attn_mask, t5_attn_mask]
+
         data = np.load(npz_path)
         lg_out = data["lg_out"]
         lg_pooled = data["lg_pooled"]
@@ -339,64 +382,126 @@ class Sd3TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 enable_dropout=False,
             )
 
-        if lg_out.dtype == torch.bfloat16:
-            lg_out = lg_out.float()
-        if lg_pooled.dtype == torch.bfloat16:
-            lg_pooled = lg_pooled.float()
-        if t5_out.dtype == torch.bfloat16:
-            t5_out = t5_out.float()
+        l_attn_mask_tokens = tokens_and_masks[3]
+        g_attn_mask_tokens = tokens_and_masks[4]
+        t5_attn_mask_tokens = tokens_and_masks[5]
 
-        lg_out = lg_out.cpu().numpy()
-        lg_pooled = lg_pooled.cpu().numpy()
-        t5_out = t5_out.cpu().numpy()
+        if self.cache_format == "safetensors":
+            self._cache_batch_outputs_safetensors(
+                lg_out, t5_out, lg_pooled, l_attn_mask_tokens, g_attn_mask_tokens, t5_attn_mask_tokens, infos
+            )
+        else:
+            if lg_out.dtype == torch.bfloat16:
+                lg_out = lg_out.float()
+            if lg_pooled.dtype == torch.bfloat16:
+                lg_pooled = lg_pooled.float()
+            if t5_out.dtype == torch.bfloat16:
+                t5_out = t5_out.float()
 
-        l_attn_mask = tokens_and_masks[3].cpu().numpy()
-        g_attn_mask = tokens_and_masks[4].cpu().numpy()
-        t5_attn_mask = tokens_and_masks[5].cpu().numpy()
+            lg_out = lg_out.cpu().numpy()
+            lg_pooled = lg_pooled.cpu().numpy()
+            t5_out = t5_out.cpu().numpy()
+
+            l_attn_mask = l_attn_mask_tokens.cpu().numpy()
+            g_attn_mask = g_attn_mask_tokens.cpu().numpy()
+            t5_attn_mask = t5_attn_mask_tokens.cpu().numpy()
+
+            for i, info in enumerate(infos):
+                lg_out_i = lg_out[i]
+                t5_out_i = t5_out[i]
+                lg_pooled_i = lg_pooled[i]
+                l_attn_mask_i = l_attn_mask[i]
+                g_attn_mask_i = g_attn_mask[i]
+                t5_attn_mask_i = t5_attn_mask[i]
+                apply_lg_attn_mask = self.apply_lg_attn_mask
+                apply_t5_attn_mask = self.apply_t5_attn_mask
+
+                if self.cache_to_disk:
+                    np.savez(
+                        info.text_encoder_outputs_npz,
+                        lg_out=lg_out_i,
+                        lg_pooled=lg_pooled_i,
+                        t5_out=t5_out_i,
+                        clip_l_attn_mask=l_attn_mask_i,
+                        clip_g_attn_mask=g_attn_mask_i,
+                        t5_attn_mask=t5_attn_mask_i,
+                        apply_lg_attn_mask=apply_lg_attn_mask,
+                        apply_t5_attn_mask=apply_t5_attn_mask,
+                    )
+                else:
+                    # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
+                    info.text_encoder_outputs = (lg_out_i, t5_out_i, lg_pooled_i, l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i)
+
+    def _cache_batch_outputs_safetensors(
+        self, lg_out, t5_out, lg_pooled, l_attn_mask_tokens, g_attn_mask_tokens, t5_attn_mask_tokens, infos
+    ):
+        from library.safetensors_utils import mem_eff_save_file, MemoryEfficientSafeOpen
+        from library.strategy_base import _dtype_to_str, TE_OUTPUTS_CACHE_FORMAT_VERSION
+
+        lg_out = lg_out.cpu()
+        t5_out = t5_out.cpu()
+        lg_pooled = lg_pooled.cpu()
+        l_attn_mask = l_attn_mask_tokens.cpu()
+        g_attn_mask = g_attn_mask_tokens.cpu()
+        t5_attn_mask = t5_attn_mask_tokens.cpu()
 
         for i, info in enumerate(infos):
-            lg_out_i = lg_out[i]
-            t5_out_i = t5_out[i]
-            lg_pooled_i = lg_pooled[i]
-            l_attn_mask_i = l_attn_mask[i]
-            g_attn_mask_i = g_attn_mask[i]
-            t5_attn_mask_i = t5_attn_mask[i]
-            apply_lg_attn_mask = self.apply_lg_attn_mask
-            apply_t5_attn_mask = self.apply_t5_attn_mask
-
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    lg_out=lg_out_i,
-                    lg_pooled=lg_pooled_i,
-                    t5_out=t5_out_i,
-                    clip_l_attn_mask=l_attn_mask_i,
-                    clip_g_attn_mask=g_attn_mask_i,
-                    t5_attn_mask=t5_attn_mask_i,
-                    apply_lg_attn_mask=apply_lg_attn_mask,
-                    apply_t5_attn_mask=apply_t5_attn_mask,
-                )
+                tensors = {}
+                if self.is_partial and os.path.exists(info.text_encoder_outputs_npz):
+                    with MemoryEfficientSafeOpen(info.text_encoder_outputs_npz) as f:
+                        for key in f.keys():
+                            tensors[key] = f.get_tensor(key)
+
+                lg_out_i = lg_out[i]
+                t5_out_i = t5_out[i]
+                lg_pooled_i = lg_pooled[i]
+                tensors[f"lg_out_{_dtype_to_str(lg_out_i.dtype)}"] = lg_out_i
+                tensors[f"t5_out_{_dtype_to_str(t5_out_i.dtype)}"] = t5_out_i
+                tensors[f"lg_pooled_{_dtype_to_str(lg_pooled_i.dtype)}"] = lg_pooled_i
+                tensors["clip_l_attn_mask"] = l_attn_mask[i]
+                tensors["clip_g_attn_mask"] = g_attn_mask[i]
+                tensors["t5_attn_mask"] = t5_attn_mask[i]
+                tensors["apply_lg_attn_mask"] = torch.tensor(self.apply_lg_attn_mask, dtype=torch.bool)
+                tensors["apply_t5_attn_mask"] = torch.tensor(self.apply_t5_attn_mask, dtype=torch.bool)
+
+                metadata = {
+                    "architecture": "sd3",
+                    "caption1": info.caption,
+                    "format_version": TE_OUTPUTS_CACHE_FORMAT_VERSION,
+                }
+                mem_eff_save_file(tensors, info.text_encoder_outputs_npz, metadata=metadata)
             else:
-                # it's fine that attn mask is not None. it's overwritten before calling the model if necessary
-                info.text_encoder_outputs = (lg_out_i, t5_out_i, lg_pooled_i, l_attn_mask_i, g_attn_mask_i, t5_attn_mask_i)
+                info.text_encoder_outputs = (
+                    lg_out[i].numpy(),
+                    t5_out[i].numpy(),
+                    lg_pooled[i].numpy(),
+                    l_attn_mask[i].numpy(),
+                    g_attn_mask[i].numpy(),
+                    t5_attn_mask[i].numpy(),
+                )
 
 
 class Sd3LatentsCachingStrategy(LatentsCachingStrategy):
     SD3_LATENTS_NPZ_SUFFIX = "_sd3.npz"
+    SD3_LATENTS_ST_SUFFIX = "_sd3.safetensors"
 
     def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check)
 
     @property
     def cache_suffix(self) -> str:
-        return Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
+        return self.SD3_LATENTS_ST_SUFFIX if self.cache_format == "safetensors" else self.SD3_LATENTS_NPZ_SUFFIX
 
     def get_latents_npz_path(self, absolute_path: str, image_size: Tuple[int, int]) -> str:
         return (
             os.path.splitext(absolute_path)[0]
             + f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + Sd3LatentsCachingStrategy.SD3_LATENTS_NPZ_SUFFIX
+            + self.cache_suffix
         )
+
+    def _get_architecture_name(self) -> str:
+        return "sd3"
 
     def is_disk_cached_latents_expected(self, bucket_reso: Tuple[int, int], npz_path: str, flip_aug: bool, alpha_mask: bool):
         return self._default_is_disk_cached_latents_expected(8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True)

@@ -221,6 +221,7 @@ class SdxlTextEncodingStrategy(TextEncodingStrategy):
 
 class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_te_outputs.npz"
+    SDXL_TEXT_ENCODER_OUTPUTS_ST_SUFFIX = "_te_outputs.safetensors"
 
     def __init__(
         self,
@@ -233,7 +234,8 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial, is_weighted)
 
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
-        return os.path.splitext(image_abs_path)[0] + SdxlTextEncoderOutputsCachingStrategy.SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        suffix = self.SDXL_TEXT_ENCODER_OUTPUTS_ST_SUFFIX if self.cache_format == "safetensors" else self.SDXL_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
+        return os.path.splitext(image_abs_path)[0] + suffix
 
     def is_disk_cached_outputs_expected(self, npz_path: str):
         if not self.cache_to_disk:
@@ -244,9 +246,22 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             return True
 
         try:
-            npz = np.load(npz_path)
-            if "hidden_state1" not in npz or "hidden_state2" not in npz or "pool2" not in npz:
-                return False
+            if npz_path.endswith(".safetensors"):
+                from library.safetensors_utils import MemoryEfficientSafeOpen
+                from library.strategy_base import _find_tensor_by_prefix
+
+                with MemoryEfficientSafeOpen(npz_path) as f:
+                    keys = f.keys()
+                    if not _find_tensor_by_prefix(keys, "hidden_state1"):
+                        return False
+                    if not _find_tensor_by_prefix(keys, "hidden_state2"):
+                        return False
+                    if not _find_tensor_by_prefix(keys, "pool2"):
+                        return False
+            else:
+                npz = np.load(npz_path)
+                if "hidden_state1" not in npz or "hidden_state2" not in npz or "pool2" not in npz:
+                    return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
             raise e
@@ -254,6 +269,17 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         return True
 
     def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+        if npz_path.endswith(".safetensors"):
+            from library.safetensors_utils import MemoryEfficientSafeOpen
+            from library.strategy_base import _find_tensor_by_prefix
+
+            with MemoryEfficientSafeOpen(npz_path) as f:
+                keys = f.keys()
+                hidden_state1 = f.get_tensor(_find_tensor_by_prefix(keys, "hidden_state1")).numpy()
+                hidden_state2 = f.get_tensor(_find_tensor_by_prefix(keys, "hidden_state2")).numpy()
+                pool2 = f.get_tensor(_find_tensor_by_prefix(keys, "pool2")).numpy()
+            return [hidden_state1, hidden_state2, pool2]
+
         data = np.load(npz_path)
         hidden_state1 = data["hidden_state1"]
         hidden_state2 = data["hidden_state2"]
@@ -279,28 +305,68 @@ class SdxlTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     tokenize_strategy, models, [tokens1, tokens2]
                 )
 
-        if hidden_state1.dtype == torch.bfloat16:
-            hidden_state1 = hidden_state1.float()
-        if hidden_state2.dtype == torch.bfloat16:
-            hidden_state2 = hidden_state2.float()
-        if pool2.dtype == torch.bfloat16:
-            pool2 = pool2.float()
+        if self.cache_format == "safetensors":
+            self._cache_batch_outputs_safetensors(hidden_state1, hidden_state2, pool2, infos)
+        else:
+            if hidden_state1.dtype == torch.bfloat16:
+                hidden_state1 = hidden_state1.float()
+            if hidden_state2.dtype == torch.bfloat16:
+                hidden_state2 = hidden_state2.float()
+            if pool2.dtype == torch.bfloat16:
+                pool2 = pool2.float()
 
-        hidden_state1 = hidden_state1.cpu().numpy()
-        hidden_state2 = hidden_state2.cpu().numpy()
-        pool2 = pool2.cpu().numpy()
+            hidden_state1 = hidden_state1.cpu().numpy()
+            hidden_state2 = hidden_state2.cpu().numpy()
+            pool2 = pool2.cpu().numpy()
+
+            for i, info in enumerate(infos):
+                hidden_state1_i = hidden_state1[i]
+                hidden_state2_i = hidden_state2[i]
+                pool2_i = pool2[i]
+
+                if self.cache_to_disk:
+                    np.savez(
+                        info.text_encoder_outputs_npz,
+                        hidden_state1=hidden_state1_i,
+                        hidden_state2=hidden_state2_i,
+                        pool2=pool2_i,
+                    )
+                else:
+                    info.text_encoder_outputs = [hidden_state1_i, hidden_state2_i, pool2_i]
+
+    def _cache_batch_outputs_safetensors(self, hidden_state1, hidden_state2, pool2, infos):
+        from library.safetensors_utils import mem_eff_save_file, MemoryEfficientSafeOpen
+        from library.strategy_base import _dtype_to_str, TE_OUTPUTS_CACHE_FORMAT_VERSION
+
+        hidden_state1 = hidden_state1.cpu()
+        hidden_state2 = hidden_state2.cpu()
+        pool2 = pool2.cpu()
 
         for i, info in enumerate(infos):
-            hidden_state1_i = hidden_state1[i]
-            hidden_state2_i = hidden_state2[i]
-            pool2_i = pool2[i]
-
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    hidden_state1=hidden_state1_i,
-                    hidden_state2=hidden_state2_i,
-                    pool2=pool2_i,
-                )
+                tensors = {}
+                # merge existing file if partial
+                if self.is_partial and os.path.exists(info.text_encoder_outputs_npz):
+                    with MemoryEfficientSafeOpen(info.text_encoder_outputs_npz) as f:
+                        for key in f.keys():
+                            tensors[key] = f.get_tensor(key)
+
+                hs1 = hidden_state1[i]
+                hs2 = hidden_state2[i]
+                p2 = pool2[i]
+                tensors[f"hidden_state1_{_dtype_to_str(hs1.dtype)}"] = hs1
+                tensors[f"hidden_state2_{_dtype_to_str(hs2.dtype)}"] = hs2
+                tensors[f"pool2_{_dtype_to_str(p2.dtype)}"] = p2
+
+                metadata = {
+                    "architecture": "sdxl",
+                    "caption1": info.caption,
+                    "format_version": TE_OUTPUTS_CACHE_FORMAT_VERSION,
+                }
+                mem_eff_save_file(tensors, info.text_encoder_outputs_npz, metadata=metadata)
             else:
-                info.text_encoder_outputs = [hidden_state1_i, hidden_state2_i, pool2_i]
+                info.text_encoder_outputs = [
+                    hidden_state1[i].numpy(),
+                    hidden_state2[i].numpy(),
+                    pool2[i].numpy(),
+                ]

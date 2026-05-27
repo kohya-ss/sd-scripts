@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Any, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import numpy as np
 import torch
@@ -18,6 +18,48 @@ setup_logging()
 import logging
 
 logger = logging.getLogger(__name__)
+
+LATENTS_CACHE_FORMAT_VERSION = "1.0.1"
+TE_OUTPUTS_CACHE_FORMAT_VERSION = "1.0.1"
+
+# global cache format setting: "npz" or "safetensors"
+_cache_format: str = "npz"
+
+
+def set_cache_format(cache_format: str) -> None:
+    global _cache_format
+    _cache_format = cache_format
+
+
+def get_cache_format() -> str:
+    return _cache_format
+
+_TORCH_DTYPE_TO_STR = {
+    torch.float64: "float64",
+    torch.float32: "float32",
+    torch.float16: "float16",
+    torch.bfloat16: "bfloat16",
+    torch.int64: "int64",
+    torch.int32: "int32",
+    torch.int16: "int16",
+    torch.int8: "int8",
+    torch.uint8: "uint8",
+    torch.bool: "bool",
+}
+
+_FLOAT_DTYPES = {torch.float64, torch.float32, torch.float16, torch.bfloat16}
+
+
+def _dtype_to_str(dtype: torch.dtype) -> str:
+    return _TORCH_DTYPE_TO_STR.get(dtype, str(dtype).replace("torch.", ""))
+
+
+def _find_tensor_by_prefix(tensors_keys: List[str], prefix: str) -> Optional[str]:
+    """Find a tensor key that starts with the given prefix. Returns the first match or None."""
+    for key in tensors_keys:
+        if key.startswith(prefix) or key == prefix:
+            return key
+    return None
 
 
 class TokenizeStrategy:
@@ -362,6 +404,10 @@ class TextEncoderOutputsCachingStrategy:
     def is_weighted(self):
         return self._is_weighted
 
+    @property
+    def cache_format(self) -> str:
+        return get_cache_format()
+
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
         raise NotImplementedError
 
@@ -408,6 +454,10 @@ class LatentsCachingStrategy:
         return self._batch_size
 
     @property
+    def cache_format(self) -> str:
+        return get_cache_format()
+
+    @property
     def cache_suffix(self):
         raise NotImplementedError
 
@@ -439,7 +489,7 @@ class LatentsCachingStrategy:
         Args:
             latents_stride: stride of latents
             bucket_reso: resolution of the bucket
-            npz_path: path to the npz file
+            npz_path: path to the npz/safetensors file
             flip_aug: whether to flip images
             apply_alpha_mask: whether to apply alpha mask
             multi_resolution: whether to use multi-resolution latents
@@ -453,6 +503,11 @@ class LatentsCachingStrategy:
             return False
         if self.skip_disk_cache_validity_check:
             return True
+
+        if npz_path.endswith(".safetensors"):
+            return self._is_disk_cached_latents_expected_safetensors(
+                latents_stride, bucket_reso, npz_path, flip_aug, apply_alpha_mask, multi_resolution
+            )
 
         expected_latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
 
@@ -472,6 +527,40 @@ class LatentsCachingStrategy:
                 return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
+            raise e
+
+        return True
+
+    def _is_disk_cached_latents_expected_safetensors(
+        self,
+        latents_stride: int,
+        bucket_reso: Tuple[int, int],
+        st_path: str,
+        flip_aug: bool,
+        apply_alpha_mask: bool,
+        multi_resolution: bool = False,
+    ) -> bool:
+        from library.safetensors_utils import MemoryEfficientSafeOpen
+
+        expected_latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # (H, W)
+        reso_tag = f"1x{expected_latents_size[0]}x{expected_latents_size[1]}" if multi_resolution else "1x"
+
+        try:
+            with MemoryEfficientSafeOpen(st_path) as f:
+                keys = f.keys()
+                latents_prefix = f"latents_{reso_tag}"
+                if not any(k.startswith(latents_prefix) for k in keys):
+                    return False
+                if flip_aug:
+                    flipped_prefix = f"latents_flipped_{reso_tag}"
+                    if not any(k.startswith(flipped_prefix) for k in keys):
+                        return False
+                if apply_alpha_mask:
+                    mask_prefix = f"alpha_mask_{reso_tag}"
+                    if not any(k.startswith(mask_prefix) for k in keys):
+                        return False
+        except Exception as e:
+            logger.error(f"Error loading file: {st_path}")
             raise e
 
         return True
@@ -571,7 +660,7 @@ class LatentsCachingStrategy:
         """
         Args:
             latents_stride (Optional[int]): Stride for latents. If None, load all latents.
-            npz_path (str): Path to the npz file.
+            npz_path (str): Path to the npz/safetensors file.
             bucket_reso (Tuple[int, int]): The resolution of the bucket.
 
         Returns:
@@ -583,6 +672,9 @@ class LatentsCachingStrategy:
                 Optional[np.ndarray]
             ]: Latent np tensors, original size, crop (left top, right bottom), flipped latents, alpha mask
         """
+        if npz_path.endswith(".safetensors"):
+            return self._load_latents_from_disk_safetensors(latents_stride, npz_path, bucket_reso)
+
         if latents_stride is None:
             key_reso_suffix = ""
         else:
@@ -609,6 +701,39 @@ class LatentsCachingStrategy:
         alpha_mask = npz["alpha_mask" + key_reso_suffix] if "alpha_mask" + key_reso_suffix in npz else None
         return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
 
+    def _load_latents_from_disk_safetensors(
+        self, latents_stride: Optional[int], st_path: str, bucket_reso: Tuple[int, int]
+    ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
+        from library.safetensors_utils import MemoryEfficientSafeOpen
+
+        if latents_stride is None:
+            reso_tag = "1x"
+        else:
+            latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)
+            reso_tag = f"1x{latents_size[0]}x{latents_size[1]}"
+
+        with MemoryEfficientSafeOpen(st_path) as f:
+            keys = f.keys()
+
+            latents_key = _find_tensor_by_prefix(keys, f"latents_{reso_tag}")
+            if latents_key is None:
+                raise ValueError(f"latents with prefix 'latents_{reso_tag}' not found in {st_path}")
+            latents = f.get_tensor(latents_key).numpy()
+
+            original_size_key = _find_tensor_by_prefix(keys, f"original_size_{reso_tag}")
+            original_size = f.get_tensor(original_size_key).numpy().tolist() if original_size_key else [0, 0]
+
+            crop_ltrb_key = _find_tensor_by_prefix(keys, f"crop_ltrb_{reso_tag}")
+            crop_ltrb = f.get_tensor(crop_ltrb_key).numpy().tolist() if crop_ltrb_key else [0, 0, 0, 0]
+
+            flipped_key = _find_tensor_by_prefix(keys, f"latents_flipped_{reso_tag}")
+            flipped_latents = f.get_tensor(flipped_key).numpy() if flipped_key else None
+
+            alpha_mask_key = _find_tensor_by_prefix(keys, f"alpha_mask_{reso_tag}")
+            alpha_mask = f.get_tensor(alpha_mask_key).numpy() if alpha_mask_key else None
+
+        return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
+
     def save_latents_to_disk(
         self,
         npz_path,
@@ -621,17 +746,23 @@ class LatentsCachingStrategy:
     ):
         """
         Args:
-            npz_path (str): Path to the npz file.
+            npz_path (str): Path to the npz/safetensors file.
             latents_tensor (torch.Tensor): Latent tensor
             original_size (List[int]): Original size of the image
             crop_ltrb (List[int]): Crop left top right bottom
             flipped_latents_tensor (Optional[torch.Tensor]): Flipped latent tensor
             alpha_mask (Optional[torch.Tensor]): Alpha mask
-            key_reso_suffix (str): Key resolution suffix
+            key_reso_suffix (str): Key resolution suffix (e.g. "_32x64" for multi-resolution npz)
 
         Returns:
             None
         """
+        if npz_path.endswith(".safetensors"):
+            self._save_latents_to_disk_safetensors(
+                npz_path, latents_tensor, original_size, crop_ltrb, flipped_latents_tensor, alpha_mask, key_reso_suffix
+            )
+            return
+
         kwargs = {}
 
         if os.path.exists(npz_path):
@@ -640,7 +771,7 @@ class LatentsCachingStrategy:
             for key in npz.files:
                 kwargs[key] = npz[key]
 
-        # TODO float() is needed if vae is in bfloat16. Remove it if vae is float16.
+        # float() is needed because npz doesn't support bfloat16
         kwargs["latents" + key_reso_suffix] = latents_tensor.float().cpu().numpy()
         kwargs["original_size" + key_reso_suffix] = np.array(original_size)
         kwargs["crop_ltrb" + key_reso_suffix] = np.array(crop_ltrb)
@@ -649,3 +780,59 @@ class LatentsCachingStrategy:
         if alpha_mask is not None:
             kwargs["alpha_mask" + key_reso_suffix] = alpha_mask.float().cpu().numpy()
         np.savez(npz_path, **kwargs)
+
+    def _save_latents_to_disk_safetensors(
+        self,
+        st_path,
+        latents_tensor,
+        original_size,
+        crop_ltrb,
+        flipped_latents_tensor=None,
+        alpha_mask=None,
+        key_reso_suffix="",
+    ):
+        from library.safetensors_utils import mem_eff_save_file, MemoryEfficientSafeOpen
+
+        latents_tensor = latents_tensor.cpu()
+        latents_size = latents_tensor.shape[-2:]  # H, W
+        reso_tag = f"1x{latents_size[0]}x{latents_size[1]}"
+        dtype_str = _dtype_to_str(latents_tensor.dtype)
+
+        # NaN check and zero replacement
+        if torch.isnan(latents_tensor).any():
+            latents_tensor = torch.nan_to_num(latents_tensor, nan=0.0)
+
+        tensors: Dict[str, torch.Tensor] = {}
+
+        # load existing file and merge (for multi-resolution)
+        if os.path.exists(st_path):
+            with MemoryEfficientSafeOpen(st_path) as f:
+                for key in f.keys():
+                    tensors[key] = f.get_tensor(key)
+
+        tensors[f"latents_{reso_tag}_{dtype_str}"] = latents_tensor
+        tensors[f"original_size_{reso_tag}_int32"] = torch.tensor(original_size, dtype=torch.int32)
+        tensors[f"crop_ltrb_{reso_tag}_int32"] = torch.tensor(crop_ltrb, dtype=torch.int32)
+
+        if flipped_latents_tensor is not None:
+            flipped_latents_tensor = flipped_latents_tensor.cpu()
+            if torch.isnan(flipped_latents_tensor).any():
+                flipped_latents_tensor = torch.nan_to_num(flipped_latents_tensor, nan=0.0)
+            tensors[f"latents_flipped_{reso_tag}_{dtype_str}"] = flipped_latents_tensor
+
+        if alpha_mask is not None:
+            alpha_mask_tensor = alpha_mask.cpu() if isinstance(alpha_mask, torch.Tensor) else torch.tensor(alpha_mask)
+            tensors[f"alpha_mask_{reso_tag}"] = alpha_mask_tensor
+
+        metadata = {
+            "architecture": self._get_architecture_name(),
+            "width": str(latents_size[1]),
+            "height": str(latents_size[0]),
+            "format_version": LATENTS_CACHE_FORMAT_VERSION,
+        }
+
+        mem_eff_save_file(tensors, st_path, metadata=metadata)
+
+    def _get_architecture_name(self) -> str:
+        """Override in subclasses to return the architecture name for safetensors metadata."""
+        return "unknown"
