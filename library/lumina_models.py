@@ -20,6 +20,7 @@
 # --------------------------------------------------------
 
 import math
+import os
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -30,6 +31,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from library import custom_offloading_utils
+
+disable_selective_torch_compile = (
+    os.getenv("SDSCRIPTS_SELECTIVE_TORCH_COMPILE", "0") == "0"
+)
 
 try:
     from flash_attn import flash_attn_varlen_func
@@ -549,7 +554,7 @@ class JointAttention(nn.Module):
                 f"Could not load flash attention. Please install flash_attn. / フラッシュアテンションを読み込めませんでした。flash_attn をインストールしてください。 / {e}"
             )
 
-
+@torch.compiler.disable(reason="complex ops inside")
 def apply_rope(
     x_in: torch.Tensor,
     freqs_cis: torch.Tensor,
@@ -625,13 +630,10 @@ class FeedForward(nn.Module):
             bias=False,
         )
         nn.init.xavier_uniform_(self.w3.weight)
-
-    # @torch.compile
-    def _forward_silu_gating(self, x1, x3):
-        return F.silu(x1) * x3
-
+    
+    @torch.compile(disable=disable_selective_torch_compile)
     def forward(self, x):
-        return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
+        return self.w2(F.silu(self.w1(x))*self.w3(x))
 
 
 class JointTransformerBlock(GradientCheckpointMixin):
@@ -697,6 +699,7 @@ class JointTransformerBlock(GradientCheckpointMixin):
             nn.init.zeros_(self.adaLN_modulation[1].weight)
             nn.init.zeros_(self.adaLN_modulation[1].bias)
 
+    @torch.compile(disable=disable_selective_torch_compile)
     def _forward(
         self,
         x: torch.Tensor,
@@ -788,6 +791,7 @@ class FinalLayer(GradientCheckpointMixin):
         nn.init.zeros_(self.adaLN_modulation[1].weight)
         nn.init.zeros_(self.adaLN_modulation[1].bias)
 
+    @torch.compile(disable=disable_selective_torch_compile)
     def forward(self, x, c):
         scale = self.adaLN_modulation(c)
         x = modulate(self.norm_final(x), scale)
@@ -808,6 +812,7 @@ class RopeEmbedder:
         self.axes_lens = axes_lens
         self.freqs_cis = NextDiT.precompute_freqs_cis(self.axes_dims, self.axes_lens, theta=self.theta)
 
+    @torch.compiler.disable(reason="complex ops inside")
     def __call__(self, ids: torch.Tensor):
         device = ids.device
         self.freqs_cis = [freqs_cis.to(ids.device) for freqs_cis in self.freqs_cis]
@@ -1219,6 +1224,7 @@ class NextDiT(nn.Module):
         return output
 
     @staticmethod
+    @torch.compiler.disable(reason="complex ops inside")
     def precompute_freqs_cis(
         dim: List[int],
         end: List[int],
