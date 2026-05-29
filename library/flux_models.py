@@ -543,12 +543,43 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     return embedding
 
 
+import torch.nn.functional as F
+
+# A class that supports having the biases have a dtype of float32
+# while the more numerous weights are still in bfloat16 format.
+
+class MixedLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        # Initialize weights in float32 first, then cast to bfloat16
+        weight = torch.empty(out_features, in_features, dtype=torch.float32)
+        nn.init.kaiming_uniform_(weight, a=5**0.5)
+        self.weight = nn.Parameter(weight.to(torch.bfloat16))
+
+        if bias:
+            bias_param = torch.empty(out_features, dtype=torch.float32)  # High precision
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(weight)
+            bound = 1 / fan_in**0.5
+            nn.init.uniform_(bias_param, -bound, bound)
+            self.bias = nn.Parameter(bias_param)
+        else:
+            self.bias = None
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.weight.dtype == torch.bfloat16:
+            weight_fp32 = self.weight.to(torch.float32)
+        else:
+            weight_fp32 = self.weight
+
+        return F.linear(input, weight_fp32, self.bias)
+
+
 class MLPEmbedder(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int):
         super().__init__()
-        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
+        self.in_layer = MixedLinear(in_dim, hidden_dim, bias=True)
         self.silu = nn.SiLU()
-        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        self.out_layer = MixedLinear(hidden_dim, hidden_dim, bias=True)
 
         self.gradient_checkpointing = False
 
@@ -609,9 +640,9 @@ class SelfAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv = MixedLinear(dim, dim * 3, bias=qkv_bias)
         self.norm = QKNorm(head_dim)
-        self.proj = nn.Linear(dim, dim)
+        self.proj = MixedLinear(dim, dim)
 
     # this is not called from DoubleStreamBlock/SingleStreamBlock because they uses attention function directly
     def forward(self, x: Tensor, pe: Tensor) -> Tensor:
@@ -635,7 +666,7 @@ class Modulation(nn.Module):
         super().__init__()
         self.is_double = double
         self.multiplier = 6 if double else 3
-        self.lin = nn.Linear(dim, self.multiplier * dim, bias=True)
+        self.lin = MixedLinear(dim, self.multiplier * dim, bias=True)
 
     def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
         out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
@@ -659,9 +690,9 @@ class DoubleStreamBlock(nn.Module):
 
         self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
+            MixedLinear(hidden_size, mlp_hidden_dim, bias=True),
             nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
+            MixedLinear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
         self.txt_mod = Modulation(hidden_size, double=True)
@@ -670,9 +701,9 @@ class DoubleStreamBlock(nn.Module):
 
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
+            MixedLinear(hidden_size, mlp_hidden_dim, bias=True),
             nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
+            MixedLinear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
         self.gradient_checkpointing = False
@@ -780,9 +811,9 @@ class SingleStreamBlock(nn.Module):
 
         self.mlp_hidden_dim = int(hidden_size * mlp_ratio)
         # qkv and mlp_in
-        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
+        self.linear1 = MixedLinear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
         # proj and mlp_out
-        self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
+        self.linear2 = MixedLinear(hidden_size + self.mlp_hidden_dim, hidden_size)
 
         self.norm = QKNorm(head_dim)
 
@@ -862,8 +893,8 @@ class LastLayer(nn.Module):
     def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
+        self.linear = MixedLinear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.adaLN_modulation = nn.Sequential(nn.SiLU(), MixedLinear(hidden_size, 2 * hidden_size, bias=True))
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
         shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
@@ -894,11 +925,11 @@ class Flux(nn.Module):
         self.hidden_size = params.hidden_size
         self.num_heads = params.num_heads
         self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=True)
+        self.img_in = MixedLinear(self.in_channels, self.hidden_size, bias=True)
         self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
         self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size)
         self.guidance_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size) if params.guidance_embed else nn.Identity()
-        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size)
+        self.txt_in = MixedLinear(params.context_in_dim, self.hidden_size)
 
         self.double_blocks = nn.ModuleList(
             [
@@ -1114,11 +1145,11 @@ class ControlNetFlux(nn.Module):
         self.hidden_size = params.hidden_size
         self.num_heads = params.num_heads
         self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=True)
+        self.img_in = MixedLinear(self.in_channels, self.hidden_size, bias=True)
         self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
         self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size)
         self.guidance_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size) if params.guidance_embed else nn.Identity()
-        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size)
+        self.txt_in = MixedLinear(params.context_in_dim, self.hidden_size)
 
         self.double_blocks = nn.ModuleList(
             [
@@ -1151,15 +1182,15 @@ class ControlNetFlux(nn.Module):
         # add ControlNet blocks
         self.controlnet_blocks = nn.ModuleList([])
         for _ in range(controlnet_depth):
-            controlnet_block = nn.Linear(self.hidden_size, self.hidden_size)
+            controlnet_block = MixedLinear(self.hidden_size, self.hidden_size)
             controlnet_block = zero_module(controlnet_block)
             self.controlnet_blocks.append(controlnet_block)
         self.controlnet_blocks_for_single = nn.ModuleList([])
         for _ in range(controlnet_single_depth):
-            controlnet_block = nn.Linear(self.hidden_size, self.hidden_size)
+            controlnet_block = MixedLinear(self.hidden_size, self.hidden_size)
             controlnet_block = zero_module(controlnet_block)
             self.controlnet_blocks_for_single.append(controlnet_block)
-        self.pos_embed_input = nn.Linear(self.in_channels, self.hidden_size, bias=True)
+        self.pos_embed_input = MixedLinear(self.in_channels, self.hidden_size, bias=True)
         self.gradient_checkpointing = False
         self.input_hint_block = nn.Sequential(
             nn.Conv2d(3, 16, 3, padding=1),

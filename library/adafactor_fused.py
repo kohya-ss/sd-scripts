@@ -28,6 +28,62 @@ def copy_stochastic_(target: torch.Tensor, source: torch.Tensor):
     del result
 
 
+# Kahan summation for bfloat16
+# The implementation was provided by araleza.
+# Based on paper "Revisiting BFloat16 Training": https://arxiv.org/pdf/2010.06192
+
+def copy_kahan_(target: torch.Tensor, source: torch.Tensor, state, update):
+    """
+    Copies source into target using Kahan summation.
+
+    The lower bits of the float32 weight that are lost on conversion to bfloat16
+    are sent to the CPU until the next step, where they are re-added onto the weights
+    before adding the gradient update.  This produces near float32-like weight behavior,
+    although the copies back and forth to main memory result in slower training steps.
+
+    Args:
+        target: the target tensor with dtype=bfloat16
+        source: the target tensor with dtype=float32
+        state:  the optimizer state, used to store kahan residuals
+        update: the change in weights due to the gradient
+    """
+
+    # Initialize residuals to 0 for first step
+    if state.get('kahan_residuals') is None:
+        state['kahan_residuals'] = torch.zeros_like(source, dtype=torch.int16)
+    
+    # Need this in 32 bit as PyTorch doesn't support mixed 32-bit and 16-bit math operations
+    state['kahan_residuals'] = state['kahan_residuals'].to(source.device).to(dtype=torch.int32)
+    
+    # Bring the previous step's lower bits of the weights back from the
+    # cpu device, and add them back to the weights of the current step.
+    source_i32 = source.view(dtype=torch.int32)  # Can't do math on uint32
+    source_i32.add_(state['kahan_residuals'])
+
+    # Reverse any rounding up during the cast to bf16 on the previous step
+    rounded_up = state['kahan_residuals'] >= 32768
+    source_i32[rounded_up] -= 65536
+
+    # Must add the gradient update after the bottom bits are restored in case
+    # the exponent is changed by the update, or the -65536 on the line above
+    # would drop the uint32 value below zero, which is invalid.
+    source.add_(-update)
+
+    # Get the lower bits into the residual
+    torch.bitwise_and(source_i32, 0x0000FFFF, out=state['kahan_residuals'])
+
+    # Ensure rounding to bfloat16 matches expectations. These lines may not be
+    # necessary as target.copy_ should do this rounding anyway.
+    source_i32.add_(32768)  # Add offset so clipping bits performs round-to-nearest
+    source_i32.bitwise_and_(-65536)  # -65536 = FFFF0000 as a signed int32. Leaves only upper bits in source
+
+    # Move the 16-bit Kahan bits from VRAM to main memory
+    state['kahan_residuals'] = state['kahan_residuals'].to(dtype=torch.uint16).to("cpu")
+
+    # Copy the quantized floats into the target tensor
+    target.copy_(source)
+
+
 @torch.no_grad()
 def adafactor_step_param(self, p, group):
     if p.grad is None:
@@ -102,13 +158,19 @@ def adafactor_step_param(self, p, group):
     if group["weight_decay"] != 0:
         p_data_fp32.add_(p_data_fp32, alpha=(-group["weight_decay"] * lr))
 
-    p_data_fp32.add_(-update)
+    # Add on gradient update, but not if using kahan summation as the bottom
+    # bits must be restored first. (This update occurs in copy_kahan_() instead)
+    if not self.optimizer.use_kahan_summation:
+        p_data_fp32.add_(-update)
 
     # if p.dtype in {torch.float16, torch.bfloat16}:
     #    p.copy_(p_data_fp32)
 
     if p.dtype == torch.bfloat16:
-        copy_stochastic_(p, p_data_fp32)
+        if self.optimizer.use_kahan_summation:
+            copy_kahan_(p, p_data_fp32, state, update)
+        else:
+            copy_stochastic_(p, p_data_fp32)
     elif p.dtype == torch.float16:
         p.copy_(p_data_fp32)
 
