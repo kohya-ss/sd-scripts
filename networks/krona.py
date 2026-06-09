@@ -175,15 +175,18 @@ class KronaModule(torch.nn.Module):
         self.scale = alpha / self.lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # Initialization
-        torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+        # Initialization matching DiffuseKronA paper and codebase:
+        # lokr_w1 (representing A matrix) initialized with normal distribution std=1/a1 (where a1 is out_l)
+        torch.nn.init.normal_(self.lokr_w1, std=1.0 / self.lokr_w1.size(0))
         if self.use_w2:
-            torch.nn.init.constant_(self.lokr_w2, 0)
+            # lokr_w2 (representing B matrix) initialized to zeros for zero initial delta weight
+            torch.nn.init.zeros_(self.lokr_w2)
         else:
             if self.tucker:
                 torch.nn.init.kaiming_uniform_(self.lokr_t2, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
-            torch.nn.init.constant_(self.lokr_w2_b, 0)
+            torch.nn.init.zeros_(self.lokr_w2_b)
+
 
         self.multiplier = multiplier
         self.org_module = org_module
