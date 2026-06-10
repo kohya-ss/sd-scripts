@@ -76,6 +76,8 @@ class CdkaModule(torch.nn.Module):
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
+        weight_decompose=False,
+        wd_on_out=True,
         **kwargs,
     ):
         super().__init__()
@@ -93,6 +95,7 @@ class CdkaModule(torch.nn.Module):
         if cdka_alpha is not None and str(cdka_alpha).lower() in ("none", "null", ""):
             cdka_alpha = None
         cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else None
+
 
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
@@ -180,6 +183,32 @@ class CdkaModule(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
 
+        self.wd = weight_decompose
+        self.wd_on_out = wd_on_out
+        if self.wd:
+            self.register_buffer("org_weight", org_module.weight.data.clone(), persistent=False)
+            org_weight_cpu = org_module.weight.data.cpu().clone().float()
+            self.dora_norm_dims = org_weight_cpu.dim() - 1
+            if self.wd_on_out:
+                self.dora_scale = nn.Parameter(
+                    torch.norm(
+                        org_weight_cpu.reshape(org_weight_cpu.shape[0], -1),
+                        dim=1,
+                        keepdim=True,
+                    ).reshape(org_weight_cpu.shape[0], *[1] * self.dora_norm_dims)
+                ).float()
+            else:
+                self.dora_scale = nn.Parameter(
+                    torch.norm(
+                        org_weight_cpu.transpose(1, 0).reshape(org_weight_cpu.shape[1], -1),
+                        dim=1,
+                        keepdim=True,
+                    )
+                    .reshape(org_weight_cpu.shape[1], *[1] * self.dora_norm_dims)
+                    .transpose(1, 0)
+                ).float()
+
+
     def apply_to(self):
         self.org_forward = self.org_module.forward
         self.org_module.forward = self.forward
@@ -193,6 +222,29 @@ class CdkaModule(torch.nn.Module):
             result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
         return result
 
+    def apply_weight_decompose(self, weight, multiplier=1):
+        weight = weight.to(self.dora_scale.dtype)
+        if self.wd_on_out:
+            weight_norm = (
+                weight.reshape(weight.shape[0], -1)
+                .norm(dim=1)
+                .reshape(weight.shape[0], *[1] * self.dora_norm_dims)
+            ) + torch.finfo(weight.dtype).eps
+        else:
+            weight_norm = (
+                weight.transpose(0, 1)
+                .reshape(weight.shape[1], -1)
+                .norm(dim=1, keepdim=True)
+                .reshape(weight.shape[1], *[1] * self.dora_norm_dims)
+                .transpose(0, 1)
+            ) + torch.finfo(weight.dtype).eps
+
+        scale = self.dora_scale.to(weight.device) / weight_norm
+        if multiplier != 1:
+            scale = multiplier * (scale - 1) + 1
+
+        return weight * scale
+
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
         if self.scale != 1.0:
@@ -200,6 +252,8 @@ class CdkaModule(torch.nn.Module):
             if not keep_vars:
                 w1 = w1.detach()
             destination[prefix + "lokr_w1"] = w1
+        if self.wd:
+            destination[prefix + "dora_scale"] = self.dora_scale
         return destination
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
@@ -210,7 +264,6 @@ class CdkaModule(torch.nn.Module):
             state_dict = state_dict.copy()
             state_dict[key] = state_dict[key] / self.scale
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
-
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -226,19 +279,28 @@ class CdkaModule(torch.nn.Module):
             drop = (torch.rand(diff_weight.size(0), device=diff_weight.device) > self.rank_dropout).to(diff_weight.dtype)
             drop = drop.view(-1, *([1] * (diff_weight.dim() - 1)))
             diff_weight = diff_weight * drop
-            scale = 1.0 / (1.0 - self.rank_dropout)
+            dropout_scale = 1.0 / (1.0 - self.rank_dropout)
+            diff_weight = diff_weight * dropout_scale
+
+        if self.wd:
+            base_weight = self.org_weight.to(diff_weight.device)
+            new_weight = self.apply_weight_decompose(base_weight + diff_weight, self.multiplier)
+            delta_weight = (new_weight - base_weight).to(x.dtype)
+            multiplier_val = 1.0
         else:
-            scale = 1.0
+            delta_weight = diff_weight
+            multiplier_val = self.multiplier
 
         if self.is_conv:
             if self.conv_mode == "1x1":
-                diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+                delta_weight = delta_weight.unsqueeze(2).unsqueeze(3)
             return org_forwarded + F.conv2d(
-                x, diff_weight, stride=self.stride, padding=self.padding,
+                x, delta_weight, stride=self.stride, padding=self.padding,
                 dilation=self.dilation, groups=self.groups
-            ) * self.multiplier * scale
+            ) * multiplier_val
         else:
-            return org_forwarded + F.linear(x, diff_weight) * self.multiplier * scale
+            return org_forwarded + F.linear(x, delta_weight) * multiplier_val
+
 
     @property
     def device(self):
@@ -290,9 +352,18 @@ class CdkaInfModule(CdkaModule):
         if diff_weight.shape != weight.shape:
             diff_weight = diff_weight.reshape(weight.shape)
 
-        weight = weight.to(device) + self.multiplier * diff_weight
+        if self.wd:
+            if "dora_scale" in sd:
+                with torch.no_grad():
+                    self.dora_scale.copy_(sd["dora_scale"])
+            weight = self.apply_weight_decompose(weight.to(device) + diff_weight.to(device), self.multiplier)
+        else:
+            weight = weight.to(device) + self.multiplier * diff_weight.to(device)
+
+
         org_sd["weight"] = weight.to(dtype)
         self.org_module.load_state_dict(org_sd)
+
 
     def get_weight(self, multiplier=None):
         if multiplier is None:
@@ -394,6 +465,11 @@ def create_network(
     if verbose is not None:
         verbose = True if str(verbose).lower() == "true" else False
 
+    weight_decompose = kwargs.get("weight_decompose", "false")
+    weight_decompose = True if str(weight_decompose).lower() == "true" else False
+    wd_on_out = kwargs.get("wd_on_out", "true")
+    wd_on_out = True if str(wd_on_out).lower() == "true" else False
+
     network_reg_lrs = kwargs.get("network_reg_lrs", None)
     reg_lrs = _parse_kv_pairs(network_reg_lrs, is_int=False) if network_reg_lrs is not None else None
 
@@ -416,9 +492,12 @@ def create_network(
             "factor_out": factor_out,
             "cdka_factor_in": factor_in,
             "w2_init": w2_init,
-            "cdka_alpha": cdka_alpha
+            "cdka_alpha": cdka_alpha,
+            "weight_decompose": weight_decompose,
+            "wd_on_out": wd_on_out,
         },
         train_llm_adapter=train_llm_adapter,
+
         exclude_patterns=exclude_patterns,
         include_patterns=include_patterns,
         reg_dims=reg_dims,
@@ -450,6 +529,7 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     modules_dim = {}
     modules_alpha = {}
     train_llm_adapter = False
+    weight_decompose = False
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -459,6 +539,8 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
             modules_alpha[lora_name] = value
         elif "lokr_w2" in key:
             modules_dim[lora_name] = max(value.shape[0], value.shape[1])
+        elif "dora_scale" in key:
+            weight_decompose = True
 
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
@@ -476,6 +558,10 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         modules_dim=modules_dim,
         modules_alpha=modules_alpha,
         module_class=module_class,
+        module_kwargs={
+            "weight_decompose": weight_decompose,
+        },
         train_llm_adapter=train_llm_adapter,
     )
     return network, weights_sd
+
