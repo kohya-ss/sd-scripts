@@ -89,7 +89,7 @@ class CdkaModule(torch.nn.Module):
         cdka_factor_in = kwargs.get("cdka_factor_in", None)
         self.r2 = cdka_factor_in if cdka_factor_in is not None else kwargs.get("factor_in", 8)
         w2_init = kwargs.get("w2_init", "kaiming_uniform")
-        cdka_alpha = kwargs.get("cdka_alpha", None)
+        cdka_alpha = kwargs.get("cdka_alpha", 16.0)
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
         if is_conv2d:
@@ -153,12 +153,6 @@ class CdkaModule(torch.nn.Module):
             # Default CDKA style: scale = 1.0 (no scaling, ignores network_dim/alpha settings)
             self.scale = 1.0
 
-        # Print module status on load
-        print(
-            "CdkaModule initialized: "
-            f"B={tuple(self.lokr_w1.shape)}, A={tuple(self.lokr_w2.shape)}, "
-            f"scale={self.scale}, w2_init={w2_init}"
-        )
 
         # Initialization
         # lokr_w1 (B) initialized to zeros
@@ -385,7 +379,8 @@ def create_network(
     factor_out = int(factor_out) if factor_out is not None else 2
     w2_init = kwargs.get("w2_init", "kaiming_uniform")
     cdka_alpha = kwargs.get("cdka_alpha", None)
-    cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else None
+    cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else 16.0
+
 
     verbose = kwargs.get("verbose", "false")
     if verbose is not None:

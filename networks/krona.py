@@ -161,15 +161,9 @@ class KronaModule(torch.nn.Module):
             # Default KronA style: scale = 1.0 (ignores network_dim/alpha settings)
             self.scale = 1.0
 
-        # Print module status on load
-        print(
-            "KronaModule initialized: "
-            f"B={tuple(self.lokr_w1.shape)}, A={tuple(self.lokr_w2.shape)}, "
-            f"scale={self.scale}, w2_init={w2_init}"
-        )
-
         # Initialization
         # lokr_w1 (B) initialized to zeros
+
         nn.init.zeros_(self.lokr_w1)
         
         # lokr_w2 (A) initialized according to w2_init
