@@ -141,31 +141,33 @@ class KronaModule(torch.nn.Module):
         in_m, in_n = factorization_in(in_dim)
         out_l, out_k = factorization_out(out_dim)
 
-        # Parameter names are identical to lokr for 100% LOKR compatibility
-        self.lokr_w1 = nn.Parameter(torch.empty(out_l, in_m))
+        # To align with DiffuseKronA's B ⊗ A order while maintaining LoKr compatibility,
+        # we assign B (large factor) to lokr_w1 and A (small factor) to lokr_w2.
+        # Standard LoKr computations calculate: ΔW = lokr_w1 ⊗ lokr_w2 = B ⊗ A.
+        self.lokr_w1 = nn.Parameter(torch.empty(out_k, in_n))
 
         if self.conv_mode in ("tucker", "flat"):
             k_size = kernel_size
-            if lora_dim >= max(out_k, in_n) / 2:
+            if lora_dim >= max(out_l, in_m) / 2:
                 self.use_w2 = True
-                self.lokr_w2 = nn.Parameter(torch.empty(out_k, in_n, *k_size))
+                self.lokr_w2 = nn.Parameter(torch.empty(out_l, in_m, *k_size))
             elif self.tucker:
                 self.lokr_t2 = nn.Parameter(torch.empty(lora_dim, lora_dim, *k_size))
-                self.lokr_w2_a = nn.Parameter(torch.empty(lora_dim, out_k))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n))
+                self.lokr_w2_a = nn.Parameter(torch.empty(lora_dim, out_l))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m))
             else:
                 k_prod = 1
                 for k in k_size:
                     k_prod *= k
-                self.lokr_w2_a = nn.Parameter(torch.empty(out_k, lora_dim))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n * k_prod))
+                self.lokr_w2_a = nn.Parameter(torch.empty(out_l, lora_dim))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m * k_prod))
         else:
-            if lora_dim < max(out_k, in_n) / 2:
-                self.lokr_w2_a = nn.Parameter(torch.empty(out_k, lora_dim))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_n))
+            if lora_dim < max(out_l, in_m) / 2:
+                self.lokr_w2_a = nn.Parameter(torch.empty(out_l, lora_dim))
+                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m))
             else:
                 self.use_w2 = True
-                self.lokr_w2 = nn.Parameter(torch.empty(out_k, in_n))
+                self.lokr_w2 = nn.Parameter(torch.empty(out_l, in_m))
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy()
@@ -176,16 +178,18 @@ class KronaModule(torch.nn.Module):
         self.register_buffer("alpha", torch.tensor(alpha))
 
         # Initialization matching DiffuseKronA paper and codebase:
-        # lokr_w1 (representing A matrix) initialized with normal distribution std=1/a1 (where a1 is out_l)
-        torch.nn.init.normal_(self.lokr_w1, std=1.0 / self.lokr_w1.size(0))
+        # lokr_w1 (representing B matrix) initialized to zeros for zero initial delta weight
+        torch.nn.init.zeros_(self.lokr_w1)
+        
+        # lokr_w2 (representing A matrix) initialized with normal distribution std=1/a1 (where a1 is out_l)
         if self.use_w2:
-            # lokr_w2 (representing B matrix) initialized to zeros for zero initial delta weight
-            torch.nn.init.zeros_(self.lokr_w2)
+            torch.nn.init.normal_(self.lokr_w2, std=1.0 / self.lokr_w2.size(0))
         else:
             if self.tucker:
                 torch.nn.init.kaiming_uniform_(self.lokr_t2, a=math.sqrt(5))
             torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
             torch.nn.init.zeros_(self.lokr_w2_b)
+
 
 
         self.multiplier = multiplier
