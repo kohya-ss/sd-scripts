@@ -204,6 +204,16 @@ class CdkaModule(torch.nn.Module):
             destination[prefix + "lokr_w1"] = w1
         return destination
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        key = prefix + "lokr_w1"
+        if key in state_dict and self.scale != 1.0:
+            # Scale is folded into lokr_w1 when saving. To prevent repeated scaling during continue training,
+            # we divide it back by the scale factor upon loading.
+            state_dict = state_dict.copy()
+            state_dict[key] = state_dict[key] / self.scale
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+
+
     def forward(self, x):
         org_forwarded = self.org_forward(x)
 
