@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 
 from pathlib import Path
 from PIL import Image
@@ -14,7 +15,11 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers.generation.utils import GenerationMixin
 
 import library.dataset as dataset_util
-from finetune.image_loading_dataset import ImageLoadingDataset
+
+# finetune/ is not an installed package; allow running this file as a script
+# from any directory by importing the sibling module via the script directory
+sys.path.append(os.path.dirname(__file__))
+from image_loading_dataset import ImageLoadingDataset
 from library.utils import setup_logging
 setup_logging()
 import logging

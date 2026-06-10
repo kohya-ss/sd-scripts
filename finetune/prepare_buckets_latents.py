@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import json
 
 from pathlib import Path
@@ -17,10 +18,13 @@ init_ipex()
 from torchvision import transforms
 
 import library.caching as caching
-import library.dataset as dataset
 import library.model_util as model_util
 import library.dataset as dataset_util
-from finetune.image_loading_dataset import ImageLoadingDataset
+
+# finetune/ is not an installed package; allow running this file as a script
+# from any directory by importing the sibling module via the script directory
+sys.path.append(os.path.dirname(__file__))
+from image_loading_dataset import ImageLoadingDataset
 from library.utils import setup_logging
 
 setup_logging()
@@ -99,7 +103,7 @@ def main(args):
         len(max_reso) == 2
     ), f"illegal resolution (not 'width,height') / 画像サイズに誤りがあります。'幅,高さ'で指定してください: {args.max_resolution}"
 
-    bucket_manager = dataset.BucketManager(
+    bucket_manager = dataset_util.BucketManager(
         args.bucket_no_upscale, max_reso, args.min_bucket_reso, args.max_bucket_reso, args.bucket_reso_steps
     )
     if not args.bucket_no_upscale:
@@ -178,11 +182,12 @@ def main(args):
         # 既に存在するファイルがあればshape等を確認して同じならskipする
         npz_file_name = get_npz_filename(args.train_data_dir, image_key, args.full_path, args.recursive)
         if args.skip_existing:
-            if caching.is_disk_cached_latents_is_expected(reso, npz_file_name, args.flip_aug):
+            # this script does not write alpha_mask to npz, so pass False
+            if caching.is_disk_cached_latents_is_expected(reso, npz_file_name, args.flip_aug, False):
                 continue
 
         # バッチへ追加
-        image_info = dataset.ImageInfo(image_key, 1, "", False, image_path)
+        image_info = dataset_util.ImageInfo(image_key, 1, "", False, image_path)
         image_info.latents_npz = npz_file_name
         image_info.bucket_reso = reso
         image_info.resized_size = resized_size

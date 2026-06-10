@@ -25,7 +25,7 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator
 from diffusers import DDPMScheduler
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
-from library import deepspeed_utils, model_util, sai_model_spec, strategy_base, strategy_sd, sai_model_spec
+from library import deepspeed_utils, model_util, sai_model_spec, strategy_base, strategy_sd
 
 import library.accelerator_setup as accelerator_setup
 import library.args as args_util
@@ -39,14 +39,6 @@ import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
 import library.sampling as sampling
-import library.accelerator_setup as accelerator_setup
-import library.args as args_util
-import library.dataset as dataset_util
-import library.model_io as model_io
-import library.optimizer as optimizer_util
-from library.dataset import DatasetGroup, MinimalDataset
-from library.dreambooth_dataset import DreamBoothDataset
-from library.model_io import SS_METADATA_MINIMUM_KEYS
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
