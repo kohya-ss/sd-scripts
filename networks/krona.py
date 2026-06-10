@@ -82,9 +82,12 @@ class KronaModule(torch.nn.Module):
         module_dropout=None,
         weight_decompose=False,
         wd_on_out=True,
+        allora=False,
+        allora_eta=2.0,
         **kwargs,
     ):
         super().__init__()
+
         self.lora_name = lora_name
         self.lora_dim = lora_dim
 
@@ -215,6 +218,10 @@ class KronaModule(torch.nn.Module):
                     .transpose(1, 0)
                 ).float()
 
+        self.allora = allora
+        self.allora_eta = allora_eta
+
+
 
     def apply_to(self):
         self.org_forward = self.org_module.forward
@@ -289,7 +296,17 @@ class KronaModule(torch.nn.Module):
             dropout_scale = 1.0 / (1.0 - self.rank_dropout)
             diff_weight = diff_weight * dropout_scale
 
+        if self.allora and self.training:
+            diff_weight_static = diff_weight.detach()
+            norms = torch.norm(diff_weight_static.reshape(diff_weight_static.shape[0], -1), dim=1)
+            norms = norms.reshape(diff_weight_static.shape[0], *[1] * (diff_weight_static.dim() - 1))
+            rsq_scale = 1.0 / (self.allora_eta ** 2)
+            accelerate = 1.0 / torch.sqrt(norms + rsq_scale)
+            acc_val = accelerate.to(diff_weight.device).to(diff_weight.dtype)
+            diff_weight.register_hook(lambda grad: grad * acc_val)
+
         if self.wd:
+
             base_weight = self.org_weight.to(diff_weight.device)
             new_weight = self.apply_weight_decompose(base_weight + diff_weight, self.multiplier)
             delta_weight = (new_weight - base_weight).to(x.dtype)
@@ -474,6 +491,11 @@ def create_network(
     wd_on_out = kwargs.get("wd_on_out", "true")
     wd_on_out = True if str(wd_on_out).lower() == "true" else False
 
+    allora = kwargs.get("allora", "false")
+    allora = True if str(allora).lower() == "true" else False
+    allora_eta = kwargs.get("allora_eta", None)
+    allora_eta = float(allora_eta) if allora_eta is not None else 2.0
+
     network_reg_lrs = kwargs.get("network_reg_lrs", None)
     reg_lrs = _parse_kv_pairs(network_reg_lrs, is_int=False) if network_reg_lrs is not None else None
 
@@ -499,6 +521,8 @@ def create_network(
             "cdka_alpha": cdka_alpha,
             "weight_decompose": weight_decompose,
             "wd_on_out": wd_on_out,
+            "allora": allora,
+            "allora_eta": allora_eta,
         },
         train_llm_adapter=train_llm_adapter,
 
