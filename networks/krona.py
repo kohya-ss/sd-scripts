@@ -96,6 +96,9 @@ class KronaModule(torch.nn.Module):
         self.cdka_factor_in = kwargs.get("cdka_factor_in", None)
         w2_init = kwargs.get("w2_init", "normal")
         cdka_alpha = kwargs.get("cdka_alpha", None)
+        if cdka_alpha is not None and str(cdka_alpha).lower() in ("none", "null", ""):
+            cdka_alpha = None
+        cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else None
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
         if is_conv2d:
@@ -288,7 +291,8 @@ class KronaInfModule(KronaModule):
         w1 = sd["lokr_w1"].to(torch.float).to(device)
         w2 = sd["lokr_w2"].to(torch.float).to(device)
 
-        diff_weight = make_kron(w1, w2, self.scale)
+        # Saved full LoKr weights already have scale folded into lokr_w1.
+        diff_weight = make_kron(w1, w2, 1.0)
 
         if diff_weight.shape != weight.shape:
             diff_weight = diff_weight.reshape(weight.shape)
