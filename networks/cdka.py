@@ -82,10 +82,12 @@ class CdkaModule(torch.nn.Module):
         self.lora_name = lora_name
         self.lora_dim = lora_dim
 
-        # CDKA-specific hyperparameters (Paper defaults: r1=2, r2=8)
+        # CDKA-specific hyperparameters (Paper defaults: r1=2, r2=8).
+        # cdka_factor_in is the paper r2 and takes priority over factor_in.
         self.r = 1
         self.r1 = kwargs.get("factor_out", 2)
-        self.r2 = kwargs.get("factor_in", 8)
+        cdka_factor_in = kwargs.get("cdka_factor_in", None)
+        self.r2 = cdka_factor_in if cdka_factor_in is not None else kwargs.get("factor_in", 8)
         w2_init = kwargs.get("w2_init", "kaiming_uniform")
         cdka_alpha = kwargs.get("cdka_alpha", None)
 
@@ -141,7 +143,8 @@ class CdkaModule(torch.nn.Module):
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # Setup scale
+        # Setup scale. Full-rank LoKr inference ignores alpha, so state_dict()
+        # folds this scale into lokr_w1 when exporting.
         if cdka_alpha is not None:
             # CDKA-style scale: lambda = alpha / sqrt(r2)
             self.scale = cdka_alpha / math.sqrt(self.in_n)
@@ -151,7 +154,11 @@ class CdkaModule(torch.nn.Module):
             self.scale = 1.0
 
         # Print module status on load
-        print(f"CdkaModule initialized: r1 (factor_out)={self.out_l}, r2 (factor_in)={self.in_n}, scale={self.scale}, w2_init={w2_init}")
+        print(
+            "CdkaModule initialized: "
+            f"B={tuple(self.lokr_w1.shape)}, A={tuple(self.lokr_w2.shape)}, "
+            f"scale={self.scale}, w2_init={w2_init}"
+        )
 
         # Initialization
         # lokr_w1 (B) initialized to zeros
@@ -187,6 +194,15 @@ class CdkaModule(torch.nn.Module):
         if self.conv_mode == "flat" and result.dim() == 2:
             result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
         return result
+
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        if self.scale != 1.0:
+            w1 = self.lokr_w1 * self.scale
+            if not keep_vars:
+                w1 = w1.detach()
+            destination[prefix + "lokr_w1"] = w1
+        return destination
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -352,7 +368,8 @@ def create_network(
         module_dropout = float(module_dropout)
 
     # Configurable factorization and init parameters from kwargs (CDKA default: r1=2, r2=8)
-    factor_in = kwargs.get("factor_in", 8)
+    cdka_factor_in = kwargs.get("cdka_factor_in", None)
+    factor_in = cdka_factor_in if cdka_factor_in is not None else kwargs.get("factor_in", 8)
     factor_out = kwargs.get("factor_out", 2)
     factor_in = int(factor_in) if factor_in is not None else 8
     factor_out = int(factor_out) if factor_out is not None else 2
@@ -384,6 +401,7 @@ def create_network(
         module_kwargs={
             "factor_in": factor_in,
             "factor_out": factor_out,
+            "cdka_factor_in": factor_in,
             "w2_init": w2_init,
             "cdka_alpha": cdka_alpha
         },

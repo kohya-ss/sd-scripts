@@ -86,13 +86,16 @@ class KronaModule(torch.nn.Module):
         self.lora_name = lora_name
         self.lora_dim = lora_dim
 
-        # Customizable parameters (Defaults match original KronA specs: r1=64, r2=4)
+        # Customizable parameters. By default this follows DiffuseKronA-style
+        # factorization: A=(factor_out, factor_in), B=(out/factor_out, in/factor_in).
+        # If cdka_factor_in is provided, use CDKA-style factorization instead:
+        # A=(factor_out, in/cdka_factor_in), B=(out/factor_out, cdka_factor_in).
         self.r = 1
         self.r1 = kwargs.get("factor_out", 64)
         self.r2 = kwargs.get("factor_in", 4)
+        self.cdka_factor_in = kwargs.get("cdka_factor_in", None)
         w2_init = kwargs.get("w2_init", "normal")
-        krona_alpha = kwargs.get("krona_alpha", None)
-        use_cdka_scale = kwargs.get("use_cdka_scale", "false").lower() == "true"
+        cdka_alpha = kwargs.get("cdka_alpha", None)
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
         if is_conv2d:
@@ -130,7 +133,10 @@ class KronaModule(torch.nn.Module):
 
         # Apply factorization (pref_val can be customized)
         r1_val, out_k_val = factorization_out(out_dim, self.r1)
-        r2_val, in_m_val = factorization_in(in_dim_flat, self.r2)
+        if self.cdka_factor_in is not None:
+            r2_val, in_m_val = factorization_in(in_dim_flat, int(self.cdka_factor_in))
+        else:
+            in_m_val, r2_val = factorization_in(in_dim_flat, self.r2)
 
         self.out_l = r1_val
         self.out_k = out_k_val
@@ -146,17 +152,21 @@ class KronaModule(torch.nn.Module):
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # Setup scale
-        if krona_alpha is not None and use_cdka_scale:
-            # CDKA-style scale: lambda = alpha / sqrt(r2)
-            self.scale = krona_alpha / math.sqrt(self.in_n)
-            self.alpha.copy_(torch.tensor(krona_alpha))
+        # Setup scale. Full-rank LoKr inference ignores alpha, so state_dict()
+        # folds this scale into lokr_w1 when exporting.
+        if cdka_alpha is not None:
+            self.scale = cdka_alpha / math.sqrt(self.in_n)
+            self.alpha.copy_(torch.tensor(cdka_alpha))
         else:
             # Default KronA style: scale = 1.0 (ignores network_dim/alpha settings)
             self.scale = 1.0
 
         # Print module status on load
-        print(f"KronaModule initialized: r1 (factor_out)={self.out_l}, r2 (factor_in)={self.in_n}, scale={self.scale}, w2_init={w2_init}")
+        print(
+            "KronaModule initialized: "
+            f"B={tuple(self.lokr_w1.shape)}, A={tuple(self.lokr_w2.shape)}, "
+            f"scale={self.scale}, w2_init={w2_init}"
+        )
 
         # Initialization
         # lokr_w1 (B) initialized to zeros
@@ -192,6 +202,15 @@ class KronaModule(torch.nn.Module):
         if self.conv_mode == "flat" and result.dim() == 2:
             result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
         return result
+
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        if self.scale != 1.0:
+            w1 = self.lokr_w1 * self.scale
+            if not keep_vars:
+                w1 = w1.detach()
+            destination[prefix + "lokr_w1"] = w1
+        return destination
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -362,9 +381,10 @@ def create_network(
     factor_in = int(factor_in) if factor_in is not None else 4
     factor_out = int(factor_out) if factor_out is not None else 64
     w2_init = kwargs.get("w2_init", "normal")
-    krona_alpha = kwargs.get("krona_alpha", None)
-    krona_alpha = float(krona_alpha) if krona_alpha is not None else None
-    use_cdka_scale = kwargs.get("use_cdka_scale", "false")
+    cdka_factor_in = kwargs.get("cdka_factor_in", None)
+    cdka_factor_in = int(cdka_factor_in) if cdka_factor_in is not None else None
+    cdka_alpha = kwargs.get("cdka_alpha", None)
+    cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else None
 
     verbose = kwargs.get("verbose", "false")
     if verbose is not None:
@@ -391,8 +411,8 @@ def create_network(
             "factor_in": factor_in,
             "factor_out": factor_out,
             "w2_init": w2_init,
-            "krona_alpha": krona_alpha,
-            "use_cdka_scale": use_cdka_scale
+            "cdka_factor_in": cdka_factor_in,
+            "cdka_alpha": cdka_alpha,
         },
         train_llm_adapter=train_llm_adapter,
         exclude_patterns=exclude_patterns,
