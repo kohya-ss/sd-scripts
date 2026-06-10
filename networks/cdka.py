@@ -1,8 +1,9 @@
 # CDKA (Component Designed Kronecker Adapters) network module
-# Supporting multi-component training and SVD degradation to single-component LoKr format on save.
+# Compatible with LOKR format and inference
 #
-# Reference Paper: 
-# - "Diving into Kronecker Adapters: Component Design Matters" (arXiv:2602.01267, 2026)
+# References & Citation:
+# - Paper: "Diving into Kronecker Adapters: Component Design Matters" (arXiv:2602.01267, 2026)
+# - Official Repository: https://github.com/rainstonee/CDKA/tree/main
 #
 
 import ast
@@ -61,8 +62,8 @@ def make_kron(w1, w2, scale):
 
 class CdkaModule(torch.nn.Module):
     """Cdka module for training. Replaces forward method of the original Linear/Conv2d.
-    Supports multi-component training with stabilization factor lambda,
-    and SVD degradation to standard single-component LoKr on save.
+    Uses parameter naming compatible with LoKr for seamless LOKR inference support.
+    Isomorphic design: r=1 Full Rank, supports customizable factorizations and initializations.
     """
 
     def __init__(
@@ -81,10 +82,12 @@ class CdkaModule(torch.nn.Module):
         self.lora_name = lora_name
         self.lora_dim = lora_dim
 
-        # CDKA-specific hyperparameters. Default to r=1 so LoKr export is lossless.
-        self.r = kwargs.get("r", 1)
-        self.r1 = kwargs.get("r1", 2)
-        self.r2 = kwargs.get("r2", 8)
+        # CDKA-specific hyperparameters (Paper defaults: r1=2, r2=8)
+        self.r = 1
+        self.r1 = kwargs.get("factor_out", 2)
+        self.r2 = kwargs.get("factor_in", 8)
+        w2_init = kwargs.get("w2_init", "kaiming_uniform")
+        cdka_alpha = kwargs.get("cdka_alpha", None)
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
         if is_conv2d:
@@ -121,8 +124,6 @@ class CdkaModule(torch.nn.Module):
             in_dim_flat = in_dim * k_prod
 
         # Apply CDKA factorization (Paper: small r1, large r2)
-        # factorization_out returns (r1_val, out_k_val)
-        # factorization_in returns (r2_val, in_m_val)
         r1_val, out_k_val = factorization_out(out_dim, self.r1)
         r2_val, in_m_val = factorization_in(in_dim_flat, self.r2)
 
@@ -131,28 +132,42 @@ class CdkaModule(torch.nn.Module):
         self.in_n = r2_val
         self.in_m = in_m_val
 
-        # Multi-component parameters:
-        # lokr_w1_multi (B) shape: (r, out_k, in_n)
-        # lokr_w2_multi (A) shape: (r, out_l, in_m)
-        self.lokr_w1_multi = nn.Parameter(torch.empty(self.r, self.out_k, self.in_n))
-        self.lokr_w2_multi = nn.Parameter(torch.empty(self.r, self.out_l, self.in_m))
+        # Setup parameters (Full Rank)
+        self.lokr_w1 = nn.Parameter(torch.empty(self.out_k, self.in_n))
+        self.lokr_w2 = nn.Parameter(torch.empty(self.out_l, self.in_m))
 
         if type(alpha) == torch.Tensor:
             alpha = alpha.detach().float().numpy().item()
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # CDKA Stabilization Scaling Factor: lambda = alpha / sqrt(r * r2)
-        # self.in_n represents r2 (input-side factor)
-        self.scale = alpha / math.sqrt(self.r * self.in_n)
+        # Setup scale
+        if cdka_alpha is not None:
+            # CDKA-style scale: lambda = alpha / sqrt(r2)
+            self.scale = cdka_alpha / math.sqrt(self.in_n)
+            self.alpha.copy_(torch.tensor(cdka_alpha))
+        else:
+            # Default CDKA style: scale = 1.0 (no scaling, ignores network_dim/alpha settings)
+            self.scale = 1.0
+
+        # Print module status on load
+        print(f"CdkaModule initialized: r1 (factor_out)={self.out_l}, r2 (factor_in)={self.in_n}, scale={self.scale}, w2_init={w2_init}")
 
         # Initialization
-        # lokr_w1_multi (B) initialized to zeros
-        nn.init.zeros_(self.lokr_w1_multi)
+        # lokr_w1 (B) initialized to zeros
+        nn.init.zeros_(self.lokr_w1)
         
-        # lokr_w2_multi (A) initialized with Kaiming Uniform
-        for i in range(self.r):
-            nn.init.kaiming_uniform_(self.lokr_w2_multi[i], a=math.sqrt(5))
+        # lokr_w2 (A) initialized according to w2_init
+        if w2_init == "normal":
+            nn.init.normal_(self.lokr_w2, std=1.0 / self.out_l)
+        elif w2_init == "kaiming_uniform":
+            nn.init.kaiming_uniform_(self.lokr_w2, a=math.sqrt(5))
+        elif w2_init == "kaiming_normal":
+            nn.init.kaiming_normal_(self.lokr_w2, a=math.sqrt(5))
+        elif w2_init == "zeros":
+            nn.init.zeros_(self.lokr_w2)
+        else:
+            raise ValueError(f"Unknown w2_init mode: {w2_init}")
 
         self.multiplier = multiplier
         self.org_module = org_module
@@ -166,19 +181,12 @@ class CdkaModule(torch.nn.Module):
         del self.org_module
 
     def get_diff_weight(self):
-        # Accumulate Kronecker products over components
-        diff_weight = 0
-        for i in range(self.r):
-            w1 = self.lokr_w1_multi[i]
-            w2 = self.lokr_w2_multi[i]
-            diff_weight += make_kron(w1, w2, 1.0)
-
-        # Apply the scale factor lambda
-        diff_weight = diff_weight * self.scale
-        
-        if self.conv_mode == "flat" and diff_weight.dim() == 2:
-            diff_weight = diff_weight.reshape(self.out_dim, self.in_dim, *self.kernel_size)
-        return diff_weight
+        w1 = self.lokr_w1
+        w2 = self.lokr_w2
+        result = make_kron(w1, w2, self.scale)
+        if self.conv_mode == "flat" and result.dim() == 2:
+            result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
+        return result
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -208,67 +216,6 @@ class CdkaModule(torch.nn.Module):
         else:
             return org_forwarded + F.linear(x, diff_weight) * self.multiplier * scale
 
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        if destination is None:
-            destination = OrderedDict()
-            destination._metadata = OrderedDict()
-
-        # 1. Fast path for a single component: export exact LoKr weights.
-        if self.r == 1:
-            with torch.no_grad():
-                w1 = self.lokr_w1_multi[0] * self.scale
-                w2 = self.lokr_w2_multi[0]
-                if not keep_vars:
-                    w1 = w1.detach()
-                    w2 = w2.detach()
-                destination[prefix + "lokr_w1"] = w1
-                destination[prefix + "lokr_w2"] = w2
-                destination[prefix + "alpha"] = self.alpha
-            return destination
-
-        # 2. Compute multi-component update delta_w
-        with torch.no_grad():
-            diff_weight = 0
-            for i in range(self.r):
-                w1 = self.lokr_w1_multi[i]
-                w2 = self.lokr_w2_multi[i]
-                diff_weight += make_kron(w1, w2, 1.0)
-            
-            delta_w = diff_weight * self.scale  # shape: (out_dim, in_dim_flat)
-        
-        # 3. Divide by the standard LoKr inference scale (alpha / lora_dim)
-        scale_lokr = self.alpha.item() / self.lora_dim
-        delta_w_for_svd = delta_w / scale_lokr
-        
-        # 4. Kreshape and perform SVD
-        # delta_w_for_svd has shape (out_k * out_l, in_n * in_m)
-        # We reshape and permute to (out_k * in_n, out_l * in_m)
-        W_tilde = delta_w_for_svd.contiguous().view(
-            self.out_k, self.out_l, self.in_n, self.in_m
-        ).permute(0, 2, 1, 3).reshape(self.out_k * self.in_n, self.out_l * self.in_m)
-        
-        # Perform SVD on CPU to prevent backend support issues
-        W_tilde_cpu = W_tilde.to(torch.float32).cpu()
-        U, S, V = torch.linalg.svd(W_tilde_cpu, full_matrices=False)
-        
-        sigma_1 = S[0]
-        u_1 = U[:, 0]
-        v_1 = V[0, :]  # conjugate transpose V^H first row
-        
-        # SVD NKP solution:
-        B_vec = torch.sqrt(sigma_1) * u_1
-        A_vec = torch.sqrt(sigma_1) * v_1
-        
-        B_approx = B_vec.reshape(self.out_k, self.in_n).to(device=delta_w.device, dtype=delta_w.dtype)
-        A_approx = A_vec.reshape(self.out_l, self.in_m).to(device=delta_w.device, dtype=delta_w.dtype)
-        
-        # 5. Save degraded weights into destination dictionary
-        destination[prefix + "lokr_w1"] = B_approx
-        destination[prefix + "lokr_w2"] = A_approx
-        destination[prefix + "alpha"] = self.alpha
-        
-        return destination
-
     @property
     def device(self):
         return next(self.parameters()).device
@@ -276,6 +223,86 @@ class CdkaModule(torch.nn.Module):
     @property
     def dtype(self):
         return next(self.parameters()).dtype
+
+
+class CdkaInfModule(CdkaModule):
+    """Cdka module for inference. Supports merge_to and get_weight."""
+
+    def __init__(
+        self,
+        lora_name,
+        org_module: torch.nn.Module,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=1,
+        **kwargs,
+    ):
+        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha, **kwargs)
+        self.org_module_ref = [org_module]
+        self.enabled = True
+        self.network: AdditionalNetwork = None
+
+    def set_network(self, network):
+        self.network = network
+
+    def merge_to(self, sd, dtype, device):
+        org_sd = self.org_module.state_dict()
+        weight = org_sd["weight"]
+        org_dtype = weight.dtype
+        org_device = weight.device
+        weight = weight.to(torch.float)
+
+        if dtype is None:
+            dtype = org_dtype
+        if device is None:
+            device = org_device
+
+        w1 = sd["lokr_w1"].to(torch.float).to(device)
+        w2 = sd["lokr_w2"].to(torch.float).to(device)
+
+        diff_weight = make_kron(w1, w2, self.scale)
+
+        if diff_weight.shape != weight.shape:
+            diff_weight = diff_weight.reshape(weight.shape)
+
+        weight = weight.to(device) + self.multiplier * diff_weight
+        org_sd["weight"] = weight.to(dtype)
+        self.org_module.load_state_dict(org_sd)
+
+    def get_weight(self, multiplier=None):
+        if multiplier is None:
+            multiplier = self.multiplier
+
+        w1 = self.lokr_w1.to(torch.float)
+        w2 = self.lokr_w2.to(torch.float)
+
+        weight = make_kron(w1, w2, self.scale) * multiplier
+
+        if self.is_conv:
+            if self.conv_mode == "1x1":
+                weight = weight.unsqueeze(2).unsqueeze(3)
+            elif self.conv_mode == "flat" and weight.dim() == 2:
+                weight = weight.reshape(self.out_dim, self.in_dim, *self.kernel_size)
+
+        return weight
+
+    def default_forward(self, x):
+        diff_weight = self.get_diff_weight()
+        diff_weight = diff_weight.to(x.dtype)
+        if self.is_conv:
+            if self.conv_mode == "1x1":
+                diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
+            return self.org_forward(x) + F.conv2d(
+                x, diff_weight, stride=self.stride, padding=self.padding,
+                dilation=self.dilation, groups=self.groups
+            ) * self.multiplier
+        else:
+            return self.org_forward(x) + F.linear(x, diff_weight) * self.multiplier
+
+    def forward(self, x):
+        if not self.enabled:
+            return self.org_forward(x)
+        return self.default_forward(x)
 
 
 def create_network(
@@ -324,13 +351,14 @@ def create_network(
     if module_dropout is not None:
         module_dropout = float(module_dropout)
 
-    # CDKA hyperparameters from kwargs
-    r = kwargs.get("r", 1)
-    r1 = kwargs.get("r1", 2)
-    r2 = kwargs.get("r2", 8)
-    r = int(r) if r is not None else 1
-    r1 = int(r1) if r1 is not None else 2
-    r2 = int(r2) if r2 is not None else 8
+    # Configurable factorization and init parameters from kwargs (CDKA default: r1=2, r2=8)
+    factor_in = kwargs.get("factor_in", 8)
+    factor_out = kwargs.get("factor_out", 2)
+    factor_in = int(factor_in) if factor_in is not None else 8
+    factor_out = int(factor_out) if factor_out is not None else 2
+    w2_init = kwargs.get("w2_init", "kaiming_uniform")
+    cdka_alpha = kwargs.get("cdka_alpha", None)
+    cdka_alpha = float(cdka_alpha) if cdka_alpha is not None else None
 
     verbose = kwargs.get("verbose", "false")
     if verbose is not None:
@@ -353,7 +381,12 @@ def create_network(
         rank_dropout=rank_dropout,
         module_dropout=module_dropout,
         module_class=CdkaModule,
-        module_kwargs={"r": r, "r1": r1, "r2": r2},
+        module_kwargs={
+            "factor_in": factor_in,
+            "factor_out": factor_out,
+            "w2_init": w2_init,
+            "cdka_alpha": cdka_alpha
+        },
         train_llm_adapter=train_llm_adapter,
         exclude_patterns=exclude_patterns,
         include_patterns=include_patterns,
@@ -362,4 +395,56 @@ def create_network(
         verbose=verbose,
     )
 
+    loraplus_lr_ratio = kwargs.get("loraplus_lr_ratio", None)
+    loraplus_unet_lr_ratio = kwargs.get("loraplus_unet_lr_ratio", None)
+    loraplus_text_encoder_lr_ratio = kwargs.get("loraplus_text_encoder_lr_ratio", None)
+    loraplus_lr_ratio = float(loraplus_lr_ratio) if loraplus_lr_ratio is not None else None
+    loraplus_unet_lr_ratio = float(loraplus_unet_lr_ratio) if loraplus_unet_lr_ratio is not None else None
+    loraplus_text_encoder_lr_ratio = float(loraplus_text_encoder_lr_ratio) if loraplus_text_encoder_lr_ratio is not None else None
+    if loraplus_lr_ratio is not None or loraplus_unet_lr_ratio is not None or loraplus_text_encoder_lr_ratio is not None:
+        network.set_loraplus_lr_ratio(loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio)
+
     return network
+
+
+def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weights_sd=None, for_inference=False, **kwargs):
+    """Create a CDKA network from saved weights (compatible with LOKR)."""
+    if weights_sd is None:
+        if os.path.splitext(file)[1] == ".safetensors":
+            from safetensors.torch import load_file
+            weights_sd = load_file(file)
+        else:
+            weights_sd = torch.load(file, map_location="cpu")
+
+    modules_dim = {}
+    modules_alpha = {}
+    train_llm_adapter = False
+    for key, value in weights_sd.items():
+        if "." not in key:
+            continue
+
+        lora_name = key.split(".")[0]
+        if "alpha" in key:
+            modules_alpha[lora_name] = value
+        elif "lokr_w2" in key:
+            modules_dim[lora_name] = max(value.shape[0], value.shape[1])
+
+        if "llm_adapter" in lora_name:
+            train_llm_adapter = True
+
+    text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
+    arch_config = detect_arch_config(unet, text_encoders)
+
+    module_class = CdkaInfModule if for_inference else CdkaModule
+
+    network = AdditionalNetwork(
+        text_encoders,
+        unet,
+        arch_config=arch_config,
+        multiplier=multiplier,
+        modules_dim=modules_dim,
+        modules_alpha=modules_alpha,
+        module_class=module_class,
+        train_llm_adapter=train_llm_adapter,
+    )
+    return network, weights_sd

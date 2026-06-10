@@ -7,26 +7,13 @@
 # - Project Website: https://diffusekrona.github.io/
 # - Official Codebase: https://github.com/IBM/DiffuseKronA
 #
-# Implementation Differences (Official vs. Custom):
-# 1. Computation Path:
-#    - Official (diffusers): Reshapes hidden states and performs two consecutive small matrix multiplications
-#      Y = B(X A^T) during forward pass to save training FLOPs and VRAM.
-#    - Custom (sd-scripts / krona.py): Materializes the Kronecker product delta weight ΔW = B ⊗ A and applies
-#      it via standard matrix multiplication Y = X ΔW^T or merges it directly into base weights.
-#    - Equivalence: Due to the vectorization property vec(B X A^T) = (A ⊗ B) vec(X), both methods are 
-#      mathematically 100% equivalent.
-# 2. Ecosystem Compatibility:
-#    - By using LoKr parameter naming conventions (lokr_w1, lokr_w2), this implementation outputs checkpoints
-#      that are 100% compatible with ComfyUI, WebUI, and other standard LoKr inference loaders without any modification.
-#
-# Based on the lokr.py from sd-scripts
-
 
 import ast
 import math
 import os
 import logging
 from typing import Dict, List, Optional
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -39,26 +26,26 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-def factorization_in(dimension: int) -> tuple:
+def factorization_in(dimension: int, pref_val: int = 4) -> tuple:
     """Return a tuple of two values whose product equals dimension.
-    For the input side, one factor is fixed to 4. If not divisible,
+    For the input side, one factor is fixed to pref_val (default 4). If not divisible,
     decrements to 2 or 1.
     """
-    for val in [4, 2, 1]:
-        if dimension % val == 0:
+    for val in [pref_val, 4, 2, 1]:
+        if val <= dimension and dimension % val == 0:
             m = val
             n = dimension // val
             return m, n
     return 1, dimension
 
 
-def factorization_out(dimension: int, max_val: int = 64) -> tuple:
+def factorization_out(dimension: int, pref_val: int = 64) -> tuple:
     """Return a tuple of two values whose product equals dimension.
     For the output side, one factor is found by searching downwards
-    from 64 for the largest integer that divides dimension.
+    from pref_val (default 64) for the largest integer that divides dimension.
     """
-    for val in range(max_val, 0, -1):
-        if dimension % val == 0:
+    for val in range(pref_val, 0, -1):
+        if val <= dimension and dimension % val == 0:
             m = val
             n = dimension // val
             return m, n
@@ -72,19 +59,15 @@ def make_kron(w1, w2, scale):
             w1 = w1.unsqueeze(-1)
     w2 = w2.contiguous()
     rebuild = torch.kron(w1, w2)
-    if scale != 1:
+    if scale != 1.0:
         rebuild = rebuild * scale
     return rebuild
-
-
-def rebuild_tucker(t, wa, wb):
-    """Rebuild weight from Tucker decomposition."""
-    return torch.einsum("i j ..., i p, j r -> p r ...", t, wa, wb)
 
 
 class KronaModule(torch.nn.Module):
     """Krona module for training. Replaces forward method of the original Linear/Conv2d.
     Uses parameter naming compatible with LoKr for seamless LOKR inference support.
+    Isomorphic design: r=1 Full Rank, supports customizable factorizations and initializations.
     """
 
     def __init__(
@@ -92,17 +75,24 @@ class KronaModule(torch.nn.Module):
         lora_name,
         org_module: torch.nn.Module,
         multiplier=1.0,
-        lora_dim=4,
-        alpha=1,
+        lora_dim=4,           # Standard LoKr lora_dim (used for scale_lokr in degradation)
+        alpha=1.0,            # Standard LoKr alpha (used for scale_lokr in degradation)
         dropout=None,
         rank_dropout=None,
         module_dropout=None,
-        use_tucker=False,
         **kwargs,
     ):
         super().__init__()
         self.lora_name = lora_name
         self.lora_dim = lora_dim
+
+        # Customizable parameters (Defaults match original KronA specs: r1=64, r2=4)
+        self.r = 1
+        self.r1 = kwargs.get("factor_out", 64)
+        self.r2 = kwargs.get("factor_in", 4)
+        w2_init = kwargs.get("w2_init", "normal")
+        krona_alpha = kwargs.get("krona_alpha", None)
+        use_cdka_scale = kwargs.get("use_cdka_scale", "false").lower() == "true"
 
         is_conv2d = org_module.__class__.__name__ == "Conv2d"
         if is_conv2d:
@@ -116,81 +106,73 @@ class KronaModule(torch.nn.Module):
             self.groups = org_module.groups
             self.kernel_size = kernel_size
 
-            self.tucker = use_tucker and any(k != 1 for k in kernel_size)
-
             if kernel_size == (1, 1):
                 self.conv_mode = "1x1"
-            elif self.tucker:
-                self.conv_mode = "tucker"
             else:
                 self.conv_mode = "flat"
         else:
             in_dim = org_module.in_features
             out_dim = org_module.out_features
             self.is_conv = False
-            self.tucker = False
             self.conv_mode = None
             self.kernel_size = None
 
         self.in_dim = in_dim
         self.out_dim = out_dim
 
-        self.use_w2 = False
+        # Flatten input dimension for Conv2d kernel product
+        in_dim_flat = in_dim
+        if self.conv_mode == "flat":
+            k_prod = 1
+            for k in kernel_size:
+                k_prod *= k
+            in_dim_flat = in_dim * k_prod
 
-        # Apply KronA-specific factorization
-        in_m, in_n = factorization_in(in_dim)
-        out_l, out_k = factorization_out(out_dim)
+        # Apply factorization (pref_val can be customized)
+        r1_val, out_k_val = factorization_out(out_dim, self.r1)
+        r2_val, in_m_val = factorization_in(in_dim_flat, self.r2)
 
-        # To align with DiffuseKronA's B ⊗ A order while maintaining LoKr compatibility,
-        # we assign B (large factor) to lokr_w1 and A (small factor) to lokr_w2.
-        # Standard LoKr computations calculate: ΔW = lokr_w1 ⊗ lokr_w2 = B ⊗ A.
-        self.lokr_w1 = nn.Parameter(torch.empty(out_k, in_n))
+        self.out_l = r1_val
+        self.out_k = out_k_val
+        self.in_n = r2_val
+        self.in_m = in_m_val
 
-        if self.conv_mode in ("tucker", "flat"):
-            k_size = kernel_size
-            if lora_dim >= max(out_l, in_m) / 2:
-                self.use_w2 = True
-                self.lokr_w2 = nn.Parameter(torch.empty(out_l, in_m, *k_size))
-            elif self.tucker:
-                self.lokr_t2 = nn.Parameter(torch.empty(lora_dim, lora_dim, *k_size))
-                self.lokr_w2_a = nn.Parameter(torch.empty(lora_dim, out_l))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m))
-            else:
-                k_prod = 1
-                for k in k_size:
-                    k_prod *= k
-                self.lokr_w2_a = nn.Parameter(torch.empty(out_l, lora_dim))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m * k_prod))
-        else:
-            if lora_dim < max(out_l, in_m) / 2:
-                self.lokr_w2_a = nn.Parameter(torch.empty(out_l, lora_dim))
-                self.lokr_w2_b = nn.Parameter(torch.empty(lora_dim, in_m))
-            else:
-                self.use_w2 = True
-                self.lokr_w2 = nn.Parameter(torch.empty(out_l, in_m))
+        # Setup parameters (Full Rank)
+        self.lokr_w1 = nn.Parameter(torch.empty(self.out_k, self.in_n))
+        self.lokr_w2 = nn.Parameter(torch.empty(self.out_l, self.in_m))
 
         if type(alpha) == torch.Tensor:
-            alpha = alpha.detach().float().numpy()
+            alpha = alpha.detach().float().numpy().item()
         alpha = lora_dim if alpha is None or alpha == 0 else alpha
-        if self.use_w2:
-            alpha = lora_dim
-        self.scale = alpha / self.lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))
 
-        # Initialization matching DiffuseKronA paper and codebase:
-        # lokr_w1 (representing B matrix) initialized to zeros for zero initial delta weight
-        torch.nn.init.zeros_(self.lokr_w1)
-        
-        # lokr_w2 (representing A matrix) initialized with normal distribution std=1/a1 (where a1 is out_l)
-        if self.use_w2:
-            torch.nn.init.normal_(self.lokr_w2, std=1.0 / self.lokr_w2.size(0))
+        # Setup scale
+        if krona_alpha is not None and use_cdka_scale:
+            # CDKA-style scale: lambda = alpha / sqrt(r2)
+            self.scale = krona_alpha / math.sqrt(self.in_n)
+            self.alpha.copy_(torch.tensor(krona_alpha))
         else:
-            if self.tucker:
-                torch.nn.init.kaiming_uniform_(self.lokr_t2, a=math.sqrt(5))
-            torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
-            torch.nn.init.zeros_(self.lokr_w2_b)
+            # Default KronA style: scale = 1.0 (ignores network_dim/alpha settings)
+            self.scale = 1.0
 
+        # Print module status on load
+        print(f"KronaModule initialized: r1 (factor_out)={self.out_l}, r2 (factor_in)={self.in_n}, scale={self.scale}, w2_init={w2_init}")
 
+        # Initialization
+        # lokr_w1 (B) initialized to zeros
+        nn.init.zeros_(self.lokr_w1)
+        
+        # lokr_w2 (A) initialized according to w2_init
+        if w2_init == "normal":
+            nn.init.normal_(self.lokr_w2, std=1.0 / self.out_l)
+        elif w2_init == "kaiming_uniform":
+            nn.init.kaiming_uniform_(self.lokr_w2, a=math.sqrt(5))
+        elif w2_init == "kaiming_normal":
+            nn.init.kaiming_normal_(self.lokr_w2, a=math.sqrt(5))
+        elif w2_init == "zeros":
+            nn.init.zeros_(self.lokr_w2)
+        else:
+            raise ValueError(f"Unknown w2_init mode: {w2_init}")
 
         self.multiplier = multiplier
         self.org_module = org_module
@@ -205,13 +187,7 @@ class KronaModule(torch.nn.Module):
 
     def get_diff_weight(self):
         w1 = self.lokr_w1
-        if self.use_w2:
-            w2 = self.lokr_w2
-        elif self.tucker:
-            w2 = rebuild_tucker(self.lokr_t2, self.lokr_w2_a, self.lokr_w2_b)
-        else:
-            w2 = self.lokr_w2_a @ self.lokr_w2_b
-
+        w2 = self.lokr_w2
         result = make_kron(w1, w2, self.scale)
         if self.conv_mode == "flat" and result.dim() == 2:
             result = result.reshape(self.out_dim, self.in_dim, *self.kernel_size)
@@ -225,6 +201,7 @@ class KronaModule(torch.nn.Module):
                 return org_forwarded
 
         diff_weight = self.get_diff_weight()
+        diff_weight = diff_weight.to(x.dtype)
 
         if self.rank_dropout is not None and self.training:
             drop = (torch.rand(diff_weight.size(0), device=diff_weight.device) > self.rank_dropout).to(diff_weight.dtype)
@@ -237,15 +214,10 @@ class KronaModule(torch.nn.Module):
         if self.is_conv:
             if self.conv_mode == "1x1":
                 diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
-                return org_forwarded + F.conv2d(
-                    x, diff_weight, stride=self.stride, padding=self.padding,
-                    dilation=self.dilation, groups=self.groups
-                ) * self.multiplier * scale
-            else:
-                return org_forwarded + F.conv2d(
-                    x, diff_weight, stride=self.stride, padding=self.padding,
-                    dilation=self.dilation, groups=self.groups
-                ) * self.multiplier * scale
+            return org_forwarded + F.conv2d(
+                x, diff_weight, stride=self.stride, padding=self.padding,
+                dilation=self.dilation, groups=self.groups
+            ) * self.multiplier * scale
         else:
             return org_forwarded + F.linear(x, diff_weight) * self.multiplier * scale
 
@@ -270,9 +242,7 @@ class KronaInfModule(KronaModule):
         alpha=1,
         **kwargs,
     ):
-        use_tucker = kwargs.pop("use_tucker", False)
-        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha, use_tucker=use_tucker)
-
+        super().__init__(lora_name, org_module, multiplier, lora_dim, alpha, **kwargs)
         self.org_module_ref = [org_module]
         self.enabled = True
         self.network: AdditionalNetwork = None
@@ -293,18 +263,7 @@ class KronaInfModule(KronaModule):
             device = org_device
 
         w1 = sd["lokr_w1"].to(torch.float).to(device)
-
-        if "lokr_w2" in sd:
-            w2 = sd["lokr_w2"].to(torch.float).to(device)
-        elif "lokr_t2" in sd:
-            t2 = sd["lokr_t2"].to(torch.float).to(device)
-            w2a = sd["lokr_w2_a"].to(torch.float).to(device)
-            w2b = sd["lokr_w2_b"].to(torch.float).to(device)
-            w2 = rebuild_tucker(t2, w2a, w2b)
-        else:
-            w2a = sd["lokr_w2_a"].to(torch.float).to(device)
-            w2b = sd["lokr_w2_b"].to(torch.float).to(device)
-            w2 = w2a @ w2b
+        w2 = sd["lokr_w2"].to(torch.float).to(device)
 
         diff_weight = make_kron(w1, w2, self.scale)
 
@@ -320,17 +279,7 @@ class KronaInfModule(KronaModule):
             multiplier = self.multiplier
 
         w1 = self.lokr_w1.to(torch.float)
-
-        if self.use_w2:
-            w2 = self.lokr_w2.to(torch.float)
-        elif self.tucker:
-            w2 = rebuild_tucker(
-                self.lokr_t2.to(torch.float),
-                self.lokr_w2_a.to(torch.float),
-                self.lokr_w2_b.to(torch.float),
-            )
-        else:
-            w2 = (self.lokr_w2_a @ self.lokr_w2_b).to(torch.float)
+        w2 = self.lokr_w2.to(torch.float)
 
         weight = make_kron(w1, w2, self.scale) * multiplier
 
@@ -344,6 +293,7 @@ class KronaInfModule(KronaModule):
 
     def default_forward(self, x):
         diff_weight = self.get_diff_weight()
+        diff_weight = diff_weight.to(x.dtype)
         if self.is_conv:
             if self.conv_mode == "1x1":
                 diff_weight = diff_weight.unsqueeze(2).unsqueeze(3)
@@ -406,18 +356,15 @@ def create_network(
     if module_dropout is not None:
         module_dropout = float(module_dropout)
 
-    conv_lora_dim = kwargs.get("conv_dim", None)
-    conv_alpha = kwargs.get("conv_alpha", None)
-    if conv_lora_dim is not None:
-        conv_lora_dim = int(conv_lora_dim)
-        if conv_alpha is None:
-            conv_alpha = 1.0
-        else:
-            conv_alpha = float(conv_alpha)
-
-    use_tucker = kwargs.get("use_tucker", "false")
-    if use_tucker is not None:
-        use_tucker = True if str(use_tucker).lower() == "true" else False
+    # Configurable factorization and init parameters from kwargs
+    factor_in = kwargs.get("factor_in", 4)
+    factor_out = kwargs.get("factor_out", 64)
+    factor_in = int(factor_in) if factor_in is not None else 4
+    factor_out = int(factor_out) if factor_out is not None else 64
+    w2_init = kwargs.get("w2_init", "normal")
+    krona_alpha = kwargs.get("krona_alpha", None)
+    krona_alpha = float(krona_alpha) if krona_alpha is not None else None
+    use_cdka_scale = kwargs.get("use_cdka_scale", "false")
 
     verbose = kwargs.get("verbose", "false")
     if verbose is not None:
@@ -440,9 +387,13 @@ def create_network(
         rank_dropout=rank_dropout,
         module_dropout=module_dropout,
         module_class=KronaModule,
-        module_kwargs={"use_tucker": use_tucker},
-        conv_lora_dim=conv_lora_dim,
-        conv_alpha=conv_alpha,
+        module_kwargs={
+            "factor_in": factor_in,
+            "factor_out": factor_out,
+            "w2_init": w2_init,
+            "krona_alpha": krona_alpha,
+            "use_cdka_scale": use_cdka_scale
+        },
         train_llm_adapter=train_llm_adapter,
         exclude_patterns=exclude_patterns,
         include_patterns=include_patterns,
@@ -475,7 +426,6 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     modules_dim = {}
     modules_alpha = {}
     train_llm_adapter = False
-    use_tucker = False
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -483,18 +433,8 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         lora_name = key.split(".")[0]
         if "alpha" in key:
             modules_alpha[lora_name] = value
-        elif "lokr_w2_a" in key:
-            if "lokr_t2" in key.replace("lokr_w2_a", "lokr_t2") and lora_name + ".lokr_t2" in weights_sd:
-                dim = value.shape[0]
-            else:
-                dim = value.shape[1]
-            modules_dim[lora_name] = dim
-        elif "lokr_w2" in key and "lokr_w2_a" not in key and "lokr_w2_b" not in key:
-            if lora_name not in modules_dim:
-                modules_dim[lora_name] = max(value.shape[0], value.shape[1])
-
-        if "lokr_t2" in key:
-            use_tucker = True
+        elif "lokr_w2" in key:
+            modules_dim[lora_name] = max(value.shape[0], value.shape[1])
 
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
@@ -503,7 +443,6 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
     arch_config = detect_arch_config(unet, text_encoders)
 
     module_class = KronaInfModule if for_inference else KronaModule
-    module_kwargs = {"use_tucker": use_tucker}
 
     network = AdditionalNetwork(
         text_encoders,
@@ -513,7 +452,6 @@ def create_network_from_weights(multiplier, file, vae, text_encoder, unet, weigh
         modules_dim=modules_dim,
         modules_alpha=modules_alpha,
         module_class=module_class,
-        module_kwargs=module_kwargs,
         train_llm_adapter=train_llm_adapter,
     )
     return network, weights_sd
@@ -528,6 +466,5 @@ def merge_weights_to_tensor(
     calc_device: torch.device,
 ) -> torch.Tensor:
     """Merge Krona weights directly into a model weight tensor using LoKr mapping."""
-    # Reuse standard lokr merging function logic as keys are identical
     from .lokr import merge_weights_to_tensor as lokr_merge
     return lokr_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
