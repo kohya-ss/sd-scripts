@@ -1,9 +1,10 @@
 __由于文档正在更新中，描述可能有错误。__
 
 # 关于训练，通用描述
-本库支持模型微调(fine tuning)、DreamBooth、训练LoRA和文本反转(Textual Inversion)（包括[XTI:P+](https://github.com/kohya-ss/sd-scripts/pull/327)
-）
+本库支持模型微调(fine tuning)、DreamBooth、训练LoRA和文本反转(Textual Inversion)。
 本文档将说明它们通用的训练数据准备方法和选项等。
+
+（XTI:P+ 的训练脚本 `train_textual_inversion_XTI.py` 已被移除。）
 
 # 概要
 

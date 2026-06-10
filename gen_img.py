@@ -52,7 +52,6 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 import library.model_util as model_util
-import library.train_util as train_util
 from library.hidden_states import pool_workaround
 import library.sdxl_model_util as sdxl_model_util
 import library.sdxl_train_util as sdxl_train_util

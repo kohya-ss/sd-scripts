@@ -2,7 +2,9 @@ __ドキュメント更新中のため記述に誤りがあるかもしれませ
 
 # 学習について、共通編
 
-当リポジトリではモデルのfine tuning、DreamBooth、およびLoRAとTextual Inversion（[XTI:P+](https://github.com/kohya-ss/sd-scripts/pull/327)を含む）の学習をサポートします。この文書ではそれらに共通する、学習データの準備方法やオプション等について説明します。
+当リポジトリではモデルのfine tuning、DreamBooth、およびLoRAとTextual Inversionの学習をサポートします。この文書ではそれらに共通する、学習データの準備方法やオプション等について説明します。
+
+（XTI:P+ の学習スクリプト `train_textual_inversion_XTI.py` は廃止されました。）
 
 # 概要
 
@@ -487,7 +489,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
 - `--weighted_captions`
 
-    指定するとAutomatic1111氏のWeb UIと同様の重み付きキャプションが有効になります。「Textual Inversion と XTI」以外の学習に使用できます。キャプションだけでなく DreamBooth 手法の token string でも有効です。
+    指定するとAutomatic1111氏のWeb UIと同様の重み付きキャプションが有効になります。Textual Inversion 以外の学習に使用できます。キャプションだけでなく DreamBooth 手法の token string でも有効です。
 
     重みづけキャプションの記法はWeb UIとほぼ同じで、(abc)や[abc]、(abc:1.23)などが使用できます。入れ子も可能です。括弧内にカンマを含めるとプロンプトのshuffle/dropoutで括弧の対応付けがおかしくなるため、括弧内にはカンマを含めないでください。
 

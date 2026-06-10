@@ -14,7 +14,8 @@ This module owns the data-loading side of training:
 * ``split_train_val`` shared between training/validation dataset halves
 
 The DreamBooth / FineTuning / ControlNet specializations of ``BaseDataset`` live
-in ``library.train_util`` for now and will move to dedicated modules in PR-1d.
+in their dedicated modules: ``library.dreambooth_dataset``,
+``library.finetuning_dataset`` and ``library.controlnet_dataset``.
 ``HIGH_VRAM`` (a mutable module-level flag toggled by ``enable_high_vram``) lives
 in ``library.accelerator_setup``; that module has no cycle with this one so it
 is imported directly.
