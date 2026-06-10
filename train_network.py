@@ -27,12 +27,26 @@ from diffusers import DDPMScheduler
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from library import deepspeed_utils, model_util, sai_model_spec, strategy_base, strategy_sd, sai_model_spec
 
-import library.train_util as train_util
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.dataset as dataset_util
+import library.model_io as model_io
+import library.optimizer as optimizer_util
+from library.dataset import DatasetGroup, MinimalDataset
+from library.dreambooth_dataset import DreamBoothDataset
+from library.model_io import SS_METADATA_MINIMUM_KEYS
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
 import library.sampling as sampling
-from library.train_util import DreamBoothDataset
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.dataset as dataset_util
+import library.model_io as model_io
+import library.optimizer as optimizer_util
+from library.dataset import DatasetGroup, MinimalDataset
+from library.dreambooth_dataset import DreamBoothDataset
+from library.model_io import SS_METADATA_MINIMUM_KEYS
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
@@ -156,18 +170,18 @@ class NetworkTrainer:
     def assert_extra_args(
         self,
         args,
-        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
-        val_dataset_group: Optional[train_util.DatasetGroup],
+        train_dataset_group: Union[DatasetGroup, MinimalDataset],
+        val_dataset_group: Optional[DatasetGroup],
     ):
         train_dataset_group.verify_bucket_reso_steps(64)
         if val_dataset_group is not None:
             val_dataset_group.verify_bucket_reso_steps(64)
 
     def load_target_model(self, args, weight_dtype, accelerator) -> tuple[str, nn.Module, nn.Module, Optional[nn.Module]]:
-        text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
+        text_encoder, vae, unet, _ = model_io.load_target_model(args, weight_dtype, accelerator)
 
         # モデルに xformers とか memory efficient attention を組み込む
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        model_io.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
         if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
             vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
@@ -334,7 +348,7 @@ class NetworkTrainer:
         return loss
 
     def get_sai_model_spec(self, args):
-        return train_util.get_sai_model_spec(None, args, self.is_sdxl, True, False)
+        return model_io.get_sai_model_spec(None, args, self.is_sdxl, True, False)
 
     def update_metadata(self, metadata, args):
         pass
@@ -552,7 +566,7 @@ class NetworkTrainer:
             "ss_adaptive_noise_scale": args.adaptive_noise_scale,
             "ss_zero_terminal_snr": args.zero_terminal_snr,
             "ss_training_comment": args.training_comment,  # will not be updated after training
-            "ss_sd_scripts_commit_hash": train_util.get_git_revision_hash(),
+            "ss_sd_scripts_commit_hash": model_io.get_git_revision_hash(),
             "ss_optimizer": optimizer_name + (f"({optimizer_args})" if len(optimizer_args) > 0 else ""),
             "ss_max_grad_norm": args.max_grad_norm,
             "ss_caption_dropout_rate": args.caption_dropout_rate,
@@ -725,16 +739,16 @@ class NetworkTrainer:
         if args.pretrained_model_name_or_path is not None:
             sd_model_name = args.pretrained_model_name_or_path
             if os.path.exists(sd_model_name):
-                metadata["ss_sd_model_hash"] = train_util.model_hash(sd_model_name)
-                metadata["ss_new_sd_model_hash"] = train_util.calculate_sha256(sd_model_name)
+                metadata["ss_sd_model_hash"] = model_io.model_hash(sd_model_name)
+                metadata["ss_new_sd_model_hash"] = model_io.calculate_sha256(sd_model_name)
                 sd_model_name = os.path.basename(sd_model_name)
             metadata["ss_sd_model_name"] = sd_model_name
 
         if args.vae is not None:
             vae_name = args.vae
             if os.path.exists(vae_name):
-                metadata["ss_vae_hash"] = train_util.model_hash(vae_name)
-                metadata["ss_new_vae_hash"] = train_util.calculate_sha256(vae_name)
+                metadata["ss_vae_hash"] = model_io.model_hash(vae_name)
+                metadata["ss_new_vae_hash"] = model_io.calculate_sha256(vae_name)
                 vae_name = os.path.basename(vae_name)
             metadata["ss_vae_name"] = vae_name
 
@@ -742,7 +756,7 @@ class NetworkTrainer:
 
         # make minimum metadata for filtering
         minimum_metadata = {}
-        for key in train_util.SS_METADATA_MINIMUM_KEYS:
+        for key in SS_METADATA_MINIMUM_KEYS:
             if key in metadata:
                 minimum_metadata[key] = metadata[key]
 
@@ -892,8 +906,8 @@ class NetworkTrainer:
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
-        train_util.verify_training_args(args)
-        train_util.prepare_dataset_args(args, True)
+        args_util.verify_training_args(args)
+        accelerator_setup.prepare_dataset_args(args, True)
         deepspeed_utils.prepare_deepspeed_args(args)
         setup_logging(args, reset=True)
 
@@ -957,21 +971,21 @@ class NetworkTrainer:
             train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
         else:
             # use arbitrary dataset class
-            train_dataset_group = train_util.load_arbitrary_dataset(args)
+            train_dataset_group = dataset_util.load_arbitrary_dataset(args)
             val_dataset_group = None  # placeholder until validation dataset supported for arbitrary
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
-        collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+        collator = dataset_util.collator_class(current_epoch, current_step, ds_for_collator)
 
         if args.debug_dataset:
             train_dataset_group.set_current_strategies()  # dataset needs to know the strategies explicitly
-            train_util.debug_dataset(train_dataset_group)
+            dataset_util.debug_dataset(train_dataset_group)
 
             if val_dataset_group is not None:
                 val_dataset_group.set_current_strategies()  # dataset needs to know the strategies explicitly
-                train_util.debug_dataset(val_dataset_group)
+                dataset_util.debug_dataset(val_dataset_group)
             return
         if len(train_dataset_group) == 0:
             logger.error(
@@ -992,11 +1006,11 @@ class NetworkTrainer:
 
         # acceleratorを準備する
         logger.info("preparing accelerator")
-        accelerator = train_util.prepare_accelerator(args)
+        accelerator = accelerator_setup.prepare_accelerator(args)
         is_main_process = accelerator.is_main_process
 
         # mixed precisionに対応した型を用意しておき適宜castする
-        weight_dtype, save_dtype = train_util.prepare_dtype(args)
+        weight_dtype, save_dtype = accelerator_setup.prepare_dtype(args)
         vae_dtype = (torch.float32 if args.no_half_vae else weight_dtype) if self.cast_vae(args) else None
 
         # load target models: unet may be None for lazy loading
@@ -1165,8 +1179,8 @@ class NetworkTrainer:
         #             v = len(v)
         #         accelerator.print(f"trainable_params: {k} = {v}")
 
-        optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
-        optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
+        optimizer_name, optimizer_args, optimizer = optimizer_util.get_optimizer(args, trainable_params)
+        optimizer_train_fn, optimizer_eval_fn = optimizer_util.get_optimizer_train_eval_fn(optimizer, args)
 
         # prepare dataloader
         # strategies are set here because they cannot be referenced in another process. Copy them with the dataset
@@ -1209,7 +1223,7 @@ class NetworkTrainer:
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
         # lr schedulerを用意する
-        lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+        lr_scheduler = optimizer_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
         if args.full_fp16:
@@ -1325,7 +1339,7 @@ class NetworkTrainer:
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
-            train_util.patch_accelerator_for_fp16_training(accelerator)
+            accelerator_setup.patch_accelerator_for_fp16_training(accelerator)
 
         # before resuming make hook for saving/loading to save/load the network weights only
         def save_model_hook(models, weights, output_dir):
@@ -1373,7 +1387,7 @@ class NetworkTrainer:
         accelerator.register_load_state_pre_hook(load_model_hook)
 
         # resumeする
-        train_util.resume_from_local_or_hf_if_specified(accelerator, args)
+        args_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
         # epoch数を計算する
         num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1861,13 +1875,13 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    train_util.add_sd_models_arguments(parser)
+    args_util.add_sd_models_arguments(parser)
     sai_model_spec.add_model_spec_arguments(parser)
-    train_util.add_dataset_arguments(parser, True, True, True)
-    train_util.add_training_arguments(parser, True)
-    train_util.add_masked_loss_arguments(parser)
+    args_util.add_dataset_arguments(parser, True, True, True)
+    args_util.add_training_arguments(parser, True)
+    args_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
-    train_util.add_optimizer_arguments(parser)
+    args_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
 
@@ -2034,8 +2048,8 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     trainer = NetworkTrainer()
     trainer.train(args)

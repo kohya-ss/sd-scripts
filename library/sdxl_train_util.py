@@ -11,7 +11,8 @@ init_ipex()
 from accelerate import init_empty_weights
 from tqdm import tqdm
 from transformers import CLIPTokenizer
-from library import model_util, sdxl_model_util, checkpoint_io, sampling, train_util, sdxl_original_unet
+from library import model_util, sdxl_model_util, checkpoint_io, sampling, sdxl_original_unet
+import library.model_io as model_io
 from .utils import setup_logging
 
 setup_logging()
@@ -242,7 +243,7 @@ def save_sd_model_on_train_end(
     ckpt_info,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, True, False, False, is_stable_diffusion_ckpt=True)
+        sai_metadata = model_io.get_sai_model_spec(None, args, True, False, False, is_stable_diffusion_ckpt=True)
         sdxl_model_util.save_stable_diffusion_checkpoint(
             ckpt_file,
             text_encoder1,
@@ -295,7 +296,7 @@ def save_sd_model_on_epoch_end_or_stepwise(
     ckpt_info,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, True, False, False, is_stable_diffusion_ckpt=True)
+        sai_metadata = model_io.get_sai_model_spec(None, args, True, False, False, is_stable_diffusion_ckpt=True)
         sdxl_model_util.save_stable_diffusion_checkpoint(
             ckpt_file,
             text_encoder1,

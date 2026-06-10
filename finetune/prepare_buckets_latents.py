@@ -19,7 +19,7 @@ from torchvision import transforms
 import library.caching as caching
 import library.dataset as dataset
 import library.model_util as model_util
-import library.train_util as train_util
+import library.dataset as dataset_util
 from finetune.image_loading_dataset import ImageLoadingDataset
 from library.utils import setup_logging
 
@@ -72,7 +72,7 @@ def main(args):
         )
 
     train_data_dir_path = Path(args.train_data_dir)
-    image_paths: List[str] = [str(p) for p in train_util.glob_images_pathlib(train_data_dir_path, args.recursive)]
+    image_paths: List[str] = [str(p) for p in dataset_util.glob_images_pathlib(train_data_dir_path, args.recursive)]
     logger.info(f"found {len(image_paths)} images.")
 
     if os.path.exists(args.in_json):

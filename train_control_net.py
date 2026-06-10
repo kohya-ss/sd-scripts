@@ -23,7 +23,12 @@ from diffusers import DDPMScheduler, ControlNetModel
 from safetensors.torch import load_file
 
 import library.model_util as model_util
-import library.train_util as train_util
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.dataset as dataset_util
+from library.hidden_states import get_hidden_states
+import library.model_io as model_io
+import library.optimizer as optimizer_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
@@ -66,8 +71,8 @@ def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_sche
 def train(args):
     # session_id = random.randint(0, 2**32)
     # training_started_at = time.time()
-    train_util.verify_training_args(args)
-    train_util.prepare_dataset_args(args, True)
+    args_util.verify_training_args(args)
+    accelerator_setup.prepare_dataset_args(args, True)
     setup_logging(args, reset=True)
 
     cache_latents = args.cache_latents
@@ -117,12 +122,12 @@ def train(args):
     current_epoch = Value("i", 0)
     current_step = Value("i", 0)
     ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
-    collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+    collator = dataset_util.collator_class(current_epoch, current_step, ds_for_collator)
 
     train_dataset_group.verify_bucket_reso_steps(64)
 
     if args.debug_dataset:
-        train_util.debug_dataset(train_dataset_group)
+        dataset_util.debug_dataset(train_dataset_group)
         return
     if len(train_dataset_group) == 0:
         logger.error(
@@ -137,14 +142,14 @@ def train(args):
 
     # acceleratorを準備する
     logger.info("prepare accelerator")
-    accelerator = train_util.prepare_accelerator(args)
+    accelerator = accelerator_setup.prepare_accelerator(args)
     is_main_process = accelerator.is_main_process
 
     # mixed precisionに対応した型を用意しておき適宜castする
-    weight_dtype, save_dtype = train_util.prepare_dtype(args)
+    weight_dtype, save_dtype = accelerator_setup.prepare_dtype(args)
 
     # モデルを読み込む
-    text_encoder, vae, unet, _ = train_util.load_target_model(
+    text_encoder, vae, unet, _ = model_io.load_target_model(
         args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=True
     )
 
@@ -246,7 +251,7 @@ def train(args):
             controlnet = ControlNetModel.from_pretrained(filename)
 
     # モデルに xformers とか memory efficient attention を組み込む
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+    model_io.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
 
     # 学習を準備する
     if cache_latents:
@@ -269,7 +274,7 @@ def train(args):
 
     trainable_params = list(controlnet.parameters())
 
-    _, _, optimizer = train_util.get_optimizer(args, trainable_params)
+    _, _, optimizer = optimizer_util.get_optimizer(args, trainable_params)
 
     # dataloaderを準備する
     # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
@@ -298,7 +303,7 @@ def train(args):
     train_dataset_group.set_max_train_steps(args.max_train_steps)
 
     # lr schedulerを用意する
-    lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+    lr_scheduler = optimizer_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     # 実験的機能：勾配も含めたfp16学習を行う　モデル全体をfp16にする
     if args.full_fp16:
@@ -346,10 +351,10 @@ def train(args):
 
     # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
     if args.full_fp16:
-        train_util.patch_accelerator_for_fp16_training(accelerator)
+        accelerator_setup.patch_accelerator_for_fp16_training(accelerator)
 
     # resumeする
-    train_util.resume_from_local_or_hf_if_specified(accelerator, args)
+    args_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     # epoch数を計算する
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -394,7 +399,7 @@ def train(args):
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(
             "controlnet_train" if args.log_tracker_name is None else args.log_tracker_name,
-            config=train_util.get_sanitized_config_or_none(args),
+            config=args_util.get_sanitized_config_or_none(args),
             init_kwargs=init_kwargs,
         )
 
@@ -459,7 +464,7 @@ def train(args):
                 b_size = latents.shape[0]
 
                 input_ids = batch["input_ids_list"][0].to(accelerator.device)
-                encoder_hidden_states = train_util.get_hidden_states(args, input_ids, tokenizer, text_encoder, weight_dtype)
+                encoder_hidden_states = get_hidden_states(args, input_ids, tokenizer, text_encoder, weight_dtype)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents, device=latents.device)
@@ -636,11 +641,11 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    train_util.add_sd_models_arguments(parser)
-    train_util.add_dataset_arguments(parser, False, True, True)
-    train_util.add_training_arguments(parser, False)
+    args_util.add_sd_models_arguments(parser)
+    args_util.add_dataset_arguments(parser, False, True, True)
+    args_util.add_training_arguments(parser, False)
     deepspeed_utils.add_deepspeed_arguments(parser)
-    train_util.add_optimizer_arguments(parser)
+    args_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
 
@@ -671,7 +676,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     train(args)

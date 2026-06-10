@@ -8,7 +8,8 @@ import os
 import torch
 from safetensors.torch import load_file, save_file, safe_open
 from tqdm import tqdm
-from library import train_util, model_util
+from library import model_util
+import library.model_io as model_io
 import numpy as np
 from library.utils import setup_logging
 setup_logging()
@@ -90,7 +91,7 @@ def split(args):
         new_metadata["ss_network_dim"] = str(new_rank)
         # new_metadata["ss_network_alpha"] = str(new_alpha.float().numpy())
 
-        model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+        model_hash, legacy_hash = model_io.precalculate_safetensors_hashes(state_dict, metadata)
         metadata["sshs_model_hash"] = model_hash
         metadata["sshs_legacy_hash"] = legacy_hash
 

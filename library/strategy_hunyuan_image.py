@@ -4,7 +4,9 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer, Qwen2TokenizerFast
 
-from library import hunyuan_image_text_encoder, hunyuan_image_vae, train_util
+from library import hunyuan_image_text_encoder, hunyuan_image_vae
+import library.accelerator_setup as accelerator_setup
+import library.device_utils as device_utils
 from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
 
 from library.utils import setup_logging
@@ -215,4 +217,4 @@ class HunyuanImageLatentsCachingStrategy(LatentsCachingStrategy):
         )
 
         if not accelerator_setup.HIGH_VRAM:
-            train_util.clean_memory_on_device(vae.device)
+            device_utils.clean_memory_on_device(vae.device)

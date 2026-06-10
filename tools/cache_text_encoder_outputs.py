@@ -19,7 +19,9 @@ from library import (
     strategy_sd,
     strategy_sdxl,
 )
-from library import train_util
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.dataset as dataset_util
 from library import sdxl_train_util
 from library import utils
 import library.sai_model_spec as sai_model_spec
@@ -38,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 def cache_to_disk(args: argparse.Namespace) -> None:
     setup_logging(args, reset=True)
-    train_util.prepare_dataset_args(args, True)
-    train_util.enable_high_vram(args)
+    accelerator_setup.prepare_dataset_args(args, True)
+    accelerator_setup.enable_high_vram(args)
 
     args.cache_text_encoder_outputs = True
     args.cache_text_encoder_outputs_to_disk = True
@@ -107,16 +109,16 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         train_dataset_group, val_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     else:
         # use arbitrary dataset class
-        train_dataset_group = train_util.load_arbitrary_dataset(args)
+        train_dataset_group = dataset_util.load_arbitrary_dataset(args)
         val_dataset_group = None
 
     # acceleratorを準備する
     logger.info("prepare accelerator")
     args.deepspeed = False
-    accelerator = train_util.prepare_accelerator(args)
+    accelerator = accelerator_setup.prepare_accelerator(args)
 
     # mixed precisionに対応した型を用意しておき適宜castする
-    weight_dtype, _ = train_util.prepare_dtype(args)
+    weight_dtype, _ = accelerator_setup.prepare_dtype(args)
     t5xxl_dtype = utils.str_to_dtype(args.t5xxl_dtype, weight_dtype)
 
     # モデルを読み込む
@@ -188,13 +190,13 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    train_util.add_sd_models_arguments(parser)
+    args_util.add_sd_models_arguments(parser)
     sai_model_spec.add_model_spec_arguments(parser)
-    train_util.add_training_arguments(parser, True)
-    train_util.add_dataset_arguments(parser, True, True, True)
-    train_util.add_masked_loss_arguments(parser)
+    args_util.add_training_arguments(parser, True)
+    args_util.add_dataset_arguments(parser, True, True, True)
+    args_util.add_masked_loss_arguments(parser)
     config_util.add_config_arguments(parser)
-    train_util.add_dit_training_arguments(parser)
+    args_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
 
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
@@ -224,6 +226,6 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    args = train_util.read_config_from_file(args, parser)
+    args = args_util.read_config_from_file(args, parser)
 
     cache_to_disk(args)

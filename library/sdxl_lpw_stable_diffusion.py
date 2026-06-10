@@ -23,10 +23,10 @@ from library import (
     sdxl_train_util,
     strategy_base,
     strategy_sdxl,
-    train_util,
     sdxl_original_unet,
     sdxl_original_control_net,
 )
+from library.hidden_states import pool_workaround
 
 
 try:
@@ -229,7 +229,7 @@ def get_hidden_states(text_encoder, input_ids, is_sdxl_text_encoder2: bool, eos_
         enc_out = text_encoder(input_ids.to(text_encoder.device), output_hidden_states=True, return_dict=True)
         hidden_states = enc_out["hidden_states"][-2]  # penuultimate layer
         # pool = enc_out["text_embeds"]
-        pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], input_ids, eos_token_id)
+        pool = pool_workaround(text_encoder, enc_out["last_hidden_state"], input_ids, eos_token_id)
     hidden_states = hidden_states.to(device)
     if pool is not None:
         pool = pool.to(device)
@@ -941,7 +941,7 @@ class SdxlStableDiffusionLongPromptWeightingPipeline:
             mask_t = torch.from_numpy(mask_np)[None, None].to(device=device, dtype=self.vae.dtype)
             masked_img_t = img_t * (1.0 - mask_t)
             # Disable autocast: under fp16 autocast (set by accelerator.autocast() in
-            # train_util.sample_image_inference), conv kernels run in fp16 even when
+            # sampling.sample_image_inference), conv kernels run in fp16 even when
             # weights/inputs are fp32 — and SDXL VAE produces NaN in fp16. This mirrors
             # how decode_latents() runs *outside* the autocast block in the caller.
             with torch.autocast(device_type=device.type, enabled=False):

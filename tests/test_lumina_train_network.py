@@ -138,7 +138,7 @@ def test_noise_scheduler(lumina_trainer, mock_args):
 
 
 def test_sai_model_spec(lumina_trainer, mock_args):
-    with patch("library.train_util.get_sai_model_spec") as mock_get_spec:
+    with patch("library.model_io.get_sai_model_spec") as mock_get_spec:
         mock_get_spec.return_value = "test_spec"
         spec = lumina_trainer.get_sai_model_spec(mock_args)
         assert spec == "test_spec"

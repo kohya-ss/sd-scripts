@@ -2,7 +2,7 @@
 
 from tqdm import tqdm
 from library import model_util
-import library.train_util as train_util
+import library.model_io as model_io
 import argparse
 from transformers import CLIPTokenizer
 
@@ -30,7 +30,7 @@ def interrogate(args):
   logger.info(f"loading SD model: {args.sd_model}")
   args.pretrained_model_name_or_path = args.sd_model
   args.vae = None
-  text_encoder, vae, unet, _ = train_util._load_target_model(args,weights_dtype, DEVICE)
+  text_encoder, vae, unet, _ = model_io._load_target_model(args,weights_dtype, DEVICE)
 
   logger.info(f"loading LoRA: {args.model}")
   network, weights_sd = lora.create_network_from_weights(1.0, args.model, vae, text_encoder, unet)

@@ -14,7 +14,8 @@ from tqdm import tqdm
 from PIL import Image
 from safetensors.torch import save_file
 
-from library import flux_models, flux_utils, strategy_base, checkpoint_io, sampling, train_util
+from library import flux_models, flux_utils, strategy_base, checkpoint_io, sampling
+import library.model_io as model_io
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.safetensors_utils import mem_eff_save_file
 
@@ -575,7 +576,7 @@ def save_flux_model_on_train_end(
     args: argparse.Namespace, save_dtype: torch.dtype, epoch: int, global_step: int, flux: flux_models.Flux
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
+        sai_metadata = model_io.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
         save_models(ckpt_file, flux, sai_metadata, save_dtype, args.mem_eff_save)
 
     checkpoint_io.save_sd_model_on_train_end_common(args, True, True, epoch, global_step, sd_saver, None)
@@ -594,7 +595,7 @@ def save_flux_model_on_epoch_end_or_stepwise(
     flux: flux_models.Flux,
 ):
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
+        sai_metadata = model_io.get_sai_model_spec(None, args, False, False, False, is_stable_diffusion_ckpt=True, flux="dev")
         save_models(ckpt_file, flux, sai_metadata, save_dtype, args.mem_eff_save)
 
     checkpoint_io.save_sd_model_on_epoch_end_or_stepwise_common(

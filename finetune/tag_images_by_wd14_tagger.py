@@ -12,7 +12,7 @@ from huggingface_hub import hf_hub_download
 from PIL import Image
 from tqdm import tqdm
 
-import library.train_util as train_util
+import library.dataset as dataset_util
 from library.utils import setup_logging, resize_image
 
 setup_logging()
@@ -320,7 +320,7 @@ def main(args):
 
     # 画像を読み込む
     train_data_dir_path = Path(args.train_data_dir)
-    image_paths = train_util.glob_images_pathlib(train_data_dir_path, args.recursive)
+    image_paths = dataset_util.glob_images_pathlib(train_data_dir_path, args.recursive)
     logger.info(f"found {len(image_paths)} images.")
     image_paths = [str(ip) for ip in image_paths]
 

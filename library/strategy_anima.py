@@ -7,7 +7,9 @@ from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from library import anima_utils, train_util
+from library import anima_utils
+import library.accelerator_setup as accelerator_setup
+import library.device_utils as device_utils
 from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
 from library import qwen_image_autoencoder_kl
 
@@ -299,4 +301,4 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         )
 
         if not accelerator_setup.HIGH_VRAM:
-            train_util.clean_memory_on_device(vae_device)
+            device_utils.clean_memory_on_device(vae_device)
