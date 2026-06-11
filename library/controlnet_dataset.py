@@ -5,48 +5,22 @@ imports the abstract :class:`~library.dataset.BaseDataset` and its
 :class:`~library.subset.ControlNetSubset` configuration class.
 """
 
-import glob
-import json
 import logging
-import math
 import os
-import random
-import re
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple
 
-import cv2
-import imagesize
-import numpy as np
 import torch
-from PIL import Image
 from accelerate import Accelerator
-from diffusers import AutoencoderKL
-from torchvision import transforms
-from tqdm import tqdm
-from transformers import CLIPTokenizer
 
-import library.model_util as model_util
 from library.dataset import (
-    IMAGE_EXTENSIONS,
     IMAGE_TRANSFORMS,
     BaseDataset,
-    BucketManager,
-    ImageInfo,
     glob_images,
-    glob_images_pathlib,
     load_image,
-)
-from library.device_utils import clean_memory_on_device
-from library.strategy_base import (
-    LatentsCachingStrategy,
-    TextEncoderOutputsCachingStrategy,
-    TextEncodingStrategy,
-    TokenizeStrategy,
 )
 from library.dreambooth_dataset import DreamBoothDataset
 from library.subset import ControlNetSubset, DreamBoothSubset
-from library.utils import resize_image, setup_logging, validate_interpolation_fn
+from library.utils import resize_image, setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
