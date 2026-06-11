@@ -447,6 +447,11 @@ class NetworkTrainer:
                     if encoded_text_encoder_conds[i] is not None:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
+        if args.cep_noise > 0.0 and is_train:
+            text_encoder_conds = train_util.apply_cep_noise(
+                text_encoder_conds, args.cep_noise, args.cep_noise_type, batch_size=latents.shape[0]
+            )
+
         # sample noise, call unet, get target
         noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
             args,

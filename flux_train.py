@@ -640,6 +640,10 @@ def train(args):
                 guidance_vec = torch.full((bsz,), float(args.guidance_scale), device=accelerator.device)
 
                 # call model
+                if args.cep_noise > 0.0:
+                    text_encoder_conds = train_util.apply_cep_noise(
+                        text_encoder_conds, args.cep_noise, args.cep_noise_type, batch_size=latents.shape[0]
+                    )
                 l_pooled, t5_out, txt_ids, t5_attn_mask = text_encoder_conds
                 if not args.apply_t5_attn_mask:
                     t5_attn_mask = None

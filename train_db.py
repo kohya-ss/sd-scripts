@@ -383,6 +383,14 @@ def train(args):
                     if args.full_fp16:
                         encoder_hidden_states = encoder_hidden_states.to(weight_dtype)
 
+                if args.cep_noise > 0.0:
+                    encoder_hidden_states = train_util.apply_cep_noise(
+                        encoder_hidden_states,
+                        args.cep_noise,
+                        args.cep_noise_type,
+                        batch_size=latents.shape[0],
+                    )
+
                 # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
                 noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)

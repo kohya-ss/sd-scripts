@@ -4207,6 +4207,19 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="Use random strength between 0~ip_noise_gamma for input perturbation noise."
         + "/ input perturbation noiseにおいて、0からip_noise_gammaの間でランダムな強度を使用します。",
     )
+    parser.add_argument(
+        "--cep_noise",
+        type=float,
+        default=0.0,
+        help="enable condition embedding perturbation (CEP) noise. recommended value: 1.0 (from arxiv.org/abs/2405.20494) / 条件埋め込み摂動(CEP)ノイズを有効にする。推奨値: 1.0 (arxiv.org/abs/2405.20494 より)",
+    )
+    parser.add_argument(
+        "--cep_noise_type",
+        type=str,
+        default="gaussian",
+        choices=["gaussian", "uniform"],
+        help="noise type for condition embedding perturbation (CEP) / 条件埋め込み摂動(CEP)のノイズタイプ",
+    )
     # parser.add_argument(
     #     "--perlin_noise",
     #     type=int,
@@ -6218,6 +6231,57 @@ def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: tor
         timesteps = torch.full((b_size,), max_timestep, device="cpu")
     timesteps = timesteps.long().to(device)
     return timesteps
+
+
+def apply_cep_noise(
+    conds: Union[List[Union[torch.Tensor, None]], Tuple[Union[torch.Tensor, None]], torch.Tensor],
+    cep_noise: float,
+    cep_noise_type: str = "gaussian",
+    batch_size: Optional[int] = None,
+) -> Union[List[Union[torch.Tensor, None]], Tuple[Union[torch.Tensor, None]], torch.Tensor]:
+    if cep_noise <= 0.0:
+        return conds
+
+    if isinstance(conds, torch.Tensor):
+        if not conds.dtype.is_floating_point:
+            return conds
+        d = conds.shape[-1]
+        if cep_noise_type == "gaussian":
+            noise = torch.randn_like(conds) * (cep_noise / math.sqrt(d))
+        elif cep_noise_type == "uniform":
+            noise = (torch.rand_like(conds) * 2.0 - 1.0) * (cep_noise / math.sqrt(d))
+        else:
+            raise ValueError(f"Unknown cep_noise_type: {cep_noise_type}")
+        return conds + noise
+
+    is_tuple = isinstance(conds, tuple)
+    conds_list = list(conds)
+    perturbed_conds = []
+
+    for cond in conds_list:
+        if cond is None or not isinstance(cond, torch.Tensor) or not cond.dtype.is_floating_point:
+            perturbed_conds.append(cond)
+            continue
+
+        if batch_size is not None and cond.shape[0] != batch_size:
+            perturbed_conds.append(cond)
+            continue
+
+        d = cond.shape[-1]
+        if d not in [768, 1024, 1152, 1280, 1536, 2048, 3072, 4096]:
+            perturbed_conds.append(cond)
+            continue
+
+        if cep_noise_type == "gaussian":
+            noise = torch.randn_like(cond) * (cep_noise / math.sqrt(d))
+        elif cep_noise_type == "uniform":
+            noise = (torch.rand_like(cond) * 2.0 - 1.0) * (cep_noise / math.sqrt(d))
+        else:
+            raise ValueError(f"Unknown cep_noise_type: {cep_noise_type}")
+
+        perturbed_conds.append(cond + noise)
+
+    return tuple(perturbed_conds) if is_tuple else perturbed_conds
 
 
 def get_noise_noisy_latents_and_timesteps(
