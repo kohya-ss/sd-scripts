@@ -220,6 +220,7 @@ These options are related to the configuration of the fine-tuning method's subse
 * `metadata_file`
     * Specify the path to the metadata file used for the subset. This is a required option.
         * It is equivalent to the command-line argument `--in_json`.
+        * For the metadata file format (the fields the trainer reads), see the [Fine-tuning Metadata File Specification](./dataset_metadata.md).
     * Due to the specification that a metadata file must be specified for each subset, it is recommended to avoid creating a metadata file with images from different directories as a single metadata file. It is strongly recommended to prepare a separate metadata file for each image directory and register them as separate subsets.
 
 ### Options available when caption dropout method can be used
