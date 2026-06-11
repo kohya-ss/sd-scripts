@@ -9,9 +9,7 @@ import torch
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
 
-# TODO remove circular import by moving ImageInfo to a separate file
-# from library.train_util import ImageInfo
-
+from library import caching
 from library.utils import setup_logging
 
 setup_logging()
@@ -504,8 +502,6 @@ class LatentsCachingStrategy:
         Returns:
             None
         """
-        from library import caching
-
         img_tensor, alpha_masks, original_sizes, crop_ltrbs = caching.load_images_and_masks_for_caching(
             image_infos, apply_alpha_mask, random_crop
         )

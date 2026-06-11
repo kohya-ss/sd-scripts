@@ -2,16 +2,18 @@
 
 This module owns the data-loading side of training:
 
-* ``IMAGE_EXTENSIONS`` / ``IMAGE_TRANSFORMS`` / ``TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX*``
-  constants
+* ``IMAGE_EXTENSIONS`` / ``TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX*`` constants
 * ``ImageInfo`` (per-image metadata), ``BucketManager`` (aspect-ratio buckets),
   ``BucketBatchIndex``, ``AugHelper`` (color augmentation)
 * ``BaseDataset`` (abstract dataset shared by DreamBooth / FineTuning / ControlNet)
 * ``DatasetGroup`` (concat of multiple datasets)
 * ``MinimalDataset`` and ``load_arbitrary_dataset`` (user-supplied dataset hook)
-* ``debug_dataset`` viewer plus ``glob_images`` / ``glob_images_pathlib`` /
-  ``load_image`` helpers
+* ``debug_dataset`` viewer plus ``glob_images`` / ``glob_images_pathlib`` helpers
 * ``split_train_val`` shared between training/validation dataset halves
+
+Leaf image helpers (``IMAGE_TRANSFORMS`` / ``load_image`` / ``get_crop_ltrb`` /
+``trim_and_resize_if_required``) live in ``library.utils`` and are re-exported
+here for backward compatibility.
 
 The DreamBooth / FineTuning / ControlNet specializations of ``BaseDataset`` live
 in their dedicated modules: ``library.dreambooth_dataset``,
@@ -45,7 +47,6 @@ from transformers import CLIPTokenizer
 
 import library.model_util as model_util
 from library import accelerator_setup
-from library.caching import trim_and_resize_if_required
 from library.device_utils import clean_memory_on_device
 from library.strategy_base import (
     LatentsCachingStrategy,
@@ -59,7 +60,15 @@ from library.subset import (
     DreamBoothSubset,
     FineTuningSubset,
 )
-from library.utils import resize_image, setup_logging, validate_interpolation_fn
+from library.utils import (
+    IMAGE_TRANSFORMS,
+    get_crop_ltrb,
+    load_image,
+    resize_image,
+    setup_logging,
+    trim_and_resize_if_required,
+    validate_interpolation_fn,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -91,13 +100,6 @@ try:
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
     pass
-
-IMAGE_TRANSFORMS = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
 
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX = "_te_outputs.npz"
 TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX_SD3 = "_sd3_te.npz"
@@ -310,23 +312,8 @@ class BucketManager:
 
     @staticmethod
     def get_crop_ltrb(bucket_reso: Tuple[int, int], image_size: Tuple[int, int]):
-        # Stability AIの前処理に合わせてcrop left/topを計算する。crop rightはflipのaugmentationのために求める
-        # Calculate crop left/top according to the preprocessing of Stability AI. Crop right is calculated for flip augmentation.
-
-        bucket_ar = bucket_reso[0] / bucket_reso[1]
-        image_ar = image_size[0] / image_size[1]
-        if bucket_ar > image_ar:
-            # bucketのほうが横長→縦を合わせる
-            resized_width = bucket_reso[1] * image_ar
-            resized_height = bucket_reso[1]
-        else:
-            resized_width = bucket_reso[0]
-            resized_height = bucket_reso[0] / image_ar
-        crop_left = (bucket_reso[0] - resized_width) // 2
-        crop_top = (bucket_reso[1] - resized_height) // 2
-        crop_right = crop_left + resized_width
-        crop_bottom = crop_top + resized_height
-        return crop_left, crop_top, crop_right, crop_bottom
+        # implementation moved to library.utils.get_crop_ltrb; kept as a staticmethod for backward compatibility
+        return get_crop_ltrb(bucket_reso, image_size)
 
 
 class BucketBatchIndex(NamedTuple):
@@ -1561,22 +1548,6 @@ def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
     train_dataset_group: MinimalDataset = dataset_class(tokenizer, args.max_token_length, args.resolution, args.debug_dataset)
     return train_dataset_group
 
-
-
-def load_image(image_path, alpha=False):
-    try:
-        with Image.open(image_path) as image:
-            if alpha:
-                if not image.mode == "RGBA":
-                    image = image.convert("RGBA")
-            else:
-                if not image.mode == "RGB":
-                    image = image.convert("RGB")
-            img = np.array(image, np.uint8)
-            return img
-    except (IOError, OSError) as e:
-        logger.error(f"Error loading file: {image_path}")
-        raise e
 
 
 # collate_fn 用 epoch, step は multiprocessing.Value
