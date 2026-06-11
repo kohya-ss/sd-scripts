@@ -21,17 +21,22 @@ import os
 import subprocess
 import time
 from io import BytesIO
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import safetensors
 import safetensors.torch
-from diffusers import StableDiffusionPipeline
 
-import library.model_util as model_util
 import library.sai_model_spec as sai_model_spec
 from library.device_utils import clean_memory_on_device
-from library.original_unet import UNet2DConditionModel
 from library.utils import setup_logging
+
+if TYPE_CHECKING:
+    from library.original_unet import UNet2DConditionModel
+
+# NOTE: diffusers / library.model_util / library.original_unet are imported lazily
+# inside the load_target_model functions: importing them here adds several seconds
+# of startup time to lightweight CLI tools (networks/*) that only need the
+# hashing / metadata helpers from this module.
 
 setup_logging()
 
@@ -124,7 +129,7 @@ def get_git_revision_hash() -> str:
         return "(unknown)"
 
 
-def replace_unet_modules(unet: UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+def replace_unet_modules(unet: "UNet2DConditionModel", mem_eff_attn, xformers, sdpa):
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
         unet.set_use_memory_efficient_attention(False, True)
@@ -344,6 +349,11 @@ def get_sai_model_spec_dataclass(
 
 
 def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", unet_use_linear_projection_in_v2=False):
+    from diffusers import StableDiffusionPipeline
+
+    import library.model_util as model_util
+    from library.original_unet import UNet2DConditionModel
+
     name_or_path = args.pretrained_model_name_or_path
     name_or_path = os.path.realpath(name_or_path) if os.path.islink(name_or_path) else name_or_path
     load_stable_diffusion_format = os.path.isfile(name_or_path)  # determine SD or Diffusers
@@ -390,6 +400,8 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
 
 
 def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projection_in_v2=False):
+    import library.model_util as model_util
+
     for pi in range(accelerator.state.num_processes):
         if pi == accelerator.state.local_process_index:
             logger.info(f"loading model for process {accelerator.state.local_process_index}/{accelerator.state.num_processes}")
