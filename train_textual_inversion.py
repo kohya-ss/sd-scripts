@@ -598,6 +598,14 @@ class TextualInversionTrainer:
                     if args.full_fp16:
                         text_encoder_conds = [c.to(weight_dtype) for c in text_encoder_conds]
 
+                    if args.cep_noise > 0.0:
+                        text_encoder_conds = train_util.apply_cep_noise(
+                            text_encoder_conds,
+                            args.cep_noise,
+                            args.cep_noise_type,
+                            batch_size=latents.shape[0],
+                        )
+
                     # Sample noise, sample a random timestep for each image, and add noise to the latents,
                     # with noise offset and/or multires noise if specified
                     noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(

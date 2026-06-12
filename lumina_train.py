@@ -743,6 +743,13 @@ def train(args):
                     )
                 )
                 # call model
+                if args.cep_noise > 0.0:
+                    text_encoder_conds = train_util.apply_cep_noise(
+                        text_encoder_conds,
+                        args.cep_noise,
+                        args.cep_noise_type,
+                        batch_size=latents.shape[0],
+                    )
                 gemma2_hidden_states, input_ids, gemma2_attn_mask = text_encoder_conds
 
                 with accelerator.autocast():

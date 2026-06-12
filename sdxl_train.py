@@ -691,6 +691,13 @@ def train(args):
                 embs = sdxl_train_util.get_size_embeddings(orig_size, crop_size, target_size, accelerator.device).to(weight_dtype)
 
                 # concat embeddings
+                if args.cep_noise > 0.0:
+                    encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.apply_cep_noise(
+                        [encoder_hidden_states1, encoder_hidden_states2, pool2],
+                        args.cep_noise,
+                        args.cep_noise_type,
+                        batch_size=latents.shape[0]
+                    )
                 vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
                 text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim=2).to(weight_dtype)
 

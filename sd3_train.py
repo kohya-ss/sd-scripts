@@ -802,6 +802,13 @@ def train(args):
                             sd3_tokenize_strategy, [None, None, t5xxl], [None, None, input_ids_t5xxl, None, None, t5_attn_mask]
                         )
 
+                if args.cep_noise > 0.0:
+                    lg_out, t5_out, lg_pooled = train_util.apply_cep_noise(
+                        [lg_out, t5_out, lg_pooled],
+                        args.cep_noise,
+                        args.cep_noise_type,
+                        batch_size=latents.shape[0]
+                    )
                 context, lg_pooled = text_encoding_strategy.concat_encodings(lg_out, t5_out, lg_pooled)
 
                 # TODO support some features for noise implemented in get_noise_noisy_latents_and_timesteps
