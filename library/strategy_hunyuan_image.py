@@ -2,7 +2,7 @@ import os
 from typing import Any, List, Optional, Tuple, Union
 import torch
 import numpy as np
-from transformers import AutoTokenizer, Qwen2Tokenizer
+from transformers import AutoTokenizer, Qwen2TokenizerFast
 
 from library import hunyuan_image_text_encoder, hunyuan_image_vae, train_util
 from library.strategy_base import LatentsCachingStrategy, TextEncodingStrategy, TokenizeStrategy, TextEncoderOutputsCachingStrategy
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class HunyuanImageTokenizeStrategy(TokenizeStrategy):
     def __init__(self, tokenizer_cache_dir: Optional[str] = None) -> None:
         self.vlm_tokenizer = self._load_tokenizer(
-            Qwen2Tokenizer, hunyuan_image_text_encoder.QWEN_2_5_VL_IMAGE_ID, tokenizer_cache_dir=tokenizer_cache_dir
+            Qwen2TokenizerFast, hunyuan_image_text_encoder.QWEN_2_5_VL_IMAGE_ID, tokenizer_cache_dir=tokenizer_cache_dir
         )
         self.byt5_tokenizer = self._load_tokenizer(
             AutoTokenizer, hunyuan_image_text_encoder.BYT5_TOKENIZER_PATH, subfolder="", tokenizer_cache_dir=tokenizer_cache_dir

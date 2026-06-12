@@ -370,19 +370,25 @@ def train(args):
         grouped_params = []
         param_group = {}
         for group in params_to_optimize:
-            named_parameters = list(nextdit.named_parameters())
+            named_parameters = [(n, p) for n, p in nextdit.named_parameters() if p.requires_grad]
             assert len(named_parameters) == len(
                 group["params"]
-            ), "number of parameters does not match"
+            ), f"number of trainable parameters ({len(named_parameters)}) does not match optimizer group ({len(group['params'])})"
             for p, np in zip(group["params"], named_parameters):
                 # determine target layer and block index for each parameter
-                block_type = "other"  # double, single or other
-                if np[0].startswith("double_blocks"):
+                # Lumina NextDiT architecture:
+                #   - "layers.{i}.*"           : main transformer blocks (e.g. 32 blocks for 2B)
+                #   - "context_refiner.{i}.*"  : context refiner blocks (2 blocks)
+                #   - "noise_refiner.{i}.*"    : noise refiner blocks (2 blocks)
+                #   - others: t_embedder, cap_embedder, x_embedder, norm_final, final_layer
+                block_type = "other"
+                if np[0].startswith("layers."):
                     block_index = int(np[0].split(".")[1])
-                    block_type = "double"
-                elif np[0].startswith("single_blocks"):
-                    block_index = int(np[0].split(".")[1])
-                    block_type = "single"
+                    block_type = "main"
+                elif np[0].startswith("context_refiner.") or np[0].startswith("noise_refiner."):
+                    # All refiner blocks (context + noise) grouped together
+                    block_index = -1
+                    block_type = "refiner"
                 else:
                     block_index = -1
 
@@ -759,7 +765,7 @@ def train(args):
 
                 # calculate loss
                 huber_c = train_util.get_huber_threshold_if_needed(
-                    args, timesteps, noise_scheduler
+                    args, 1000 - timesteps, noise_scheduler
                 )
                 loss = train_util.conditional_loss(
                     model_pred.float(), target.float(), args.loss_type, "none", huber_c

@@ -20,7 +20,7 @@ This guide assumes you know the basics of LoRA training. For common options see 
 **Prerequisites:**
 
 * The repository is cloned and the Python environment is ready.
-* A training dataset is prepared. See the dataset configuration guide.
+* A training dataset is prepared. See the [Dataset Configuration Guide](./config_README-en.md).
 
 <details>
 <summary>日本語</summary>
@@ -32,7 +32,7 @@ This guide assumes you know the basics of LoRA training. For common options see 
 **前提条件:**
 
 * `sd-scripts`リポジトリのクローンとPython環境のセットアップが完了していること。
-* 学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）
+* 学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](./config_README-ja.md)を参照してください）
 
 </details>
 
@@ -97,7 +97,7 @@ AE and T5-XXL models are same as FLUX.1, so you can use the same files. CLIP-L m
    - CLIP-Lモデルの`.safetensors`ファイル。例として`clip_l.safetensors`を使用します。
    - T5-XXLモデルの`.safetensors`ファイル。例として`t5xxl.safetensors`を使用します。
 4. **AutoEncoderモデルファイル:** FLUX.1に対応するAEモデルの`.safetensors`ファイル。例として`ae.safetensors`を使用します。
-5. **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）。例として`my_flux_dataset_config.toml`を使用します。
+5. **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](./config_README-ja.md)を参照してください）。例として`my_flux_dataset_config.toml`を使用します。
 
 **必要なモデルのダウンロード**
 

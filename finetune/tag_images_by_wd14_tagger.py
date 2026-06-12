@@ -404,7 +404,7 @@ def main(args):
                 rating_tag = None
                 quality_max_prob = -1
                 quality_tag = None
-                character_tags = []
+                img_character_tags = []
 
                 min_thres = min(
                     args.thresh,
@@ -449,7 +449,7 @@ def main(args):
                         tag_freq[tag_name] = tag_freq.get(tag_name, 0) + 1
                         character_tag_text += caption_separator + tag_name
                         if args.character_tags_first:  # we separate character tags
-                            character_tags.append((tag_name, p))
+                            img_character_tags.append((tag_name, p))
                         else:
                             combined_tags.append((tag_name, p))
                     elif (
@@ -464,9 +464,9 @@ def main(args):
 
                 # sort by probability
                 combined_tags.sort(key=lambda x: x[1], reverse=True)
-                if character_tags:
-                    character_tags.sort(key=lambda x: x[1], reverse=True)
-                    combined_tags = character_tags + combined_tags
+                if img_character_tags:
+                    img_character_tags.sort(key=lambda x: x[1], reverse=True)
+                    combined_tags = img_character_tags + combined_tags
                 combined_tags = [t[0] for t in combined_tags]  # remove probability
 
                 if quality_tag is not None:

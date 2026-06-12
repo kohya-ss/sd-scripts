@@ -382,6 +382,8 @@ class LatentsCachingStrategy:
 
     _strategy = None  # strategy instance: actual strategy class
 
+    _warned_fallback_to_old_npz = False  # to avoid spamming logs about fallback
+
     def __init__(self, cache_to_disk: bool, batch_size: int, skip_disk_cache_validity_check: bool) -> None:
         self._cache_to_disk = cache_to_disk
         self._batch_size = batch_size
@@ -459,11 +461,14 @@ class LatentsCachingStrategy:
 
         try:
             npz = np.load(npz_path)
-            if "latents" + key_reso_suffix not in npz:
+
+            # In old SD/SDXL npz files, if the actual latents shape does not match the expected shape, it doesn't raise an error as long as "latents" key exists (backward compatibility)
+            # In non-SD/SDXL npz files (multi-resolution support), the latents key always has the resolution suffix, and no latents key without suffix exists, so it raises an error if the expected resolution suffix key is not found (this doesn't change the behavior for non-SD/SDXL npz files).
+            if "latents" + key_reso_suffix not in npz and "latents" not in npz:
                 return False
-            if flip_aug and "latents_flipped" + key_reso_suffix not in npz:
+            if flip_aug and ("latents_flipped" + key_reso_suffix not in npz and "latents_flipped" not in npz):
                 return False
-            if apply_alpha_mask and "alpha_mask" + key_reso_suffix not in npz:
+            if apply_alpha_mask and ("alpha_mask" + key_reso_suffix not in npz and "alpha_mask" not in npz):
                 return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
@@ -495,8 +500,8 @@ class LatentsCachingStrategy:
             apply_alpha_mask: whether to apply alpha mask
             random_crop: whether to random crop images
             multi_resolution: whether to use multi-resolution latents
-        
-        Returns: 
+
+        Returns:
             None
         """
         from library import train_util  # import here to avoid circular import
@@ -543,18 +548,18 @@ class LatentsCachingStrategy:
         self, npz_path: str, bucket_reso: Tuple[int, int]
     ) -> Tuple[Optional[np.ndarray], Optional[List[int]], Optional[List[int]], Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        for SD/SDXL
+        For single resolution architectures (currently no architecture is single resolution specific). Kept for reference.
 
         Args:
             npz_path (str): Path to the npz file.
             bucket_reso (Tuple[int, int]): The resolution of the bucket.
-        
+
         Returns:
             Tuple[
-                Optional[np.ndarray], 
-                Optional[List[int]], 
-                Optional[List[int]], 
-                Optional[np.ndarray], 
+                Optional[np.ndarray],
+                Optional[List[int]],
+                Optional[List[int]],
+                Optional[np.ndarray],
                 Optional[np.ndarray]
             ]: Latent np tensors, original size, crop (left top, right bottom), flipped latents, alpha mask
         """
@@ -568,25 +573,34 @@ class LatentsCachingStrategy:
             latents_stride (Optional[int]): Stride for latents. If None, load all latents.
             npz_path (str): Path to the npz file.
             bucket_reso (Tuple[int, int]): The resolution of the bucket.
-       
+
         Returns:
             Tuple[
-                Optional[np.ndarray], 
-                Optional[List[int]], 
-                Optional[List[int]], 
-                Optional[np.ndarray], 
+                Optional[np.ndarray],
+                Optional[List[int]],
+                Optional[List[int]],
+                Optional[np.ndarray],
                 Optional[np.ndarray]
             ]: Latent np tensors, original size, crop (left top, right bottom), flipped latents, alpha mask
         """
         if latents_stride is None:
             key_reso_suffix = ""
         else:
-            latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
-            key_reso_suffix = f"_{latents_size[0]}x{latents_size[1]}"  # e.g. "_32x64", HxW
+            expected_latents_size = (bucket_reso[1] // latents_stride, bucket_reso[0] // latents_stride)  # bucket_reso is (W, H)
+            key_reso_suffix = f"_{expected_latents_size[0]}x{expected_latents_size[1]}"  # e.g. "_32x64", HxW
 
         npz = np.load(npz_path)
         if "latents" + key_reso_suffix not in npz:
-            raise ValueError(f"latents{key_reso_suffix} not found in {npz_path}")
+            # raise ValueError(f"latents{key_reso_suffix} not found in {npz_path}")
+            # Fallback to old npz without resolution suffix
+            if "latents" not in npz:
+                raise ValueError(f"latents not found in {npz_path} (either with or without resolution suffix: {key_reso_suffix})")
+            if not self._warned_fallback_to_old_npz:
+                logger.warning(
+                    f"latents{key_reso_suffix} not found in {npz_path}. Falling back to latents without resolution suffix (old npz). This warning will only be shown once. To avoid this warning, please re-cache the latents with the latest version."
+                )
+                self._warned_fallback_to_old_npz = True
+            key_reso_suffix = ""
 
         latents = npz["latents" + key_reso_suffix]
         original_size = npz["original_size" + key_reso_suffix].tolist()

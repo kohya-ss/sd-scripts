@@ -54,14 +54,14 @@ class AnimaTokenizeStrategy(TokenizeStrategy):
         text = [text] if isinstance(text, str) else text
 
         # Tokenize with Qwen3
-        qwen3_encoding = self.qwen3_tokenizer.batch_encode_plus(
+        qwen3_encoding = self.qwen3_tokenizer(
             text, return_tensors="pt", truncation=True, padding="max_length", max_length=self.qwen3_max_length
         )
         qwen3_input_ids = qwen3_encoding["input_ids"]
         qwen3_attn_mask = qwen3_encoding["attention_mask"]
 
         # Tokenize with T5 (for LLM Adapter target tokens)
-        t5_encoding = self.t5_tokenizer.batch_encode_plus(
+        t5_encoding = self.t5_tokenizer(
             text, return_tensors="pt", truncation=True, padding="max_length", max_length=self.t5_max_length
         )
         t5_input_ids = t5_encoding["input_ids"]

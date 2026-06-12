@@ -122,11 +122,15 @@ These are options related to the configuration of the data set. They cannot be d
 | `max_bucket_reso` | `1024` | o | o |
 | `min_bucket_reso` | `128` | o | o |
 | `resolution` | `256`, `[512, 512]` | o | o |
+| `skip_image_resolution` | `768`, `[512, 768]` | o | o |
 
 * `batch_size`
     * This corresponds to the command-line argument `--train_batch_size`.
 * `max_bucket_reso`, `min_bucket_reso`
     * Specify the maximum and minimum resolutions of the bucket. It must be divisible by `bucket_reso_steps`.
+* `skip_image_resolution`
+    * Images whose original resolution (area) is equal to or smaller than the specified resolution will be skipped. Specify as `'size'` or `[width, height]`. This corresponds to the command-line argument `--skip_image_resolution`.
+    * Useful when sharing the same image directory across multiple datasets with different resolutions, to exclude low-resolution source images from higher-resolution datasets.
 
 These settings are fixed per dataset. That means that subsets belonging to the same dataset will share these settings. For example, if you want to prepare datasets with different resolutions, you can define them as separate datasets as shown in the example above, and set different resolutions for each.
 
@@ -254,6 +258,34 @@ resolution = 768
   image_dir = 'C:\hoge'
 ```
 
+When using multi-resolution datasets, you can use `skip_image_resolution` to exclude images whose original size is too small for higher-resolution datasets. This prevents overlapping of low-resolution images across datasets and improves training quality. This option can also be used to simply exclude low-resolution source images from datasets.
+
+```toml
+[general]
+enable_bucket = true
+bucket_no_upscale = true
+max_bucket_reso = 1536
+
+[[datasets]]
+resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1024
+skip_image_resolution = 768
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+
+[[datasets]]
+resolution = 1280
+skip_image_resolution = 1024
+  [[datasets.subsets]]
+  image_dir = 'C:\hoge'
+```
+
+In this example, the 1024-resolution dataset skips images whose original size is 768x768 or smaller, and the 1280-resolution dataset skips images whose original size is 1024x1024 or smaller.
+
 ## Command Line Argument and Configuration File
 
 There are options in the configuration file that have overlapping roles with command line argument options.
@@ -284,6 +316,7 @@ For the command line options listed below, if an option is specified in both the
 | `--random_crop`                 |                                       |
 | `--resolution`                  |                                       |
 | `--shuffle_caption`             |                                       |
+| `--skip_image_resolution`       |                                       |
 | `--train_batch_size`            | `batch_size`                           |
 
 ## Error Guide

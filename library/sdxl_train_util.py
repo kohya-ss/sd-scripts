@@ -49,6 +49,15 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
                 args.disable_mmap_load_safetensors,
             )
 
+            # Expand 4-channel conv_in to 9 channels when training inpainting from a
+            # standard (non-inpainting) checkpoint.
+            if getattr(args, "train_inpainting", False) and getattr(unet, "in_channels", 4) == 4:
+                logger.info(
+                    "train_inpainting: expanding UNet conv_in from 4 to 9 channels "
+                    "(standard checkpoint → inpainting training from scratch)"
+                )
+                model_util.expand_unet_to_inpainting(unet)
+
             # work on low-ram device
             if args.lowram:
                 text_encoder1.to(accelerator.device)
@@ -117,8 +126,9 @@ def _load_target_model(
 
         # Diffusers U-Net to original U-Net
         state_dict = sdxl_model_util.convert_diffusers_unet_state_dict_to_sdxl(unet.state_dict())
+        actual_in_channels = state_dict["input_blocks.0.0.weight"].shape[1]
         with init_empty_weights():
-            unet = sdxl_original_unet.SdxlUNet2DConditionModel()  # overwrite unet
+            unet = sdxl_original_unet.SdxlUNet2DConditionModel(in_channels=actual_in_channels)  # overwrite unet
         sdxl_model_util._load_state_dict_on_device(unet, state_dict, device=device, dtype=model_dtype)
         logger.info("U-Net converted to original U-Net")
 

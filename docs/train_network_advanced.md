@@ -7,7 +7,7 @@ This guide targets experienced users who want to fine tune settings in detail.
 **Prerequisites:**
 
 * You have cloned the `sd-scripts` repository and prepared a Python environment.
-* A training dataset and its `.toml` configuration are ready (see the dataset configuration guide).
+* A training dataset and its `.toml` configuration are ready (see the [Dataset Configuration Guide](./config_README-en.md)).
 * You are familiar with running basic LoRA training commands.
 
 ## 1. Command Line Options / コマンドライン引数 詳細解説
@@ -23,7 +23,7 @@ This guide targets experienced users who want to fine tune settings in detail.
 
 ### 1.2. Dataset Settings
 
-* `--dataset_config=\"<path to config>\"`: specify a `.toml` dataset config. High resolution data and aspect ratio buckets (specify `enable_bucket = true` in `.toml`) are common for SDXL. The resolution steps for aspect ratio buckets (`bucket_reso_steps`) must be multiples of 32 for SDXL. For details on writing `.toml` files, refer to the [Dataset Configuration Guide](link/to/dataset/config/doc).
+* `--dataset_config=\"<path to config>\"`: specify a `.toml` dataset config. High resolution data and aspect ratio buckets (specify `enable_bucket = true` in `.toml`) are common for SDXL. The resolution steps for aspect ratio buckets (`bucket_reso_steps`) must be multiples of 32 for SDXL. For details on writing `.toml` files, refer to the [Dataset Configuration Guide](./config_README-en.md).
 
 ### 1.3. Output and Saving
 
@@ -247,7 +247,7 @@ This technique involves merging a pre-trained LoRA into the base model before st
 **前提条件:**
 
 *   `sd-scripts` リポジトリのクローンと Python 環境のセットアップが完了していること。
-*   学習用データセットの準備と設定（`.toml`ファイル）が完了していること。（[データセット設定ガイド](link/to/dataset/config/doc)参照）
+*   学習用データセットの準備と設定（`.toml`ファイル）が完了していること。（[データセット設定ガイド](./config_README-ja.md)参照）
 *   基本的なLoRA学習のコマンドライン実行経験があること。
 
 ## 1. コマンドライン引数 詳細解説
@@ -272,7 +272,7 @@ This technique involves merging a pre-trained LoRA into the base model before st
 
 *   `--dataset_config="<設定ファイルのパス>"` 
     *   データセットの設定を記述した`.toml`ファイルを指定します。SDXLでは高解像度データとバケツ機能（`.toml` で `enable_bucket = true` を指定）の利用が一般的です。
-    *   `.toml`ファイルの書き方の詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください。
+    *   `.toml`ファイルの書き方の詳細は[データセット設定ガイド](./config_README-ja.md)を参照してください。
     *   アスペクト比バケツの解像度ステップ(`bucket_reso_steps`)は、SDXLでは32の倍数とする必要があります。
 
 ### 1.3. 出力・保存関連

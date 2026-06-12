@@ -4,12 +4,12 @@ from typing import Tuple, Optional, Union
 import torch
 from transformers import (
     AutoTokenizer,
+    PreTrainedTokenizer,
     Qwen2_5_VLConfig,
     Qwen2_5_VLForConditionalGeneration,
-    Qwen2Tokenizer,
+    Qwen2TokenizerFast,
     T5ForConditionalGeneration,
     T5Config,
-    T5Tokenizer,
 )
 from transformers.models.t5.modeling_t5 import T5Stack
 from accelerate import init_empty_weights
@@ -145,7 +145,7 @@ MULTILINGUAL_10_LANG_IDX_JSON = """{"en-Montserrat-Regular": 0, "en-Poppins-Ital
 "kr-WenQuanYiMicroHei": 120, "kr-YeonSung-Regular": 121}"""
 
 
-def add_special_token(tokenizer: T5Tokenizer, text_encoder: T5Stack):
+def add_special_token(tokenizer: PreTrainedTokenizer, text_encoder: T5Stack):
     """
     Add special tokens for color and font to tokenizer and text encoder.
 
@@ -173,7 +173,7 @@ def load_byt5(
     device: Union[str, torch.device],
     disable_mmap: bool = False,
     state_dict: Optional[dict] = None,
-) -> Tuple[T5Stack, T5Tokenizer]:
+) -> Tuple[T5Stack, PreTrainedTokenizer]:
     BYT5_CONFIG_JSON = """
 {
     "_name_or_path": "/home/patrick/t5/byt5-small",
@@ -240,7 +240,7 @@ def load_qwen2_5_vl(
     device: Union[str, torch.device],
     disable_mmap: bool = False,
     state_dict: Optional[dict] = None,
-) -> tuple[Qwen2Tokenizer, Qwen2_5_VLForConditionalGeneration]:
+) -> tuple[Qwen2TokenizerFast, Qwen2_5_VLForConditionalGeneration]:
     QWEN2_5_VL_CONFIG_JSON = """
 {
   "architectures": [
@@ -496,7 +496,7 @@ def load_qwen2_5_vl(
 
     # Load tokenizer
     logger.info(f"Loading tokenizer from {QWEN_2_5_VL_IMAGE_ID}")
-    tokenizer = Qwen2Tokenizer.from_pretrained(QWEN_2_5_VL_IMAGE_ID)
+    tokenizer = Qwen2TokenizerFast.from_pretrained(QWEN_2_5_VL_IMAGE_ID)
     return tokenizer, qwen2_5_vl
 
 
@@ -505,13 +505,13 @@ PROMPT_TEMPLATE_ENCODE_START_IDX = 34
 
 
 def get_qwen_prompt_embeds(
-    tokenizer: Qwen2Tokenizer, vlm: Qwen2_5_VLForConditionalGeneration, prompt: Union[str, list[str]] = None
+    tokenizer: Qwen2TokenizerFast, vlm: Qwen2_5_VLForConditionalGeneration, prompt: Union[str, list[str]] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     input_ids, mask = get_qwen_tokens(tokenizer, prompt)
     return get_qwen_prompt_embeds_from_tokens(vlm, input_ids, mask)
 
 
-def get_qwen_tokens(tokenizer: Qwen2Tokenizer, prompt: Union[str, list[str]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+def get_qwen_tokens(tokenizer: Qwen2TokenizerFast, prompt: Union[str, list[str]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     tokenizer_max_length = TOKENIZER_MAX_LENGTH
 
     # HunyuanImage-2.1 does not use "<|im_start|>assistant\n" in the prompt template
@@ -586,7 +586,7 @@ BYT5_MAX_LENGTH = 128
 
 
 def get_glyph_prompt_embeds(
-    tokenizer: T5Tokenizer, text_encoder: T5Stack, prompt: Optional[str] = None
+    tokenizer: PreTrainedTokenizer, text_encoder: T5Stack, prompt: Optional[str] = None
 ) -> Tuple[list[bool], torch.Tensor, torch.Tensor]:
     byt5_tokens, byt5_text_mask = get_byt5_text_tokens(tokenizer, prompt)
     return get_byt5_prompt_embeds_from_tokens(text_encoder, byt5_tokens, byt5_text_mask)

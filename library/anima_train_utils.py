@@ -393,10 +393,17 @@ def sample_images(
     text_encoding_strategy,
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
+    on_prompt_start=None,
+    on_prompt_end=None,
 ):
     """Generate sample images during training.
 
     This is a simplified sampler for Anima - it generates images using the current model state.
+
+    on_prompt_start / on_prompt_end:
+        Optional callbacks invoked around each prompt's `_sample_image_inference` call. Useful
+        for injecting per-prompt state into wrapper modules (e.g. ControlNet-LLLite cond image).
+        Signature: ``on_prompt_start(prompt_dict, accelerator)`` / ``on_prompt_end(prompt_dict)``.
     """
     if steps == 0:
         if not args.sample_at_first:
@@ -438,21 +445,27 @@ def sample_images(
     with torch.no_grad(), accelerator.autocast():
         for prompt_dict in prompts:
             dit.prepare_block_swap_before_forward()
-            _sample_image_inference(
-                accelerator,
-                args,
-                dit,
-                text_encoder,
-                vae,
-                tokenize_strategy,
-                text_encoding_strategy,
-                save_dir,
-                prompt_dict,
-                epoch,
-                steps,
-                sample_prompts_te_outputs,
-                prompt_replacement,
-            )
+            if on_prompt_start is not None:
+                on_prompt_start(prompt_dict, accelerator)
+            try:
+                _sample_image_inference(
+                    accelerator,
+                    args,
+                    dit,
+                    text_encoder,
+                    vae,
+                    tokenize_strategy,
+                    text_encoding_strategy,
+                    save_dir,
+                    prompt_dict,
+                    epoch,
+                    steps,
+                    sample_prompts_te_outputs,
+                    prompt_replacement,
+                )
+            finally:
+                if on_prompt_end is not None:
+                    on_prompt_end(prompt_dict)
 
     # Restore RNG state
     torch.set_rng_state(rng_state)

@@ -700,6 +700,19 @@ def train(args):
 
                 noisy_latents = noisy_latents.to(weight_dtype)  # TODO check why noisy_latents is not weight_dtype
 
+                if batch["masks"] is not None:
+                    with torch.no_grad():
+                        masked_latents = vae.encode(
+                            batch["masked_images"].to(vae_dtype)
+                        ).latent_dist.sample().to(weight_dtype)
+                        masked_latents = masked_latents * sdxl_model_util.VAE_SCALE_FACTOR
+
+                        # Resize the mask to latents shape as we concatenate the mask to the latents
+                        mask = torch.nn.functional.interpolate(
+                            batch["masks"].to(weight_dtype), size=latents.shape[2:]
+                        )
+                    noisy_latents = torch.cat([noisy_latents, mask, masked_latents], dim=1)
+
                 # Predict the noise residual
                 with accelerator.autocast():
                     noise_pred = unet(noisy_latents, timesteps, text_embedding, vector_embedding)

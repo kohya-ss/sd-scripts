@@ -334,31 +334,34 @@ def sample_image_inference(
 
         # No need to add system prompt here, as it has been handled in the tokenize_strategy
 
-        # Get sample prompts from cache
+        # Get sample prompts from cache, fallback to live encoding
+        gemma2_conds = None
+        neg_gemma2_conds = None
+
         if sample_prompts_gemma2_outputs and prompt in sample_prompts_gemma2_outputs:
             gemma2_conds = sample_prompts_gemma2_outputs[prompt]
             logger.info(f"Using cached Gemma2 outputs for prompt: {prompt}")
 
-        if (
-            sample_prompts_gemma2_outputs
-            and negative_prompt in sample_prompts_gemma2_outputs
-        ):
+        if sample_prompts_gemma2_outputs and negative_prompt in sample_prompts_gemma2_outputs:
             neg_gemma2_conds = sample_prompts_gemma2_outputs[negative_prompt]
-            logger.info(
-                f"Using cached Gemma2 outputs for negative prompt: {negative_prompt}"
-            )
+            logger.info(f"Using cached Gemma2 outputs for negative prompt: {negative_prompt}")
 
-        # Load sample prompts from Gemma 2
-        if gemma2_model is not None:
+        # Only encode if not found in cache
+        if gemma2_conds is None and gemma2_model is not None:
             tokens_and_masks = tokenize_strategy.tokenize(prompt)
             gemma2_conds = encoding_strategy.encode_tokens(
                 tokenize_strategy, gemma2_model, tokens_and_masks
             )
 
+        if neg_gemma2_conds is None and gemma2_model is not None:
             tokens_and_masks = tokenize_strategy.tokenize(negative_prompt, is_negative=True)
             neg_gemma2_conds = encoding_strategy.encode_tokens(
                 tokenize_strategy, gemma2_model, tokens_and_masks
             )
+
+        if gemma2_conds is None or neg_gemma2_conds is None:
+            logger.error(f"Cannot generate sample: no cached outputs and no text encoder available for prompt: {prompt}")
+            continue
 
         # Unpack Gemma2 outputs
         gemma2_hidden_states, _, gemma2_attn_mask = gemma2_conds
@@ -475,6 +478,7 @@ def sample_image_inference(
 
 
 def time_shift(mu: float, sigma: float, t: torch.Tensor):
+    """Apply time shifting to timesteps."""
     t = math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
     return t
 
@@ -483,7 +487,7 @@ def get_lin_function(
     x1: float = 256, x2: float = 4096, y1: float = 0.5, y2: float = 1.15
 ) -> Callable[[float], float]:
     """
-    Get linear function
+    Get linear function for resolution-dependent shifting.
 
     Args:
         image_seq_len,
@@ -528,6 +532,7 @@ def get_schedule(
         mu = get_lin_function(y1=base_shift, y2=max_shift, x1=256, x2=4096)(
             image_seq_len
         )
+        timesteps = torch.clamp(timesteps, min=1e-7).to(timesteps.device)
         timesteps = time_shift(mu, 1.0, timesteps)
 
     return timesteps.tolist()
@@ -689,14 +694,14 @@ def denoise(
 
         img_dtype = img.dtype
 
-        if img.dtype != img_dtype:
-            if torch.backends.mps.is_available():
-                # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
-                img = img.to(img_dtype)
-
         # compute the previous noisy sample x_t -> x_t-1
         noise_pred = -noise_pred
         img = scheduler.step(noise_pred, t, img, return_dict=False)[0]
+
+        # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
+        if img.dtype != img_dtype:
+            if torch.backends.mps.is_available():
+                img = img.to(img_dtype)
 
     model.prepare_block_swap_before_forward()
     return img
@@ -823,6 +828,7 @@ def get_noisy_model_input_and_timesteps(
         timesteps = sigmas * num_timesteps
     elif args.timestep_sampling == "nextdit_shift":
         sigmas = torch.rand((bsz,), device=device)
+        sigmas = torch.clamp(sigmas, min=1e-7).to(device)
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
         sigmas = time_shift(mu, 1.0, sigmas)
 
@@ -831,6 +837,7 @@ def get_noisy_model_input_and_timesteps(
         sigmas = torch.randn(bsz, device=device)
         sigmas = sigmas * args.sigmoid_scale  # larger scale for more uniform sampling
         sigmas = sigmas.sigmoid()
+        sigmas = torch.clamp(sigmas, min=1e-7).to(device)
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))  # we are pre-packed so must adjust for packed size
         sigmas = time_shift(mu, 1.0, sigmas)
         timesteps = sigmas * num_timesteps

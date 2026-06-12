@@ -21,6 +21,9 @@ Each supported model family has a consistent structure:
 - **SDXL**: `sdxl_train*.py`, `library/sdxl_*`
 - **SD3**: `sd3_train*.py`, `library/sd3_*`
 - **FLUX.1**: `flux_train*.py`, `library/flux_*`
+- **Lumina Image 2.0**: `lumina_train*.py`, `library/lumina_*`
+- **HunyuanImage-2.1**: `hunyuan_image_train*.py`, `library/hunyuan_image_*`
+- **Anima-Preview**:  `anima_train*.py`, `library/anima_*`
 
 ### Key Components
 

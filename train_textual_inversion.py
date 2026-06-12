@@ -579,6 +579,17 @@ class TextualInversionTrainer:
                             latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample().to(dtype=weight_dtype)
                         latents = latents * self.vae_scale_factor
 
+                        if batch["masks"] is not None:
+                            masked_latents = vae.encode(
+                                batch["masked_images"].to(dtype=vae_dtype)
+                            ).latent_dist.sample().to(dtype=weight_dtype)
+                            masked_latents = masked_latents * self.vae_scale_factor
+
+                            # Resize the mask to latents shape as we concatenate the mask to the latents
+                            mask = torch.nn.functional.interpolate(
+                                batch["masks"].to(weight_dtype), size=latents.shape[2:]
+                            )
+
                     # Get the text embedding for conditioning
                     input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
                     text_encoder_conds = text_encoding_strategy.encode_tokens(
@@ -592,6 +603,9 @@ class TextualInversionTrainer:
                     noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
                         args, noise_scheduler, latents
                     )
+                    if batch["masks"] is not None:
+                      # Concatenate the noised latents with the mask and the masked latents
+                      noisy_latents = torch.cat([noisy_latents, mask, masked_latents], dim=1)
 
                     # Predict the noise residual
                     with accelerator.autocast():

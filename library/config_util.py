@@ -104,10 +104,12 @@ class ControlNetSubsetParams(BaseSubsetParams):
 class BaseDatasetParams:
     resolution: Optional[Tuple[int, int]] = None
     network_multiplier: float = 1.0
+    train_inpainting: bool = False
     debug_dataset: bool = False
     validation_seed: Optional[int] = None
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
+    skip_image_resolution: Optional[Tuple[int, int]] = None
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
@@ -118,7 +120,7 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
-    
+
 @dataclass
 class FineTuningDatasetParams(BaseDatasetParams):
     batch_size: int = 1
@@ -244,11 +246,13 @@ class ConfigSanitizer:
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
         "resize_interpolation": str,
+        "skip_image_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
     }
 
     # options handled by argparse but not handled by user config
     ARGPARSE_SPECIFIC_SCHEMA = {
         "debug_dataset": bool,
+        "train_inpainting": bool,
         "max_token_length": Any(None, int),
         "prior_loss_weight": Any(float, int),
     }
@@ -256,6 +260,7 @@ class ConfigSanitizer:
     ARGPARSE_NULLABLE_OPTNAMES = [
         "face_crop_aug_range",
         "resolution",
+        "skip_image_resolution",
     ]
     # prepare map because option name may differ among argparse and user config
     ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME = {
@@ -528,6 +533,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                 [{dataset_type} {i}]
                   batch_size: {dataset.batch_size}
                   resolution: {(dataset.width, dataset.height)}
+                  skip_image_resolution: {dataset.skip_image_resolution}
                   resize_interpolation: {dataset.resize_interpolation}
                   enable_bucket: {dataset.enable_bucket}
             """)

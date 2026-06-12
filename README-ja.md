@@ -8,25 +8,25 @@
 <summary>クリックすると展開します</summary>
 
 - [はじめに](#はじめに)
-  - [スポンサー](#スポンサー)
-  - [スポンサー募集のお知らせ](#スポンサー募集のお知らせ)
-  - [更新履歴](#更新履歴)
-  - [サポートモデル](#サポートモデル)
-  - [機能](#機能)
+    - [スポンサー](#スポンサー)
+    - [スポンサー募集のお知らせ](#スポンサー募集のお知らせ)
+    - [更新履歴](#更新履歴)
+    - [サポートモデル](#サポートモデル)
+    - [機能](#機能)
 - [ドキュメント](#ドキュメント)
-  - [学習ドキュメント（英語および日本語）](#学習ドキュメント英語および日本語)
-  - [その他のドキュメント](#その他のドキュメント)
-  - [旧ドキュメント（日本語）](#旧ドキュメント日本語)
+    - [学習ドキュメント（英語および日本語）](#学習ドキュメント英語および日本語)
+    - [その他のドキュメント](#その他のドキュメント)
+    - [旧ドキュメント（日本語）](#旧ドキュメント日本語)
 - [AIコーディングエージェントを使う開発者の方へ](#aiコーディングエージェントを使う開発者の方へ)
 - [Windows環境でのインストール](#windows環境でのインストール)
-  - [Windowsでの動作に必要なプログラム](#windowsでの動作に必要なプログラム)
-  - [インストール手順](#インストール手順)
-  - [requirements.txtとPyTorchについて](#requirementstxtとpytorchについて)
-  - [xformersのインストール（オプション）](#xformersのインストールオプション)
+    - [Windowsでの動作に必要なプログラム](#windowsでの動作に必要なプログラム)
+    - [インストール手順](#インストール手順)
+    - [requirements.txtとPyTorchについて](#requirementstxtとpytorchについて)
+    - [xformersのインストール（オプション）](#xformersのインストールオプション)
 - [Linux/WSL2環境でのインストール](#linuxwsl2環境でのインストール)
-  - [DeepSpeedのインストール（実験的、LinuxまたはWSL2のみ）](#deepspeedのインストール実験的linuxまたはwsl2のみ)
+    - [DeepSpeedのインストール（実験的、LinuxまたはWSL2のみ）](#deepspeedのインストール実験的linuxまたはwsl2のみ)
 - [アップグレード](#アップグレード)
-  - [PyTorchのアップグレード](#pytorchのアップグレード)
+    - [PyTorchのアップグレード](#pytorchのアップグレード)
 - [謝意](#謝意)
 - [ライセンス](#ライセンス)
 
@@ -50,15 +50,35 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
-- **Version 0.10.1 (2026-02-13):**
-  - [Anima Preview](https://huggingface.co/circlestone-labs/Anima)モデルのLoRA学習およびfine-tuningをサポートしました。[PR #2260](https://github.com/kohya-ss/sd-scripts/pull/2260) および[PR #2261](https://github.com/kohya-ss/sd-scripts/pull/2261)
-  - 素晴らしいモデルを公開された CircleStone Labs、および PR #2260を提出していただいたduongve13112002氏に深く感謝します。
-  - 詳細は[ドキュメント](./docs/anima_train_network.md)をご覧ください。
+- **Version 0.10.6 (2026-06-12):**
+    - リファクタリングマージ前の安定バージョン。
 
-- **Version 0.10.0 (2026-01-19):**
-  - `sd3`ブランチを`main`ブランチにマージしました。このバージョンからFLUX.1およびSD3/SD3.5等のモデルが`main`ブランチでサポートされます。
-  - ドキュメントにはまだ不備があるため、お気づきの点はIssue等でお知らせください。
-  - `sd3`ブランチは当面、`dev`ブランチと同期して開発ブランチとして維持します。
+- **Version 0.10.5 (2026-05-08):**
+    - transformersのバージョン5以降に対応しました。[PR #2315](https://github.com/kohya-ss/sd-scripts/pull/2315) および [PR #2316](https://github.com/kohya-ss/sd-scripts/pull/2316) marcus165090-spec氏に感謝します。
+        - `requirements.txt`の`transformers`のバージョンは4.xのままですが、5.xでも動作します。何らかの理由で5.xを用いる場合はdiffusersもあわせて最新バージョンにしてください。
+    - Anima向けのControlNet-LLLite学習に対応しました。[PR #2317](https://github.com/kohya-ss/sd-scripts/pull/2317)
+        - 詳細は[ドキュメント](./docs/anima_train_control_net_lllite.md)をご覧ください。
+
+- **Version 0.10.4 (2026-05-07):**
+    - Intel GPUの互換性を向上しました。[PR #2307](https://github.com/kohya-ss/sd-scripts/pull/2307) WhitePr氏に感謝します。
+    - SD 1.5/SDXLのinpaintingモデルの学習に対応しました。[PR #2309](https://github.com/kohya-ss/sd-scripts/pull/2309) および [PR #2318](https://github.com/kohya-ss/sd-scripts/pull/2318)allanoepping氏に感謝します。
+        - 詳細は[ドキュメント](./docs/inpainting_training.md)をご覧ください。
+
+- **Version 0.10.3 (2026-04-02):**
+    - Animaでfp16で学習する際の安定性をさらに改善しました。[PR #2302](https://github.com/kohya-ss/sd-scripts/pull/2302) 問題をご報告いただいた方々に深く感謝します。
+
+- **Version 0.10.2 (2026-03-30):**
+    - SD/SDXLのLECO学習に対応しました。[PR #2285](https://github.com/kohya-ss/sd-scripts/pull/2285) および [PR #2294](https://github.com/kohya-ss/sd-scripts/pull/2294) umisetokikaze氏に深く感謝します。
+        - 詳細は[ドキュメント](./docs/train_leco.md)をご覧ください。
+    - `networks/resize_lora.py`が`torch.svd_lowrank`に対応し、大幅に高速化されました。[PR #2240](https://github.com/kohya-ss/sd-scripts/pull/2240) および [PR #2296](https://github.com/kohya-ss/sd-scripts/pull/2296) woct0rdho氏に深く感謝します。
+        - デフォルトは有効になっています。`--svd_lowrank_niter`オプションで反復回数を指定できます（デフォルトは2、多いほど精度が向上します）。0にすると従来の方法になります。詳細は `--help` でご確認ください。
+    - LoKr/LoHaをSDXL/Animaでサポートしました。[PR #2275](https://github.com/kohya-ss/sd-scripts/pull/2275)
+        - 詳細は[ドキュメント](./docs/loha_lokr.md)をご覧ください。
+    - マルチ解像度データセット（同じ画像を複数のbucketサイズにリサイズして使用）がSD/SDXLの学習でサポートされました。[PR #2269](https://github.com/kohya-ss/sd-scripts/pull/2269) また、マルチ解像度データセットで同じ解像度の画像が重複して使用される事象への対応を行いました。[PR #2273](https://github.com/kohya-ss/sd-scripts/pull/2273)
+        - woct0rdho氏に感謝します。
+        - [ドキュメント英語版](./docs/config_README-en.md#behavior-when-there-are-duplicate-subsets) / [ドキュメント日本語版](./docs/config_README-ja.md#重複したサブセットが存在する時の挙動) をご覧ください。
+    - Animaでfp16で学習する際の安定性が向上しました。[PR #2297](https://github.com/kohya-ss/sd-scripts/pull/2297) ただし、依然として不安定な場合があるようです。問題が発生する場合は、詳細をIssueでお知らせください。
+    - その他、細かいバグ修正や改善を行いました。
 
 ### サポートモデル
 
@@ -68,12 +88,14 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * **FLUX.1**
 * **LUMINA**
 * **HunyuanImage-2.1**
+* **Anima preview**
 
 ### 機能
 
 * LoRA学習
 * fine-tuning（DreamBooth）：HunyuanImage-2.1以外のモデル
 * Textual Inversion学習：SD/SDXL
+* インペインティングモデル学習：SD1.5およびSDXL
 * 画像生成
 * その他、モデル変換やタグ付け、LoRAマージなどのユーティリティ
 
@@ -94,8 +116,10 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [Fine-tuning](./docs/fine_tune.md)
 * [Textual Inversion学習](./docs/train_textual_inversion.md)
 * [ControlNet-LLLite学習](./docs/train_lllite_README-ja.md) / [英語版](./docs/train_lllite_README.md)
+* [Anima向けControlNet-LLLite学習ガイド](./docs/anima_train_control_net_lllite.md)
 * [Validation](./docs/validation.md)
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
+* [インペインティング学習](./docs/inpainting_training.md)
 
 ### その他のドキュメント
 

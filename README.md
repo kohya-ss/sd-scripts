@@ -7,23 +7,23 @@
 <summary>Click to expand</summary>
 
 - [Introduction](#introduction)
-  - [Supported Models](#supported-models)
-  - [Features](#features)
-  - [Sponsors](#sponsors)
-  - [Support the Project](#support-the-project)
+    - [Supported Models](#supported-models)
+    - [Features](#features)
+    - [Sponsors](#sponsors)
+    - [Support the Project](#support-the-project)
 - [Documentation](#documentation)
-  - [Training Documentation (English and Japanese)](#training-documentation-english-and-japanese)
-  - [Other Documentation (English and Japanese)](#other-documentation-english-and-japanese)
+    - [Training Documentation (English and Japanese)](#training-documentation-english-and-japanese)
+    - [Other Documentation (English and Japanese)](#other-documentation-english-and-japanese)
 - [For Developers Using AI Coding Agents](#for-developers-using-ai-coding-agents)
 - [Windows Installation](#windows-installation)
-  - [Windows Required Dependencies](#windows-required-dependencies)
-  - [Installation Steps](#installation-steps)
-  - [About requirements.txt and PyTorch](#about-requirementstxt-and-pytorch)
-  - [xformers installation (optional)](#xformers-installation-optional)
+    - [Windows Required Dependencies](#windows-required-dependencies)
+    - [Installation Steps](#installation-steps)
+    - [About requirements.txt and PyTorch](#about-requirementstxt-and-pytorch)
+    - [xformers installation (optional)](#xformers-installation-optional)
 - [Linux/WSL2 Installation](#linuxwsl2-installation)
-  - [DeepSpeed installation (experimental, Linux or WSL2 only)](#deepspeed-installation-experimental-linux-or-wsl2-only)
+    - [DeepSpeed installation (experimental, Linux or WSL2 only)](#deepspeed-installation-experimental-linux-or-wsl2-only)
 - [Upgrade](#upgrade)
-  - [Upgrade PyTorch](#upgrade-pytorch)
+    - [Upgrade PyTorch](#upgrade-pytorch)
 - [Credits](#credits)
 - [License](#license)
 
@@ -47,15 +47,35 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
-- **Version 0.10.1 (2026-02-13):**
-    - [Anima Preview](https://huggingface.co/circlestone-labs/Anima) model LoRA training and fine-tuning are now supported. See [PR #2260](https://github.com/kohya-ss/sd-scripts/pull/2260) and [PR #2261](https://github.com/kohya-ss/sd-scripts/pull/2261).
-    - Many thanks to CircleStone Labs for releasing this amazing model, and to duongve13112002 for submitting great PR #2260.
-    - For details, please refer to the [documentation](./docs/anima_train_network.md).
+- **Version 0.10.6 (2026-06-12):**
+    - Stable version before refactoring merge.
 
-- **Version 0.10.0 (2026-01-19):**
-    - `sd3` branch is merged to `main` branch. From this version, FLUX.1 and SD3/SD3.5 etc. are supported in the `main` branch.
-    - There are still some missing parts in the documentation, so please let us know if you find any issues via Issues etc.
-    - The `sd3` branch will be maintained as a development branch synchronized with `dev` for the time being.
+- **Version 0.10.5 (2026-05-08):**
+    - Support for transformers version 5 and later has been added. Thanks to marcus165090-spec for [PR #2315](https://github.com/kohya-ss/sd-scripts/pull/2315) (followed by [PR #2316](https://github.com/kohya-ss/sd-scripts/pull/2316)).
+        - The `transformers` version in `requirements.txt` remains 4.x, but it also works with 5.x. If you use 5.x for any reason, please also update `diffusers` to the latest version.
+    - Support for ControlNet-LLLite training for Anima has been added. Thanks to [PR #2317](https://github.com/kohya-ss/sd-scripts/pull/2317).
+        - For details, please refer to the [documentation](./docs/anima_train_control_net_lllite.md).
+
+- **Version 0.10.4 (2026-05-07):**
+    - Improved compatibility with Intel GPUs. Thanks to WhitePr for [PR #2307](https://github.com/kohya-ss/sd-scripts/pull/2307).
+    - Support for training inpainting models for SD 1.5/SDXL has been added. Thanks to allanoepping for [PR #2309](https://github.com/kohya-ss/sd-scripts/pull/2309) (followed by [PR #2318](https://github.com/kohya-ss/sd-scripts/pull/2318)).
+        - For details, please refer to the [documentation](./docs/inpainting_training.md).
+
+- **Version 0.10.3 (2026-04-02):**
+    - Stability when training with fp16 on Anima has been further improved. See [PR #2302](https://github.com/kohya-ss/sd-scripts/pull/2302) for details. We deeply appreciate those who reported the issue.
+
+- **Version 0.10.2 (2026-03-30):**
+    - LECO training for SD/SDXL is now supported. Many thanks to umisetokikaze for [PR #2285](https://github.com/kohya-ss/sd-scripts/pull/2285) and [PR #2294](https://github.com/kohya-ss/sd-scripts/pull/2294).
+        - Please refer to the [documentation](./docs/train_leco.md) for details.
+    - `networks/resize_lora.py` has been updated to use `torch.svd_lowrank`, resulting in a significant speedup. Many thanks to woct0rdho for [PR #2240](https://github.com/kohya-ss/sd-scripts/pull/2240) and [PR #2296](https://github.com/kohya-ss/sd-scripts/pull/2296).
+        - It is enabled by default. You can specify the number of iterations with the `--svd_lowrank_niter` option (default is 2, more iterations will improve accuracy). Setting it to 0 will revert to the previous method. Please check `--help` for details.
+    - LoKr/LoHa is now supported for SDXL/Anima. See [PR #2275](https://github.com/kohya-ss/sd-scripts/pull/2275) for details.
+        - Please refer to the [documentation](./docs/loha_lokr.md) for details.
+    - Multi-resolution datasets (using the same image resized to multiple bucket sizes) are now supported in SD/SDXL training. We also addressed the issue of duplicate images with the same resolution being used in multi-resolution datasets. See [PR #2269](https://github.com/kohya-ss/sd-scripts/pull/2269) and [PR #2273](https://github.com/kohya-ss/sd-scripts/pull/2273) for details.
+        - Thanks to woct0rdho for the contribution.
+        - Please refer to the [English documentation](./docs/config_README-en.md#behavior-when-there-are-duplicate-subsets) / [Japanese documentation](./docs/config_README-ja.md#重複したサブセットが存在する時の挙動) for details.
+    - Stability when training with fp16 on Anima has been improved. See [PR #2297](https://github.com/kohya-ss/sd-scripts/pull/2297) for details. However, it still seems to be unstable in some cases. If you encounter any issues, please let us know the details via Issues.
+    - Other minor bug fixes and improvements were made.
 
 ### Supported Models
 
@@ -65,12 +85,14 @@ If you find this project helpful, please consider supporting its development via
 * **FLUX.1**
 * **LUMINA**
 * **HunyuanImage-2.1**
+* **Anima preview**
 
 ### Features
 
 * LoRA training
 * Fine-tuning (native training, DreamBooth): except for HunyuanImage-2.1
 * Textual Inversion training: SD/SDXL
+* Inpainting model training: SD1.5 and SDXL
 * Image generation
 * Other utilities such as model conversion, image tagging, LoRA merging, etc.
 
@@ -89,8 +111,10 @@ If you find this project helpful, please consider supporting its development via
 * [Fine-tuning](./docs/fine_tune.md)
 * [Textual Inversion Training](./docs/train_textual_inversion.md)
 * [ControlNet-LLLite Training](./docs/train_lllite_README.md) / [Japanese version](./docs/train_lllite_README-ja.md)
+* [Anima ControlNet-LLLite Training Guide](./docs/anima_train_control_net_lllite.md)
 * [Validation](./docs/validation.md)
 * [Masked Loss Training](./docs/masked_loss_README.md) / [Japanese version](./docs/masked_loss_README-ja.md)
+* [Inpainting Training](./docs/inpainting_training.md)
 
 ### Other Documentation (English and Japanese)
 

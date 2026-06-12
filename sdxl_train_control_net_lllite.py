@@ -134,6 +134,7 @@ def train(args):
     train_dataset_group.verify_bucket_reso_steps(32)
 
     if args.debug_dataset:
+        train_dataset_group.set_current_strategies()  # dataset needs to know the strategies explicitly
         train_util.debug_dataset(train_dataset_group)
         return
     if len(train_dataset_group) == 0:

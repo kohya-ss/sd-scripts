@@ -59,8 +59,8 @@ def save_to_file(file_name, state_dict, metadata):
 def index_sv_cumulative(S, target):
     original_sum = float(torch.sum(S))
     cumulative_sums = torch.cumsum(S, dim=0) / original_sum
-    index = int(torch.searchsorted(cumulative_sums, target)) + 1
-    index = max(1, min(index, len(S) - 1))
+    index = int(torch.searchsorted(cumulative_sums, target))
+    index = max(0, min(index, len(S) - 1))
 
     return index
 
@@ -69,8 +69,8 @@ def index_sv_fro(S, target):
     S_squared = S.pow(2)
     S_fro_sq = float(torch.sum(S_squared))
     sum_S_squared = torch.cumsum(S_squared, dim=0) / S_fro_sq
-    index = int(torch.searchsorted(sum_S_squared, target**2)) + 1
-    index = max(1, min(index, len(S) - 1))
+    index = int(torch.searchsorted(sum_S_squared, target**2))
+    index = max(0, min(index, len(S) - 1))
 
     return index
 
@@ -78,16 +78,23 @@ def index_sv_fro(S, target):
 def index_sv_ratio(S, target):
     max_sv = S[0]
     min_sv = max_sv / target
-    index = int(torch.sum(S > min_sv).item())
-    index = max(1, min(index, len(S) - 1))
+    index = int(torch.sum(S > min_sv).item()) - 1
+    index = max(0, min(index, len(S) - 1))
 
     return index
 
 
 # Modified from Kohaku-blueleaf's extract/merge functions
-def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
+def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=2):
     out_size, in_size, kernel_size, _ = weight.size()
-    U, S, Vh = torch.linalg.svd(weight.reshape(out_size, -1).to(device))
+    weight = weight.reshape(out_size, -1)
+    _in_size = in_size * kernel_size * kernel_size
+
+    if svd_lowrank_niter > 0 and out_size > 2048 and _in_size > 2048:
+        U, S, V = torch.svd_lowrank(weight.to(device), q=min(2 * lora_rank, out_size, _in_size), niter=svd_lowrank_niter)
+        Vh = V.T
+    else:
+        U, S, Vh = torch.linalg.svd(weight.to(device))
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -103,10 +110,14 @@ def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale
     return param_dict
 
 
-def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
+def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=2):
     out_size, in_size = weight.size()
 
-    U, S, Vh = torch.linalg.svd(weight.to(device))
+    if svd_lowrank_niter > 0 and out_size > 2048 and in_size > 2048:
+        U, S, V = torch.svd_lowrank(weight.to(device), q=min(2 * lora_rank, out_size, in_size), niter=svd_lowrank_niter)
+        Vh = V.T
+    else:
+        U, S, Vh = torch.linalg.svd(weight.to(device))
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -198,10 +209,9 @@ def rank_resize(S, rank, dynamic_method, dynamic_param, scale=1):
     return param_dict
 
 
-def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dynamic_method, dynamic_param, verbose):
+def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dynamic_method, dynamic_param, verbose, svd_lowrank_niter=2):
     max_old_rank = None
     new_alpha = None
-    verbose_str = "\n"
     fro_list = []
 
     if dynamic_method:
@@ -262,10 +272,10 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
 
                 if conv2d:
                     full_weight_matrix = merge_conv(lora_down_weight, lora_up_weight, device)
-                    param_dict = extract_conv(full_weight_matrix, new_conv_rank, dynamic_method, dynamic_param, device, scale)
+                    param_dict = extract_conv(full_weight_matrix, new_conv_rank, dynamic_method, dynamic_param, device, scale, svd_lowrank_niter)
                 else:
                     full_weight_matrix = merge_linear(lora_down_weight, lora_up_weight, device)
-                    param_dict = extract_linear(full_weight_matrix, new_rank, dynamic_method, dynamic_param, device, scale)
+                    param_dict = extract_linear(full_weight_matrix, new_rank, dynamic_method, dynamic_param, device, scale, svd_lowrank_niter)
 
                 if verbose:
                     max_ratio = param_dict["max_ratio"]
@@ -274,15 +284,13 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
                     if not np.isnan(fro_retained):
                         fro_list.append(float(fro_retained))
 
-                    verbose_str += f"{block_down_name:75} | "
+                    verbose_str = f"{block_down_name:75} | "
                     verbose_str += (
                         f"sum(S) retained: {sum_retained:.1%}, fro retained: {fro_retained:.1%}, max(S) ratio: {max_ratio:0.1f}"
                     )
-
-                if verbose and dynamic_method:
-                    verbose_str += f", dynamic | dim: {param_dict['new_rank']}, alpha: {param_dict['new_alpha']}\n"
-                else:
-                    verbose_str += "\n"
+                    if dynamic_method:
+                        verbose_str += f", dynamic | dim: {param_dict['new_rank']}, alpha: {param_dict['new_alpha']}"
+                    tqdm.write(verbose_str)
 
                 new_alpha = param_dict["new_alpha"]
                 o_lora_sd[block_down_name + lora_down_name + weight_name] = param_dict["lora_down"].to(save_dtype).contiguous()
@@ -297,7 +305,6 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
                 del param_dict
 
     if verbose:
-        print(verbose_str)
         print(f"Average Frobenius norm retention: {np.mean(fro_list):.2%} | std: {np.std(fro_list):0.3f}")
     logger.info("resizing complete")
     return o_lora_sd, max_old_rank, new_alpha
@@ -336,7 +343,7 @@ def resize(args):
 
     logger.info("Resizing Lora...")
     state_dict, old_dim, new_alpha = resize_lora_model(
-        lora_sd, args.new_rank, args.new_conv_rank, save_dtype, args.device, args.dynamic_method, args.dynamic_param, args.verbose
+        lora_sd, args.new_rank, args.new_conv_rank, save_dtype, args.device, args.dynamic_method, args.dynamic_param, args.verbose, args.svd_lowrank_niter
     )
 
     # update metadata
@@ -414,6 +421,13 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Specify dynamic resizing method, --new_rank is used as a hard limit for max rank",
     )
     parser.add_argument("--dynamic_param", type=float, default=None, help="Specify target for dynamic reduction")
+    parser.add_argument(
+        "--svd_lowrank_niter",
+        type=int,
+        default=2,
+        help="Number of iterations for svd_lowrank on large matrices (>2048 dims). 0 to disable and use full SVD"
+        " / 大行列(2048次元超)に対するsvd_lowrankの反復回数。0で無効化し完全SVDを使用",
+    )
 
     return parser
 
