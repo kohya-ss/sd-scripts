@@ -250,7 +250,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         is_train=True,
     ):
         assert isinstance(noise_scheduler, sd3_train_utils.FlowMatchEulerDiscreteScheduler)
-        noise = torch.randn_like(latents)
+        noise = train_util.sample_training_noise(args, latents)
         # get noisy model input and timesteps
         noisy_model_input, timesteps, sigmas = lumina_train_util.get_noisy_model_input_and_timesteps(
             args, noise_scheduler, latents, noise, accelerator.device, weight_dtype

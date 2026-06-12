@@ -534,7 +534,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         is_train=True,
     ):
         # Sample noise that we'll add to the latents
-        noise = torch.randn_like(latents)
+        noise = train_util.sample_training_noise(args, latents)
 
         # get noisy model input and timesteps
         noisy_model_input, _, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
