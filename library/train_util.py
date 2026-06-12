@@ -2333,6 +2333,8 @@ class FineTuningDataset(BaseDataset):
                             image_md = {"caption": line_md.get("caption", "")}
                             if "image_size" in line_md:
                                 image_md["image_size"] = line_md["image_size"]
+                            if "width" in line_md and "height" in line_md:
+                                image_md["image_size"] = [line_md["width"], line_md["height"]]
                             if "tags" in line_md:
                                 image_md["tags"] = line_md["tags"]
                             metadata[line_md["image_path"]] = image_md
@@ -2376,8 +2378,9 @@ class FineTuningDataset(BaseDataset):
             # Enumerate existing npz files
             strategy = LatentsCachingStrategy.get_strategy()
             npz_paths = []
-            for image_dir in image_dirs:
-                npz_paths.extend(glob.glob(os.path.join(image_dir, "*" + strategy.cache_suffix)))
+            if strategy is not None:    # If `cache_latents` is not enabled (and no strategy is set), skip this part
+                for image_dir in image_dirs:
+                    npz_paths.extend(glob.glob(os.path.join(image_dir, "*" + strategy.cache_suffix)))
             npz_paths = sorted(npz_paths, key=lambda item: len(os.path.basename(item)), reverse=True)  # longer paths first
 
             # Match image filename longer to shorter because some images share same prefix
@@ -2922,8 +2925,8 @@ def debug_dataset(train_dataset, show_input_ids=False):
                     im = np.transpose(im, (1, 2, 0))  # c,H,W -> H,W,c
                     im = im[:, :, ::-1]  # RGB -> BGR (OpenCV)
 
-                    if "conditioning_images" in example:
-                        cond_img = example["conditioning_images"][j]
+                    if "conditioning_images" in example or "masked_images" in example:
+                        cond_img = example["conditioning_images"][j] if "conditioning_images" in example else example["masked_images"][j]
                         logger.info(f"conditioning image size: {cond_img.size()}")
                         cond_img = ((cond_img.numpy() + 1.0) * 127.5).astype(np.uint8)
                         cond_img = np.transpose(cond_img, (1, 2, 0))

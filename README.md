@@ -108,6 +108,7 @@ If you find this project helpful, please consider supporting its development via
 * [Fine-tuning](./docs/fine_tune.md)
 * [Textual Inversion Training](./docs/train_textual_inversion.md)
 * [ControlNet-LLLite Training](./docs/train_lllite_README.md) / [Japanese version](./docs/train_lllite_README-ja.md)
+* [Anima ControlNet-LLLite Training Guide](./docs/anima_train_control_net_lllite.md)
 * [Validation](./docs/validation.md)
 * [Masked Loss Training](./docs/masked_loss_README.md) / [Japanese version](./docs/masked_loss_README-ja.md)
 * [Inpainting Training](./docs/inpainting_training.md)

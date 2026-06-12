@@ -11,7 +11,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 **Prerequisites:**
 
 * The `sd-scripts` repository has been cloned and the Python environment is ready.
-* A training dataset has been prepared. See the [Dataset Configuration Guide](link/to/dataset/config/doc).
+* A training dataset has been prepared. See the [Dataset Configuration Guide](./config_README-en.md).
 * SD3/3.5 model files for training are available.
 
 <details>
@@ -24,7 +24,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 **前提条件:**
 
 *   `sd-scripts`リポジトリのクローンとPython環境のセットアップが完了していること。
-*   学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）
+*   学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](./config_README-ja.md)を参照してください）
 *   学習対象のSD3/3.5モデルファイルが準備できていること。
 </details>
 
@@ -55,7 +55,7 @@ The following files are required before starting training:
 
 1. **Training script:** `sd3_train_network.py`
 2. **SD3/3.5 model file:** `.safetensors` file for the base model and paths to each text encoder. Single-file format can also be used.
-3. **Dataset definition file (.toml):** Dataset settings in TOML format. (See the [Dataset Configuration Guide](link/to/dataset/config/doc).) In this document we use `my_sd3_dataset_config.toml` as an example.
+3. **Dataset definition file (.toml):** Dataset settings in TOML format. (See the [Dataset Configuration Guide](./config_README-en.md).) In this document we use `my_sd3_dataset_config.toml` as an example.
 
 <details>
 <summary>日本語</summary>
@@ -64,7 +64,7 @@ The following files are required before starting training:
 1.  **学習スクリプト:** `sd3_train_network.py`
 2.  **SD3/3.5モデルファイル:** 学習のベースとなるSD3/3.5モデルの`.safetensors`ファイル。またText Encoderをそれぞれ対応する引数でパスを指定します。
     * 単一ファイル形式も使用可能です。
-3.  **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](link/to/dataset/config/doc)を参照してください）。
+3.  **データセット定義ファイル (.toml):** 学習データセットの設定を記述したTOML形式のファイル。（詳細は[データセット設定ガイド](./config_README-ja.md)を参照してください）。
     *   例として`my_sd3_dataset_config.toml`を使用します。
 </details>
 

@@ -16,7 +16,7 @@ This guide focuses on SDXL LoRA training, explaining the main differences from `
 **Prerequisites:**
 
 * You have cloned the `sd-scripts` repository and set up the Python environment.
-* Your training dataset is ready. (Please refer to the [Dataset Preparation Guide](link/to/dataset/doc) for dataset preparation)
+* Your training dataset is ready. (Please refer to the [Dataset Configuration Guide](./config_README-en.md) for dataset preparation)
 * You have read [How to Use the LoRA Training Script `train_network.py`](train_network.md).
 
 <details>
@@ -28,7 +28,7 @@ This guide focuses on SDXL LoRA training, explaining the main differences from `
 **前提条件:**
 
 *   `sd-scripts` リポジトリのクローンと Python 環境のセットアップが完了していること。
-*   学習用データセットの準備が完了していること。（データセットの準備については[データセット準備ガイド](link/to/dataset/doc)を参照してください）
+*   学習用データセットの準備が完了していること。（データセットの準備については[データセット設定ガイド](./config_README-ja.md)を参照してください）
 *   [LoRA学習スクリプト `train_network.py` の使い方](train_network.md) を一読していること。
 </details>
 
@@ -41,7 +41,7 @@ Before starting training, you need the following files:
 
 ### About the Dataset Definition File
 
-The basic format of the dataset definition file (`.toml`) is the same as for `train_network.py`. Please refer to the [Dataset Configuration Guide](link/to/dataset/config/doc) and [How to Use the LoRA Training Script `train_network.py`](train_network.md#about-the-dataset-definition-file).
+The basic format of the dataset definition file (`.toml`) is the same as for `train_network.py`. Please refer to the [Dataset Configuration Guide](./config_README-en.md) and [How to Use the LoRA Training Script `train_network.py`](train_network.md#about-the-dataset-definition-file).
 
 For SDXL, it is common to use high-resolution datasets and the aspect ratio bucketing feature (`enable_bucket = true`).
 
@@ -56,7 +56,7 @@ In this example, we'll use a file named `my_sdxl_dataset_config.toml`.
 
 ### データセット定義ファイルについて
 
-データセット定義ファイル (`.toml`) の基本的な書き方は `train_network.py` と共通です。[データセット設定ガイド](link/to/dataset/config/doc) および [LoRA学習スクリプト `train_network.py` の使い方](train_network.md#データセット定義ファイルについて) を参照してください。
+データセット定義ファイル (`.toml`) の基本的な書き方は `train_network.py` と共通です。[データセット設定ガイド](./config_README-ja.md) および [LoRA学習スクリプト `train_network.py` の使い方](train_network.md#データセット定義ファイルについて) を参照してください。
 
 SDXL では、高解像度のデータセットや、アスペクト比バケツ機能 (`enable_bucket = true`) の利用が一般的です。
 
