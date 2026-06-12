@@ -139,6 +139,7 @@ The prompt weighting such as `( )` and `[ ]` are working for SD/SDXL models, not
 ### 1.9. Regularization and Advanced Techniques
 
 *   `--noise_offset=N`: Enables noise offset and specifies its value. Expected to improve bias in image brightness and contrast. Recommended to enable as SDXL base models are trained with this (e.g., 0.0357). Original technical explanation [here](https://www.crosslabs.org/blog/diffusion-with-offset-noise).
+*   `--knn_noise_k=K`: Selects the base training noise source. `K=1` keeps standard Gaussian sampling (default). `K>1` draws `K` Gaussian candidates per sample and picks the nearest one in flattened latent space.
 *   `--noise_offset_random_strength`: Randomly varies noise offset strength between 0 and the specified value.
 *   `--adaptive_noise_scale=N`: Adjusts noise offset based on the mean absolute value of latents. Used with `--noise_offset`.
 *   `--multires_noise_iterations=N` / `--multires_noise_discount=D`: Enables multi-resolution noise. Adding noise of different frequency components is expected to improve detail reproduction. Specify iteration count N (around 6-10) and discount rate D (around 0.3). Technical explanation [here](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2).

@@ -41,6 +41,9 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
         val_dataset_group: Optional[train_util.DatasetGroup],
     ):
+        if getattr(args, "knn_noise_k", 1) < 1:
+            raise ValueError("knn_noise_k must be greater than or equal to 1")
+
         if args.fp8_base or args.fp8_base_unet:
             logger.warning("fp8_base and fp8_base_unet are not supported. / fp8_baseとfp8_base_unetはサポートされていません。")
             args.fp8_base = False
@@ -270,7 +273,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Sample noise
         if latents.ndim == 5:  # Fallback for 5D latents (old cache)
             latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
-        noise = torch.randn_like(latents)
+        noise = train_util.sample_training_noise(args, latents)
 
         # Get noisy model input and timesteps
         noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
@@ -390,6 +393,7 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_timestep_sampling"] = args.timestep_sampling
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
+        metadata["ss_knn_noise_k"] = getattr(args, "knn_noise_k", 1)
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)

@@ -1029,6 +1029,7 @@ class NetworkTrainer:
             "ss_seed": args.seed,
             "ss_lowram": args.lowram,
             "ss_noise_offset": args.noise_offset,
+            "ss_knn_noise_k": getattr(args, "knn_noise_k", 1),
             "ss_multires_noise_iterations": args.multires_noise_iterations,
             "ss_multires_noise_discount": args.multires_noise_discount,
             "ss_adaptive_noise_scale": args.adaptive_noise_scale,
