@@ -8,7 +8,7 @@ einops==0.7.0
 # pytorch-lightning==1.9.0
 bitsandbytes
 lion-pytorch==0.2.3
-schedulefree==1.4
+schedulefree @ git+https://github.com/facebookresearch/schedule_free.git@43e5c2d978920e1a3707a7609662c72b56401e62
 pytorch-optimizer @ git+https://github.com/kozistr/pytorch_optimizer.git@3d08fa0
 prodigy-plus-schedule-free==2.0.1
 prodigyopt==1.1.2
