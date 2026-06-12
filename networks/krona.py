@@ -303,7 +303,8 @@ class KronaModule(torch.nn.Module):
             rsq_scale = 1.0 / (self.allora_eta ** 2)
             accelerate = 1.0 / torch.sqrt(norms + rsq_scale)
             acc_val = accelerate.to(diff_weight.device).to(diff_weight.dtype)
-            diff_weight.register_hook(lambda grad: grad * acc_val)
+            if diff_weight.requires_grad:
+                diff_weight.register_hook(lambda grad: grad * acc_val)
 
         if self.wd:
 
