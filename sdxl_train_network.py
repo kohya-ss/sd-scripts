@@ -7,7 +7,10 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from library import sdxl_model_util, sdxl_train_util, strategy_base, strategy_sd, strategy_sdxl, train_util
+from library import sdxl_model_util, sdxl_train_util, strategy_base, strategy_sd, strategy_sdxl
+import library.args as args_util
+import library.model_io as model_io
+from library.dataset import DatasetGroup, MinimalDataset
 import train_network
 from library.utils import setup_logging
 
@@ -26,8 +29,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
     def assert_extra_args(
         self,
         args,
-        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
-        val_dataset_group: Optional[train_util.DatasetGroup],
+        train_dataset_group: Union[DatasetGroup, MinimalDataset],
+        val_dataset_group: Optional[DatasetGroup],
     ):
         sdxl_train_util.verify_sdxl_training_args(args)
 
@@ -60,7 +63,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         self.ckpt_info = ckpt_info
 
         # モデルに xformers とか memory efficient attention を組み込む
-        train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+        model_io.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
         if torch.__version__ >= "2.0.0":  # PyTorch 2.0.0 以上対応のxformersなら以下が使える
             vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
@@ -93,7 +96,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
             return None
 
     def cache_text_encoder_outputs_if_needed(
-        self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
+        self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: DatasetGroup, weight_dtype
     ):
         if args.cache_text_encoder_outputs:
             if not args.lowram:
@@ -173,8 +176,8 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     trainer = SdxlNetworkTrainer()
     trainer.train(args)

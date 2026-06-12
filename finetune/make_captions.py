@@ -18,7 +18,7 @@ from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 sys.path.append(os.path.dirname(__file__))
 from blip.blip import blip_decoder, is_url
-import library.train_util as train_util
+import library.dataset as dataset_util
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -89,7 +89,7 @@ def main(args):
 
     logger.info(f"load images from {args.train_data_dir}")
     train_data_dir_path = Path(args.train_data_dir)
-    image_paths = train_util.glob_images_pathlib(train_data_dir_path, args.recursive)
+    image_paths = dataset_util.glob_images_pathlib(train_data_dir_path, args.recursive)
     logger.info(f"found {len(image_paths)} images.")
 
     logger.info(f"loading BLIP caption: {args.caption_weights}")

@@ -35,7 +35,10 @@ from library import (
 )
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
-import library.train_util as train_util
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.dataset as dataset_util
+import library.optimizer as optimizer_util
 import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
@@ -59,8 +62,8 @@ from library.custom_train_functions import apply_masked_loss, add_custom_train_a
 
 
 def train(args):
-    train_util.verify_training_args(args)
-    train_util.prepare_dataset_args(args, True)
+    args_util.verify_training_args(args)
+    accelerator_setup.prepare_dataset_args(args, True)
     # sdxl_train_util.verify_sdxl_training_args(args)
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
@@ -148,7 +151,7 @@ def train(args):
             config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
         )
     else:
-        train_dataset_group = train_util.load_arbitrary_dataset(args)
+        train_dataset_group = dataset_util.load_arbitrary_dataset(args)
         val_dataset_group = None
 
     current_epoch = Value("i", 0)
@@ -156,7 +159,7 @@ def train(args):
     ds_for_collator = (
         train_dataset_group if args.max_data_loader_n_workers == 0 else None
     )
-    collator = train_util.collator_class(current_epoch, current_step, ds_for_collator)
+    collator = dataset_util.collator_class(current_epoch, current_step, ds_for_collator)
 
     train_dataset_group.verify_bucket_reso_steps(16)  # TODO これでいいか確認
 
@@ -175,7 +178,7 @@ def train(args):
         )
 
         train_dataset_group.set_current_strategies()
-        train_util.debug_dataset(train_dataset_group, True)
+        dataset_util.debug_dataset(train_dataset_group, True)
         return
     if len(train_dataset_group) == 0:
         logger.error(
@@ -195,10 +198,10 @@ def train(args):
 
     # acceleratorを準備する
     logger.info("prepare accelerator")
-    accelerator = train_util.prepare_accelerator(args)
+    accelerator = accelerator_setup.prepare_accelerator(args)
 
     # mixed precisionに対応した型を用意しておき適宜castする
-    weight_dtype, save_dtype = train_util.prepare_dtype(args)
+    weight_dtype, save_dtype = accelerator_setup.prepare_dtype(args)
 
     # モデルを読み込む
 
@@ -414,7 +417,7 @@ def train(args):
         # prepare optimizers for each group
         optimizers = []
         for group in grouped_params:
-            _, _, optimizer = train_util.get_optimizer(args, trainable_params=[group])
+            _, _, optimizer = optimizer_util.get_optimizer(args, trainable_params=[group])
             optimizers.append(optimizer)
         optimizer = optimizers[0]  # avoid error in the following code
 
@@ -422,17 +425,17 @@ def train(args):
             f"using {len(optimizers)} optimizers for blockwise fused optimizers"
         )
 
-        if train_util.is_schedulefree_optimizer(optimizers[0], args):
+        if optimizer_util.is_schedulefree_optimizer(optimizers[0], args):
             raise ValueError(
                 "Schedule-free optimizer is not supported with blockwise fused optimizers"
             )
         optimizer_train_fn = lambda: None  # dummy function
         optimizer_eval_fn = lambda: None  # dummy function
     else:
-        _, _, optimizer = train_util.get_optimizer(
+        _, _, optimizer = optimizer_util.get_optimizer(
             args, trainable_params=params_to_optimize
         )
-        optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(
+        optimizer_train_fn, optimizer_eval_fn = optimizer_util.get_optimizer_train_eval_fn(
             optimizer, args
         )
 
@@ -472,12 +475,12 @@ def train(args):
     if args.blockwise_fused_optimizers:
         # prepare lr schedulers for each optimizer
         lr_schedulers = [
-            train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+            optimizer_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
             for optimizer in optimizers
         ]
         lr_scheduler = lr_schedulers[0]  # avoid error in the following code
     else:
-        lr_scheduler = train_util.get_scheduler_fix(
+        lr_scheduler = optimizer_util.get_scheduler_fix(
             args, optimizer, accelerator.num_processes
         )
 
@@ -533,10 +536,10 @@ def train(args):
     if args.full_fp16:
         # During deepseed training, accelerate not handles fp16/bf16|mixed precision directly via scaler. Let deepspeed engine do.
         # -> But we think it's ok to patch accelerator even if deepspeed is enabled.
-        train_util.patch_accelerator_for_fp16_training(accelerator)
+        accelerator_setup.patch_accelerator_for_fp16_training(accelerator)
 
     # resumeする
-    train_util.resume_from_local_or_hf_if_specified(accelerator, args)
+    args_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
     if args.fused_backward_pass:
         # use fused optimizer for backward pass: other optimizers will be supported in the future
@@ -651,7 +654,7 @@ def train(args):
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(
             "finetuning" if args.log_tracker_name is None else args.log_tracker_name,
-            config=train_util.get_sanitized_config_or_none(args),
+            config=args_util.get_sanitized_config_or_none(args),
             init_kwargs=init_kwargs,
         )
 
@@ -845,7 +848,7 @@ def train(args):
             current_loss = loss.detach().item()  # 平均なのでbatch sizeは関係ないはず
             if len(accelerator.trackers) > 0:
                 logs = {"loss": current_loss}
-                train_util.append_lr_to_logs(
+                optimizer_util.append_lr_to_logs(
                     logs, lr_scheduler, args.optimizer_type, including_unet=True
                 )
 
@@ -914,17 +917,17 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     add_logging_arguments(parser)
-    train_util.add_sd_models_arguments(parser)  # TODO split this
+    args_util.add_sd_models_arguments(parser)  # TODO split this
     sai_model_spec.add_model_spec_arguments(parser)
-    train_util.add_dataset_arguments(parser, True, True, True)
-    train_util.add_training_arguments(parser, False)
-    train_util.add_masked_loss_arguments(parser)
+    args_util.add_dataset_arguments(parser, True, True, True)
+    args_util.add_training_arguments(parser, False)
+    args_util.add_masked_loss_arguments(parser)
     deepspeed_utils.add_deepspeed_arguments(parser)
-    train_util.add_sd_saving_arguments(parser)
-    train_util.add_optimizer_arguments(parser)
+    args_util.add_sd_saving_arguments(parser)
+    args_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     add_custom_train_arguments(parser)  # TODO remove this from here
-    train_util.add_dit_training_arguments(parser)
+    args_util.add_dit_training_arguments(parser)
     lumina_train_util.add_lumina_train_arguments(parser)
 
     parser.add_argument(
@@ -961,7 +964,7 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     train(args)

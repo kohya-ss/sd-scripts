@@ -12,7 +12,10 @@ import torch.nn as nn
 from PIL import Image
 from accelerate import Accelerator, PartialState
 
-from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, sampling, train_util
+from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, sampling
+import library.args as args_util
+import library.model_io as model_io
+from library.dataset import DatasetGroup, MinimalDataset
 from library.device_utils import clean_memory_on_device, init_ipex
 
 init_ipex()
@@ -27,7 +30,6 @@ from library import (
     sd3_train_utils,
     strategy_base,
     strategy_hunyuan_image,
-    train_util,
 )
 from library.utils import setup_logging
 
@@ -316,8 +318,8 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
     def assert_extra_args(
         self,
         args,
-        train_dataset_group: Union[train_util.DatasetGroup, train_util.MinimalDataset],
-        val_dataset_group: Optional[train_util.DatasetGroup],
+        train_dataset_group: Union[DatasetGroup, MinimalDataset],
+        val_dataset_group: Optional[DatasetGroup],
     ):
         super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
@@ -444,7 +446,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
             return None
 
     def cache_text_encoder_outputs_if_needed(
-        self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: train_util.DatasetGroup, weight_dtype
+        self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: DatasetGroup, weight_dtype
     ):
         vlm_device = "cpu" if args.text_encoder_cpu else accelerator.device
         if args.cache_text_encoder_outputs:
@@ -580,7 +582,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
         return loss
 
     def get_sai_model_spec(self, args):
-        return train_util.get_sai_model_spec_dataclass(None, args, False, True, False, hunyuan_image="2.1").to_metadata_dict()
+        return model_io.get_sai_model_spec_dataclass(None, args, False, True, False, hunyuan_image="2.1").to_metadata_dict()
 
     def update_metadata(self, metadata, args):
         metadata["ss_logit_mean"] = args.logit_mean
@@ -633,7 +635,7 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
-    train_util.add_dit_training_arguments(parser)
+    args_util.add_dit_training_arguments(parser)
 
     parser.add_argument(
         "--text_encoder",
@@ -707,8 +709,8 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility

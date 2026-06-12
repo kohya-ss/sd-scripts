@@ -5,18 +5,17 @@ between memory and ``.npz`` files on disk. Used both during the explicit
 ``cache_latents`` / ``cache_text_encoder_outputs`` preprocessing passes and on
 the fly inside ``BaseDataset``.
 
-``BucketManager`` / ``load_image`` / ``IMAGE_TRANSFORMS`` (and ``ImageInfo`` for
-type checks) live in ``library.dataset``; ``library.dataset`` imports
-``library.caching`` at top level so we pull the dataset symbols in lazily
-through ``_ds()`` to avoid an import cycle.
+The leaf image helpers (``load_image`` / ``IMAGE_TRANSFORMS`` /
+``trim_and_resize_if_required``) live in ``library.utils``; ``ImageInfo`` is
+only needed for type checks and stays behind ``TYPE_CHECKING`` to keep this
+module free of any (circular) dependency on ``library.dataset``.
 ``HIGH_VRAM`` lives in ``library.accelerator_setup``; it has no cycle with this
 module so it is imported directly.
 """
 
 import logging
 import os
-import random
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
 import numpy as np
 import torch
@@ -24,16 +23,10 @@ from diffusers import AutoencoderKL
 
 from library import accelerator_setup
 from library.device_utils import clean_memory_on_device
-from library.utils import resize_image  # noqa: F401  (kept for symmetry / debugging)
+from library.utils import IMAGE_TRANSFORMS, load_image, trim_and_resize_if_required
 
 if TYPE_CHECKING:
     from library.dataset import ImageInfo
-
-
-def _ds():
-    """Late-bound ``library.dataset`` accessor (BucketManager / load_image / IMAGE_TRANSFORMS)."""
-    import library.dataset as m
-    return m
 
 
 logger = logging.getLogger(__name__)
@@ -73,37 +66,6 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool, alph
     return True
 
 
-def trim_and_resize_if_required(
-    random_crop: bool, image: np.ndarray, reso, resized_size: Tuple[int, int], resize_interpolation: Optional[str] = None
-) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
-    image_height, image_width = image.shape[0:2]
-    original_size = (image_width, image_height)  # size before resize
-
-    if image_width != resized_size[0] or image_height != resized_size[1]:
-        image = resize_image(image, image_width, image_height, resized_size[0], resized_size[1], resize_interpolation)
-
-    image_height, image_width = image.shape[0:2]
-
-    if image_width > reso[0]:
-        trim_size = image_width - reso[0]
-        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
-        # logger.info(f"w {trim_size} {p}")
-        image = image[:, p : p + reso[0]]
-    if image_height > reso[1]:
-        trim_size = image_height - reso[1]
-        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
-        # logger.info(f"h {trim_size} {p})
-        image = image[p : p + reso[1]]
-
-    # random cropの場合のcropされた値をどうcrop left/topに反映するべきか全くアイデアがない
-    # I have no idea how to reflect the cropped value in crop left/top in the case of random crop
-
-    crop_ltrb = _ds().BucketManager.get_crop_ltrb(reso, original_size)
-
-    assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
-    return image, original_size, crop_ltrb
-
-
 # for new_cache_latents
 def load_images_and_masks_for_caching(
     image_infos: List["ImageInfo"], use_alpha_mask: bool, random_crop: bool
@@ -124,7 +86,7 @@ def load_images_and_masks_for_caching(
     crop_ltrbs: List[Tuple[int, int, int, int]] = []
     for info in image_infos:
         image = (
-            _ds().load_image(info.absolute_path, use_alpha_mask)
+            load_image(info.absolute_path, use_alpha_mask)
             if info.image is None
             else np.array(info.image, np.uint8)
         )
@@ -148,7 +110,7 @@ def load_images_and_masks_for_caching(
         alpha_masks.append(alpha_mask)
 
         image = image[:, :, :3]  # remove alpha channel if exists
-        image = _ds().IMAGE_TRANSFORMS(image)
+        image = IMAGE_TRANSFORMS(image)
         images.append(image)
 
     img_tensor = torch.stack(images, dim=0)
@@ -176,7 +138,7 @@ def cache_batch_latents(
     alpha_masks: List[np.ndarray] = []
     for info in image_infos:
         image = (
-            _ds().load_image(info.absolute_path, use_alpha_mask)
+            load_image(info.absolute_path, use_alpha_mask)
             if info.image is None
             else np.array(info.image, np.uint8)
         )
@@ -200,7 +162,7 @@ def cache_batch_latents(
         alpha_masks.append(alpha_mask)
 
         image = image[:, :, :3]  # remove alpha channel if exists
-        image = _ds().IMAGE_TRANSFORMS(image)
+        image = IMAGE_TRANSFORMS(image)
         images.append(image)
 
     img_tensors = torch.stack(images, dim=0)

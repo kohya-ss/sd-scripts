@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 
 from pathlib import Path
 from PIL import Image
@@ -13,8 +14,12 @@ init_ipex()
 from transformers import AutoProcessor, AutoModelForCausalLM
 from transformers.generation.utils import GenerationMixin
 
-import library.train_util as train_util
-from finetune.image_loading_dataset import ImageLoadingDataset
+import library.dataset as dataset_util
+
+# finetune/ is not an installed package; allow running this file as a script
+# from any directory by importing the sibling module via the script directory
+sys.path.append(os.path.dirname(__file__))
+from image_loading_dataset import ImageLoadingDataset
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -80,7 +85,7 @@ def main(args):
 
     logger.info(f"load images from {args.train_data_dir}")
     train_data_dir_path = Path(args.train_data_dir)
-    image_paths = train_util.glob_images_pathlib(train_data_dir_path, args.recursive)
+    image_paths = dataset_util.glob_images_pathlib(train_data_dir_path, args.recursive)
     logger.info(f"found {len(image_paths)} images.")
 
     # できればcacheに依存せず明示的にダウンロードしたい

@@ -3,7 +3,7 @@ from safetensors.torch import save_file
 from safetensors import safe_open
 
 
-from library import train_util
+import library.model_io as model_io
 from library.utils import setup_logging
 
 setup_logging()
@@ -132,7 +132,7 @@ def main(args):
     # Calculate hash
     if metadata is not None:
         logger.info(f"Calculating hashes and creating metadata...")
-        model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+        model_hash, legacy_hash = model_io.precalculate_safetensors_hashes(state_dict, metadata)
         metadata["sshs_model_hash"] = model_hash
         metadata["sshs_legacy_hash"] = legacy_hash
 

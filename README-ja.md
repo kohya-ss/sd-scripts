@@ -50,6 +50,13 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **Version 0.11.0 (2026-06-12):**
+    - コードベースの大規模な内部リファクタリングを行い、コードベースの品質と保守性を向上させました。[PR #2372](https://github.com/kohya-ss/sd-scripts/pull/2372)
+        - ユーザーの方には直接の影響が極力少なくなるよう配慮しました。詳細について、および不具合報告などは[こちらのdiscussion](https://github.com/kohya-ss/sd-scripts/discussions/2358)までお願いします。
+
+- **Version 0.10.6 (2026-06-12):**
+    - リファクタリングマージ前の安定バージョン。
+
 - **Version 0.10.5 (2026-05-08):**
     - transformersのバージョン5以降に対応しました。[PR #2315](https://github.com/kohya-ss/sd-scripts/pull/2315) および [PR #2316](https://github.com/kohya-ss/sd-scripts/pull/2316) marcus165090-spec氏に感謝します。
         - `requirements.txt`の`transformers`のバージョンは4.xのままですが、5.xでも動作します。何らかの理由で5.xを用いる場合はdiffusersもあわせて最新バージョンにしてください。
@@ -61,22 +68,6 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
     - SD 1.5/SDXLのinpaintingモデルの学習に対応しました。[PR #2309](https://github.com/kohya-ss/sd-scripts/pull/2309) および [PR #2318](https://github.com/kohya-ss/sd-scripts/pull/2318)allanoepping氏に感謝します。
         - 詳細は[ドキュメント](./docs/inpainting_training.md)をご覧ください。
 
-- **Version 0.10.3 (2026-04-02):**
-    - Animaでfp16で学習する際の安定性をさらに改善しました。[PR #2302](https://github.com/kohya-ss/sd-scripts/pull/2302) 問題をご報告いただいた方々に深く感謝します。
-
-- **Version 0.10.2 (2026-03-30):**
-    - SD/SDXLのLECO学習に対応しました。[PR #2285](https://github.com/kohya-ss/sd-scripts/pull/2285) および [PR #2294](https://github.com/kohya-ss/sd-scripts/pull/2294) umisetokikaze氏に深く感謝します。
-        - 詳細は[ドキュメント](./docs/train_leco.md)をご覧ください。
-    - `networks/resize_lora.py`が`torch.svd_lowrank`に対応し、大幅に高速化されました。[PR #2240](https://github.com/kohya-ss/sd-scripts/pull/2240) および [PR #2296](https://github.com/kohya-ss/sd-scripts/pull/2296) woct0rdho氏に深く感謝します。
-        - デフォルトは有効になっています。`--svd_lowrank_niter`オプションで反復回数を指定できます（デフォルトは2、多いほど精度が向上します）。0にすると従来の方法になります。詳細は `--help` でご確認ください。
-    - LoKr/LoHaをSDXL/Animaでサポートしました。[PR #2275](https://github.com/kohya-ss/sd-scripts/pull/2275)
-        - 詳細は[ドキュメント](./docs/loha_lokr.md)をご覧ください。
-    - マルチ解像度データセット（同じ画像を複数のbucketサイズにリサイズして使用）がSD/SDXLの学習でサポートされました。[PR #2269](https://github.com/kohya-ss/sd-scripts/pull/2269) また、マルチ解像度データセットで同じ解像度の画像が重複して使用される事象への対応を行いました。[PR #2273](https://github.com/kohya-ss/sd-scripts/pull/2273)
-        - woct0rdho氏に感謝します。
-        - [ドキュメント英語版](./docs/config_README-en.md#behavior-when-there-are-duplicate-subsets) / [ドキュメント日本語版](./docs/config_README-ja.md#重複したサブセットが存在する時の挙動) をご覧ください。
-    - Animaでfp16で学習する際の安定性が向上しました。[PR #2297](https://github.com/kohya-ss/sd-scripts/pull/2297) ただし、依然として不安定な場合があるようです。問題が発生する場合は、詳細をIssueでお知らせください。
-    - その他、細かいバグ修正や改善を行いました。
-
 ### サポートモデル
 
 * **Stable Diffusion 1.x/2.x**
@@ -85,7 +76,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * **FLUX.1**
 * **LUMINA**
 * **HunyuanImage-2.1**
-* **Anima preview**
+* **Anima**
 
 ### 機能
 

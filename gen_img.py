@@ -52,7 +52,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 import library.model_util as model_util
-import library.train_util as train_util
+from library.hidden_states import pool_workaround
 import library.sdxl_model_util as sdxl_model_util
 import library.sdxl_train_util as sdxl_train_util
 from networks.lora import LoRANetwork
@@ -1165,7 +1165,7 @@ def get_unweighted_text_embeddings(
             if pool is None:
                 pool = enc_out.get("text_embeds", None)  # use 1st chunk, if provided
                 if pool is not None:
-                    pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input_chunk, eos)
+                    pool = pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input_chunk, eos)
 
             if no_boseos_middle:
                 if i == 0:
@@ -1187,7 +1187,7 @@ def get_unweighted_text_embeddings(
             text_embeddings = text_encoder.text_model.final_layer_norm(text_embeddings)
         pool = enc_out.get("text_embeds", None)  # text encoder 1 doesn't return this
         if pool is not None:
-            pool = train_util.pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input, eos)
+            pool = pool_workaround(text_encoder, enc_out["last_hidden_state"], text_input, eos)
     return text_embeddings, pool
 
 

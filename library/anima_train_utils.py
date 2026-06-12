@@ -14,7 +14,8 @@ from tqdm import tqdm
 from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
-from library import anima_models, anima_utils, checkpoint_io, sampling, train_util, qwen_image_autoencoder_kl
+from library import anima_models, anima_utils, checkpoint_io, sampling, qwen_image_autoencoder_kl
+import library.model_io as model_io
 
 init_ipex()
 
@@ -257,7 +258,7 @@ def save_anima_model_on_train_end(
     """Save Anima model at the end of training."""
 
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec_dataclass(
+        sai_metadata = model_io.get_sai_model_spec_dataclass(
             None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
         ).to_metadata_dict()
         dit_sd = dit.state_dict()
@@ -280,7 +281,7 @@ def save_anima_model_on_epoch_end_or_stepwise(
     """Save Anima model at epoch end or specific steps."""
 
     def sd_saver(ckpt_file, epoch_no, global_step):
-        sai_metadata = train_util.get_sai_model_spec_dataclass(
+        sai_metadata = model_io.get_sai_model_spec_dataclass(
             None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
         ).to_metadata_dict()
         dit_sd = dit.state_dict()

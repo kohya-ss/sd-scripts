@@ -21,8 +21,9 @@ from library import (
     strategy_base,
     strategy_lumina,
     sampling,
-    train_util,
 )
+import library.args as args_util
+import library.model_io as model_io
 from library.utils import setup_logging
 
 setup_logging()
@@ -326,7 +327,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         return loss
 
     def get_sai_model_spec(self, args):
-        return train_util.get_sai_model_spec(None, args, False, True, False, lumina="lumina2")
+        return model_io.get_sai_model_spec(None, args, False, True, False, lumina="lumina2")
 
     def update_metadata(self, metadata, args):
         metadata["ss_weighting_scheme"] = args.weighting_scheme
@@ -372,7 +373,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
-    train_util.add_dit_training_arguments(parser)
+    args_util.add_dit_training_arguments(parser)
     lumina_train_util.add_lumina_train_arguments(parser)
     return parser
 
@@ -380,8 +381,8 @@ def setup_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     parser = setup_parser()
     args = parser.parse_args()
-    train_util.verify_command_line_training_args(args)
-    args = train_util.read_config_from_file(args, parser)
+    args_util.verify_command_line_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
 
     trainer = LuminaNetworkTrainer()
     trainer.train(args)

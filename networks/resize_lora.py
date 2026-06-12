@@ -9,7 +9,7 @@ from safetensors.torch import load_file, save_file, safe_open
 from tqdm import tqdm
 import numpy as np
 
-from library import train_util
+import library.model_io as model_io
 from library import model_util
 from library.utils import setup_logging
 
@@ -370,7 +370,7 @@ def resize(args):
         if type(value) == torch.Tensor and value.dtype.is_floating_point and value.dtype != save_dtype:
             state_dict[key] = value.to(save_dtype)
 
-    model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
+    model_hash, legacy_hash = model_io.precalculate_safetensors_hashes(state_dict, metadata)
     metadata["sshs_model_hash"] = model_hash
     metadata["sshs_legacy_hash"] = legacy_hash
 

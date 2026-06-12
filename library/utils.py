@@ -1,10 +1,10 @@
 import logging
+import random
 import sys
 import threading
 from typing import *
 
 import torch
-import torch.nn as nn
 from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
@@ -95,40 +95,6 @@ logger = logging.getLogger(__name__)
 # region PyTorch utils
 
 
-def swap_weight_devices(layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
-    assert layer_to_cpu.__class__ == layer_to_cuda.__class__
-
-    weight_swap_jobs = []
-    for module_to_cpu, module_to_cuda in zip(layer_to_cpu.modules(), layer_to_cuda.modules()):
-        if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
-            weight_swap_jobs.append((module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data))
-
-    torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
-
-    stream = torch.cuda.Stream()
-    with torch.cuda.stream(stream):
-        # cuda to cpu
-        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
-            cuda_data_view.record_stream(stream)
-            module_to_cpu.weight.data = cuda_data_view.data.to("cpu", non_blocking=True)
-
-        stream.synchronize()
-
-        # cpu to cuda
-        for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
-            cuda_data_view.copy_(module_to_cuda.weight.data, non_blocking=True)
-            module_to_cuda.weight.data = cuda_data_view
-
-    stream.synchronize()
-    torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
-
-
-def weighs_to_device(layer: nn.Module, device: torch.device):
-    for module in layer.modules():
-        if hasattr(module, "weight") and module.weight is not None:
-            module.weight.data = module.weight.data.to(device, non_blocking=True)
-
-
 def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) -> torch.dtype:
     """
     Convert a string to a torch.dtype
@@ -192,6 +158,80 @@ def str_to_dtype(s: Optional[str], default_dtype: Optional[torch.dtype] = None) 
 # endregion
 
 # region Image utils
+
+IMAGE_TRANSFORMS = transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ]
+)
+
+
+def load_image(image_path, alpha=False):
+    try:
+        with Image.open(image_path) as image:
+            if alpha:
+                if not image.mode == "RGBA":
+                    image = image.convert("RGBA")
+            else:
+                if not image.mode == "RGB":
+                    image = image.convert("RGB")
+            img = np.array(image, np.uint8)
+            return img
+    except (IOError, OSError) as e:
+        logger.error(f"Error loading file: {image_path}")
+        raise e
+
+
+def get_crop_ltrb(bucket_reso: Tuple[int, int], image_size: Tuple[int, int]):
+    # Stability AIの前処理に合わせてcrop left/topを計算する。crop rightはflipのaugmentationのために求める
+    # Calculate crop left/top according to the preprocessing of Stability AI. Crop right is calculated for flip augmentation.
+
+    bucket_ar = bucket_reso[0] / bucket_reso[1]
+    image_ar = image_size[0] / image_size[1]
+    if bucket_ar > image_ar:
+        # bucketのほうが横長→縦を合わせる
+        resized_width = bucket_reso[1] * image_ar
+        resized_height = bucket_reso[1]
+    else:
+        resized_width = bucket_reso[0]
+        resized_height = bucket_reso[0] / image_ar
+    crop_left = (bucket_reso[0] - resized_width) // 2
+    crop_top = (bucket_reso[1] - resized_height) // 2
+    crop_right = crop_left + resized_width
+    crop_bottom = crop_top + resized_height
+    return crop_left, crop_top, crop_right, crop_bottom
+
+
+def trim_and_resize_if_required(
+    random_crop: bool, image: np.ndarray, reso, resized_size: Tuple[int, int], resize_interpolation: Optional[str] = None
+) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
+    image_height, image_width = image.shape[0:2]
+    original_size = (image_width, image_height)  # size before resize
+
+    if image_width != resized_size[0] or image_height != resized_size[1]:
+        image = resize_image(image, image_width, image_height, resized_size[0], resized_size[1], resize_interpolation)
+
+    image_height, image_width = image.shape[0:2]
+
+    if image_width > reso[0]:
+        trim_size = image_width - reso[0]
+        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+        # logger.info(f"w {trim_size} {p}")
+        image = image[:, p : p + reso[0]]
+    if image_height > reso[1]:
+        trim_size = image_height - reso[1]
+        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+        # logger.info(f"h {trim_size} {p})
+        image = image[p : p + reso[1]]
+
+    # random cropの場合のcropされた値をどうcrop left/topに反映するべきか全くアイデアがない
+    # I have no idea how to reflect the cropped value in crop left/top in the case of random crop
+
+    crop_ltrb = get_crop_ltrb(reso, original_size)
+
+    assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
+    return image, original_size, crop_ltrb
 
 
 def pil_resize(image, size, interpolation):

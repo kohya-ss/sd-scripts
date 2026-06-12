@@ -10,7 +10,7 @@ import torch
 import toml
 from torch.utils.checkpoint import checkpoint
 
-from library import checkpoint_io, train_util
+from library import checkpoint_io
 
 import logging
 

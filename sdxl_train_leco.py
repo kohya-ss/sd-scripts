@@ -11,7 +11,11 @@ from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
 
-from library import custom_train_functions, logging_util, sdxl_model_util, sdxl_train_util, strategy_sdxl, train_util
+from library import custom_train_functions, logging_util, sdxl_model_util, sdxl_train_util, strategy_sdxl
+import library.accelerator_setup as accelerator_setup
+import library.args as args_util
+import library.model_io as model_io
+import library.optimizer as optimizer_util
 from library.custom_train_functions import apply_snr_weight, prepare_scheduler_for_custom_training
 from library.leco_train_util import (
     PromptEmbedsCache,
@@ -38,9 +42,9 @@ logger = logging.getLogger(__name__)
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    train_util.add_sd_models_arguments(parser)
-    train_util.add_optimizer_arguments(parser)
-    train_util.add_training_arguments(parser, support_dreambooth=False)
+    args_util.add_sd_models_arguments(parser)
+    args_util.add_optimizer_arguments(parser)
+    args_util.add_training_arguments(parser, support_dreambooth=False)
     custom_train_functions.add_custom_train_arguments(parser, support_weighted_captions=False)
     sdxl_train_util.add_sdxl_training_arguments(parser, support_text_encoder_caching=False)
     add_logging_arguments(parser)
@@ -88,7 +92,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dim_from_weights", action="store_true", help="infer network dim from network_weights")
     parser.add_argument("--unet_lr", type=float, default=None, help="learning rate for U-Net / U-Netの学習率")
 
-    # dummy arguments required by train_util.verify_training_args / deepspeed_utils (LECO does not use datasets or deepspeed)
+    # dummy arguments required by args_util.verify_training_args / deepspeed_utils (LECO does not use datasets or deepspeed)
     parser.add_argument("--cache_latents", action="store_true", default=False, help=argparse.SUPPRESS)
     parser.add_argument("--cache_latents_to_disk", action="store_true", default=False, help=argparse.SUPPRESS)
     parser.add_argument("--deepspeed", action="store_true", default=False, help=argparse.SUPPRESS)
@@ -99,8 +103,8 @@ def setup_parser() -> argparse.ArgumentParser:
 def main():
     parser = setup_parser()
     args = parser.parse_args()
-    args = train_util.read_config_from_file(args, parser)
-    train_util.verify_training_args(args)
+    args = args_util.read_config_from_file(args, parser)
+    args_util.verify_training_args(args)
     sdxl_train_util.verify_sdxl_training_args(args, support_text_encoder_caching=False)
 
     if args.output_dir is None:
@@ -112,8 +116,8 @@ def main():
         args.seed = random.randint(0, 2**32 - 1)
     set_seed(args.seed)
 
-    accelerator = train_util.prepare_accelerator(args)
-    weight_dtype, save_dtype = train_util.prepare_dtype(args)
+    accelerator = accelerator_setup.prepare_accelerator(args)
+    weight_dtype, save_dtype = accelerator_setup.prepare_dtype(args)
 
     prompt_settings = load_prompt_settings(args.prompts_file)
     logger.info(f"loaded {len(prompt_settings)} LECO prompt settings from {args.prompts_file}")
@@ -124,7 +128,7 @@ def main():
     del vae
     text_encoders = [text_encoder1, text_encoder2]
 
-    train_util.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
+    model_io.replace_unet_modules(unet, args.mem_eff_attn, args.xformers, args.sdpa)
     unet.requires_grad_(False)
     unet.to(accelerator.device, dtype=weight_dtype)
     unet.train()
@@ -195,16 +199,16 @@ def main():
 
     unet_lr = args.unet_lr if args.unet_lr is not None else args.learning_rate
     trainable_params, _ = network.prepare_optimizer_params(None, unet_lr, args.learning_rate)
-    _, _, optimizer = train_util.get_optimizer(args, trainable_params)
-    lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
+    _, _, optimizer = optimizer_util.get_optimizer(args, trainable_params)
+    lr_scheduler = optimizer_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
     network, optimizer, lr_scheduler = accelerator.prepare(network, optimizer, lr_scheduler)
     accelerator.unwrap_model(network).prepare_grad_etc(text_encoders, unet)
 
     if args.full_fp16:
-        train_util.patch_accelerator_for_fp16_training(accelerator)
+        accelerator_setup.patch_accelerator_for_fp16_training(accelerator)
 
-    optimizer_train_fn, _ = train_util.get_optimizer_train_eval_fn(optimizer, args)
+    optimizer_train_fn, _ = optimizer_util.get_optimizer_train_eval_fn(optimizer, args)
     optimizer_train_fn()
     logging_util.init_trackers(accelerator, args, "sdxl_leco_train")
 
