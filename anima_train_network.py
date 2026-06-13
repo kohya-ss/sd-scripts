@@ -22,6 +22,7 @@ from library import (
     sampling,
 )
 import library.args as args_util
+import library.compile_utils as compile_utils
 import library.model_io as model_io
 from library.dataset import DatasetGroup, MinimalDataset
 import train_network
@@ -77,6 +78,16 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             assert (
                 args.blocks_to_swap is None or args.blocks_to_swap == 0
             ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
+
+        if args.compile:
+            assert not args.torch_compile, (
+                "--compile (per-block torch.compile) and --torch_compile (accelerate dynamo) cannot be used together"
+                " / --compile（ブロック単位torch.compile）と--torch_compile（accelerate dynamo）は併用できません"
+            )
+            assert not (args.compile_fullgraph and args.split_attn), (
+                "--compile_fullgraph cannot be used with --split_attn (split attention uses dynamic control flow)"
+                " / --compile_fullgraphは--split_attnと併用できません（split attentionは動的な制御フローを使用します）"
+            )
 
         train_dataset_group.verify_bucket_reso_steps(16)  # WanVAE spatial downscale = 8 and patch size = 2
         if val_dataset_group is not None:
@@ -411,12 +422,21 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             unet.enable_gradient_checkpointing(unsloth_offload=True)
 
         if not self.is_swapping_blocks:
-            return super().prepare_unet_with_accelerator(args, accelerator, unet)
+            model = super().prepare_unet_with_accelerator(args, accelerator, unet)
+        else:
+            model = unet
+            model = accelerator.prepare(model, device_placement=[not self.is_swapping_blocks])
+            accelerator.unwrap_model(model).move_to_device_except_swap_blocks(accelerator.device)
+            accelerator.unwrap_model(model).prepare_block_swap_before_forward()
 
-        model = unet
-        model = accelerator.prepare(model, device_placement=[not self.is_swapping_blocks])
-        accelerator.unwrap_model(model).move_to_device_except_swap_blocks(accelerator.device)
-        accelerator.unwrap_model(model).prepare_block_swap_before_forward()
+        # CUDA perf switches are independent of torch.compile; apply whenever requested.
+        compile_utils.apply_cuda_optimizations(args)
+
+        if args.compile:
+            # Apply per-block torch.compile to the DiT blocks. Reach the real Anima via
+            # unwrap_model so we mutate the underlying ModuleList regardless of any DDP wrapper.
+            dit = accelerator.unwrap_model(model)
+            compile_utils.compile_transformer(args, dit, [dit.blocks], disable_linear=self.is_swapping_blocks)
 
         return model
 

@@ -137,6 +137,59 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
     )
 
+    # torch.compile (per-block compilation, Triton required). Independent of the legacy
+    # accelerate-based --torch_compile; the two cannot be used together.
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable per-block torch.compile for the DiT (requires Triton). Cannot be used with --torch_compile."
+        + " / DiTのブロック単位でtorch.compileを有効にする（Tritonが必要）。--torch_compileとは併用できません。",
+    )
+    parser.add_argument(
+        "--compile_backend",
+        type=str,
+        default="inductor",
+        help="torch.compile backend (default: inductor) / torch.compileのバックエンド（デフォルト: inductor）",
+    )
+    parser.add_argument(
+        "--compile_mode",
+        type=str,
+        default="default",
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode (default: default, recommended for training) / torch.compileのモード（デフォルト: default、学習に推奨）",
+    )
+    parser.add_argument(
+        "--compile_dynamic",
+        type=str,
+        default=None,
+        choices=["true", "false", "auto"],
+        help="Dynamic shapes mode for torch.compile (default: None, same as auto). On Windows, 'true' requires the Visual Studio 2022 C++ compiler."
+        + " / torch.compileの動的形状モード（デフォルト: None、autoと同じ）。Windowsで'true'を使うにはVisual Studio 2022のC++コンパイラが必要です。",
+    )
+    parser.add_argument(
+        "--compile_fullgraph",
+        action="store_true",
+        help="Enable fullgraph mode in torch.compile. Cannot be used with --split_attn."
+        + " / torch.compileでフルグラフモードを有効にする。--split_attnとは併用できません。",
+    )
+    parser.add_argument(
+        "--compile_cache_size_limit",
+        type=int,
+        default=None,
+        help="Set torch._dynamo.config.cache_size_limit (default: PyTorch default, typically 8-32, recommended: 32)"
+        + " / torch._dynamo.config.cache_size_limitを設定（デフォルト: PyTorchのデフォルト、通常8-32、推奨: 32）",
+    )
+    parser.add_argument(
+        "--cuda_allow_tf32",
+        action="store_true",
+        help="Allow TF32 precision on Ampere or newer GPUs (improves performance) / Ampere以降のGPUでTF32を許可する（パフォーマンス向上）",
+    )
+    parser.add_argument(
+        "--cuda_cudnn_benchmark",
+        action="store_true",
+        help="Enable cuDNN benchmark mode (may improve performance) / cuDNNのベンチマークモードを有効にする（パフォーマンスが向上する可能性がある）",
+    )
+
 
 # Loss weighting
 

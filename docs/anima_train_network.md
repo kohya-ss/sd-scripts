@@ -225,7 +225,9 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
   - Chunk size for Qwen-Image VAE processing. Reduces VRAM usage at the cost of speed. Default is no chunking.
 * `--vae_disable_cache`
   - Disable internal caching in Qwen-Image VAE to reduce VRAM usage.
-  
+* `--compile` and related options
+  - Speed up training with per-block `torch.compile`. See the [torch.compile for Anima guide](anima_torch_compile.md) for details.
+
 #### Incompatible or Unsupported Options / 非互換・非サポートの引数
 
 * `--v2`, `--v_parameterization`, `--clip_skip` - Options for Stable Diffusion v1/v2 that are not used for Anima training.
@@ -277,6 +279,7 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
 * `--vae_disable_cache` - Qwen-Image VAEの内部キャッシュを無効化してメモリ使用量を削減します。
+* `--compile` および関連オプション - ブロック単位の`torch.compile`で学習を高速化します。詳細は[Anima 向け torch.compile ガイド](anima_torch_compile.md)を参照してください。
 
 #### 非互換・非サポートの引数
 
