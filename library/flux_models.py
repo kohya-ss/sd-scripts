@@ -1322,7 +1322,7 @@ class ControlNetFlux(nn.Module):
         for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks):
             block_sample = controlnet_block(block_sample)
             controlnet_block_samples = controlnet_block_samples + (block_sample,)
-        for block_sample, controlnet_block in zip(block_samples, self.controlnet_blocks_for_single):
+        for block_sample, controlnet_block in zip(block_single_samples, self.controlnet_blocks_for_single):
             block_sample = controlnet_block(block_sample)
             controlnet_single_block_samples = controlnet_single_block_samples + (block_sample,)
 
