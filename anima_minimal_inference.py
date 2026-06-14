@@ -16,7 +16,15 @@ from tqdm import tqdm
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
-from library import anima_models, anima_utils, hunyuan_image_utils, qwen_image_autoencoder_kl, strategy_anima, strategy_base
+from library import (
+    anima_models,
+    anima_train_utils,
+    anima_utils,
+    hunyuan_image_utils,
+    qwen_image_autoencoder_kl,
+    strategy_anima,
+    strategy_base,
+)
 from library.device_utils import clean_memory_on_device, synchronize_device
 
 lycoris_available = find_spec("lycoris") is not None
@@ -55,6 +63,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
         + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
+    )
+    parser.add_argument(
+        "--qwen_image_vae_2d",
+        action="store_true",
+        help="Use the image-only 2D Qwen-Image VAE implementation. Official Qwen-Image VAE weights are converted on load."
+        + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
     )
     parser.add_argument("--text_encoder", type=str, required=True, help="Text Encoder 1 (Qwen2.5-VL) directory or path")
 
@@ -766,9 +780,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
 
     # 1. Prepare VAE
     logger.info("Loading VAE for batch generation...")
-    vae_for_batch = qwen_image_autoencoder_kl.load_vae(
-        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
-    )
+    vae_for_batch = anima_train_utils.load_qwen_image_vae(args, device="cpu", disable_mmap=True)
     vae_for_batch.to(torch.bfloat16)
     vae_for_batch.eval()
 
@@ -890,9 +902,7 @@ def process_interactive(args: argparse.Namespace) -> None:
     shared_models = load_shared_models(args)
     shared_models["conds_cache"] = {}  # Initialize empty cache for interactive mode
 
-    vae = qwen_image_autoencoder_kl.load_vae(
-        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
-    )
+    vae = anima_train_utils.load_qwen_image_vae(args, device="cpu", disable_mmap=True)
     vae.to(torch.bfloat16)
     vae.eval()
 
@@ -1013,13 +1023,7 @@ def main():
 
             latents_list.append(latents)
 
-        vae = qwen_image_autoencoder_kl.load_vae(
-            args.vae,
-            device=device,
-            disable_mmap=True,
-            spatial_chunk_size=args.vae_chunk_size,
-            disable_cache=args.vae_disable_cache,
-        )
+        vae = anima_train_utils.load_qwen_image_vae(args, device=device, disable_mmap=True)
         vae.to(torch.bfloat16)
         vae.eval()
 
@@ -1064,13 +1068,7 @@ def main():
             clean_memory_on_device(device)
 
             # Save latent and video
-            vae = qwen_image_autoencoder_kl.load_vae(
-                args.vae,
-                device="cpu",
-                disable_mmap=True,
-                spatial_chunk_size=args.vae_chunk_size,
-                disable_cache=args.vae_disable_cache,
-            )
+            vae = anima_train_utils.load_qwen_image_vae(args, device="cpu", disable_mmap=True)
             vae.to(torch.bfloat16)
             vae.eval()
             save_output(args, vae, latent, device)

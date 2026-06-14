@@ -136,6 +136,36 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
         + " / VAEのメモリ使用量を減らすために内部のキャッシュ機構を無効にします。エンコード/デコードも速くなりますが、公式の動作とは異なります。",
     )
+    parser.add_argument(
+        "--qwen_image_vae_2d",
+        action="store_true",
+        help="Use the image-only 2D Qwen-Image VAE implementation. Official Qwen-Image VAE weights are converted on load."
+        + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
+    )
+
+
+def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):
+    if getattr(args, "qwen_image_vae_2d", False):
+        from library import qwen_image_autoencoder_kl_2d
+
+        logger.info("Using image-only Qwen-Image 2D VAE")
+        return qwen_image_autoencoder_kl_2d.load_vae(
+            args.vae,
+            device=device,
+            disable_mmap=disable_mmap,
+            spatial_chunk_size=args.vae_chunk_size,
+            disable_cache=args.vae_disable_cache,
+        )
+
+    from library import qwen_image_autoencoder_kl
+
+    return qwen_image_autoencoder_kl.load_vae(
+        args.vae,
+        device=device,
+        disable_mmap=disable_mmap,
+        spatial_chunk_size=args.vae_chunk_size,
+        disable_cache=args.vae_disable_cache,
+    )
 
 
 # Loss weighting
