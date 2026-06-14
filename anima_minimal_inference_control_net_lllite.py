@@ -86,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vae", type=str, default=None, help="VAE directory or path")
     parser.add_argument("--vae_chunk_size", type=int, default=None)
     parser.add_argument("--vae_disable_cache", action="store_true")
+    parser.add_argument("--qwen_image_vae_2d", action="store_true")
     parser.add_argument("--text_encoder", type=str, required=True, help="Qwen3 Text Encoder path")
 
     parser.add_argument("--lora_weight", type=str, nargs="*", default=None, help="LoRA weight path")

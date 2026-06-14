@@ -49,6 +49,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         super().assert_extra_args(args, train_dataset_group, val_dataset_group)
         # sdxl_train_util.verify_sdxl_training_args(args)
 
+        flux_train_utils.log_timestep_sampling_info(args)
+
         self.model_type = args.model_type  # "flux" or "chroma"
         if self.model_type != "chroma":
             self.use_clip_l = True
@@ -546,5 +548,8 @@ if __name__ == "__main__":
     args_util.verify_command_line_training_args(args)
     args = args_util.read_config_from_file(args, parser)
 
-    trainer = FluxNetworkTrainer()
-    trainer.train(args)
+    if args.show_timesteps:
+        flux_train_utils.show_timesteps(args)
+    else:
+        trainer = FluxNetworkTrainer()
+        trainer.train(args)
