@@ -53,6 +53,8 @@ def train(args):
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
+    flux_train_utils.log_timestep_sampling_info(args)
+
     # backward compatibility
     if not args.skip_cache_check:
         args.skip_cache_check = args.skip_latents_validity_check
@@ -763,4 +765,7 @@ if __name__ == "__main__":
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility
 
-    train(args)
+    if args.show_timesteps:
+        anima_train_utils.show_timesteps(args)
+    else:
+        train(args)

@@ -7,6 +7,7 @@ import os
 import time
 from typing import Optional
 
+from library import device_utils
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -156,6 +157,40 @@ def compute_loss_weighting_for_anima(weighting_scheme: str, sigmas: torch.Tensor
     else:
         weighting = torch.ones_like(sigmas)
     return weighting
+
+
+def show_timesteps(args):
+    """Visualize the actual sampled-timestep / loss-weighting distribution for the current Anima settings, then return.
+
+    Anima reuses ``flux_train_utils.get_noisy_model_input_and_timesteps`` for sampling but has its own loss weighting.
+    """
+    from library import flux_train_utils, sd3_train_utils, timestep_visualization
+
+    num_train_timesteps = 1000
+    noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps=num_train_timesteps, shift=args.discrete_flow_shift
+    )
+    h, w = flux_train_utils.parse_show_timesteps_latent_size(args)  # latent size for the assumed image resolution
+    device, dtype = device_utils.get_preferred_device(), torch.float32
+
+    def sample_timesteps(bsz):
+        latents = torch.zeros(bsz, 16, h, w, dtype=dtype, device=device)
+        noise = torch.ones_like(latents)
+        _, timesteps, _ = flux_train_utils.get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
+        return timesteps
+
+    def compute_weighting(timesteps):
+        sigmas = timesteps / num_train_timesteps
+        return compute_loss_weighting_for_anima(args.weighting_scheme, sigmas)
+
+    header = (
+        "Timestep distribution / タイムステップ分布:\n  "
+        + flux_train_utils.get_timestep_sampling_info(args)
+        + f", resolution={args.show_timesteps_resolution} (latent {h}x{w})"
+    )
+    timestep_visualization.show_timestep_distribution(
+        args.show_timesteps, sample_timesteps, compute_weighting, num_train_timesteps=num_train_timesteps, header=header
+    )
 
 
 # Parameter groups (6 groups with separate LRs)

@@ -500,6 +500,19 @@ The `--weighting_scheme` option specifies loss weighting by timestep:
 - `none`: Same as uniform.
 - `logit_normal`, `mode`: Additional schemes from SD3 training. See the [`sd3_train_network.md` guide](sd3_train_network.md) for details.
 
+#### Visualizing the Timestep Distribution
+
+To check how the above settings actually affect the sampled timesteps, two features are available (both shared with FLUX training):
+
+* **Training log:** At the start of every run, a one-line summary of the timestep sampling configuration is logged. It explicitly states whether `--discrete_flow_shift` is applied for the chosen `--timestep_sampling` (only `sigma` and `shift` use it; with `sigmoid`, `uniform`, or `flux_shift` it is **ignored**). This makes it easy to notice when a shift value you set has no effect.
+* `--show_timesteps=<console|image>`: Visualize the *actual* sampled-timestep distribution and the loss weighting for the current settings, then exit without training. `console` prints an ASCII histogram; `image` shows a matplotlib plot (requires `matplotlib`). The distribution is shown from noisy (top / left, t=1000) to clean (bottom / right, t=0).
+* `--show_timesteps_resolution=<H | H,W>`: Image resolution (in pixels) assumed by `--show_timesteps` for resolution-dependent sampling such as `flux_shift`. A single value is used for both height and width; two comma-separated values are `H,W` (`W,H` gives the same result). Default `1024`. This is useful because the `--resolution` argument is `None` when the dataset is configured via a `.toml` file.
+
+Example:
+```
+--show_timesteps console --show_timesteps_resolution 1024
+```
+
 #### Caption Dropout
 
 Caption dropout uses the `caption_dropout_rate` setting from the dataset configuration (per-subset in TOML). When using `--cache_text_encoder_outputs`, the dropout rate is stored with each cached entry and applied during training, so caption dropout is compatible with text encoder output caching.
@@ -530,6 +543,14 @@ Note: Currently, only Anima supports combining `caption_dropout_rate` with text 
 #### 損失の重み付け
 
 `--weighting_scheme`でタイムステップごとの損失の重み付けを指定します。
+
+#### タイムステップ分布の可視化
+
+上記の設定が実際のタイムステップにどう影響するかを確認するため、2つの機能があります（FLUX学習と共通）。
+
+* **学習ログ:** 学習開始時に、タイムステップサンプリング設定の概要を1行ログ出力します。選択した`--timestep_sampling`に対して`--discrete_flow_shift`が適用されるか（使用するのは`sigma`と`shift`のみ。`sigmoid`、`uniform`、`flux_shift`では**無視**される）を明示するため、設定したシフト値が効いていない場合に気づきやすくなります。
+* `--show_timesteps=<console|image>`: 現在の設定で実際にサンプリングされるタイムステップ分布とloss weightingを可視化して終了します（学習は行いません）。`console`はASCIIヒストグラム、`image`はmatplotlibで表示します（`matplotlib`が必要）。分布はノイズ側（上／左、t=1000）からクリーン側（下／右、t=0）の順で表示されます。
+* `--show_timesteps_resolution=<H | H,W>`: `flux_shift`等の解像度依存サンプリングで`--show_timesteps`が想定する画像解像度（ピクセル）。数値が1つなら縦横両方に、カンマ区切りで2つなら`H,W`に使用します（`W,H`でも結果は同じ）。デフォルト`1024`。`.toml`データセット設定を使用すると`--resolution`が`None`になるため、この指定が役立ちます。
 
 #### キャプションドロップアウト
 

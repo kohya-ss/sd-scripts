@@ -44,6 +44,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group: Union[DatasetGroup, MinimalDataset],
         val_dataset_group: Optional[DatasetGroup],
     ):
+        flux_train_utils.log_timestep_sampling_info(args)
+
         if args.fp8_base or args.fp8_base_unet:
             logger.warning("fp8_base and fp8_base_unet are not supported. / fp8_baseとfp8_base_unetはサポートされていません。")
             args.fp8_base = False
@@ -450,5 +452,8 @@ if __name__ == "__main__":
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility
 
-    trainer = AnimaNetworkTrainer()
-    trainer.train(args)
+    if args.show_timesteps:
+        anima_train_utils.show_timesteps(args)
+    else:
+        trainer = AnimaNetworkTrainer()
+        trainer.train(args)
