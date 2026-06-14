@@ -356,7 +356,11 @@ class AutoencoderKLQwenImage2D(nn.Module):
             raise ValueError(f"Unsupported QwenImage 2D VAE input shape: {tuple(x.shape)}")
 
         batch, channels, frames, height, width = x.shape
-        x = x.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width)
+        if frames != 1:
+            raise ValueError(
+                f"QwenImage 2D VAE is image-only and does not support T>1 inputs (got shape {tuple(x.shape)})."
+            )
+        x = x.squeeze(2)
         return x, (batch, frames)
 
     def _restore_frames(self, x: torch.Tensor, frame_info: Optional[Tuple[int, int]]) -> torch.Tensor:
