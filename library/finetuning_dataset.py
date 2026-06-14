@@ -168,9 +168,11 @@ class FineTuningDataset(BaseDataset):
                 # search npz if image_size is not given
                 npz_path = None
                 if image_size is None:
-                    image_without_ext = os.path.splitext(image_key)[0]
+                    # match against the resolved absolute path and normalize separators, so that metadata
+                    # paths written with "/" still match glob results using the OS-native separator
+                    abs_path_without_ext = os.path.normpath(os.path.splitext(abs_path)[0])
                     for candidate in npz_paths:
-                        if candidate.startswith(image_without_ext):
+                        if os.path.normpath(candidate).startswith(abs_path_without_ext):
                             npz_path = candidate
                             break
                     if npz_path is not None:
@@ -215,6 +217,9 @@ class FineTuningDataset(BaseDataset):
                     w, h = strategy.get_image_size_from_disk_cache_path(abs_path, npz_path)
                     image_info.image_size = (w, h)
                     size_set_from_cache_filename += 1
+
+                    # use the discovered cache file directly for latent caching/loading
+                    image_info.latents_npz = npz_path
 
                 if self.skip_image_resolution is not None:
                     size = image_info.image_size

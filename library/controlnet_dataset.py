@@ -20,7 +20,7 @@ from library.dataset import (
 )
 from library.dreambooth_dataset import DreamBoothDataset
 from library.subset import ControlNetSubset, DreamBoothSubset
-from library.utils import resize_image, setup_logging
+from library.utils import resize_image, setup_logging, trim_and_resize_if_required
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -200,21 +200,13 @@ class ControlNetDataset(BaseDataset):
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
 
-                cond_img = resize_image(
+                cond_img, _, _ = trim_and_resize_if_required(
+                    False,  # TODO support random crop
                     cond_img,
-                    original_size_hw[1],
-                    original_size_hw[0],
-                    target_size_hw[1],
-                    target_size_hw[0],
-                    self.resize_interpolation,
+                    image_info.bucket_reso,
+                    image_info.resized_size,
+                    resize_interpolation=image_info.resize_interpolation,
                 )
-
-                # TODO support random crop
-                # 現在サポートしているcropはrandomではなく中央のみ
-                h, w = target_size_hw
-                ct = (cond_img.shape[0] - h) // 2
-                cl = (cond_img.shape[1] - w) // 2
-                cond_img = cond_img[ct : ct + h, cl : cl + w]
             else:
                 # assert (
                 #     cond_img.shape[0] == self.height and cond_img.shape[1] == self.width
