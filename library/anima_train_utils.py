@@ -144,30 +144,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
     )
 
-
-def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):
-    if getattr(args, "qwen_image_vae_2d", False):
-        from library import qwen_image_autoencoder_kl_2d
-
-        logger.info("Using image-only Qwen-Image 2D VAE")
-        return qwen_image_autoencoder_kl_2d.load_vae(
-            args.vae,
-            device=device,
-            disable_mmap=disable_mmap,
-            spatial_chunk_size=args.vae_chunk_size,
-            disable_cache=args.vae_disable_cache,
-        )
-
-    from library import qwen_image_autoencoder_kl
-
-    return qwen_image_autoencoder_kl.load_vae(
-        args.vae,
-        device=device,
-        disable_mmap=disable_mmap,
-        spatial_chunk_size=args.vae_chunk_size,
-        disable_cache=args.vae_disable_cache,
-    )
-
     # torch.compile (per-block compilation, Triton required). Independent of the legacy
     # accelerate-based --torch_compile; the two cannot be used together.
     parser.add_argument(
@@ -219,6 +195,30 @@ def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):
         "--cuda_cudnn_benchmark",
         action="store_true",
         help="Enable cuDNN benchmark mode (may improve performance) / cuDNNのベンチマークモードを有効にする（パフォーマンスが向上する可能性がある）",
+    )
+
+
+def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):
+    if getattr(args, "qwen_image_vae_2d", False):
+        from library import qwen_image_autoencoder_kl_2d
+
+        logger.info("Using image-only Qwen-Image 2D VAE")
+        return qwen_image_autoencoder_kl_2d.load_vae(
+            args.vae,
+            device=device,
+            disable_mmap=disable_mmap,
+            spatial_chunk_size=args.vae_chunk_size,
+            disable_cache=args.vae_disable_cache,
+        )
+
+    from library import qwen_image_autoencoder_kl
+
+    return qwen_image_autoencoder_kl.load_vae(
+        args.vae,
+        device=device,
+        disable_mmap=disable_mmap,
+        spatial_chunk_size=args.vae_chunk_size,
+        disable_cache=args.vae_disable_cache,
     )
 
 
