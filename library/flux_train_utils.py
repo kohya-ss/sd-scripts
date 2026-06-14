@@ -605,9 +605,10 @@ def show_timesteps(args):
         return timesteps
 
     def compute_weighting(timesteps):
+        if args.model_prediction_type != "sigma_scaled":
+            return None
         sigmas = timesteps / num_train_timesteps
         return compute_loss_weighting_for_sd3(args.weighting_scheme, sigmas)
-
     header = (
         "Timestep distribution / タイムステップ分布:\n  "
         + get_timestep_sampling_info(args)
