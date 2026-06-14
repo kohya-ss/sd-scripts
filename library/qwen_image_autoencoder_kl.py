@@ -1650,7 +1650,7 @@ if __name__ == "__main__":
 
     from PIL import Image
 
-    from library.device_utils import get_preferred_device, synchronize_device
+from library.device_utils import synchronize_device
     from library.qwen_image_autoencoder_kl_2d import load_vae as load_vae_2d
 
     parser = argparse.ArgumentParser()
