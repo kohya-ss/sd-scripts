@@ -32,7 +32,7 @@ def show_timestep_distribution(
     compute_weighting: Optional[Callable[[torch.Tensor], Optional[torch.Tensor]]] = None,
     num_train_timesteps: int = 1000,
     n_try: int = 100000,
-    batch_size: int = 1000,
+    batch_size: int = 64,
     header: Optional[str] = None,
 ):
     """Sample timesteps many times and render their distribution (and loss weighting).
