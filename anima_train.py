@@ -53,6 +53,8 @@ def train(args):
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
+    flux_train_utils.log_timestep_sampling_info(args)
+
     # backward compatibility
     if not args.skip_cache_check:
         args.skip_cache_check = args.skip_latents_validity_check
@@ -229,9 +231,7 @@ def train(args):
 
     # Load VAE and cache latents
     logger.info("Loading Anima VAE...")
-    vae = qwen_image_autoencoder_kl.load_vae(
-        args.vae, device="cpu", disable_mmap=True, spatial_chunk_size=args.vae_chunk_size, disable_cache=args.vae_disable_cache
-    )
+    vae = anima_train_utils.load_qwen_image_vae(args, device="cpu", disable_mmap=True)
 
     if cache_latents:
         vae.to(accelerator.device, dtype=weight_dtype)
@@ -763,4 +763,7 @@ if __name__ == "__main__":
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility
 
-    train(args)
+    if args.show_timesteps:
+        anima_train_utils.show_timesteps(args)
+    else:
+        train(args)

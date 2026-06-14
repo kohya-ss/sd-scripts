@@ -1650,16 +1650,24 @@ if __name__ == "__main__":
 
     from PIL import Image
 
-    from library.device_utils import get_preferred_device, synchronize_device
+    from library.device_utils import synchronize_device
+    from library.qwen_image_autoencoder_kl_2d import load_vae as load_vae_2d
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--vae", type=str, required=True, help="Path to the VAE model file.")
     parser.add_argument("--input_image_dir", type=str, required=True, help="Path to the input image directory.")
     parser.add_argument("--output_image_dir", type=str, required=True, help="Path to the output image directory.")
+    parser.add_argument("--qwen_image_vae_2d", action="store_true", help="Whether to use the 2D version of the Qwen Image VAE.")
+    parser.add_argument("--device", type=str, default="cuda", help="Device to run the VAE on (e.g., 'cpu', 'cuda', 'cuda:0').")
     args = parser.parse_args()
 
     # Load VAE
-    vae = load_vae(args.vae, device=get_preferred_device())
+    device = torch.device(args.device)
+    if args.qwen_image_vae_2d:
+        print("Using Qwen Image VAE 2D version")
+        vae = load_vae_2d(args.vae, device=device)
+    else:
+        vae = load_vae(args.vae, device=device)
 
     # Process images
     def encode_decode_image(image_path, output_path):
@@ -1686,11 +1694,11 @@ if __name__ == "__main__":
         Image.fromarray(reconstructed_image).save(output_path)
 
     def process_directory(input_dir, output_dir):
-        if get_preferred_device().type == "cuda":
+        if device.type == "cuda":
             torch.cuda.empty_cache()
-            torch.cuda.reset_max_memory_allocated()
+            torch.cuda.reset_max_memory_allocated(device)
 
-        synchronize_device(get_preferred_device())
+        synchronize_device(device)
         start_time = time.perf_counter()
 
         os.makedirs(output_dir, exist_ok=True)
@@ -1700,11 +1708,11 @@ if __name__ == "__main__":
             output_path = os.path.join(output_dir, filename)
             encode_decode_image(image_path, output_path)
 
-        if get_preferred_device().type == "cuda":
-            max_mem = torch.cuda.max_memory_allocated() / (1024**3)
+        if device.type == "cuda":
+            max_mem = torch.cuda.max_memory_allocated(device) / (1024**3)
             print(f"Max GPU memory allocated: {max_mem:.2f} GB")
 
-        synchronize_device(get_preferred_device())
+        synchronize_device(device)
         end_time = time.perf_counter()
         print(f"Processing time: {end_time - start_time:.2f} seconds")
 
@@ -1725,6 +1733,7 @@ if __name__ == "__main__":
     process_directory(args.input_image_dir, args.output_image_dir + "_no_cache_chunked_64")
 
     print("Starting image processing without caching and chunking enabled with chunk size 16...")
+    vae.enable_spatial_chunking(16)
     vae.disable_cache()
     process_directory(args.input_image_dir, args.output_image_dir + "_no_cache_chunked_16")
 

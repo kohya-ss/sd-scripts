@@ -72,6 +72,8 @@ def train(args):
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
+    flux_train_utils.log_timestep_sampling_info(args)
+
     # temporary: backward compatibility for deprecated options. remove in the future
     if not args.skip_cache_check:
         args.skip_cache_check = args.skip_latents_validity_check
@@ -889,4 +891,7 @@ if __name__ == "__main__":
     args_util.verify_command_line_training_args(args)
     args = args_util.read_config_from_file(args, parser)
 
-    train(args)
+    if args.show_timesteps:
+        flux_train_utils.show_timesteps(args)
+    else:
+        train(args)
