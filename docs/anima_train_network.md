@@ -281,6 +281,7 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
 * `--vae_disable_cache` - Qwen-Image VAEの内部キャッシュを無効化してメモリ使用量を削減します。
+* `--qwen_image_vae_2d` - 画像専用の2D Qwen-Image VAEを使用します。公式（3D causal Conv3d）のVAE重みをロード時に等価な2D畳み込みへ変換するため、専用の重みファイルは不要で、単一画像では出力（latent）がデフォルトの3D VAEと数値的に一致します。encode/decodeが約2倍高速で、ピークVRAMが約1/3になります（RTX 3090・1024x1024・10枚で約4.4GB/7.7秒→約1.4GB/4.5秒）。latentキャッシュ用途に推奨です。注意: 2D VAEではピークメモリがフル解像度のアクティベーションやmid-blockのattentionに移るため、`--vae_chunk_size`のピークへの追加効果は小さく、また`--vae_disable_cache`は無効です（2D VAEに時間方向のキャッシュは無いため）。
 
 #### 非互換・非サポートの引数
 
