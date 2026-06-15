@@ -368,6 +368,17 @@ class BaseDataset(torch.utils.data.Dataset):
         debug_dataset: bool,
         resize_interpolation: Optional[str] = None,
         skip_image_resolution: Optional[Tuple[int, int]] = None,
+        enable_fad: bool = False,
+        fad_curriculum: bool = False,
+        fad_p_min: float = 0.35,
+        fad_p_max: float = 1.0,
+        fad_alpha: float = 10.0,
+        fad_c: float = 0.5,
+        fad_curriculum_start: float = 0.1,
+        fad_curriculum_end: float = 0.8,
+        fad_curriculum_beta: float = 3.0,
+        fad_step_start: float = 0.0,
+        fad_step_end: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -421,6 +432,18 @@ class BaseDataset(torch.utils.data.Dataset):
         self.tokenize_strategy = None
         self.text_encoder_output_caching_strategy = None
         self.latents_caching_strategy = None
+
+        self.enable_fad = enable_fad
+        self.fad_curriculum = fad_curriculum
+        self.fad_p_min = fad_p_min
+        self.fad_p_max = fad_p_max
+        self.fad_alpha = fad_alpha
+        self.fad_c = fad_c
+        self.fad_curriculum_start = fad_curriculum_start
+        self.fad_curriculum_end = fad_curriculum_end
+        self.fad_curriculum_beta = fad_curriculum_beta
+        self.fad_step_start = fad_step_start
+        self.fad_step_end = fad_step_end
 
     def set_current_strategies(self):
         self.tokenize_strategy = TokenizeStrategy.get_strategy()
@@ -498,6 +521,79 @@ class BaseDataset(torch.utils.data.Dataset):
     def add_replacement(self, str_from, str_to):
         self.replacements[str_from] = str_to
 
+    def get_fad_caption_variants(self, subset: BaseSubset, caption: str) -> List[Tuple[str, float]]:
+        if subset.caption_prefix:
+            caption = subset.caption_prefix + " " + caption
+        if subset.caption_suffix:
+            caption = caption + " " + subset.caption_suffix
+
+        if not subset.enable_wildcard:
+            return [(caption.split("\n")[0], 1.0)]
+
+        lines = caption.split("\n")
+        line_probability = 1.0 / len(lines)
+        variants: List[Tuple[str, float]] = []
+
+        for line in lines:
+            variants.extend(
+                [(expanded_caption, line_probability * wildcard_probability) for expanded_caption, wildcard_probability in self.expand_wildcards(line)]
+            )
+
+        return variants
+
+    def expand_wildcards(self, caption: str) -> List[Tuple[str, float]]:
+        replacer1 = "⦅"
+        replacer2 = "⦆"
+        while replacer1 in caption or replacer2 in caption:
+            replacer1 += "⦅"
+            replacer2 += "⦆"
+
+        caption = caption.replace("{{", replacer1).replace("}}", replacer2)
+
+        def expand_once(text: str) -> List[Tuple[str, float]]:
+            match = re.search(r"\{([^}]+)\}", text)
+            if match is None:
+                return [(text.replace(replacer1, "{").replace(replacer2, "}"), 1.0)]
+
+            choices = match.group(1).split("|")
+            choice_probability = 1.0 / len(choices)
+            variants: List[Tuple[str, float]] = []
+            for choice in choices:
+                expanded = text[: match.start()] + choice + text[match.end() :]
+                variants.extend([(variant, choice_probability * probability) for variant, probability in expand_once(expanded)])
+            return variants
+
+        return expand_once(caption)
+
+    def get_flex_tokens_from_caption(self, subset: BaseSubset, caption: str) -> List[str]:
+        fixed_tokens = []
+        flex_tokens = []
+        fixed_suffix_tokens = []
+        if (
+            hasattr(subset, "keep_tokens_separator")
+            and subset.keep_tokens_separator
+            and subset.keep_tokens_separator in caption
+        ):
+            fixed_part, flex_part = caption.split(subset.keep_tokens_separator, 1)
+            if subset.keep_tokens_separator in flex_part:
+                flex_part, fixed_suffix_part = flex_part.split(subset.keep_tokens_separator, 1)
+                fixed_suffix_tokens = [t.strip() for t in fixed_suffix_part.split(subset.caption_separator) if t.strip()]
+
+            fixed_tokens = [t.strip() for t in fixed_part.split(subset.caption_separator) if t.strip()]
+            flex_tokens = [t.strip() for t in flex_part.split(subset.caption_separator) if t.strip()]
+        else:
+            tokens = [t.strip() for t in caption.strip().split(subset.caption_separator)]
+            flex_tokens = tokens[:]
+            if subset.keep_tokens > 0:
+                fixed_tokens = flex_tokens[: subset.keep_tokens]
+                flex_tokens = tokens[subset.keep_tokens :]
+
+        return flex_tokens
+
+    def get_raw_flex_tokens(self, subset: BaseSubset, caption: str) -> List[str]:
+        caption_variant = self.get_fad_caption_variants(subset, caption)[0][0]
+        return self.get_flex_tokens_from_caption(subset, caption_variant)
+
     def process_caption(self, subset: BaseSubset, caption):
         # caption に prefix/suffix を付ける
         if subset.caption_prefix:
@@ -544,7 +640,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # if caption is multiline, use the first line
                 caption = caption.split("\n")[0]
 
-            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
+            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0 or getattr(subset, "enable_fad", False):
                 fixed_tokens = []
                 flex_tokens = []
                 fixed_suffix_tokens = []
@@ -590,6 +686,41 @@ class BaseDataset(torch.utils.data.Dataset):
                 if subset.shuffle_caption:
                     random.shuffle(flex_tokens)
 
+                if getattr(subset, "enable_fad", False):
+                    if getattr(self, "max_train_steps", 0) > 0:
+                        if subset.fad_curriculum:
+                            i = self.current_step
+                            N = self.max_train_steps
+                            iw = N * self.fad_curriculum_start
+                            if_ = N * self.fad_curriculum_end
+
+                            if i < iw:
+                                p_step = self.fad_step_start
+                            elif i >= if_:
+                                p_step = self.fad_step_end
+                            else:
+                                s = (i - iw) / (if_ - iw) if if_ != iw else 1.0
+                                p_step_normalized = 1.0 - math.exp(-self.fad_curriculum_beta * s)
+                                p_step = self.fad_step_start + (self.fad_step_end - self.fad_step_start) * p_step_normalized
+                        else:
+                            p_step = 1.0
+
+                        l = []
+                        for token in flex_tokens:
+                            r_w = subset.fad_tag_frequencies.get(token, 0.0)
+                            delta_p = self.fad_p_max - self.fad_p_min
+                            val = self.fad_alpha * (r_w - self.fad_c)
+                            try:
+                                sigmoid_val = 1.0 / (1.0 + math.exp(-val))
+                            except OverflowError:
+                                sigmoid_val = 0.0 if val < 0 else 1.0
+
+                            p_drop = self.fad_p_min + delta_p * sigmoid_val
+                            p_drop_final = p_drop * p_step
+
+                            if random.random() >= p_drop_final:
+                                l.append(token)
+                        flex_tokens = l
                 flex_tokens = dropout_tags(flex_tokens)
 
                 caption = ", ".join(fixed_tokens + flex_tokens + fixed_suffix_tokens)
@@ -620,6 +751,44 @@ class BaseDataset(torch.utils.data.Dataset):
         bucketingを行わない場合も呼び出し必須（ひとつだけbucketを作る）
         min_size and max_size are ignored when enable_bucket is False
         """
+        # Frequency-Aware Dropout (FAD) Co-occurrence frequency computation
+        for subset in self.subsets:
+            if not getattr(subset, "enable_fad", False):
+                continue
+
+            logger.info(f"Initializing Frequency-Aware Dropout (FAD) statistics for subset: {subset.image_dir or getattr(subset, 'metadata_file', '')}")
+
+            # Find subset image infos
+            subset_image_infos = [
+                info for info in self.image_data.values()
+                if self.image_to_subset.get(info.image_key) == subset
+            ]
+
+            if not subset_image_infos:
+                logger.warning(f"No images found for subset, skipping FAD initialization.")
+                continue
+
+            # Token occurrences expectation computation
+            token_expected_counts = {}
+            N_t = len(subset_image_infos)
+
+            for info in subset_image_infos:
+                raw_caption = info.caption
+                for caption_variant, probability in self.get_fad_caption_variants(subset, raw_caption):
+                    flex_tokens = self.get_flex_tokens_from_caption(subset, caption_variant)
+                    unique_flex_tokens = set(flex_tokens)
+                    for token in unique_flex_tokens:
+                        token_expected_counts[token] = token_expected_counts.get(token, 0.0) + probability
+
+            # Calculate r(w) = count[w] / N_t
+            fad_tag_frequencies = {}
+            for token, count in token_expected_counts.items():
+                r_w = count / N_t
+                fad_tag_frequencies[token] = min(r_w, 1.0)
+
+            subset.fad_tag_frequencies = fad_tag_frequencies
+            logger.info(f"FAD initialized: {len(fad_tag_frequencies)} unique flex tokens registered.")
+
         logger.info("loading image sizes.")
         for info in tqdm(self.image_data.values()):
             if info.image_size is None:
@@ -739,6 +908,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     or subset.shuffle_caption
                     or subset.token_warmup_step > 0
                     or subset.caption_tag_dropout_rate > 0
+                    or getattr(subset, "enable_fad", False)
                 )
                 for subset in self.subsets
             ]
