@@ -621,6 +621,7 @@ python anima_minimal_inference_control_net_lllite.py \
 * **`T=1` only.** Video-style multi-frame inputs are not supported — the wrapper asserts `T==1` at forward time.
 * **Bucket size.** The training script enforces a bucket resolution step of 16 (Qwen-Image VAE /8 × patch /2).
 * **Memory.** `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` are not yet supported. If VRAM is tight, prefer `--full_bf16`, smaller `--lllite_mlp_dim`, lower `--cond_emb_dim`, and `--gradient_checkpointing`.
+* **`torch.compile` (speed-up).** Per-block `torch.compile` of the DiT is supported here as well, via the same `--compile` / `--compile_*` arguments shared with the LoRA script. See [`anima_torch_compile.md`](./anima_torch_compile.md) for details and recommended settings. Note that with aspect-ratio bucketing each distinct bucket resolution triggers a one-time recompile, so the first pass over your buckets is slower before it settles.
 * **Save format.** The saved `.safetensors` is **not** compatible with the SDXL LLLite format and **not** loadable by `sdxl_gen_img.py`. Use the dedicated inference script in Section 6.
 * **Metadata-required at inference.** Inference relies on the architecture metadata (`lllite.version`, `lllite.cond_dim`, `lllite.cond_resblocks`, `lllite.use_aspp`, `lllite.target_atomics`, ...) saved by the training script to reconstruct the LLLite architecture. State-dict-only auto-detection of those fields is not implemented; if a weight file lacks metadata, you currently need to pass the override flags listed in Section 6.3 explicitly.
 
@@ -631,6 +632,7 @@ python anima_minimal_inference_control_net_lllite.py \
 * **`T=1` のみ.** 動画的な多フレーム入力はサポートしていません（wrapper の forward 冒頭で assert）。
 * **bucket サイズ.** 学習スクリプトは bucket 解像度ステップを 16（Qwen-Image VAE /8 × patch /2）として検証します。
 * **メモリ.** `--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing` は未対応です。VRAM が厳しい場合は `--full_bf16`、`--lllite_mlp_dim` を下げる、`--cond_emb_dim` を下げる、`--gradient_checkpointing` を有効にする、などで対応してください。
+* **`torch.compile`（高速化）.** LoRA 学習スクリプトと共通の `--compile` / `--compile_*` 引数により、本スクリプトでも DiT のブロック単位 `torch.compile` が利用できます。詳細や推奨設定は [`anima_torch_compile.md`](./anima_torch_compile.md) を参照してください。なお aspect-ratio bucketing 使用時はバケット解像度ごとに初回 1 回の recompile が走るため、全バケットを一巡するまでは遅くなりますが、その後は安定します。
 * **保存形式.** 保存される `.safetensors` は SDXL LLLite フォーマットとは**互換性がなく**、`sdxl_gen_img.py` ではロードできません。推論には第 6 節の専用スクリプトを使用してください。
 * **推論時のメタデータ依存.** 推論時のアーキテクチャ復元は、学習スクリプトが書き込んだメタデータ（`lllite.version` / `lllite.cond_dim` / `lllite.cond_resblocks` / `lllite.use_aspp` / `lllite.target_atomics` など）に依存します。state_dict 単独からの自動判定は実装されていないため、メタデータの無い重みを使う場合は第 6.3 節の手動上書き引数を明示的に指定してください。
 

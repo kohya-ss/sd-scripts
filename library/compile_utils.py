@@ -86,6 +86,14 @@ def compile_transformer(
     if args.compile_cache_size_limit is not None:
         torch._dynamo.config.cache_size_limit = args.compile_cache_size_limit
 
+    # nn.Module の tensor 属性 (例: ControlNet-LLLite が注入する self.cond_emb) は、
+    # 既定では dynamic=True でも shape が static に specialize され、解像度バケット毎に
+    # recompile を誘発する。forward 入力ではなく属性経由で渡る可変長テンソルを dynamic
+    # 対象に含めるため、この強制 static 化を無効化する。Parameter (学習重み) は形状不変
+    # なので force_parameter_static_shapes は既定 (True) のままにしておく。
+    if hasattr(torch._dynamo.config, "force_nn_module_property_static_shapes"):
+        torch._dynamo.config.force_nn_module_property_static_shapes = False
+
     for blocks in target_blocks:
         for i, block in enumerate(blocks):
             blocks[i] = torch.compile(

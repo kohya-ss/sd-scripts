@@ -242,9 +242,9 @@ class LLLiteModuleDiT(nn.Module):
         # 親 ControlNetLLLiteDiT が set_cond_image で注入する
         self.cond_emb: Optional[torch.Tensor] = None
 
-        # 親 ControlNetLLLiteDiT が __init__ 末尾で設定 (list 包みで Parameter 二重登録回避)
+        # 親 ControlNetLLLiteDiT が __init__ 末尾で layer_idx を設定する。
+        # depth embedding の加算は set_cond_image 側で行う (torch.compile 対策)。
         self.layer_idx: int = -1
-        self._depth_embeds_ref: List[nn.Parameter] = []
 
     def apply_to(self):
         self.org_forward = self.org_module[0].forward
@@ -264,23 +264,19 @@ class LLLiteModuleDiT(nn.Module):
             B, T, H, W, D = orig_shape
             x = x.reshape(B, T * H * W, D)
 
-        cx = self.cond_emb  # (B, H*W, cond_emb_dim)
+        # cond_emb には set_cond_image 時点で depth embedding が加算済み。
+        # (forward 内で per-block の layer_idx を参照すると torch.compile が
+        #  ブロック毎に別グラフを焼くため、加算を compile 領域の外へ出している)
+        cond_local = self.cond_emb  # (B, H*W, cond_emb_dim)
 
         # CFG 推論用 (学習時は通らない想定)
-        if x.shape[0] // 2 == cx.shape[0]:
-            cx = cx.repeat(2, 1, 1)
+        if x.shape[0] // 2 == cond_local.shape[0]:
+            cond_local = cond_local.repeat(2, 1, 1)
 
         # T=1 固定前提なので S == H*W のはず
-        assert x.shape[1] == cx.shape[1], (
-            f"LLLite seq mismatch ({self.lllite_name}): x={x.shape[1]} vs cond_emb={cx.shape[1]}"
+        assert x.shape[1] == cond_local.shape[1], (
+            f"LLLite seq mismatch ({self.lllite_name}): x={x.shape[1]} vs cond_emb={cond_local.shape[1]}"
         )
-
-        # depth embedding を加算 (zero-init なので学習序盤は cx のまま)
-        if self._depth_embeds_ref:
-            depth_e = self._depth_embeds_ref[0][self.layer_idx]  # (cond_emb_dim,)
-            cond_local = cx + depth_e  # broadcast over (B, S)
-        else:
-            cond_local = cx
 
         h = F.silu(self.down(x))  # (B, S, mlp)
 
@@ -360,7 +356,6 @@ class ControlNetLLLiteDiT(nn.Module):
         self.depth_embeds = nn.Parameter(torch.zeros(n, cond_emb_dim))
         for i, m in enumerate(self.lllite_modules):
             m.layer_idx = i
-            m._depth_embeds_ref = [self.depth_embeds]
 
         aspp_info = f"aspp={'on' + str(list(self.aspp_dilations)) if use_aspp else 'off'}"
         inpaint_info = (
@@ -448,7 +443,11 @@ class ControlNetLLLiteDiT(nn.Module):
             return
         cx = self.conditioning1(cond_image)  # (B, S, cond_emb_dim)
         for m in self.lllite_modules:
-            m.cond_emb = cx
+            # depth embedding (zero-init) を compile 領域の外でここで加算しておく。
+            # forward 内で per-block の layer_idx を参照すると torch.compile が
+            # ブロック毎に別グラフを焼いてしまうため (整数属性は定数扱いされる)。
+            # depth_embeds は学習対象なので、autograd スコープ内で呼ばれる前提。
+            m.cond_emb = cx + self.depth_embeds[m.layer_idx]  # broadcast over (B, S)
 
     def clear_cond_image(self):
         self.set_cond_image(None)

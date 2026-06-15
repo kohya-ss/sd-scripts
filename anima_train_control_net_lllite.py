@@ -37,6 +37,7 @@ from library import (
 )
 import library.accelerator_setup as accelerator_setup
 import library.args as args_util
+import library.compile_utils as compile_utils
 import library.dataset as dataset_util
 import library.model_io as model_io
 import library.optimizer as optimizer_util
@@ -308,6 +309,17 @@ def train(args):
         "fused_backward_pass is not supported in Anima ControlNet-LLLite training (MVP)"
     )
 
+    # per-block torch.compile の排他チェック (anima_train_network.assert_extra_args と同等)
+    if args.compile:
+        assert not args.torch_compile, (
+            "--compile (per-block torch.compile) and --torch_compile (accelerate dynamo) cannot be used together"
+            " / --compile（ブロック単位torch.compile）と--torch_compile（accelerate dynamo）は併用できません"
+        )
+        assert not (args.compile_fullgraph and args.split_attn), (
+            "--compile_fullgraph cannot be used with --split_attn (split attention uses dynamic control flow)"
+            " / --compile_fullgraphは--split_attnと併用できません（split attentionは動的な制御フローを使用します）"
+        )
+
     cache_latents = args.cache_latents
 
     if args.seed is not None:
@@ -575,6 +587,17 @@ def train(args):
 
     if args.full_fp16:
         accelerator_setup.patch_accelerator_for_fp16_training(accelerator)
+
+    # CUDA perf switches are independent of torch.compile; apply whenever requested.
+    compile_utils.apply_cuda_optimizations(args)
+
+    if args.compile:
+        # per-block torch.compile を凍結 DiT のブロックに適用する。LLLite の forward 差し替え
+        # (apply_to) と accelerator.prepare の後でなければならない。block swap は MVP で無効
+        # のため disable_linear=False 固定。LLLite モジュールは対象 Linear の forward を差し替え
+        # ているため、compile は patch 済みの forward を取り込む (cond_emb はガード付き入力扱い)。
+        dit_to_compile = accelerator.unwrap_model(wrapper).dit
+        compile_utils.compile_transformer(args, dit_to_compile, [dit_to_compile.blocks], disable_linear=False)
 
     args_util.resume_from_local_or_hf_if_specified(accelerator, args)
 
