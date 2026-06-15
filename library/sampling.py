@@ -180,7 +180,7 @@ def line_to_prompt_dict(line: str) -> dict:
 
             m = re.match(r"mk (.+)", parg, re.IGNORECASE)
             if m:
-                prompt_dict["mask_image"] = m.group(1)
+                prompt_dict["mask_image"] = m.group(1).strip()
                 continue
 
             m = re.match(r"i (.+)", parg, re.IGNORECASE)

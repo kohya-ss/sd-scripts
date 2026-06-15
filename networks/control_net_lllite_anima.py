@@ -239,11 +239,15 @@ class LLLiteModuleDiT(nn.Module):
         nn.init.zeros_(self.up.weight)
         nn.init.zeros_(self.up.bias)
 
-        # 親 ControlNetLLLiteDiT が set_cond_image で注入する
+        # 親 ControlNetLLLiteDiT が set_cond_image で注入する。
+        # cond_emb は全モジュールで共有される cx (B, S, cond_emb_dim)、
+        # depth_emb はこのモジュール用の depth embedding (cond_emb_dim,)。
+        # cx を共有参照することで N コピーを避け、加算は forward 内で行う。
         self.cond_emb: Optional[torch.Tensor] = None
+        self.depth_emb: Optional[torch.Tensor] = None
 
         # 親 ControlNetLLLiteDiT が __init__ 末尾で layer_idx を設定する。
-        # depth embedding の加算は set_cond_image 側で行う (torch.compile 対策)。
+        # depth embedding の index 参照は set_cond_image 側で行う (torch.compile 対策)。
         self.layer_idx: int = -1
 
     def apply_to(self):
@@ -264,10 +268,11 @@ class LLLiteModuleDiT(nn.Module):
             B, T, H, W, D = orig_shape
             x = x.reshape(B, T * H * W, D)
 
-        # cond_emb には set_cond_image 時点で depth embedding が加算済み。
-        # (forward 内で per-block の layer_idx を参照すると torch.compile が
-        #  ブロック毎に別グラフを焼くため、加算を compile 領域の外へ出している)
-        cond_local = self.cond_emb  # (B, H*W, cond_emb_dim)
+        # cond_emb は全モジュール共有の cx、depth_emb はこのモジュール用の depth vector。
+        # ここで加算することで cx の N コピーを避ける。整数 layer_idx は参照せず
+        # テンソル属性 depth_emb だけを足すので、torch.compile は単一グラフを維持する
+        # (gradient checkpointing 下では cond_local は領域内で再計算され retain されない)。
+        cond_local = self.cond_emb + self.depth_emb  # (B, H*W, cond_emb_dim)
 
         # CFG 推論用 (学習時は通らない想定)
         if x.shape[0] // 2 == cond_local.shape[0]:
@@ -359,7 +364,7 @@ class ControlNetLLLiteDiT(nn.Module):
 
         aspp_info = f"aspp={'on' + str(list(self.aspp_dilations)) if use_aspp else 'off'}"
         inpaint_info = (
-            f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels != 3 else ""
+            f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
         )
         logger.info(
             f"ControlNet-LLLite (Anima v{LLLITE_ARCH_VERSION}): created {n} modules for "
@@ -440,14 +445,21 @@ class ControlNetLLLiteDiT(nn.Module):
         if cond_image is None:
             for m in self.lllite_modules:
                 m.cond_emb = None
+                m.depth_emb = None
             return
         cx = self.conditioning1(cond_image)  # (B, S, cond_emb_dim)
         for m in self.lllite_modules:
-            # depth embedding (zero-init) を compile 領域の外でここで加算しておく。
-            # forward 内で per-block の layer_idx を参照すると torch.compile が
-            # ブロック毎に別グラフを焼いてしまうため (整数属性は定数扱いされる)。
-            # depth_embeds は学習対象なので、autograd スコープ内で呼ばれる前提。
-            m.cond_emb = cx + self.depth_embeds[m.layer_idx]  # broadcast over (B, S)
+            # 共有の cx を全モジュールに同一テンソルとして持たせ (N コピーを避ける)、
+            # depth embedding はこのモジュール用の (cond_emb_dim,) スライスだけを渡す。
+            # 加算は forward 内で行う (cx の N 倍メモリを回避するため)。
+            #
+            # depth_embeds[layer_idx] の index 参照はここ (compile 領域の外) で毎ステップ
+            # 行う。forward 内で整数 layer_idx を参照すると torch.compile がブロック毎に
+            # 別グラフを焼くため、参照はここに残す。また index 参照を毎ステップ行うことで
+            # SelectBackward が毎回張り直され、2 回目以降の backward でも depth_embeds へ
+            # 正しく勾配が流れる (__init__ で一度だけ index すると graph 再利用で破綻する)。
+            m.cond_emb = cx  # 全モジュールで共有 (同一テンソル)
+            m.depth_emb = self.depth_embeds[m.layer_idx]  # (cond_emb_dim,), broadcast over (B, S)
 
     def clear_cond_image(self):
         self.set_cond_image(None)

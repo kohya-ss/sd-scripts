@@ -497,7 +497,7 @@ The default 3-channel behavior (no mask, generic ControlNet usage) is unchanged.
 * `white` (1.0) = **inpaint area** — the region the model should fill in / 生成すべき穴.
 * `black` (0.0) = **keep** — the region whose pixels are preserved.
 
-The mask is binarized at 0.5 on load and fed to the network as `{0.0, 1.0}` (it is **not** rescaled to `[-1, 1]`; GroupNorm inside the trunk normalizes the scale).
+The mask is binarized at 0.5 on load (`{0.0, 1.0}`) and then rescaled to `{-1.0, 1.0}` via `mask * 2 - 1` before being concatenated as the 4th channel, so that the mask channel matches the `[-1, 1]` range of the RGB conditioning channels.
 
 ### 7.2. Dataset Setup / データセット設定
 
@@ -599,7 +599,7 @@ python anima_minimal_inference_control_net_lllite.py \
 
 `--lllite_cond_in_channels=4` を指定すると、`conditioning1` の入力チャネルが 3 → 4 になり、`[R, G, B, mask]` を受け付けるようになります。学習時は `library.mask_generator.random_mask` でステップ毎にランダム mask を生成し、`conditioning_images` (= 元画像) と concat して渡します。3ch のデフォルト動作は変更されません。
 
-**マスク規約**: 白 (1.0) = inpaint 対象 (穴) / 黒 (0.0) = 保持。ロード時に 0.5 で二値化し、`{0.0, 1.0}` のままトランクに入力します。
+**マスク規約**: 白 (1.0) = inpaint 対象 (穴) / 黒 (0.0) = 保持。ロード時に 0.5 で二値化 (`{0.0, 1.0}`) した後、`mask * 2 - 1` で `{-1.0, 1.0}` にスケールしてから 4ch 目として concat します (RGB conditioning チャンネルの `[-1, 1]` レンジに合わせるため)。
 
 **データセット**: inpainting では「conditioning 画像 = 元画像」となるため、`conditioning_data_dir` には `image_dir` と同じパス (もしくは symlink / コピー) を指定してください。データセットコード側は無改修です。
 
