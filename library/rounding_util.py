@@ -245,6 +245,7 @@ def round_parameters(
     *,
     step: float,
     mode: RoundMode = "det",
+    exclude_param_ids: Optional[set[int]] = None,
 ) -> None:
     """In-place rounding of given parameters to multiples of `step`.
 
@@ -253,7 +254,10 @@ def round_parameters(
     if step is None or step <= 0:
         return
 
+    exclude_param_ids = exclude_param_ids or set()
     for p in params:
+        if id(p) in exclude_param_ids:
+            continue
         if not torch.is_floating_point(p.data):
             continue
         if mode == "det":

@@ -486,7 +486,7 @@ def write_report(output_dir: Path, metadata: dict):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SDXL LoRA Report</title>
 <style>
-:root {{ color-scheme: light dark; }}
+:root {{ color-scheme: light dark; --image-width: 320px; --card-width: calc(var(--image-width) + 18px); }}
 body {{ margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f5f5f2; color: #202124; }}
 header {{ position: sticky; top: 0; z-index: 3; background: #ffffffee; border-bottom: 1px solid #d8d8d0; padding: 12px 18px; backdrop-filter: blur(8px); }}
 h1 {{ font-size: 18px; margin: 0 0 10px; }}
@@ -495,25 +495,27 @@ h1 {{ font-size: 18px; margin: 0 0 10px; }}
 .filter-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
 .filter-box {{ max-height: 150px; overflow: auto; border: 1px solid #d6d6ce; padding: 8px; background: white; }}
 .filter-box label {{ display: block; margin: 3px 0; white-space: nowrap; }}
-main {{ padding: 18px; overflow: auto; }}
-table {{ border-collapse: separate; border-spacing: 0; background: white; box-shadow: 0 1px 3px #0001; }}
-th, td {{ border-right: 1px solid #d8d8d0; border-bottom: 1px solid #d8d8d0; padding: 8px; vertical-align: top; }}
-th {{ background: #ecece6; font-size: 12px; text-align: left; }}
-td:first-child {{ position: sticky; left: 0; z-index: 1; background: #fafaf6; font-size: 12px; min-width: 190px; }}
-.cell {{ min-width: 180px; }}
-.cell img {{ width: var(--image-width, 50%); max-width: none; height: auto; display: block; cursor: zoom-in; border: 1px solid #ccc; background: #eee; }}
-.missing {{ width: 180px; min-height: 120px; display: grid; place-items: center; border: 1px dashed #aaa; color: #777; font-size: 12px; }}
+main {{ padding: 18px; }}
+.group {{ margin: 0 0 18px; background: white; border: 1px solid #d8d8d0; box-shadow: 0 1px 3px #0001; }}
+.group h2 {{ margin: 0; padding: 10px 12px; font-size: 13px; background: #ecece6; border-bottom: 1px solid #d8d8d0; }}
+.cards {{ display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px; padding: 14px; }}
+.card {{ width: var(--card-width); border: 1px solid #d8d8d0; background: #fbfbf8; padding: 8px; box-sizing: border-box; }}
+.card-title {{ width: var(--image-width); margin: 0 0 6px; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }}
+.card img {{ width: var(--image-width); max-width: none; height: auto; display: block; cursor: zoom-in; border: 1px solid #ccc; background: #eee; box-sizing: border-box; }}
+.missing {{ width: var(--image-width); min-height: 120px; display: grid; place-items: center; border: 1px dashed #aaa; color: #777; font-size: 12px; box-sizing: border-box; }}
 .meta {{ margin-top: 6px; font-size: 11px; color: #555; line-height: 1.35; }}
 dialog {{ max-width: 96vw; max-height: 96vh; border: 0; padding: 0; background: transparent; }}
-dialog img {{ max-width: 96vw; max-height: 92vh; display: block; background: #111; }}
+.viewer-card {{ margin: 0; color: #eee; }}
+#viewerTitle {{ padding: 8px 10px; font-size: 13px; font-weight: 650; background: #111; overflow-wrap: anywhere; }}
+dialog img {{ max-width: 96vw; max-height: 88vh; display: block; background: #111; }}
+#viewerMeta {{ padding: 7px 10px; font-size: 12px; background: #111; color: #ccc; }}
 dialog::backdrop {{ background: rgba(0,0,0,.78); }}
 button, select, input {{ font: inherit; }}
 @media (prefers-color-scheme: dark) {{
   body {{ background: #1f211f; color: #eee; }}
-  header, .panel, table, .filter-box {{ background: #282b28; }}
-  th {{ background: #343832; }}
-  td:first-child {{ background: #2b2e2a; }}
-  th, td, header, .panel, .filter-box {{ border-color: #474b43; }}
+  header, .panel, .group, .card, .filter-box {{ background: #282b28; }}
+  .group h2 {{ background: #343832; }}
+  header, .panel, .filter-box, .group, .group h2, .card {{ border-color: #474b43; }}
   .meta {{ color: #bbb; }}
 }}
 </style>
@@ -523,7 +525,7 @@ button, select, input {{ font: inherit; }}
   <h1>SDXL LoRA Report</h1>
   <div class="toolbar">
     <label>Axis <select id="axis"><option value="condition">X: LoRA / Y: Prompt+Seed</option><option value="case">X: Prompt+Seed / Y: LoRA</option></select></label>
-    <label>Image size <input id="size" type="range" min="20" max="120" value="50"> <span id="sizeLabel">50%</span></label>
+    <label>Image size <input id="size" type="range" min="160" max="768" step="16" value="320"> <span id="sizeLabel">320px</span></label>
     <button id="showAll">Show all</button>
   </div>
 </header>
@@ -535,14 +537,20 @@ button, select, input {{ font: inherit; }}
   </div>
 </section>
 <main id="report"></main>
-<dialog id="viewer"><img id="viewerImage" alt=""></dialog>
+<dialog id="viewer"><figure class="viewer-card"><figcaption id="viewerTitle"></figcaption><img id="viewerImage" alt=""><div id="viewerMeta"></div></figure></dialog>
 <script>
 const reportData = {data_json};
-const state = {{ axis: "condition", conditions: new Set(), prompts: new Set(), seeds: new Set(), size: 50 }};
+const state = {{ axis: "condition", conditions: new Set(), prompts: new Set(), seeds: new Set(), size: 320 }};
+let renderedJobs = [];
+let renderedJobMap = new Map();
+let viewerJobs = [];
+let viewerIndex = -1;
 const byId = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[ch]));
 const promptPosition = job => `p${{String(job.prompt_index ?? 0).padStart(4, "0")}}`;
 const caseId = job => `${{promptPosition(job)}} / ${{job.prompt_id}} / seed ${{job.seed}}`;
+const jobKey = job => `${{job.condition_id}}@@${{caseId(job)}}`;
+const conditionOrder = new Map(reportData.conditions.map((condition, index) => [condition.id, index]));
 function initState() {{
   reportData.conditions.forEach(c => state.conditions.add(c.id));
   reportData.prompts.forEach(p => state.prompts.add(p.id));
@@ -563,41 +571,68 @@ function checkboxList(root, items, selected, labelFn) {{
 function selectedJobs() {{
   return reportData.jobs.filter(j => state.conditions.has(j.condition_id) && state.prompts.has(j.prompt_id) && state.seeds.has(String(j.seed)));
 }}
-function cell(job) {{
-  if (!job) return `<td class="cell"><div class="missing">no job</div></td>`;
-  const image = job.status === "done" ? `<img src="${{esc(job.image)}}" alt="" loading="lazy">` : `<div class="missing">${{esc(job.status)}}</div>`;
+function card(job, title) {{
+  if (!job) return `<article class="card"><div class="card-title">${{esc(title || "missing")}}</div><div class="missing">no job</div></article>`;
+  const image = job.status === "done"
+    ? `<img src="${{esc(job.image)}}" alt="" loading="lazy" data-job-key="${{esc(jobKey(job))}}">`
+    : `<div class="missing">${{esc(job.status)}}</div>`;
   const items = (job.condition_items || []).map(item => `${{esc(item.name || item.path)}} x${{esc(item.strength)}} lbw=${{esc(item.lbw ?? "")}}`).join("<br>");
-  return `<td class="cell">${{image}}<div class="meta">${{esc(job.condition_name)}}<br>${{items}}<br>${{esc(caseId(job))}}<br>${{esc(job.width)}}x${{esc(job.height)}}</div></td>`;
+  return `<article class="card"><div class="card-title">${{esc(title || job.condition_name)}}</div>${{image}}<div class="meta">${{items}}<br>${{esc(caseId(job))}}<br>${{esc(job.width)}}x${{esc(job.height)}}</div></article>`;
+}}
+function setImageSize(value) {{
+  state.size = Number(value);
+  document.documentElement.style.setProperty("--image-width", `${{state.size}}px`);
+  byId("sizeLabel").textContent = `${{state.size}}px`;
+}}
+function openViewer(key) {{
+  const job = renderedJobMap.get(key);
+  if (!job) return;
+  viewerJobs = renderedJobs
+    .filter(item => item.status === "done" && caseId(item) === caseId(job))
+    .sort((a, b) => (conditionOrder.get(a.condition_id) ?? 9999) - (conditionOrder.get(b.condition_id) ?? 9999));
+  viewerIndex = Math.max(0, viewerJobs.findIndex(item => jobKey(item) === key));
+  updateViewer();
+  byId("viewer").showModal();
+}}
+function updateViewer() {{
+  const job = viewerJobs[viewerIndex];
+  if (!job) return;
+  byId("viewerImage").src = job.image;
+  byId("viewerTitle").textContent = job.condition_name || "";
+  byId("viewerMeta").textContent = `${{caseId(job)}} / ${{job.width}}x${{job.height}}`;
+}}
+function moveViewer(delta) {{
+  if (!byId("viewer").open || viewerJobs.length === 0) return;
+  viewerIndex = (viewerIndex + delta + viewerJobs.length) % viewerJobs.length;
+  updateViewer();
 }}
 function render() {{
-  document.documentElement.style.setProperty("--image-width", `${{state.size}}%`);
+  setImageSize(state.size);
   const jobs = selectedJobs();
+  renderedJobs = jobs;
+  renderedJobMap = new Map(jobs.map(j => [jobKey(j), j]));
   const report = byId("report");
   const axis = state.axis;
-  const jobMap = new Map(jobs.map(j => [`${{j.condition_id}}@@${{caseId(j)}}`, j]));
+  const jobMap = renderedJobMap;
   const cases = Array.from(new Set(jobs.map(caseId)));
   const conditions = reportData.conditions.filter(c => state.conditions.has(c.id));
-  let html = "<table>";
+  let html = "";
   if (axis === "condition") {{
-    html += "<thead><tr><th>Prompt / Seed</th>" + conditions.map(c => `<th>${{esc(c.name)}}</th>`).join("") + "</tr></thead><tbody>";
     for (const caze of cases) {{
-      html += `<tr><td>${{esc(caze)}}</td>`;
-      for (const condition of conditions) html += cell(jobMap.get(`${{condition.id}}@@${{caze}}`));
-      html += "</tr>";
+      html += `<section class="group"><h2>${{esc(caze)}}</h2><div class="cards">`;
+      for (const condition of conditions) html += card(jobMap.get(`${{condition.id}}@@${{caze}}`), condition.name);
+      html += "</div></section>";
     }}
   }} else {{
-    html += "<thead><tr><th>LoRA</th>" + cases.map(c => `<th>${{esc(c)}}</th>`).join("") + "</tr></thead><tbody>";
     for (const condition of conditions) {{
-      html += `<tr><td>${{esc(condition.name)}}</td>`;
-      for (const caze of cases) html += cell(jobMap.get(`${{condition.id}}@@${{caze}}`));
-      html += "</tr>";
+      html += `<section class="group"><h2>${{esc(condition.name)}}</h2><div class="cards">`;
+      for (const caze of cases) html += card(jobMap.get(`${{condition.id}}@@${{caze}}`), condition.name);
+      html += "</div></section>";
     }}
   }}
-  html += "</tbody></table>";
   report.innerHTML = html;
   report.querySelectorAll("img").forEach(img => img.addEventListener("click", () => {{
-    byId("viewerImage").src = img.src;
-    byId("viewer").showModal();
+    openViewer(img.dataset.jobKey);
   }}));
 }}
 initState();
@@ -605,9 +640,14 @@ checkboxList(byId("conditionFilters"), reportData.conditions, state.conditions, 
 checkboxList(byId("promptFilters"), reportData.prompts, state.prompts, item => item.id);
 checkboxList(byId("seedFilters"), reportData.seeds, state.seeds, item => item);
 byId("axis").addEventListener("change", event => {{ state.axis = event.target.value; render(); }});
-byId("size").addEventListener("input", event => {{ state.size = event.target.value; byId("sizeLabel").textContent = `${{state.size}}%`; render(); }});
+byId("size").addEventListener("input", event => {{ setImageSize(event.target.value); render(); }});
 byId("showAll").addEventListener("click", () => location.reload());
 byId("viewer").addEventListener("click", () => byId("viewer").close());
+document.addEventListener("keydown", event => {{
+  if (!byId("viewer").open) return;
+  if (event.key === "ArrowLeft") {{ event.preventDefault(); moveViewer(-1); }}
+  if (event.key === "ArrowRight") {{ event.preventDefault(); moveViewer(1); }}
+}});
 render();
 </script>
 </body>
@@ -626,7 +666,7 @@ def write_blind_report(output_dir: Path, metadata: dict):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SDXL LoRA Blind Report</title>
 <style>
-:root { color-scheme: light dark; --image-width: 50%; }
+:root { color-scheme: light dark; --image-width: 320px; --card-width: calc(var(--image-width) + 22px); }
 body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f5f5f2; color: #202124; }
 header { position: sticky; top: 0; z-index: 3; background: #ffffffee; border-bottom: 1px solid #d8d8d0; padding: 12px 18px; backdrop-filter: blur(8px); }
 h1 { font-size: 18px; margin: 0 0 10px; }
@@ -634,18 +674,20 @@ h1 { font-size: 18px; margin: 0 0 10px; }
 main { padding: 18px; }
 .group { margin: 0 0 22px; background: white; border: 1px solid #d8d8d0; box-shadow: 0 1px 3px #0001; }
 .group h2 { margin: 0; padding: 10px 12px; font-size: 13px; background: #ecece6; border-bottom: 1px solid #d8d8d0; }
-.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; padding: 14px; }
-.choice { border: 1px solid #d8d8d0; background: #fbfbf8; padding: 10px; }
-.choice img { width: var(--image-width); max-width: 100%; height: auto; display: block; cursor: zoom-in; border: 1px solid #ccc; background: #eee; }
+.choices { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px; padding: 14px; }
+.choice { width: var(--card-width); border: 1px solid #d8d8d0; background: #fbfbf8; padding: 10px; box-sizing: border-box; }
+.choice img { width: var(--image-width); max-width: none; height: auto; display: block; cursor: zoom-in; border: 1px solid #ccc; background: #eee; box-sizing: border-box; }
 .choice label { display: inline-flex; gap: 7px; align-items: center; margin-top: 8px; font-weight: 650; }
-.missing { min-height: 140px; display: grid; place-items: center; border: 1px dashed #aaa; color: #777; font-size: 12px; }
+.missing { width: var(--image-width); min-height: 140px; display: grid; place-items: center; border: 1px dashed #aaa; color: #777; font-size: 12px; box-sizing: border-box; }
 .answer { display: none; margin-top: 7px; font-size: 12px; color: #555; line-height: 1.35; }
 body.revealed .answer { display: block; }
 #results { margin: 0 18px 22px; padding: 12px; border: 1px solid #d8d8d0; background: white; display: none; }
 #results table { border-collapse: collapse; }
 #results th, #results td { border: 1px solid #d8d8d0; padding: 6px 10px; text-align: left; }
 dialog { max-width: 96vw; max-height: 96vh; border: 0; padding: 0; background: transparent; }
-dialog img { max-width: 96vw; max-height: 92vh; display: block; background: #111; }
+.viewer-card { margin: 0; color: #eee; }
+#viewerTitle { padding: 8px 10px; font-size: 13px; font-weight: 650; background: #111; overflow-wrap: anywhere; }
+dialog img { max-width: 96vw; max-height: 88vh; display: block; background: #111; }
 dialog::backdrop { background: rgba(0,0,0,.78); }
 button, input { font: inherit; }
 @media (prefers-color-scheme: dark) {
@@ -661,15 +703,18 @@ button, input { font: inherit; }
 <header>
   <h1>SDXL LoRA Blind Report</h1>
   <div class="toolbar">
-    <label>Image size <input id="size" type="range" min="20" max="120" value="50"> <span id="sizeLabel">50%</span></label>
+    <label>Image size <input id="size" type="range" min="160" max="768" step="16" value="320"> <span id="sizeLabel">320px</span></label>
     <button id="reveal">Reveal / 答え合わせ</button>
   </div>
 </header>
 <section id="results"></section>
 <main id="report"></main>
-<dialog id="viewer"><img id="viewerImage" alt=""></dialog>
+<dialog id="viewer"><figure class="viewer-card"><figcaption id="viewerTitle"></figcaption><img id="viewerImage" alt=""></figure></dialog>
 <script>
 const reportData = __REPORT_DATA__;
+let renderedGroups = [];
+let viewerJobs = [];
+let viewerIndex = -1;
 const byId = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => {
   if (ch === "&") return "&amp;";
@@ -702,7 +747,7 @@ function buildGroups() {
 }
 function choice(job, groupIndex, choiceIndex) {
   const image = job.status === "done"
-    ? `<img src="${esc(job.image)}" alt="" loading="lazy">`
+    ? `<img src="${esc(job.image)}" alt="" loading="lazy" data-group-index="${groupIndex}" data-choice-index="${choiceIndex}">`
     : `<div class="missing">${esc(job.status)}</div>`;
   return `<article class="choice" data-condition="${esc(job.condition_id)}">
     ${image}
@@ -710,17 +755,41 @@ function choice(job, groupIndex, choiceIndex) {
     <div class="answer">#${choiceIndex + 1}<br>${conditionLabel(job)}</div>
   </article>`;
 }
+function setImageSize(value) {
+  document.documentElement.style.setProperty("--image-width", `${value}px`);
+  byId("sizeLabel").textContent = `${value}px`;
+}
+function openViewer(groupIndex, choiceIndex) {
+  const group = renderedGroups[groupIndex];
+  if (!group) return;
+  viewerJobs = group.jobs.filter(job => job.status === "done");
+  const clickedJob = group.jobs[choiceIndex];
+  viewerIndex = Math.max(0, viewerJobs.findIndex(job => job === clickedJob));
+  updateViewer();
+  byId("viewer").showModal();
+}
+function updateViewer() {
+  const job = viewerJobs[viewerIndex];
+  if (!job) return;
+  byId("viewerImage").src = job.image;
+  byId("viewerTitle").textContent = caseId(job);
+}
+function moveViewer(delta) {
+  if (!byId("viewer").open || viewerJobs.length === 0) return;
+  viewerIndex = (viewerIndex + delta + viewerJobs.length) % viewerJobs.length;
+  updateViewer();
+}
 function render() {
-  const groups = buildGroups();
-  byId("report").innerHTML = groups.map(group => `
+  setImageSize(byId("size").value);
+  renderedGroups = buildGroups();
+  byId("report").innerHTML = renderedGroups.map(group => `
     <section class="group">
       <h2>${esc(group.label)}</h2>
       <div class="choices">${group.jobs.map((job, index) => choice(job, group.index, index)).join("")}</div>
     </section>
   `).join("");
   byId("report").querySelectorAll("img").forEach(img => img.addEventListener("click", () => {
-    byId("viewerImage").src = img.src;
-    byId("viewer").showModal();
+    openViewer(Number(img.dataset.groupIndex), Number(img.dataset.choiceIndex));
   }));
 }
 function reveal() {
@@ -737,11 +806,15 @@ function reveal() {
     </tbody></table>`;
 }
 byId("size").addEventListener("input", event => {
-  document.documentElement.style.setProperty("--image-width", `${event.target.value}%`);
-  byId("sizeLabel").textContent = `${event.target.value}%`;
+  setImageSize(event.target.value);
 });
 byId("reveal").addEventListener("click", reveal);
 byId("viewer").addEventListener("click", () => byId("viewer").close());
+document.addEventListener("keydown", event => {
+  if (!byId("viewer").open) return;
+  if (event.key === "ArrowLeft") { event.preventDefault(); moveViewer(-1); }
+  if (event.key === "ArrowRight") { event.preventDefault(); moveViewer(1); }
+});
 render();
 </script>
 </body>

@@ -4475,7 +4475,7 @@ def get_optimizer(args, trainable_params):
 # Add some checking and features to the original function.
 
 
-def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
+def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int, lr_descriptions: Optional[Sequence[str]] = None):
     """
     Unified API to get any scheduler from its name.
     """
@@ -4492,6 +4492,26 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     power = args.lr_scheduler_power
     timescale = args.lr_scheduler_timescale
     min_lr_ratio = args.lr_scheduler_min_lr_ratio
+    te1_warmup_steps = getattr(args, "te1_lr_warmup_steps", None)
+    te2_warmup_steps = getattr(args, "te2_lr_warmup_steps", None)
+    has_te_warmup_steps = te1_warmup_steps is not None or te2_warmup_steps is not None
+
+    def resolve_warmup_steps(value, option_name: str) -> int:
+        if isinstance(value, float) and value < 1.0:
+            resolved = int(value * num_training_steps)
+        else:
+            resolved = int(value)
+        if resolved < 0:
+            raise ValueError(f"{option_name} must be >= 0.")
+        return resolved
+
+    def text_encoder_index_from_lr_description(description: str) -> Optional[int]:
+        base = (description or "").split()[0].lower()
+        if base.startswith("textencoder2"):
+            return 1
+        if base.startswith("textencoder1") or base == "textencoder":
+            return 0
+        return None
 
     lr_scheduler_kwargs = {}  # get custom lr_scheduler kwargs
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
@@ -4504,6 +4524,11 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         if num_warmup_steps is not None and num_warmup_steps != 0:
             raise ValueError(f"{name} does not require `num_warmup_steps`. Set None or 0.")
         return return_vals
+
+    if has_te_warmup_steps and (args.lr_scheduler_type or name != SchedulerType.CONSTANT_WITH_WARMUP.value):
+        raise ValueError(
+            "--te1_lr_warmup_steps/--te2_lr_warmup_steps require --lr_scheduler constant_with_warmup."
+        )
 
     # using any lr_scheduler from other library
     if args.lr_scheduler_type:
@@ -4543,6 +4568,46 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         raise ValueError(f"{name} requires `num_warmup_steps`, please provide that argument.")
 
     if name == SchedulerType.CONSTANT_WITH_WARMUP:
+        if has_te_warmup_steps:
+            if lr_descriptions is None:
+                raise ValueError(
+                    "--te1_lr_warmup_steps/--te2_lr_warmup_steps require optimizer group descriptions."
+                )
+
+            group_warmup_steps = [num_warmup_steps for _ in optimizer.param_groups]
+            te_warmup_steps = {
+                0: resolve_warmup_steps(te1_warmup_steps, "--te1_lr_warmup_steps")
+                if te1_warmup_steps is not None
+                else None,
+                1: resolve_warmup_steps(te2_warmup_steps, "--te2_lr_warmup_steps")
+                if te2_warmup_steps is not None
+                else None,
+            }
+            for group_index, description in enumerate(lr_descriptions):
+                if group_index >= len(group_warmup_steps):
+                    break
+                te_index = text_encoder_index_from_lr_description(description)
+                if te_index is not None and te_warmup_steps[te_index] is not None:
+                    group_warmup_steps[group_index] = te_warmup_steps[te_index]
+
+            logger.info(
+                "use constant_with_warmup with per text encoder warmup steps: %s",
+                ", ".join(
+                    f"{desc}={steps}" for desc, steps in zip(lr_descriptions, group_warmup_steps)
+                ),
+            )
+
+            def make_group_lambda(warmup_steps: int):
+                def lr_lambda(current_step: int):
+                    if warmup_steps == 0:
+                        return 1.0
+                    return min(1.0, float(current_step) / float(max(1, warmup_steps)))
+
+                return lr_lambda
+
+            return torch.optim.lr_scheduler.LambdaLR(
+                optimizer, [make_group_lambda(int(steps)) for steps in group_warmup_steps]
+            )
         return schedule_func(optimizer, num_warmup_steps=num_warmup_steps, **lr_scheduler_kwargs)
 
     if name == SchedulerType.INVERSE_SQRT:
