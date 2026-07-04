@@ -100,6 +100,28 @@
 - 最初から量子化有で学習するとディティールが弱くなりやすいが、うまく行けば柔軟性が増す
 - まず量子化無で学習し、`--network_weights` でその重みを読み込んで量子化ありで追加学習するのもよい
 - `clip_rate_low` が合うデータもあるが、lowを維持するための量子化誤差が重くなる場合は `--dq_delta_auto_preset clip_rate_low_auto` でmid帯へ自動退避させる選択肢がある
+- `--dq_delta_bits_sched "0.0:8,0.9:10"` で前半を 8bit、最後 10% だけ 10bit にする設定は、うまくいったこともあるが基本的には不要。ずっと 8bit のままで問題ない
+- `--dq_quantize_z --dq_delta_mode det` は 10% 程度高速化する。学習は破綻なくできたが、内部で行われる丸め処理の場所が変わるため結果は通常設定と同等ではなくなる。量子化による自由度アップ性能が劣るようなので不採用
+
+## 検証メモ
+
+### TE の warmup を長くし、途中で TE を freeze する実験
+
+通常設定:
+
+```bat
+--lr_scheduler constant_with_warmup --lr_warmup_steps 0.05
+```
+
+実験設定:
+
+```bat
+--lr_scheduler constant_with_warmup --lr_warmup_steps 0.05 --te1_lr_warmup_steps 0.1 --te2_lr_warmup_steps 0.1 --te1_freeze_at 0.85 --te2_freeze_at 0.85
+```
+
+- TE の warmup を長くすると TE の学習が薄まり、全体として学習が弱くなる
+- 通常の U-Net と同期した warmup の方がよい
+- TE を後半で freeze しても、特に良い効果はなかった
 
 ## データセット設定例（dataset_config.toml）
 ```
