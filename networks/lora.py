@@ -58,11 +58,19 @@ def _fake_quantize_levels_with_q(
 
 
 class DQStatsAccumulator:
-    def __init__(self, device, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
+    def __init__(
+        self,
+        device,
+        collect_full: bool,
+        collect_zero: bool,
+        collect_near_zero: bool,
+        collect_error_parts: bool = False,
+    ):
         self.device = device
         self.collect_full = collect_full
         self.collect_zero = collect_zero
         self.collect_near_zero = collect_near_zero
+        self.collect_error_parts = collect_error_parts
         self.numel = torch.zeros(1, device=device, dtype=torch.float32)
         self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
         self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
@@ -75,6 +83,8 @@ class DQStatsAccumulator:
         self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
         self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
         self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+        self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+        self.round_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
 
     def add(
         self,
@@ -91,6 +101,8 @@ class DQStatsAccumulator:
         scale_max: Optional[torch.Tensor] = None,
         scale_sum: Optional[torch.Tensor] = None,
         scale_count: Optional[torch.Tensor] = None,
+        clip_err_sumsq: Optional[torch.Tensor] = None,
+        round_err_sumsq: Optional[torch.Tensor] = None,
     ):
         self.numel += numel
         self.clip_count += clip_count
@@ -115,6 +127,11 @@ class DQStatsAccumulator:
                 self.scale_sum += scale_sum
             if scale_count is not None:
                 self.scale_count += scale_count
+        if self.collect_error_parts:
+            if clip_err_sumsq is not None:
+                self.clip_err_sumsq += clip_err_sumsq
+            if round_err_sumsq is not None:
+                self.round_err_sumsq += round_err_sumsq
 
 
 class DQStatsManager:
@@ -124,6 +141,7 @@ class DQStatsManager:
         self.collect_full = False
         self.collect_zero = False
         self.collect_near_zero = False
+        self.collect_error_parts = False
         self.log_mode = "summary"
         self.log_scope = "both"
         self.auto_scope = "both"
@@ -135,8 +153,12 @@ class DQStatsManager:
 
     def _reset(self, device):
         self.accum = {
-            "unet": DQStatsAccumulator(device, self.collect_full, self.collect_zero, self.collect_near_zero),
-            "te": DQStatsAccumulator(device, self.collect_full, self.collect_zero, self.collect_near_zero),
+            "unet": DQStatsAccumulator(
+                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+            ),
+            "te": DQStatsAccumulator(
+                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+            ),
         }
         self.per_module = []
 
@@ -150,6 +172,7 @@ class DQStatsManager:
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_error_parts: bool,
         log_mode: str,
         log_scope: str,
         auto_scope: str,
@@ -163,6 +186,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
             self.auto_scope = auto_scope
@@ -176,6 +200,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
             self.auto_scope = auto_scope
@@ -216,6 +241,8 @@ class DQStatsManager:
         scale_max: Optional[torch.Tensor],
         scale_sum: Optional[torch.Tensor],
         scale_count: Optional[torch.Tensor],
+        clip_err_sumsq: Optional[torch.Tensor],
+        round_err_sumsq: Optional[torch.Tensor],
     ):
         if not self._scope_enabled(scope):
             return
@@ -233,6 +260,8 @@ class DQStatsManager:
             scale_max=scale_max,
             scale_sum=scale_sum,
             scale_count=scale_count,
+            clip_err_sumsq=clip_err_sumsq,
+            round_err_sumsq=round_err_sumsq,
         )
         if self.do_log and self.log_mode == "per_module" and (self.log_scope == "both" or self.log_scope == scope):
             self.per_module.append(
@@ -252,6 +281,8 @@ class DQStatsManager:
                     "scale_max": scale_max.detach() if scale_max is not None else None,
                     "scale_sum": scale_sum.detach() if scale_sum is not None else None,
                     "scale_count": scale_count.detach() if scale_count is not None else None,
+                    "clip_err_sumsq": clip_err_sumsq.detach() if clip_err_sumsq is not None else None,
+                    "round_err_sumsq": round_err_sumsq.detach() if round_err_sumsq is not None else None,
                 }
             )
 
@@ -269,6 +300,7 @@ class DQStatsManager:
             "collect_full": self.collect_full,
             "collect_zero": self.collect_zero,
             "collect_near_zero": self.collect_near_zero,
+            "collect_error_parts": self.collect_error_parts,
             "accum": self.accum,
             "per_module": self.per_module,
         }
@@ -457,6 +489,7 @@ class LoRAModule(torch.nn.Module):
             if mgr.collect_near_zero and scale is not None:
                 near_zero_count = (x_in.abs() < (0.5 * scale)).to(torch.float32).sum()
             sumsq = xq_sumsq = xxq_sum = absmax = None
+            clip_err_sumsq = round_err_sumsq = None
             if mgr.collect_full:
                 x_fp32 = x_in.to(torch.float32)
                 x_flat = x_fp32.reshape(-1)
@@ -466,6 +499,14 @@ class LoRAModule(torch.nn.Module):
                 xq_sumsq = torch.dot(q_flat, q_flat)
                 xxq_sum = torch.dot(x_flat, q_flat)
                 absmax = x_in.abs().max()
+                if mgr.collect_error_parts and q_clamp is not None and scale is not None:
+                    x_clamped = q_clamp.to(torch.float32) * scale.to(device=device, dtype=torch.float32)
+                    clip_err = x_fp32 - x_clamped
+                    round_err = x_clamped - q_fp32
+                    clip_err_flat = clip_err.reshape(-1)
+                    round_err_flat = round_err.reshape(-1)
+                    clip_err_sumsq = torch.dot(clip_err_flat, clip_err_flat)
+                    round_err_sumsq = torch.dot(round_err_flat, round_err_flat)
             scale_min = scale_max = scale_sum = scale_count = None
             if mgr.collect_full and scale is not None:
                 scale_min = scale.min()
@@ -489,6 +530,8 @@ class LoRAModule(torch.nn.Module):
                 scale_max=scale_max,
                 scale_sum=scale_sum,
                 scale_count=scale_count,
+                clip_err_sumsq=clip_err_sumsq,
+                round_err_sumsq=round_err_sumsq,
             )
 
     def forward(self, x):
@@ -1623,6 +1666,7 @@ class LoRANetwork(torch.nn.Module):
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_error_parts: bool = False,
         log_mode: str,
         log_scope: str,
         auto_scope: str,
@@ -1638,6 +1682,7 @@ class LoRANetwork(torch.nn.Module):
             collect_full=collect_full,
             collect_zero=collect_zero,
             collect_near_zero=collect_near_zero,
+            collect_error_parts=collect_error_parts,
             log_mode=log_mode,
             log_scope=log_scope,
             auto_scope=auto_scope,

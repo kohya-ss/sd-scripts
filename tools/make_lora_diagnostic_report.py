@@ -21,6 +21,7 @@ ColorPalette = [
 ]
 
 DEFAULT_LORA_EPOCH_TREND_MAX_SERIES = 18
+DQ_LOW_QERR_PER_CLIP_THRESHOLD = 130.0
 
 
 def module_label(module: str) -> str:
@@ -376,6 +377,26 @@ def parse_dq_logs(
                 "QuantErrRatioEMA": safe_float(row.get("QuantErrRatioEMA")),
                 "QuantErrRMSRaw": safe_float(row.get("QuantErrRMSRaw")),
                 "QuantErrRMSEMA": safe_float(row.get("QuantErrRMSEMA")),
+                "QErrPerClip": safe_float(row.get("QErrPerClip")),
+                "QErrPerClipClipFloor": safe_float(row.get("QErrPerClipClipFloor")),
+                "ActiveClipBand": (row.get("ActiveClipBand") or "").strip(),
+                "ActiveClipLow": safe_float(row.get("ActiveClipLow")),
+                "ActiveClipHigh": safe_float(row.get("ActiveClipHigh")),
+                "ClipRateLowAutoState": (row.get("ClipRateLowAutoState") or "").strip(),
+                "ClipRateLowAutoBad": safe_int(row.get("ClipRateLowAutoBad")),
+                "ClipRateLowAutoBadStreak": safe_int(row.get("ClipRateLowAutoBadStreak")),
+                "TrainProgress": safe_float(row.get("TrainProgress")),
+                "ClipRateLowAutoMinProgress": safe_float(row.get("ClipRateLowAutoMinProgress")),
+                "ClipRateLowAutoFreezeProgress": safe_float(row.get("ClipRateLowAutoFreezeProgress")),
+                "ClipRateLowAutoThresholdQErrRatio": safe_float(row.get("ClipRateLowAutoThresholdQErrRatio")),
+                "ClipRateLowAutoThresholdQErrPerClip": safe_float(row.get("ClipRateLowAutoThresholdQErrPerClip")),
+                "ClipRateLowAutoPhase": (row.get("ClipRateLowAutoPhase") or "").strip(),
+                "ClipErrRMS": safe_float(row.get("ClipErrRMS")),
+                "RoundErrRMS": safe_float(row.get("RoundErrRMS")),
+                "ClipErrRatio": safe_float(row.get("ClipErrRatio")),
+                "RoundErrRatio": safe_float(row.get("RoundErrRatio")),
+                "ClipShare": safe_float(row.get("ClipShare")),
+                "RoundShare": safe_float(row.get("RoundShare")),
                 "ZeroRate": safe_float(row.get("ZeroRate")),
                 "AbsMax": safe_float(row.get("AbsMax")),
                 "Range": safe_float(row.get("Range")),
@@ -403,6 +424,23 @@ def parse_dq_logs(
                     "WarmupActive": safe_int(row.get("WarmupActive")),
                     "AutoReason": (row.get("AutoReason") or "").strip(),
                     "AutoInitClipTarget": safe_float(row.get("AutoInitClipTarget")),
+                    "QErrPerClip": safe_float(row.get("QErrPerClip")),
+                    "QErrPerClipClipFloor": safe_float(row.get("QErrPerClipClipFloor")),
+                    "ActiveClipBand": (row.get("ActiveClipBand") or "").strip(),
+                    "ActiveClipLow": safe_float(row.get("ActiveClipLow")),
+                    "ActiveClipHigh": safe_float(row.get("ActiveClipHigh")),
+                    "ClipRateLowAutoState": (row.get("ClipRateLowAutoState") or "").strip(),
+                    "ClipRateLowAutoDecision": (row.get("ClipRateLowAutoDecision") or "").strip(),
+                    "ClipRateLowAutoReason": (row.get("ClipRateLowAutoReason") or "").strip(),
+                    "ClipRateLowAutoBad": safe_int(row.get("ClipRateLowAutoBad")),
+                    "ClipRateLowAutoBadStreak": safe_int(row.get("ClipRateLowAutoBadStreak")),
+                    "TrainProgress": safe_float(row.get("TrainProgress")),
+                    "ClipRateLowAutoMinProgress": safe_float(row.get("ClipRateLowAutoMinProgress")),
+                    "ClipRateLowAutoFreezeProgress": safe_float(row.get("ClipRateLowAutoFreezeProgress")),
+                    "ClipRateLowAutoThresholdQErrRatio": safe_float(row.get("ClipRateLowAutoThresholdQErrRatio")),
+                    "ClipRateLowAutoThresholdQErrPerClip": safe_float(row.get("ClipRateLowAutoThresholdQErrPerClip")),
+                    "ClipRateLowAutoPhase": (row.get("ClipRateLowAutoPhase") or "").strip(),
+                    "ClipRateLowAutoCanEscape": safe_int(row.get("ClipRateLowAutoCanEscape")),
                 }
             )
         auto_rows.sort(key=lambda item: item["TrainStep"])
@@ -458,6 +496,81 @@ def parse_dq_logs(
             variance = sum((x - tail_mean) ** 2 for x in tail) / len(tail)
             clip_ema_cv = math.sqrt(variance) / tail_mean
 
+    auto_has_qerr_per_clip = any(item.get("QErrPerClip") is not None for item in auto_rows)
+    low_diag_source = auto_rows if auto_has_qerr_per_clip else parsed_rows
+    qerr_per_clip_values = [item["QErrPerClip"] for item in low_diag_source if item.get("QErrPerClip") is not None]
+    qerr_tail_mean = mean_tail(qerr_per_clip_values, 0.25, True) if qerr_per_clip_values else None
+    qerr_max = max(qerr_per_clip_values) if qerr_per_clip_values else None
+    final_qerr_per_clip = qerr_per_clip_values[-1] if qerr_per_clip_values else None
+    low_auto_bad_values = [
+        item["ClipRateLowAutoBad"] for item in low_diag_source if item.get("ClipRateLowAutoBad") is not None
+    ]
+    low_auto_bad_count = sum(1 for value in low_auto_bad_values if value == 1)
+    low_auto_bad_ratio = safe_ratio(float(low_auto_bad_count), float(len(low_auto_bad_values))) if low_auto_bad_values else None
+    low_auto_streak_values = [
+        item["ClipRateLowAutoBadStreak"]
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoBadStreak") is not None
+    ]
+    low_auto_states = [str(item.get("ClipRateLowAutoState") or "") for item in low_diag_source]
+    low_auto_decisions = [str(item.get("ClipRateLowAutoDecision") or "") for item in low_diag_source]
+    low_auto_reasons = [str(item.get("ClipRateLowAutoReason") or "") for item in low_diag_source]
+    low_auto_phases = [str(item.get("ClipRateLowAutoPhase") or "") for item in low_diag_source]
+    low_auto_escaped = any(value in ("escape_to_mid", "mid_lock") for value in low_auto_states + low_auto_decisions)
+    low_auto_frozen_bad_count = sum(
+        1
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoBad") == 1
+        and (
+            item.get("ClipRateLowAutoState") == "frozen"
+            or item.get("ClipRateLowAutoReason") == "freeze_progress"
+        )
+    )
+    active_bands = [str(item.get("ActiveClipBand") or "") for item in low_diag_source if item.get("ActiveClipBand")]
+    active_band_counts = dict(Counter(active_bands))
+    active_clip_band_final = active_bands[-1] if active_bands else None
+    low_band_seen = any(band == "low" for band in active_bands) or bool(low_auto_bad_values)
+    run_qerr_ratio_thresholds = [
+        item["ClipRateLowAutoThresholdQErrRatio"]
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoThresholdQErrRatio") is not None
+    ]
+    run_qerr_per_clip_thresholds = [
+        item["ClipRateLowAutoThresholdQErrPerClip"]
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoThresholdQErrPerClip") is not None
+    ]
+    min_progress_values = [
+        item["ClipRateLowAutoMinProgress"]
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoMinProgress") is not None
+    ]
+    freeze_progress_values = [
+        item["ClipRateLowAutoFreezeProgress"]
+        for item in low_diag_source
+        if item.get("ClipRateLowAutoFreezeProgress") is not None
+    ]
+    progress_rows = [item for item in low_diag_source if item.get("TrainProgress") is not None]
+    min_progress_value = min_progress_values[-1] if min_progress_values else None
+    freeze_progress_value = freeze_progress_values[-1] if freeze_progress_values else None
+    min_progress_step = None
+    freeze_progress_step = None
+    if min_progress_value is not None:
+        for item in progress_rows:
+            if item.get("TrainProgress") is not None and item["TrainProgress"] >= min_progress_value:
+                min_progress_step = item.get("TrainStep")
+                break
+    if freeze_progress_value is not None:
+        for item in progress_rows:
+            if item.get("TrainProgress") is not None and item["TrainProgress"] >= freeze_progress_value:
+                freeze_progress_step = item.get("TrainStep")
+                break
+
+    clip_share_values = [item["ClipShare"] for item in parsed_rows if item.get("ClipShare") is not None]
+    round_share_values = [item["RoundShare"] for item in parsed_rows if item.get("RoundShare") is not None]
+    clip_err_ratio_values = [item["ClipErrRatio"] for item in parsed_rows if item.get("ClipErrRatio") is not None]
+    round_err_ratio_values = [item["RoundErrRatio"] for item in parsed_rows if item.get("RoundErrRatio") is not None]
+
     summary = {
         "rows": len(parsed_rows),
         "auto_rows": len(auto_rows),
@@ -471,6 +584,32 @@ def parse_dq_logs(
         "final_clip_rate_ema": latest.get("ClipRateEMA"),
         "final_quant_err_ratio_ema": latest.get("QuantErrRatioEMA"),
         "final_quant_err_rms_ema": latest.get("QuantErrRMSEMA"),
+        "final_qerr_per_clip": final_qerr_per_clip,
+        "max_qerr_per_clip": qerr_max,
+        "tail_mean_qerr_per_clip": qerr_tail_mean,
+        "qerr_per_clip_threshold": DQ_LOW_QERR_PER_CLIP_THRESHOLD,
+        "run_qerr_ratio_threshold": run_qerr_ratio_thresholds[-1] if run_qerr_ratio_thresholds else None,
+        "run_qerr_per_clip_threshold": run_qerr_per_clip_thresholds[-1] if run_qerr_per_clip_thresholds else None,
+        "low_band_seen": low_band_seen,
+        "low_auto_bad_count": low_auto_bad_count if low_auto_bad_values else None,
+        "low_auto_bad_ratio": low_auto_bad_ratio,
+        "low_auto_max_bad_streak": max(low_auto_streak_values) if low_auto_streak_values else None,
+        "low_auto_escaped": low_auto_escaped if low_auto_bad_values or low_auto_states or low_auto_decisions else None,
+        "low_auto_frozen_bad_count": low_auto_frozen_bad_count if low_auto_bad_values else None,
+        "low_auto_state_counts": dict(Counter(value for value in low_auto_states if value)),
+        "low_auto_decision_counts": dict(Counter(value for value in low_auto_decisions if value)),
+        "low_auto_reason_counts": dict(Counter(value for value in low_auto_reasons if value)),
+        "low_auto_phase_counts": dict(Counter(value for value in low_auto_phases if value)),
+        "low_auto_min_progress": min_progress_value,
+        "low_auto_freeze_progress": freeze_progress_value,
+        "low_auto_min_progress_step": min_progress_step,
+        "low_auto_freeze_progress_step": freeze_progress_step,
+        "active_clip_band_final": active_clip_band_final,
+        "active_clip_band_counts": active_band_counts,
+        "clip_share_tail_mean": mean_tail(clip_share_values, 0.25, True) if clip_share_values else None,
+        "round_share_tail_mean": mean_tail(round_share_values, 0.25, True) if round_share_values else None,
+        "clip_err_ratio_tail_mean": mean_tail(clip_err_ratio_values, 0.25, True) if clip_err_ratio_values else None,
+        "round_err_ratio_tail_mean": mean_tail(round_err_ratio_values, 0.25, True) if round_err_ratio_values else None,
         "final_zero_rate": latest.get("ZeroRate"),
     }
 
@@ -1274,6 +1413,57 @@ def build_diagnostics(
             }
         )
 
+        if dq_summary.get("low_band_seen"):
+            qerr_per_clip_tail = dq_summary.get("tail_mean_qerr_per_clip")
+            qerr_per_clip_max = dq_summary.get("max_qerr_per_clip")
+            max_bad_streak = dq_summary.get("low_auto_max_bad_streak")
+            frozen_bad_count = dq_summary.get("low_auto_frozen_bad_count")
+            escaped = dq_summary.get("low_auto_escaped")
+            bad_count = dq_summary.get("low_auto_bad_count")
+            run_qerr_threshold = dq_summary.get("run_qerr_per_clip_threshold")
+            run_threshold_note = ""
+            if run_qerr_threshold is not None and abs(run_qerr_threshold - DQ_LOW_QERR_PER_CLIP_THRESHOLD) > 1e-9:
+                run_threshold_note = f" run指定閾値は{run_qerr_threshold:g}。"
+            if escaped or (frozen_bad_count is not None and frozen_bad_count > 0):
+                status = "bad"
+                note = "要改善 (low帯では誤差負荷が高い可能性。clip_rate_midまたはclip_rate_highでの再実行を推奨)"
+            elif qerr_per_clip_tail is not None and qerr_per_clip_tail >= DQ_LOW_QERR_PER_CLIP_THRESHOLD:
+                status = "bad"
+                note = "要改善 (QErrPerClipが固定診断閾値130以上で継続)"
+            elif (
+                (qerr_per_clip_max is not None and qerr_per_clip_max >= DQ_LOW_QERR_PER_CLIP_THRESHOLD)
+                or (max_bad_streak is not None and max_bad_streak >= 2)
+                or (bad_count is not None and bad_count > 0)
+            ):
+                status = "warn"
+                note = "注意 (low帯で一時的に誤差負荷が高い。mid/highとの比較候補)"
+            elif qerr_per_clip_tail is None:
+                status = "info"
+                note = "データ不足 (QErrPerClip列が無いためlow適性は判定不可)"
+            else:
+                status = "good"
+                note = "良好 (low clip帯でもQErrPerClipは安定)"
+            checks.append(
+                {
+                    "section": "DQ",
+                    "name": "clip_rate_low適性",
+                    "value": fmt_float(qerr_per_clip_tail, 2),
+                    "status": status,
+                    "note": note + run_threshold_note,
+                }
+            )
+
+            if frozen_bad_count is not None and frozen_bad_count > 0:
+                checks.append(
+                    {
+                        "section": "DQ",
+                        "name": "low_auto凍結後bad",
+                        "value": str(frozen_bad_count),
+                        "status": "warn",
+                        "note": "freeze_progress後にbadが出ています。この実行ではmidへ逃げませんが、次回はlow以外の比較を推奨します。",
+                    }
+                )
+
     if rank_data:
         rank_summary = rank_data.get("summary", {})
         rank_sat_p95 = rank_summary.get("final_rank_sat_p95")
@@ -1441,14 +1631,32 @@ def build_chart_payload(
 
     if dq_data:
         rows = dq_data.get("rows", [])
+        auto_rows = dq_data.get("auto_rows", [])
         x = [item.get("TrainStep") for item in rows]
-        markers = dq_data.get("markers", [])
+        markers = list(dq_data.get("markers", []))
+        dq_summary = dq_data.get("summary", {})
+        if dq_summary.get("low_auto_min_progress_step") is not None:
+            markers.append({"x": dq_summary.get("low_auto_min_progress_step"), "label": "min_progress"})
+        if dq_summary.get("low_auto_freeze_progress_step") is not None:
+            markers.append({"x": dq_summary.get("low_auto_freeze_progress_step"), "label": "freeze_progress"})
 
         def series_for(keys: List[Tuple[str, str, str]]) -> List[Dict[str, Any]]:
             output = []
             for field, label, color in keys:
                 output.append({"name": label, "color": color, "y": [item.get(field) for item in rows]})
             return output
+
+        def series_for_source(source_rows: List[Dict[str, Any]], keys: List[Tuple[str, str, str]]) -> List[Dict[str, Any]]:
+            output = []
+            for field, label, color in keys:
+                output.append({"name": label, "color": color, "y": [item.get(field) for item in source_rows]})
+            return output
+
+        def has_series_value(field: str) -> bool:
+            return any(item.get(field) is not None for item in rows)
+
+        def has_source_series_value(source_rows: List[Dict[str, Any]], field: str) -> bool:
+            return any(item.get(field) is not None for item in source_rows)
 
         payload["dq"] = [
             {
@@ -1483,7 +1691,12 @@ def build_chart_payload(
                 "y_tick_step": 0.001,
                 "y_tick_precision": 3,
                 "series": series_for(
-                    [("ClipRateRaw", "ClipRateRaw", ColorPalette[2]), ("ClipRateEMA", "ClipRateEMA", ColorPalette[0])]
+                    [
+                        ("ClipRateRaw", "ClipRateRaw", ColorPalette[2]),
+                        ("ClipRateEMA", "ClipRateEMA", ColorPalette[0]),
+                        ("ActiveClipLow", "ActiveClipLow", "#64748b"),
+                        ("ActiveClipHigh", "ActiveClipHigh", "#334155"),
+                    ]
                 ),
             },
             {
@@ -1554,6 +1767,112 @@ def build_chart_payload(
                 "series": series_for([("Range", "Range", ColorPalette[5])]),
             },
         ]
+
+        qerr_chart_rows = rows if has_series_value("QErrPerClip") else auto_rows
+        qerr_chart_x = [item.get("TrainStep") for item in qerr_chart_rows]
+        if has_source_series_value(qerr_chart_rows, "QErrPerClip"):
+            run_qerr_threshold = dq_summary.get("run_qerr_per_clip_threshold") or DQ_LOW_QERR_PER_CLIP_THRESHOLD
+            qerr_threshold_series = [
+                {
+                    "name": f"Run threshold {run_qerr_threshold:g}",
+                    "color": ColorPalette[2],
+                    "y": [run_qerr_threshold if step is not None else None for step in qerr_chart_x],
+                }
+            ]
+            if abs(run_qerr_threshold - DQ_LOW_QERR_PER_CLIP_THRESHOLD) > 1e-9:
+                qerr_threshold_series.append(
+                    {
+                        "name": "Fixed reference 130",
+                        "color": "#94a3b8",
+                        "y": [DQ_LOW_QERR_PER_CLIP_THRESHOLD if step is not None else None for step in qerr_chart_x],
+                    }
+                )
+            payload["dq"].append(
+                {
+                    "id": "dq_qerr_per_clip",
+                    "title": "QErrPerClip",
+                    "subtitle": "QErrPerClip = QuantErrRatioEMA / max(ClipRateEMA, floor).",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": qerr_chart_x,
+                    "y_min_fixed": 0.0,
+                    "y_max_ceil": max(run_qerr_threshold, DQ_LOW_QERR_PER_CLIP_THRESHOLD),
+                    "y_tick_step": 25.0,
+                    "y_tick_precision": 0,
+                    "series": series_for_source(qerr_chart_rows, [("QErrPerClip", "QErrPerClip", ColorPalette[0])])
+                    + qerr_threshold_series,
+                }
+            )
+
+        low_auto_chart_rows = (
+            rows
+            if has_series_value("ClipRateLowAutoBad") or has_series_value("ClipRateLowAutoBadStreak")
+            else auto_rows
+        )
+        low_auto_chart_x = [item.get("TrainStep") for item in low_auto_chart_rows]
+        if has_source_series_value(low_auto_chart_rows, "ClipRateLowAutoBad") or has_source_series_value(
+            low_auto_chart_rows, "ClipRateLowAutoBadStreak"
+        ):
+            payload["dq"].append(
+                {
+                    "id": "dq_low_auto_bad",
+                    "title": "clip_rate_low_auto Bad / Streak",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": low_auto_chart_x,
+                    "y_min_fixed": 0.0,
+                    "y_tick_step": 1.0,
+                    "y_tick_integer": True,
+                    "series": series_for_source(
+                        low_auto_chart_rows,
+                        [
+                            ("ClipRateLowAutoBad", "Bad", ColorPalette[2]),
+                            ("ClipRateLowAutoBadStreak", "BadStreak", ColorPalette[4]),
+                        ]
+                    ),
+                }
+            )
+
+        if has_series_value("ClipErrRatio") or has_series_value("RoundErrRatio"):
+            payload["dq"].append(
+                {
+                    "id": "dq_error_part_ratio",
+                    "title": "ClipErrRatio / RoundErrRatio",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_tick_step": 0.05,
+                    "y_tick_precision": 2,
+                    "series": series_for(
+                        [
+                            ("ClipErrRatio", "ClipErrRatio", ColorPalette[2]),
+                            ("RoundErrRatio", "RoundErrRatio", ColorPalette[0]),
+                        ]
+                    ),
+                }
+            )
+
+        if has_series_value("ClipShare") or has_series_value("RoundShare"):
+            payload["dq"].append(
+                {
+                    "id": "dq_error_part_share",
+                    "title": "ClipShare / RoundShare",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_max_fixed": 1.0,
+                    "y_tick_step": 0.1,
+                    "y_tick_precision": 1,
+                    "series": series_for(
+                        [
+                            ("ClipShare", "ClipShare", ColorPalette[2]),
+                            ("RoundShare", "RoundShare", ColorPalette[0]),
+                        ]
+                    ),
+                }
+            )
 
     if rank_data:
         rows = rank_data.get("rows", [])

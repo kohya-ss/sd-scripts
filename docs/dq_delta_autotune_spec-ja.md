@@ -25,6 +25,7 @@
 - `--dq_delta_log_mode {summary,per_module}` : 出力粒度（デフォルト summary）
 - `--dq_delta_log_file <path>` : 省略時は `--output_dir/dq_delta_logs+<output_name>.txt`
 - `--dq_delta_log_extra {near_zero_rate}` : 追加ログ項目（デフォルト無効）
+- `--dq_delta_log_error_parts` : `QuantErr` を clip 成分と round 成分に分解した診断列を追加（デフォルト無効）
 
 ### 計測ポイント
 
@@ -54,6 +55,12 @@
 - `quant_err_ratio_raw` : `quant_err_rms_raw / (rms + eps)`（`eps=1e-12`）
 - `quant_err_ratio_ema` : `quant_err_ratio_raw` の EMA（係数は `dq_delta_auto_ema`）
   - EMA は scope 共通の 1 系列。`log_scope=both` の場合は unet+te 合算で更新。
+- `qerr_per_clip` : `quant_err_ratio_ema / max(clip_rate_ema, dq_delta_qerr_per_clip_floor)`。clip率に対して量子化誤差が重いかを見る診断値。
+- `qerr_per_clip_clip_floor` : `qerr_per_clip` の分母に使う clip率下限（デフォルト 0.001）。clip率が極端に低い時の過敏な比率上昇を抑える。
+- `active_clip_band` : 現在の目標clip帯（`default` / `low` / `mid` / `high` / `high_narrow` / `custom`）。
+- `active_clip_low,active_clip_high` : その時点でauto制御が使っている目標clip帯。`clip_rate_low_auto` では途中で `low` から `mid` に変わる。
+- `clip_rate_low_auto_state,clip_rate_low_auto_bad,clip_rate_low_auto_bad_streak` : `clip_rate_low_auto` 用の状態とbad判定。`clip_rate_low_auto` 以外では空欄。
+- 任意: `clip_err_rms,round_err_rms,clip_err_ratio,round_err_ratio,clip_share,round_share` : `--dq_delta_log_error_parts` 指定時のみ。`QuantErr` を clip 由来と round 由来に分けて確認する診断列。
 - `numel` : 計測対象の要素数（集計値）
 - 任意: `near_zero_rate` : `|x| < 0.5*scale` の割合（0 になりやすい帯域）
 - `auto_applied` : AutoStep で range_mul 更新が適用された場合は 1、それ以外は 0
@@ -89,6 +96,11 @@
 - `zero_rate = zero_count_sum / numel_sum`
 - `quant_err_rms = sqrt((sumsq_sum + xq_sumsq_sum - 2*xxq_sum) / numel_sum)`
 - `quant_err_ratio = quant_err_rms / (rms + eps)`（`eps=1e-12`）
+- `qerr_per_clip = quant_err_ratio_ema / max(clip_rate_ema, dq_delta_qerr_per_clip_floor)`
+- `clip_err_rms = sqrt(sum((x - x_clamped)^2) / numel_sum)`（`--dq_delta_log_error_parts` 時）
+- `round_err_rms = sqrt(sum((x_clamped - x_q)^2) / numel_sum)`（`--dq_delta_log_error_parts` 時）
+- `clip_err_ratio = clip_err_rms / (rms + eps)`、`round_err_ratio = round_err_rms / (rms + eps)`
+- `clip_share = clip_err_sumsq / max(total_err_sumsq, eps)`、`round_share = round_err_sumsq / max(total_err_sumsq, eps)`
 
 ※ `range_elem` は `granularity=channel` の場合はチャネル別 range をブロードキャストした per-element range を使う。  
 ※ 分散学習時は `numel_sum/sumsq_sum/clip_count_sum/zero_count_sum` を **all-reduce (sum)** してから算出する。  
@@ -100,19 +112,21 @@
 
 ### Auto 用統計（低負荷）
 
-- auto の判定に必要なのは **clip_rate** のみなので、`dq_delta_log` が無効な場合は以下に限定する。
+- 通常autoの判定に必要なのは **clip_rate** のみなので、`dq_delta_log` が無効な場合は以下に限定する。
   - `numel_sum`
   - `clip_count_sum`
   - （任意）`zero_count_sum`
 - **LogStep のみ**で **full stats**（`sumsq_sum/absmax/scale_*` など）を計測する。
   LogStep 以外の AutoStep は最小統計に限定する。
 - `quant_err_*` は full stats の一部として **LogStep のみ**で計算する。
+- 例外として `--dq_delta_auto_preset clip_rate_low_auto` では、AutoStep の判定に `QuantErrRatioEMA` / `QErrPerClip` を使うため、AutoStep でも full stats を計測する。
+- `--dq_delta_log_error_parts` の clip/round 分解は **LogStep のみ**で計測し、`clip_rate_low_auto` の第一版判定には使わない。
 
 ### 出力例（summary）
 
 ```
-Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
-2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
+Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,QErrPerClip,QErrPerClipClipFloor,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
+2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,157,0.001,low,0.0005,0.0022,keep_low,0,0,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
 ```
 
 ## ログの見方（初心者向け）
@@ -146,6 +160,23 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 | QuantErrRatioRaw | 誤差RMS/入力RMS | 入力に対する誤差の割合。 |
 | QuantErrRatioEMA | QuantErrRatio のEMA | 比率の安定した傾向を見る。 |
 | NearZeroRate | 0近傍の割合 | `--dq_delta_log_extra near_zero_rate`時のみ。 |
+| QErrPerClip | QuantErrRatioEMA / max(ClipRateEMA, floor) | clip率に対して誤差が重いかを見る。`clip_rate_low` が合わない時の早期兆候として使う。 |
+| QErrPerClipClipFloor | QErrPerClip の分母下限 | 比率が低clipで過敏に跳ねるのを抑えるための値。既定 0.001。 |
+| ActiveClipBand | 現在の目標clip帯 | `clip_rate_low_auto` では `low` から `mid` へ切り替わる。通常presetでも比較用に出力。 |
+| ActiveClipLow/High | 現在のclip帯下限/上限 | autoがどの帯を狙っているか確認する。 |
+| ClipRateLowAutoState | clip_rate_low_auto 状態 | `observe`/`keep_low`/`escape_to_mid`/`mid_lock`/`frozen`。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoBad | clip_rate_low_auto bad判定 | `QuantErrRatioEMA>=0.25` かつ `QErrPerClip>=130` の時 1。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoBadStreak | bad連続回数 | 既定では3回連続で `mid` へ逃がす。clip_rate_low_auto以外は空欄。 |
+| TrainProgress | 学習進捗 | `global_step / max_train_steps`。min/freeze境界を後から確認するための列。 |
+| ClipRateLowAutoMinProgress | low_auto判定開始進捗 | `--dq_delta_clip_rate_low_auto_min_progress` の値。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoFreezeProgress | low_auto切替凍結進捗 | `--dq_delta_clip_rate_low_auto_freeze_progress` の値。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoThresholdQErrRatio | low_auto QuantErrRatio閾値 | `--dq_delta_clip_rate_low_auto_qerr_ratio` の値。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoThresholdQErrPerClip | low_auto QErrPerClip閾値 | `--dq_delta_clip_rate_low_auto_qerr_per_clip` の値。clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoPhase | low_auto判定フェーズ | `warmup`/`pre_min_progress`/`active`/`frozen`/`escaped`。clip_rate_low_auto以外は空欄。 |
+| ClipErrRMS | clip誤差RMS | `--dq_delta_log_error_parts`時のみ。range外でclampされた成分。 |
+| RoundErrRMS | round誤差RMS | `--dq_delta_log_error_parts`時のみ。range内で量子化丸めされた成分。 |
+| ClipErrRatio/RoundErrRatio | 各誤差RMS/RMS | clip/round どちらが重いかを見る。 |
+| ClipShare/RoundShare | 全QuantErr中のclip/round寄与 | lowを守るためにround誤差が支配的になっていないか確認する。 |
 | Numel | 要素数 | 統計の母数。 |
 | AutoApplied | auto適用 | 1ならrange_mulが変化。 |
 | RangeMulBefore | 変更前 | auto適用時の前値。 |
@@ -156,6 +187,17 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 | AutoInitMulApplied | 初期化適用 | 1なら初期 range_mul 上書きが行われた。 |
 | AutoInitMulValue | 初期 range_mul | 自動算出された初期値（適用時）。 |
 | AutoInitClipTarget | 初期 clip_target | `(clip_low+clip_high)/2`。 |
+| QErrPerClip | QuantErrRatioEMA / max(ClipRateEMA, floor) | full statsがあるAutoStepで記録。通常autoでは空欄になることがある。 |
+| ActiveClipBand/Low/High | 現在のclip目標帯 | clip_rate_low_autoのescape前後の目標帯を追う。 |
+| ClipRateLowAutoState | clip_rate_low_auto 状態 | clip_rate_low_auto以外は空欄。 |
+| ClipRateLowAutoDecision | clip_rate_low_auto判断 | `observe`/`keep_low`/`bad_count`/`escape_to_mid`/`mid_lock`/`frozen`。 |
+| ClipRateLowAutoReason | clip_rate_low_auto判断理由 | `min_progress`/`low_bad`/`bad_streak_met`/`escaped_once`/`freeze_progress`/`insufficient_qerr_stats`。 |
+| ClipRateLowAutoBad/ClipRateLowAutoBadStreak | bad判定と連続回数 | `mid` に逃がした根拠を追う。 |
+| TrainProgress | 学習進捗 | `global_step / max_train_steps`。 |
+| ClipRateLowAutoMinProgress/ClipRateLowAutoFreezeProgress | low_auto進捗閾値 | min/freeze境界をログ単体から復元する。 |
+| ClipRateLowAutoThresholdQErrRatio/ClipRateLowAutoThresholdQErrPerClip | low_auto bad判定閾値 | CLIで指定した閾値をログ単体から復元する。 |
+| ClipRateLowAutoPhase | low_auto判定フェーズ | `warmup`/`pre_min_progress`/`active`/`frozen`/`escaped`。 |
+| ClipRateLowAutoCanEscape | low_auto切替可能状態 | min_progress以降、freeze_progress前、未escapeなら1。minimal autoログのみ。 |
 補足（読み解きの目安）:
 - `ClipRate` が低いのに `QuantErrRatio` が高い場合、**レンジが広く刻みが粗い**可能性がある（`range_mul` 高め / `bits` 低め）。
 - `QuantErrRatio` が低いのに `ClipRate` が高い場合、**クリップ歪み**が支配的な可能性がある。
@@ -199,7 +241,7 @@ LogStep 以外の列は空欄（NA）で、追加統計は計算しません。
 ### 有効化オプション
 
 - `--dq_delta_auto_range_mul` : range_mul の自動調整を有効化（デフォルト無効）
-- `--dq_delta_auto_preset {default,clip_rate_high,clip_rate_high_narrow,clip_rate_mid,clip_rate_low}` : auto range_mul のプリセット（指定時は clip_low/high のみ上書き）
+- `--dq_delta_auto_preset {default,clip_rate_high,clip_rate_high_narrow,clip_rate_mid,clip_rate_low,clip_rate_low_auto}` : auto range_mul のプリセット（指定時は clip_low/high のみ上書き。`clip_rate_low_auto` は途中でbandを切替）
 - `--dq_delta_auto_every <int>` : 調整間隔（optimizer step 単位、デフォルト 50）
 - `--dq_delta_auto_clip_low <float>` : clip_rate 下限（デフォルト 0.0005 = 0.05%）
 - `--dq_delta_auto_clip_high <float>` : clip_rate 上限（デフォルト 0.003 = 0.3%）
@@ -214,6 +256,12 @@ LogStep 以外の列は空欄（NA）で、追加統計は計算しません。
 - `--dq_delta_auto_warmup_updates <int>` : warmup 回数の上書き（0=内部デフォルト）
 - `--dq_delta_auto_log_file <path>` : 省略時は `--output_dir/dq_delta_auto+<output_name>.txt`（auto イベントのみ記録）
 - `--dq_delta_auto_log_format {minimal,full_schema}` : auto ログの列形式（デフォルト minimal）
+- `--dq_delta_clip_rate_low_auto_min_progress <float>` : `clip_rate_low_auto` の判定開始進捗（デフォルト 0.25）
+- `--dq_delta_clip_rate_low_auto_bad_streak <int>` : `clip_rate_low_auto` が `mid` へ逃がすまでのbad連続回数（デフォルト 3）
+- `--dq_delta_clip_rate_low_auto_freeze_progress <float>` : この学習進捗以降は `clip_rate_low_auto` のband切替を凍結（デフォルト 0.55）
+- `--dq_delta_clip_rate_low_auto_qerr_ratio <float>` : `clip_rate_low_auto` bad判定の `QuantErrRatioEMA` 閾値（デフォルト 0.25）
+- `--dq_delta_clip_rate_low_auto_qerr_per_clip <float>` : `clip_rate_low_auto` bad判定の `QErrPerClip` 閾値（デフォルト 130）
+- `--dq_delta_qerr_per_clip_floor <float>` : `QErrPerClip` 計算時の `ClipRateEMA` 下限（デフォルト 0.001）
 
 ### auto プリセット一覧
 
@@ -227,6 +275,33 @@ LogStep 以外の列は空欄（NA）で、追加統計は計算しません。
 | `clip_rate_high_narrow` | 0.0038 | 0.0048 | args | args | キャラクター学習向け2。狭い範囲を狙う。 |
 | `clip_rate_mid` | 0.002 | 0.004 | args | args | 中間帯の clip_rate を狙う。 |
 | `clip_rate_low` | 0.0005 | 0.0022 | args | args | defaultより安定方向に振る。 |
+| `clip_rate_low_auto` | 開始時 0.0005 | 開始時 0.0022 | args | args | low帯で開始し、low維持コストが高いと判断したら `clip_rate_mid` 帯へ一方向に逃がす。 |
+
+### `clip_rate_low_auto` プリセット
+
+`clip_rate_low` は低clipを狙うため、外れ値の影響を抑えられるデータでは有効なことがある。一方で、データによっては low帯を維持するために有効レンジを広げる必要があり、8bit量子化の刻みが粗くなって `QuantErr` が増えることがある。
+
+`clip_rate_low_auto` はこの「lowを維持するコストが高い」ケースを本番ラン中に検出し、low帯から中間帯へ逃がす保険として用意する。highへは自動で移動せず、第一版では `low -> mid` の一方向のみ。
+
+判定はシンプルに以下を使う。
+
+```
+QErrPerClip = QuantErrRatioEMA / max(ClipRateEMA, dq_delta_qerr_per_clip_floor)
+
+low_bad =
+  QuantErrRatioEMA >= dq_delta_clip_rate_low_auto_qerr_ratio
+  and QErrPerClip >= dq_delta_clip_rate_low_auto_qerr_per_clip
+```
+
+既定値は `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130`。`dq_delta_clip_rate_low_auto_min_progress` 経過後に `low_bad` が `dq_delta_clip_rate_low_auto_bad_streak` 回連続したら、目標bandを `clip_rate_mid`（0.002〜0.004）へ切り替える。一度 `mid` に逃げた後は `low` へ戻さない。`dq_delta_clip_rate_low_auto_freeze_progress` 以降は新規のband切替を行わない。
+
+#### 既定閾値の前提
+
+`clip_rate_low_auto` の既定閾値（`QuantErrRatioEMA=0.25`, `QErrPerClip=130`）は、主に `--dq_quantize_z` を使わない delta 量子化、`--dq_delta_mode stoch`、`8bit/channel/rms` のログを基準にした経験的な値。
+
+`--dq_quantize_z` や `--dq_delta_mode det` を使う場合、`ZeroRate` や `QErrPerClip` の分布が変わるため、同じ閾値は保守的な警告として扱う。特に z 量子化では `QErrPerClip` が高めに出ることがあり、`clip_rate_low_auto` が `mid` へ逃がす挙動は安全側に働く可能性がある。
+
+`QErrPerClip` は clip_rate_low_auto 以外でも診断列として出力される。これは preset 比較時に、clip率に対して量子化誤差が重くなっていないかを見るため。
 
 ### 発動条件（重要）
 

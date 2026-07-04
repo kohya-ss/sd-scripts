@@ -162,6 +162,8 @@ bits モードでは概ね
 
 `clip_rate` を目標レンジに保つように `range_mul` を自動調整する。
 
+`--dq_delta_auto_preset clip_rate_low_auto` では、最初は `clip_rate_low` と同じ低clip帯を狙う。学習中に `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130` が連続し、lowを維持するコストが高いと判断した場合は、目標clip帯を `clip_rate_mid` へ一方向に切り替える。これは低clipが合うデータではlowを維持し、低clipが合わないデータでは誤差が深くなる前に中間帯へ逃がすための保険である。
+
 ### 基本ロジック（AutoStep ごと）
 
 AutoStep のたびに
@@ -187,11 +189,19 @@ AutoStep のたびに
 -   `clip_rate_ema > clip_high` -> `range_mul *= mul_up`（レンジ拡大、クリップ減）
     
 -   `clip_rate_ema < clip_low` -> `range_mul *= mul_down`（レンジ縮小、クリップ増）
-    
+
 -   `--dq_delta_auto_use_raw` 指定時は `clip_rate_raw` も同時に判定
-    
+
 -   その後 `range_mul` を `[auto_min, auto_max]` にクランプ
-    
+
+補助診断:
+
+-   `QErrPerClip = QuantErrRatioEMA / max(ClipRateEMA, 0.001)`
+
+-   clip率に対して量子化誤差が重いかを見る指標。`clip_rate_low_auto` の判定にも使う。
+
+-   `--dq_delta_log_error_parts` を指定すると、`QuantErr` を `ClipErr` と `RoundErr` に分解してログに出す。第一版では判定には使わず、後から「clip由来かround由来か」を確認するための診断列として扱う。
+
 
 ### bits スケジュールとの関係
 

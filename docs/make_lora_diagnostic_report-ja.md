@@ -122,6 +122,14 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `ClipRateRaw`, `ClipRateEMA`
 - `QuantErrRatioRaw`, `QuantErrRatioEMA`
 - `QuantErrRMSRaw`, `QuantErrRMSEMA`
+- `QErrPerClip`, `QErrPerClipClipFloor`
+- `ActiveClipBand`, `ActiveClipLow`, `ActiveClipHigh`
+- `ClipRateLowAutoState`, `ClipRateLowAutoBad`, `ClipRateLowAutoBadStreak`
+- `TrainProgress`
+- `ClipRateLowAutoMinProgress`, `ClipRateLowAutoFreezeProgress`
+- `ClipRateLowAutoThresholdQErrRatio`, `ClipRateLowAutoThresholdQErrPerClip`
+- `ClipRateLowAutoPhase`
+- `ClipErrRMS`, `RoundErrRMS`, `ClipErrRatio`, `RoundErrRatio`, `ClipShare`, `RoundShare`
 - `ZeroRate`, `AbsMax`, `Range`
 - `AutoReason`
 
@@ -136,6 +144,14 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `RangeMulBefore`, `RangeMulAfter`
 - `AutoApplied`, `WarmupActive`, `AutoReason`
 - `AutoInitClipTarget`
+- `QErrPerClip`, `QErrPerClipClipFloor`
+- `ActiveClipBand`, `ActiveClipLow`, `ActiveClipHigh`
+- `ClipRateLowAutoState`, `ClipRateLowAutoDecision`, `ClipRateLowAutoReason`
+- `ClipRateLowAutoBad`, `ClipRateLowAutoBadStreak`
+- `TrainProgress`
+- `ClipRateLowAutoMinProgress`, `ClipRateLowAutoFreezeProgress`
+- `ClipRateLowAutoThresholdQErrRatio`, `ClipRateLowAutoThresholdQErrPerClip`
+- `ClipRateLowAutoPhase`, `ClipRateLowAutoCanEscape`
 
 `dq.summary` の主なキー:
 
@@ -149,6 +165,18 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `final_clip_rate_ema`
 - `final_quant_err_ratio_ema`
 - `final_quant_err_rms_ema`
+- `final_qerr_per_clip`, `max_qerr_per_clip`, `tail_mean_qerr_per_clip`
+- `qerr_per_clip_threshold`
+- `run_qerr_ratio_threshold`, `run_qerr_per_clip_threshold`
+- `low_band_seen`, `low_auto_bad_count`, `low_auto_bad_ratio`, `low_auto_max_bad_streak`
+- `low_auto_escaped`, `low_auto_frozen_bad_count`
+- `low_auto_state_counts`, `low_auto_decision_counts`, `low_auto_reason_counts`
+- `low_auto_phase_counts`
+- `low_auto_min_progress`, `low_auto_freeze_progress`
+- `low_auto_min_progress_step`, `low_auto_freeze_progress_step`
+- `active_clip_band_final`, `active_clip_band_counts`
+- `clip_share_tail_mean`, `round_share_tail_mean`
+- `clip_err_ratio_tail_mean`, `round_err_ratio_tail_mean`
 - `final_zero_rate`
 
 ### `rank` セクション
@@ -270,6 +298,10 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `start_density`, `end_density`, `delta_density`
 
 ### `diagnostics` セクション
+
+DQ logsに `ActiveClipBand=low` または `ClipRateLowAuto*` 列がある場合のみ、`clip_rate_low適性` の診断を追加します。
+`QErrPerClip` は固定診断基準 `130` を主基準として評価します。ログに `ClipRateLowAutoThresholdQErrPerClip` がある場合は、run指定閾値も補足表示します。
+
 | JSONパス | 情報源 | 内容の概説 |
 |---|---|---|
 | `diagnostics.score` | `grad.summary` / `dq.summary` / `lora.diagnostic` から派生 | 100点満点の総合スコア |
@@ -286,6 +318,10 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `note`
 
 ### `charts` セクション
+
+DQ logsに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）、`clip_rate_low_auto Bad / Streak`、`ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。
+`TrainProgress` と low_auto progress閾値がある場合は、min_progress / freeze_progress の位置をDQグラフの縦線マーカーに追加します。
+
 | JSONパス | 情報源 | 内容の概説 |
 |---|---|---|
 | `charts.grad[]` | `grad` から派生 | Grad系チャート定義 |

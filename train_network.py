@@ -329,6 +329,18 @@ DQ_DELTA_AUTO_PRESETS = {
         "clip_low": 0.0005,
         "clip_high": 0.0022,
     },
+    "clip_rate_low_auto": {
+        "clip_low": 0.0005,
+        "clip_high": 0.0022,
+    },
+}
+
+DQ_DELTA_AUTO_BANDS = {
+    "default": (0.0005, 0.003),
+    "high": (0.003, 0.005),
+    "high_narrow": (0.0038, 0.0048),
+    "mid": (0.002, 0.004),
+    "low": (0.0005, 0.0022),
 }
 
 
@@ -1010,6 +1022,16 @@ class NetworkTrainer:
             dq_auto_mul_up,
             dq_auto_mul_down,
         ) = resolve_dq_delta_auto_settings(args)
+        dq_low_auto_enabled = dq_auto_enabled and dq_auto_preset == "clip_rate_low_auto"
+        dq_auto_active_band = "low" if dq_auto_preset in ("clip_rate_low", "clip_rate_low_auto") else (
+            "mid" if dq_auto_preset == "clip_rate_mid" else (
+                "high_narrow" if dq_auto_preset == "clip_rate_high_narrow" else (
+                    "high" if dq_auto_preset == "clip_rate_high" else ("default" if dq_auto_preset == "default" else "custom")
+                )
+            )
+        )
+        dq_auto_active_clip_low = dq_auto_clip_low
+        dq_auto_active_clip_high = dq_auto_clip_high
         if dq_auto_preset is not None:
             logger.info(
                 "dq_delta_auto_preset: %s (clip_low=%s, clip_high=%s, mul_up=%s, mul_down=%s)",
@@ -1024,6 +1046,13 @@ class NetworkTrainer:
         dq_auto_max = float(getattr(args, "dq_delta_auto_max", 6.0))
         dq_auto_ema = float(getattr(args, "dq_delta_auto_ema", 0.95))
         dq_auto_use_raw = bool(getattr(args, "dq_delta_auto_use_raw", False))
+        dq_qerr_per_clip_floor = max(1e-12, float(getattr(args, "dq_delta_qerr_per_clip_floor", 0.001)))
+        dq_log_error_parts = bool(getattr(args, "dq_delta_log_error_parts", False))
+        dq_low_auto_min_progress = max(0.0, min(1.0, float(getattr(args, "dq_delta_clip_rate_low_auto_min_progress", 0.25))))
+        dq_low_auto_bad_streak_threshold = max(1, int(getattr(args, "dq_delta_clip_rate_low_auto_bad_streak", 3)))
+        dq_low_auto_freeze_progress = float(getattr(args, "dq_delta_clip_rate_low_auto_freeze_progress", 0.55))
+        dq_low_auto_qerr_ratio_threshold = float(getattr(args, "dq_delta_clip_rate_low_auto_qerr_ratio", 0.25))
+        dq_low_auto_qerr_per_clip_threshold = float(getattr(args, "dq_delta_clip_rate_low_auto_qerr_per_clip", 130.0))
         dq_auto_warmup_enabled = dq_auto_enabled and bool(getattr(args, "dq_delta_auto_warmup", True))
         dq_auto_warmup_updates_override = int(getattr(args, "dq_delta_auto_warmup_updates", 0))
         dq_auto_warmup_updates = 0
@@ -1047,7 +1076,7 @@ class NetworkTrainer:
                     "dq_delta_auto_init_range_mul_from_band is enabled but dq_delta_stat is not rms; init will be skipped."
                 )
             else:
-                clip_target = (dq_auto_clip_low + dq_auto_clip_high) / 2.0
+                clip_target = (dq_auto_active_clip_low + dq_auto_active_clip_high) / 2.0
                 p = 1.0 - (clip_target / 2.0)
                 try:
                     range_mul_init = math.sqrt(2.0) * torch.erfinv(torch.tensor(2.0 * p - 1.0)).item()
@@ -1167,6 +1196,31 @@ class NetworkTrainer:
             if include_near_zero:
                 cols.append("NearZeroRate")
             cols += [
+                "QErrPerClip",
+                "QErrPerClipClipFloor",
+                "ActiveClipBand",
+                "ActiveClipLow",
+                "ActiveClipHigh",
+                "ClipRateLowAutoState",
+                "ClipRateLowAutoBad",
+                "ClipRateLowAutoBadStreak",
+                "TrainProgress",
+                "ClipRateLowAutoMinProgress",
+                "ClipRateLowAutoFreezeProgress",
+                "ClipRateLowAutoThresholdQErrRatio",
+                "ClipRateLowAutoThresholdQErrPerClip",
+                "ClipRateLowAutoPhase",
+            ]
+            if dq_log_error_parts:
+                cols += [
+                    "ClipErrRMS",
+                    "RoundErrRMS",
+                    "ClipErrRatio",
+                    "RoundErrRatio",
+                    "ClipShare",
+                    "RoundShare",
+                ]
+            cols += [
                 "Numel",
                 "AutoApplied",
                 "RangeMulBefore",
@@ -1217,8 +1271,18 @@ class NetworkTrainer:
                 return _dq_log_header("summary", include_near_zero)
             return (
                 "TrainStep,Scope,Target,Bits,ClipRateRaw,ClipRateEMA,RangeMulBefore,RangeMulAfter,AutoApplied,"
-                "WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget"
+                "WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget,"
+                "QErrPerClip,QErrPerClipClipFloor,ActiveClipBand,ActiveClipLow,ActiveClipHigh,"
+                "ClipRateLowAutoState,ClipRateLowAutoDecision,ClipRateLowAutoReason,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,"
+                "TrainProgress,ClipRateLowAutoMinProgress,ClipRateLowAutoFreezeProgress,"
+                "ClipRateLowAutoThresholdQErrRatio,ClipRateLowAutoThresholdQErrPerClip,"
+                "ClipRateLowAutoPhase,ClipRateLowAutoCanEscape"
             )
+
+        def _dq_qerr_per_clip(quant_err_ratio, clip_rate):
+            if quant_err_ratio is None or clip_rate is None:
+                return None
+            return quant_err_ratio / max(clip_rate, dq_qerr_per_clip_floor)
 
         def _dq_reduce_stats(accum_by_scope, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
             if accelerator.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
@@ -1250,6 +1314,12 @@ class NetworkTrainer:
                     sum_refs.append((acc, "scale_sum"))
                     sum_fields.append(acc.scale_count)
                     sum_refs.append((acc, "scale_count"))
+                    if getattr(acc, "clip_err_sumsq", None) is not None:
+                        sum_fields.append(acc.clip_err_sumsq)
+                        sum_refs.append((acc, "clip_err_sumsq"))
+                    if getattr(acc, "round_err_sumsq", None) is not None:
+                        sum_fields.append(acc.round_err_sumsq)
+                        sum_refs.append((acc, "round_err_sumsq"))
 
             if sum_fields:
                 sum_vec = torch.stack(sum_fields)
@@ -1291,6 +1361,8 @@ class NetworkTrainer:
             near_zero_rate = (acc.near_zero_count / acc.numel).item() if collect_near_zero and numel > 0 else None
             rms = absmax = scale_min = scale_max = scale_mean = range_val = None
             quant_err_rms = quant_err_ratio = None
+            clip_err_rms = round_err_rms = clip_err_ratio = round_err_ratio = clip_share = round_share = None
+            total_err_sumsq = None
             if collect_full and numel > 0:
                 rms = math.sqrt((acc.sumsq / acc.numel).item()) if acc.sumsq is not None else None
                 absmax = acc.absmax.item() if acc.absmax is not None else None
@@ -1301,9 +1373,23 @@ class NetworkTrainer:
                 if acc.xq_sumsq is not None and acc.xxq_sum is not None and acc.sumsq is not None:
                     err_sumsq = acc.sumsq + acc.xq_sumsq - (2.0 * acc.xxq_sum)
                     err_sumsq = torch.clamp(err_sumsq, min=0.0)
+                    total_err_sumsq = err_sumsq
                     quant_err_rms = math.sqrt((err_sumsq / acc.numel).item())
                     if rms is not None:
                         quant_err_ratio = quant_err_rms / (rms + 1e-12)
+                if getattr(acc, "clip_err_sumsq", None) is not None and acc.clip_err_sumsq is not None:
+                    clip_err_rms = math.sqrt((torch.clamp(acc.clip_err_sumsq, min=0.0) / acc.numel).item())
+                    if rms is not None:
+                        clip_err_ratio = clip_err_rms / (rms + 1e-12)
+                if getattr(acc, "round_err_sumsq", None) is not None and acc.round_err_sumsq is not None:
+                    round_err_rms = math.sqrt((torch.clamp(acc.round_err_sumsq, min=0.0) / acc.numel).item())
+                    if rms is not None:
+                        round_err_ratio = round_err_rms / (rms + 1e-12)
+                if total_err_sumsq is not None and total_err_sumsq.item() > 0:
+                    if getattr(acc, "clip_err_sumsq", None) is not None and acc.clip_err_sumsq is not None:
+                        clip_share = (torch.clamp(acc.clip_err_sumsq, min=0.0) / (total_err_sumsq + 1e-12)).item()
+                    if getattr(acc, "round_err_sumsq", None) is not None and acc.round_err_sumsq is not None:
+                        round_share = (torch.clamp(acc.round_err_sumsq, min=0.0) / (total_err_sumsq + 1e-12)).item()
             if scale_mean is not None and qmax is not None:
                 range_val = scale_mean * qmax
             return {
@@ -1319,6 +1405,12 @@ class NetworkTrainer:
                 "scale_max": scale_max,
                 "scale_mean": scale_mean,
                 "range": range_val,
+                "clip_err_rms": clip_err_rms,
+                "round_err_rms": round_err_rms,
+                "clip_err_ratio": clip_err_ratio,
+                "round_err_ratio": round_err_ratio,
+                "clip_share": clip_share,
+                "round_share": round_share,
             }
 
         def _dq_merge_acc(acc_a, acc_b, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
@@ -1328,6 +1420,7 @@ class NetworkTrainer:
             near_zero = acc_a.near_zero_count + acc_b.near_zero_count if collect_near_zero else None
             sumsq = absmax = scale_min = scale_max = scale_sum = scale_count = None
             xq_sumsq = xxq_sum = None
+            clip_err_sumsq = round_err_sumsq = None
             if collect_full:
                 sumsq = acc_a.sumsq + acc_b.sumsq
                 xq_sumsq = acc_a.xq_sumsq + acc_b.xq_sumsq
@@ -1337,7 +1430,21 @@ class NetworkTrainer:
                 scale_max = torch.maximum(acc_a.scale_max, acc_b.scale_max)
                 scale_sum = acc_a.scale_sum + acc_b.scale_sum
                 scale_count = acc_a.scale_count + acc_b.scale_count
-            temp_acc = type(acc_a)(acc_a.numel.device, collect_full, collect_zero, collect_near_zero)
+                if getattr(acc_a, "clip_err_sumsq", None) is not None and getattr(acc_b, "clip_err_sumsq", None) is not None:
+                    clip_err_sumsq = acc_a.clip_err_sumsq + acc_b.clip_err_sumsq
+                if getattr(acc_a, "round_err_sumsq", None) is not None and getattr(acc_b, "round_err_sumsq", None) is not None:
+                    round_err_sumsq = acc_a.round_err_sumsq + acc_b.round_err_sumsq
+            acc_cls = type(acc_a)
+            if "collect_error_parts" in inspect.signature(acc_cls).parameters:
+                temp_acc = acc_cls(
+                    acc_a.numel.device,
+                    collect_full,
+                    collect_zero,
+                    collect_near_zero,
+                    getattr(acc_a, "collect_error_parts", False) or getattr(acc_b, "collect_error_parts", False),
+                )
+            else:
+                temp_acc = acc_cls(acc_a.numel.device, collect_full, collect_zero, collect_near_zero)
             temp_acc.numel = numel
             temp_acc.clip_count = clip
             temp_acc.zero_count = zero
@@ -1350,6 +1457,8 @@ class NetworkTrainer:
             temp_acc.scale_max = scale_max
             temp_acc.scale_sum = scale_sum
             temp_acc.scale_count = scale_count
+            temp_acc.clip_err_sumsq = clip_err_sumsq
+            temp_acc.round_err_sumsq = round_err_sumsq
             return temp_acc
 
         cache_latents = args.cache_latents
@@ -2970,6 +3079,17 @@ class NetworkTrainer:
         dq_auto_ema_state = None
         dq_quant_err_rms_ema_state = None
         dq_quant_err_ratio_ema_state = None
+        dq_low_auto_quant_err_ratio_ema_state = None
+        dq_low_auto_start_step = None
+        dq_low_auto_bad_streak = 0
+        dq_low_auto_escaped = False
+        dq_low_auto_state = "observe" if dq_low_auto_enabled else ""
+        dq_low_auto_decision = ""
+        dq_low_auto_reason = ""
+        dq_low_auto_bad = ""
+        dq_low_auto_qerr_per_clip = None
+        dq_low_auto_phase = "pre_min_progress" if dq_low_auto_enabled else ""
+        dq_low_auto_can_escape = 0 if dq_low_auto_enabled else ""
         dq_bits_changed_since_auto = False
         dq_auto_warmup_reset_updates = dq_auto_warmup_updates
         dq_auto_warmup_remaining = dq_auto_warmup_reset_updates
@@ -2990,6 +3110,28 @@ class NetworkTrainer:
                 row[col_idx["AutoInitClipTarget"]] = (
                     dq_auto_init_clip_target if dq_auto_init_clip_target is not None else ""
                 )
+            if "QErrPerClipClipFloor" in col_idx:
+                row[col_idx["QErrPerClipClipFloor"]] = dq_qerr_per_clip_floor
+            if "ActiveClipBand" in col_idx:
+                row[col_idx["ActiveClipBand"]] = dq_auto_active_band
+            if "ActiveClipLow" in col_idx:
+                row[col_idx["ActiveClipLow"]] = dq_auto_active_clip_low
+            if "ActiveClipHigh" in col_idx:
+                row[col_idx["ActiveClipHigh"]] = dq_auto_active_clip_high
+            if "TrainProgress" in col_idx:
+                row[col_idx["TrainProgress"]] = 0
+            if "ClipRateLowAutoMinProgress" in col_idx:
+                row[col_idx["ClipRateLowAutoMinProgress"]] = dq_low_auto_min_progress
+            if "ClipRateLowAutoFreezeProgress" in col_idx:
+                row[col_idx["ClipRateLowAutoFreezeProgress"]] = dq_low_auto_freeze_progress
+            if "ClipRateLowAutoThresholdQErrRatio" in col_idx:
+                row[col_idx["ClipRateLowAutoThresholdQErrRatio"]] = dq_low_auto_qerr_ratio_threshold
+            if "ClipRateLowAutoThresholdQErrPerClip" in col_idx:
+                row[col_idx["ClipRateLowAutoThresholdQErrPerClip"]] = dq_low_auto_qerr_per_clip_threshold
+            if "ClipRateLowAutoPhase" in col_idx:
+                row[col_idx["ClipRateLowAutoPhase"]] = "pre_min_progress" if dq_low_auto_enabled else ""
+            if "ClipRateLowAutoCanEscape" in col_idx:
+                row[col_idx["ClipRateLowAutoCanEscape"]] = 0 if dq_low_auto_enabled else ""
             _write_csv(dq_auto_log_path, header, ",".join(_dq_format_value(v) for v in row))
 
         def _dq_bits_for_progress(progress_frac: float, default_bits: Optional[int]):
@@ -3121,12 +3263,13 @@ class NetworkTrainer:
                                 (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or bool(dq_bits_sched)
                             ) and (args.dq_delta_stat == "rms")
                             do_auto = auto_eligible and (step_idx % dq_auto_every == 0)
-                            collect_full = bool(do_log)
+                            collect_full = bool(do_log or (do_auto and dq_low_auto_enabled))
                             collect_zero = bool(do_log)
                             collect_near_zero = bool(do_log and ("near_zero_rate" in dq_log_extra))
+                            collect_error_parts = bool(do_log and dq_log_error_parts)
                             target = "z" if getattr(args, "dq_quantize_z", False) else "delta"
 
-                            accelerator.unwrap_model(network).set_dq_stats_state(
+                            dq_stats_kwargs = dict(
                                 step_idx=step_idx,
                                 device=accelerator.device,
                                 do_log=do_log,
@@ -3139,6 +3282,15 @@ class NetworkTrainer:
                                 auto_scope=getattr(args, "dq_delta_scope", "both"),
                                 target=target,
                             )
+                            dq_stats_state_fn = accelerator.unwrap_model(network).set_dq_stats_state
+                            supports_error_parts = "collect_error_parts" in inspect.signature(dq_stats_state_fn).parameters
+                            if supports_error_parts:
+                                dq_stats_state_fn(
+                                    **dq_stats_kwargs,
+                                    collect_error_parts=collect_error_parts,
+                                )
+                            else:
+                                dq_stats_state_fn(**dq_stats_kwargs)
 
                     self._apply_te_freeze_if_ready(optimizer, accelerator.unwrap_model(network), global_step)
 
@@ -3328,6 +3480,14 @@ class NetworkTrainer:
                                     auto_reason = "in_band"
                                 else:
                                     auto_reason = ""
+                                low_auto_state = dq_low_auto_state
+                                low_auto_decision = ""
+                                low_auto_reason = ""
+                                low_auto_bad = ""
+                                low_auto_bad_streak = dq_low_auto_bad_streak
+                                low_auto_qerr_per_clip = None
+                                low_auto_phase = dq_low_auto_phase
+                                low_auto_can_escape = dq_low_auto_can_escape
 
                                 if dq_stats["do_auto"]:
                                     auto_scope = dq_stats["auto_scope"]
@@ -3351,6 +3511,7 @@ class NetworkTrainer:
                                         if clip_rate_raw is not None:
                                             if dq_bits_changed_since_auto:
                                                 dq_auto_ema_state = clip_rate_raw
+                                                dq_low_auto_quant_err_ratio_ema_state = None
                                                 dq_bits_changed_since_auto = False
                                                 if dq_auto_warmup_enabled:
                                                     dq_auto_warmup_remaining = dq_auto_warmup_reset_updates
@@ -3366,9 +3527,27 @@ class NetworkTrainer:
                                                 range_mul_before = getattr(args, "dq_delta_range_mul", 3.0)
                                             range_mul_after = range_mul_before
 
+                                            if dq_low_auto_enabled and dq_low_auto_start_step is None:
+                                                dq_low_auto_start_step = step_idx
+
+                                            if dq_low_auto_enabled:
+                                                qerr_ratio_raw_for_low_auto = auto_metrics.get("quant_err_ratio")
+                                                if qerr_ratio_raw_for_low_auto is not None:
+                                                    if dq_low_auto_quant_err_ratio_ema_state is None:
+                                                        dq_low_auto_quant_err_ratio_ema_state = qerr_ratio_raw_for_low_auto
+                                                    else:
+                                                        dq_low_auto_quant_err_ratio_ema_state = (
+                                                            dq_low_auto_quant_err_ratio_ema_state * dq_auto_ema
+                                                            + (1.0 - dq_auto_ema) * qerr_ratio_raw_for_low_auto
+                                                        )
+                                                low_auto_qerr_per_clip = _dq_qerr_per_clip(
+                                                    dq_low_auto_quant_err_ratio_ema_state,
+                                                    clip_rate_ema,
+                                                )
+
                                             warmup_step_active = dq_auto_warmup_enabled and dq_auto_warmup_remaining > 0
                                             if warmup_step_active:
-                                                if dq_auto_clip_low <= clip_rate_ema <= dq_auto_clip_high:
+                                                if dq_auto_active_clip_low <= clip_rate_ema <= dq_auto_active_clip_high:
                                                     dq_auto_warmup_inband_streak += 1
                                                 else:
                                                     dq_auto_warmup_inband_streak = 0
@@ -3376,21 +3555,95 @@ class NetworkTrainer:
                                                 if dq_auto_warmup_inband_streak >= 3:
                                                     dq_auto_warmup_remaining = 0
                                                 auto_reason = "warmup"
+                                                if dq_low_auto_enabled:
+                                                    low_auto_state = "observe"
+                                                    low_auto_decision = "observe"
+                                                    low_auto_reason = "warmup"
+                                                    low_auto_phase = "warmup"
+                                                    low_auto_can_escape = 0
                                             else:
+                                                if dq_low_auto_enabled:
+                                                    low_auto_frozen = progress_frac >= dq_low_auto_freeze_progress
+                                                    low_auto_stats_ready = (
+                                                        dq_low_auto_quant_err_ratio_ema_state is not None
+                                                        and low_auto_qerr_per_clip is not None
+                                                    )
+                                                    low_auto_is_bad = (
+                                                        low_auto_stats_ready
+                                                        and dq_low_auto_quant_err_ratio_ema_state >= dq_low_auto_qerr_ratio_threshold
+                                                        and low_auto_qerr_per_clip >= dq_low_auto_qerr_per_clip_threshold
+                                                    )
+                                                    low_auto_bad = 1 if low_auto_is_bad else (0 if low_auto_stats_ready else "")
+                                                    low_auto_can_escape = 1 if (
+                                                        progress_frac >= dq_low_auto_min_progress
+                                                        and not low_auto_frozen
+                                                        and not dq_low_auto_escaped
+                                                    ) else 0
+                                                    if progress_frac < dq_low_auto_min_progress:
+                                                        dq_low_auto_state = "observe"
+                                                        low_auto_decision = "observe"
+                                                        low_auto_reason = "min_progress"
+                                                        low_auto_phase = "pre_min_progress"
+                                                        dq_low_auto_bad_streak = 0
+                                                    elif dq_low_auto_escaped:
+                                                        dq_low_auto_state = "mid_lock"
+                                                        low_auto_decision = "mid_lock"
+                                                        low_auto_reason = "escaped_once"
+                                                        low_auto_phase = "escaped"
+                                                        dq_low_auto_bad_streak = 0
+                                                    elif low_auto_frozen:
+                                                        dq_low_auto_state = "frozen"
+                                                        low_auto_decision = "frozen"
+                                                        low_auto_reason = "freeze_progress"
+                                                        low_auto_phase = "frozen"
+                                                        if low_auto_is_bad:
+                                                            dq_low_auto_bad_streak += 1
+                                                        else:
+                                                            dq_low_auto_bad_streak = 0
+                                                    elif not low_auto_stats_ready:
+                                                        dq_low_auto_state = "observe"
+                                                        low_auto_decision = "observe"
+                                                        low_auto_reason = "insufficient_qerr_stats"
+                                                        low_auto_phase = "active"
+                                                        dq_low_auto_bad_streak = 0
+                                                    else:
+                                                        low_auto_phase = "active"
+                                                        if low_auto_is_bad:
+                                                            dq_low_auto_bad_streak += 1
+                                                            low_auto_decision = "bad_count"
+                                                            low_auto_reason = "low_bad"
+                                                        else:
+                                                            dq_low_auto_bad_streak = 0
+                                                            low_auto_decision = "keep_low"
+                                                            low_auto_reason = "in_band"
+                                                        if dq_low_auto_bad_streak >= dq_low_auto_bad_streak_threshold:
+                                                            dq_low_auto_escaped = True
+                                                            dq_auto_active_band = "mid"
+                                                            dq_auto_active_clip_low, dq_auto_active_clip_high = DQ_DELTA_AUTO_BANDS["mid"]
+                                                            dq_low_auto_state = "escape_to_mid"
+                                                            low_auto_decision = "escape_to_mid"
+                                                            low_auto_reason = "bad_streak_met"
+                                                            low_auto_phase = "escaped"
+                                                            low_auto_can_escape = 0
+                                                low_auto_state = dq_low_auto_state
+                                                low_auto_bad_streak = dq_low_auto_bad_streak
+                                                dq_low_auto_phase = low_auto_phase
+                                                dq_low_auto_can_escape = low_auto_can_escape
+
                                                 if dq_auto_use_raw:
                                                     clip_high_hit = (
                                                         clip_rate_raw is not None
-                                                        and clip_rate_ema > dq_auto_clip_high
-                                                        and clip_rate_raw > dq_auto_clip_high
+                                                        and clip_rate_ema > dq_auto_active_clip_high
+                                                        and clip_rate_raw > dq_auto_active_clip_high
                                                     )
                                                     clip_low_hit = (
                                                         clip_rate_raw is not None
-                                                        and clip_rate_ema < dq_auto_clip_low
-                                                        and clip_rate_raw < dq_auto_clip_low
+                                                        and clip_rate_ema < dq_auto_active_clip_low
+                                                        and clip_rate_raw < dq_auto_active_clip_low
                                                     )
                                                 else:
-                                                    clip_high_hit = clip_rate_ema > dq_auto_clip_high
-                                                    clip_low_hit = clip_rate_ema < dq_auto_clip_low
+                                                    clip_high_hit = clip_rate_ema > dq_auto_active_clip_high
+                                                    clip_low_hit = clip_rate_ema < dq_auto_active_clip_low
                                                 if clip_high_hit:
                                                     range_mul_after = range_mul_before * dq_auto_mul_up
                                                     auto_reason = "clip_high"
@@ -3405,6 +3658,8 @@ class NetworkTrainer:
 
                                             warmup_active = 1 if warmup_step_active else 0
                                             warmup_remain = dq_auto_warmup_remaining if dq_auto_warmup_enabled else 0
+                                            low_auto_state = dq_low_auto_state
+                                            low_auto_bad_streak = dq_low_auto_bad_streak
 
                                     if dist.is_available() and dist.is_initialized():
                                         range_tensor = torch.tensor(
@@ -3494,12 +3749,26 @@ class NetworkTrainer:
                                                 scale_mean = (item["scale_sum"] / item["scale_count"]).item() if item["scale_sum"] is not None and item["scale_count"] is not None and item["scale_count"].item() > 0 else None
                                                 range_val = scale_mean * qmax if scale_mean is not None and qmax is not None else None
                                                 quant_err_rms = quant_err_ratio = None
+                                                clip_err_rms = round_err_rms = clip_err_ratio = round_err_ratio = clip_share = round_share = None
                                                 if item["sumsq"] is not None and item["xq_sumsq"] is not None and item["xxq_sum"] is not None and numel > 0:
                                                     err_sumsq = item["sumsq"] + item["xq_sumsq"] - (2.0 * item["xxq_sum"])
                                                     err_sumsq = torch.clamp(err_sumsq, min=0.0)
                                                     quant_err_rms = math.sqrt((err_sumsq / item["numel"]).item())
                                                     if rms is not None:
                                                         quant_err_ratio = quant_err_rms / (rms + 1e-12)
+                                                    if item.get("clip_err_sumsq") is not None:
+                                                        clip_err_rms = math.sqrt((torch.clamp(item["clip_err_sumsq"], min=0.0) / item["numel"]).item())
+                                                        if rms is not None:
+                                                            clip_err_ratio = clip_err_rms / (rms + 1e-12)
+                                                        if err_sumsq.item() > 0:
+                                                            clip_share = (torch.clamp(item["clip_err_sumsq"], min=0.0) / (err_sumsq + 1e-12)).item()
+                                                    if item.get("round_err_sumsq") is not None:
+                                                        round_err_rms = math.sqrt((torch.clamp(item["round_err_sumsq"], min=0.0) / item["numel"]).item())
+                                                        if rms is not None:
+                                                            round_err_ratio = round_err_rms / (rms + 1e-12)
+                                                        if err_sumsq.item() > 0:
+                                                            round_share = (torch.clamp(item["round_err_sumsq"], min=0.0) / (err_sumsq + 1e-12)).item()
+                                                qerr_per_clip = _dq_qerr_per_clip(quant_err_ratio, clip_rate)
                                                 row = values + [
                                                     item["module"],
                                                     item["shape"],
@@ -3520,6 +3789,31 @@ class NetworkTrainer:
                                                 ]
                                                 if include_near_zero:
                                                     row.append(near_zero_rate)
+                                                row += [
+                                                    qerr_per_clip if qerr_per_clip is not None else "",
+                                                    dq_qerr_per_clip_floor,
+                                                    dq_auto_active_band,
+                                                    dq_auto_active_clip_low,
+                                                    dq_auto_active_clip_high,
+                                                    low_auto_state if dq_low_auto_enabled else "",
+                                                    low_auto_bad if dq_low_auto_enabled else "",
+                                                    low_auto_bad_streak if dq_low_auto_enabled else "",
+                                                    progress_frac,
+                                                    dq_low_auto_min_progress if dq_low_auto_enabled else "",
+                                                    dq_low_auto_freeze_progress if dq_low_auto_enabled else "",
+                                                    dq_low_auto_qerr_ratio_threshold if dq_low_auto_enabled else "",
+                                                    dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
+                                                    low_auto_phase if dq_low_auto_enabled else "",
+                                                ]
+                                                if dq_log_error_parts:
+                                                    row += [
+                                                        clip_err_rms if clip_err_rms is not None else "",
+                                                        round_err_rms if round_err_rms is not None else "",
+                                                        clip_err_ratio if clip_err_ratio is not None else "",
+                                                        round_err_ratio if round_err_ratio is not None else "",
+                                                        clip_share if clip_share is not None else "",
+                                                        round_share if round_share is not None else "",
+                                                    ]
                                                 row += [
                                                     numel,
                                                     auto_applied,
@@ -3552,6 +3846,32 @@ class NetworkTrainer:
                                             ]
                                             if include_near_zero:
                                                 row.append(m["near_zero_rate"])
+                                            qerr_per_clip = _dq_qerr_per_clip(quant_err_ratio_ema, clip_rate_ema)
+                                            row += [
+                                                qerr_per_clip if qerr_per_clip is not None else "",
+                                                dq_qerr_per_clip_floor,
+                                                dq_auto_active_band,
+                                                dq_auto_active_clip_low,
+                                                dq_auto_active_clip_high,
+                                                low_auto_state if dq_low_auto_enabled else "",
+                                                low_auto_bad if dq_low_auto_enabled else "",
+                                                low_auto_bad_streak if dq_low_auto_enabled else "",
+                                                progress_frac,
+                                                dq_low_auto_min_progress if dq_low_auto_enabled else "",
+                                                dq_low_auto_freeze_progress if dq_low_auto_enabled else "",
+                                                dq_low_auto_qerr_ratio_threshold if dq_low_auto_enabled else "",
+                                                dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
+                                                low_auto_phase if dq_low_auto_enabled else "",
+                                            ]
+                                            if dq_log_error_parts:
+                                                row += [
+                                                    m["clip_err_rms"] if m["clip_err_rms"] is not None else "",
+                                                    m["round_err_rms"] if m["round_err_rms"] is not None else "",
+                                                    m["clip_err_ratio"] if m["clip_err_ratio"] is not None else "",
+                                                    m["round_err_ratio"] if m["round_err_ratio"] is not None else "",
+                                                    m["clip_share"] if m["clip_share"] is not None else "",
+                                                    m["round_share"] if m["round_share"] is not None else "",
+                                                ]
                                             row += [
                                                 m["numel"],
                                                 auto_applied,
@@ -3598,6 +3918,28 @@ class NetworkTrainer:
                                         ]
                                         if include_near_zero:
                                             row.append("")
+                                        auto_qerr_per_clip = _dq_qerr_per_clip(
+                                            dq_low_auto_quant_err_ratio_ema_state if dq_low_auto_enabled else None,
+                                            clip_rate_ema,
+                                        )
+                                        row += [
+                                            auto_qerr_per_clip if auto_qerr_per_clip is not None else "",
+                                            dq_qerr_per_clip_floor,
+                                            dq_auto_active_band,
+                                            dq_auto_active_clip_low,
+                                            dq_auto_active_clip_high,
+                                            low_auto_state if dq_low_auto_enabled else "",
+                                            low_auto_bad if dq_low_auto_enabled else "",
+                                            low_auto_bad_streak if dq_low_auto_enabled else "",
+                                            progress_frac,
+                                            dq_low_auto_min_progress if dq_low_auto_enabled else "",
+                                            dq_low_auto_freeze_progress if dq_low_auto_enabled else "",
+                                            dq_low_auto_qerr_ratio_threshold if dq_low_auto_enabled else "",
+                                            dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
+                                            low_auto_phase if dq_low_auto_enabled else "",
+                                        ]
+                                        if dq_log_error_parts:
+                                            row += ["", "", "", "", "", ""]
                                         row += [
                                             "",
                                             auto_applied,
@@ -3628,6 +3970,23 @@ class NetworkTrainer:
                                             dq_auto_init_applied,
                                             dq_auto_init_value if dq_auto_init_value is not None else "",
                                             dq_auto_init_clip_target if dq_auto_init_clip_target is not None else "",
+                                            low_auto_qerr_per_clip if low_auto_qerr_per_clip is not None else "",
+                                            dq_qerr_per_clip_floor,
+                                            dq_auto_active_band,
+                                            dq_auto_active_clip_low,
+                                            dq_auto_active_clip_high,
+                                            low_auto_state if dq_low_auto_enabled else "",
+                                            low_auto_decision if dq_low_auto_enabled else "",
+                                            low_auto_reason if dq_low_auto_enabled else "",
+                                            low_auto_bad if dq_low_auto_enabled else "",
+                                            low_auto_bad_streak if dq_low_auto_enabled else "",
+                                            progress_frac,
+                                            dq_low_auto_min_progress if dq_low_auto_enabled else "",
+                                            dq_low_auto_freeze_progress if dq_low_auto_enabled else "",
+                                            dq_low_auto_qerr_ratio_threshold if dq_low_auto_enabled else "",
+                                            dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
+                                            low_auto_phase if dq_low_auto_enabled else "",
+                                            low_auto_can_escape if dq_low_auto_enabled else "",
                                         ]
                                         _write_csv(dq_auto_log_path, header, ",".join(_dq_format_value(v) for v in row))
                     if rank_log_enabled and accelerator.is_main_process and rank_log_path and (not skip_step_flag):
@@ -4391,7 +4750,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_auto_preset",
         type=str,
         default=None,
-        choices=["default", "clip_rate_high", "clip_rate_high_narrow", "clip_rate_mid", "clip_rate_low"],
+        choices=["default", "clip_rate_high", "clip_rate_high_narrow", "clip_rate_mid", "clip_rate_low", "clip_rate_low_auto"],
         help=(
             "Preset for auto range_mul tuning (overrides clip_low/high only) / "
             "auto range_mul 調整プリセット（clip_low/high のみ上書き）"
@@ -4479,6 +4838,47 @@ def setup_parser() -> argparse.ArgumentParser:
         default="minimal",
         choices=["minimal", "full_schema"],
         help="Auto log format / auto ログ形式（minimal/full_schema）",
+    )
+    parser.add_argument(
+        "--dq_delta_clip_rate_low_auto_min_progress",
+        type=float,
+        default=0.25,
+        help="Training progress before clip_rate_low_auto escape checks / clip_rate_low_auto の判定開始までの学習進捗",
+    )
+    parser.add_argument(
+        "--dq_delta_clip_rate_low_auto_bad_streak",
+        type=int,
+        default=3,
+        help="Consecutive clip_rate_low_auto bad checks before escaping to mid / clip_rate_low_auto がmidへ逃がすまでの連続bad回数",
+    )
+    parser.add_argument(
+        "--dq_delta_clip_rate_low_auto_freeze_progress",
+        type=float,
+        default=0.55,
+        help="Training progress after which clip_rate_low_auto band switching is frozen / clip_rate_low_auto のband切替を凍結する学習進捗",
+    )
+    parser.add_argument(
+        "--dq_delta_clip_rate_low_auto_qerr_ratio",
+        type=float,
+        default=0.25,
+        help="clip_rate_low_auto QuantErrRatioEMA threshold / clip_rate_low_auto の QuantErrRatioEMA 閾値",
+    )
+    parser.add_argument(
+        "--dq_delta_clip_rate_low_auto_qerr_per_clip",
+        type=float,
+        default=130.0,
+        help="clip_rate_low_auto QErrPerClip threshold / clip_rate_low_auto の QErrPerClip 閾値",
+    )
+    parser.add_argument(
+        "--dq_delta_qerr_per_clip_floor",
+        type=float,
+        default=0.001,
+        help="ClipRate floor for QErrPerClip diagnostics / QErrPerClip 診断で使う ClipRate 下限",
+    )
+    parser.add_argument(
+        "--dq_delta_log_error_parts",
+        action="store_true",
+        help="Log clip/round components of dq_delta quantization error / dq_delta量子化誤差のclip/round成分をログ出力",
     )
     # ema_* options removed
     # LoRA rounding options

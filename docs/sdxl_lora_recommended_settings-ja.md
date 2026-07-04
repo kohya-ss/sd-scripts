@@ -90,7 +90,7 @@
 | `--dq_delta_bits_sched`（独自） | `0.0:8,0.9:10` | 進行率で bits を切替 | 終盤で刻みを細かくする 効果があるか不明　途中でbit数を増やすのと破綻しやすくなる可能性もありそう |
 | `--dq_delta_log`（独自） | 有効 | dq_delta の統計ログを出力 | クリップ率等の確認用 |
 | `--dq_delta_auto_range_mul`（独自） | 有効 | clip_rate を見て range_mul を自動調整 | 過/不足クリップを自動補正 データセットによっては初期値から変わらないこともある |
-| `--dq_delta_auto_preset`（独自） | clip_rate_high | auto 調整のプリセット | clip_low/high を高め側に 選択により味付けが変わる |
+| `--dq_delta_auto_preset`（独自） | clip_rate_high | auto 調整のプリセット | clip_low/high を選択。`clip_rate_low_auto` はlow帯で開始し、`QErrPerClip` が高い状態が続くとmid帯へ逃がす |
 | `--dq_delta_auto_init_range_mul_from_band`（独自） | 有効 | clip 帯中心から range_mul 初期値を算出 | `stat=rms` 前提 適正なrange_mulからスタートすることで安定させる |
 | `--dq_delta_auto_use_raw`（独自） | 有効 | auto 判定に ema だけでなくraw も併用 | range_mulの変化をなだらかにする |
 
@@ -99,6 +99,7 @@
 - 量子化はしないのが一番無難
 - 最初から量子化有で学習するとディティールが弱くなりやすいが、うまく行けば柔軟性が増す
 - まず量子化無で学習し、`--network_weights` でその重みを読み込んで量子化ありで追加学習するのもよい
+- `clip_rate_low` が合うデータもあるが、lowを維持するための量子化誤差が重くなる場合は `--dq_delta_auto_preset clip_rate_low_auto` でmid帯へ自動退避させる選択肢がある
 
 ## データセット設定例（dataset_config.toml）
 ```
