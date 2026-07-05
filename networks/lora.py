@@ -396,6 +396,7 @@ class LoRAModule(torch.nn.Module):
         delta_q_range_mul: float = 3.0,
         delta_q_ema_decay: float = 0.99,
         delta_q_on_z: bool = False,
+        delta_q_use_triton: bool = False,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -452,6 +453,7 @@ class LoRAModule(torch.nn.Module):
         # when True, quantize z=A(x) and then apply B: Delta' = B(Q(z))
         # otherwise quantize Delta directly: Delta' = Q(B(z))
         self.delta_q_on_z = bool(delta_q_on_z)
+        self.delta_q_use_triton = bool(delta_q_use_triton)
         self.dq_stats_manager: Optional[DQStatsManager] = None
         self.dq_scope = "te" if lora_name.startswith("lora_te") else "unet"
 
@@ -573,6 +575,7 @@ class LoRAModule(torch.nn.Module):
                         granularity=self.delta_q_granularity,
                         stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
                         range_mul=self.delta_q_range_mul,
+                        use_triton=self.delta_q_use_triton,
                     )
                     qmax = (1 << (self.delta_q_bits - 1)) - 1
                 x_in = lx
@@ -582,7 +585,14 @@ class LoRAModule(torch.nn.Module):
                     )
                     self._record_dq_stats(x_in, lx, q_clamp, scale_t, qmax)
                 else:
-                    lx = fake_quantize_levels(lx, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+                    lx = fake_quantize_levels(
+                        lx,
+                        scale=z_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
+                        mode=self.delta_q_mode,
+                        use_triton=self.delta_q_use_triton,
+                    )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
                     with torch.no_grad():
@@ -612,6 +622,7 @@ class LoRAModule(torch.nn.Module):
                         granularity=self.delta_q_granularity,
                         stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
                         range_mul=self.delta_q_range_mul,
+                        use_triton=self.delta_q_use_triton,
                     )
                     qmax = (1 << (self.delta_q_bits - 1)) - 1
                 x_in = delta
@@ -621,7 +632,14 @@ class LoRAModule(torch.nn.Module):
                     )
                     self._record_dq_stats(x_in, delta, q_clamp, scale_t, qmax)
                 else:
-                    delta = fake_quantize_levels(delta, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+                    delta = fake_quantize_levels(
+                        delta,
+                        scale=d_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
+                        mode=self.delta_q_mode,
+                        use_triton=self.delta_q_use_triton,
+                    )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
                     with torch.no_grad():
@@ -1423,6 +1441,7 @@ class LoRANetwork(torch.nn.Module):
         delta_q_bits: Optional[int] = None,
         delta_q_range_mul: float = 3.0,
         delta_q_on_z: bool = False,
+        delta_q_use_triton: bool = False,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -1450,6 +1469,7 @@ class LoRANetwork(torch.nn.Module):
         self.delta_q_bits = delta_q_bits
         self.delta_q_range_mul = delta_q_range_mul
         self.delta_q_on_z = bool(delta_q_on_z)
+        self.delta_q_use_triton = bool(delta_q_use_triton)
         self.dq_stats_manager = DQStatsManager()
 
         self.loraplus_lr_ratio = None
@@ -1555,6 +1575,7 @@ class LoRANetwork(torch.nn.Module):
                                 delta_q_bits=self.delta_q_bits,
                                 delta_q_range_mul=self.delta_q_range_mul,
                                 delta_q_on_z=self.delta_q_on_z,
+                                delta_q_use_triton=self.delta_q_use_triton,
                             )
                             lora.dq_stats_manager = self.dq_stats_manager
                             loras.append(lora)
@@ -1625,6 +1646,7 @@ class LoRANetwork(torch.nn.Module):
         bits: Optional[int] = None,
         range_mul: Optional[float] = None,
         on_z: Optional[bool] = None,
+        use_triton: Optional[bool] = None,
     ):
         self.delta_q_step = step
         self.delta_q_mode = mode
@@ -1638,6 +1660,8 @@ class LoRANetwork(torch.nn.Module):
             self.delta_q_range_mul = range_mul
         if on_z is not None:
             self.delta_q_on_z = bool(on_z)
+        if use_triton is not None:
+            self.delta_q_use_triton = bool(use_triton)
         for l in self.text_encoder_loras + self.unet_loras:
             l.delta_q_step = step
             l.delta_q_mode = mode
@@ -1651,6 +1675,8 @@ class LoRANetwork(torch.nn.Module):
                 l.delta_q_range_mul = range_mul
             if on_z is not None:
                 l.delta_q_on_z = bool(on_z)
+            if use_triton is not None:
+                l.delta_q_use_triton = bool(use_triton)
 
     def set_delta_quant_enabled(self, enabled: bool):
         for l in self.text_encoder_loras + self.unet_loras:

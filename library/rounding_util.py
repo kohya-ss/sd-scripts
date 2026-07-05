@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 from typing import Iterable, Literal, Union, Optional
 
+try:
+    from library.triton_quant import triton_compute_scale_bits_channel_rms, triton_fake_quantize_levels_stoch
+except Exception:
+    triton_compute_scale_bits_channel_rms = None
+    triton_fake_quantize_levels_stoch = None
+
 
 RoundMode = Literal["det", "stoch"]
 
@@ -162,6 +168,7 @@ def fake_quantize_levels(
     qmin: int,
     qmax: int,
     mode: RoundMode = "det",
+    use_triton: bool = False,
 ) -> torch.Tensor:
     """STE fake-quantization with finite integer levels and (symmetric) clamp.
 
@@ -173,6 +180,11 @@ def fake_quantize_levels(
         s = torch.tensor(scale, dtype=torch.float32, device=x.device)
     else:
         s = scale.to(device=x.device, dtype=torch.float32)
+
+    if use_triton and mode == "stoch" and triton_fake_quantize_levels_stoch is not None and isinstance(s, torch.Tensor):
+        q_triton = triton_fake_quantize_levels_stoch(x, scale=s, qmin=qmin, qmax=qmax)
+        if q_triton is not None:
+            return _ste_from_quantized(x, q_triton)
 
     y = x.to(torch.float32) / s
     if mode == "det":
@@ -206,6 +218,7 @@ def compute_scale_bits(
     stat: Literal["rms", "absmax"] = "rms",
     range_mul: float = 3.0,
     eps: float = 1e-8,
+    use_triton: bool = False,
 ) -> torch.Tensor:
     """Compute per-tensor/per-channel scale for symmetric signed N-bit quant.
 
@@ -233,6 +246,10 @@ def compute_scale_bits(
     if stat == "absmax":
         rng = torch.amax(torch.abs(x.to(torch.float32)), dim=reduce_dims, keepdim=True) + eps
     elif stat == "rms":
+        if use_triton and triton_compute_scale_bits_channel_rms is not None:
+            scale_triton = triton_compute_scale_bits_channel_rms(x, bits=bits, range_mul=range_mul, eps=eps)
+            if scale_triton is not None:
+                return scale_triton
         rng = torch.sqrt(torch.mean(x.to(torch.float32) ** 2, dim=reduce_dims, keepdim=True) + eps) * range_mul
     else:
         raise ValueError(f"unknown stat: {stat}")

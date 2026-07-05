@@ -1002,7 +1002,8 @@ class NetworkTrainer:
                 f"lora fake-quant: target={'z' if getattr(args,'dq_quantize_z', False) else 'delta'}, "
                 f"step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
                 f"mode={args.dq_delta_mode}, {dq_begin_info}, granularity={getattr(args,'dq_delta_granularity',None)}, "
-                f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, bits_sched={dq_bits_sched}"
+                f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, "
+                f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1736,6 +1737,7 @@ class NetworkTrainer:
                 bits=getattr(args, "dq_delta_bits", None),
                 range_mul=getattr(args, "dq_delta_range_mul", None),
                 on_z=getattr(args, "dq_quantize_z", False),
+                use_triton=getattr(args, "dq_delta_use_triton", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3249,6 +3251,7 @@ class NetworkTrainer:
                                         bits=cur_bits,
                                         range_mul=getattr(args, "dq_delta_range_mul", None),
                                         on_z=getattr(args, "dq_quantize_z", False),
+                                        use_triton=getattr(args, "dq_delta_use_triton", False),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3680,6 +3683,7 @@ class NetworkTrainer:
                                             bits=cur_bits,
                                             range_mul=range_mul_after,
                                             on_z=getattr(args, "dq_quantize_z", False),
+                                            use_triton=getattr(args, "dq_delta_use_triton", False),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -4677,6 +4681,11 @@ def setup_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Schedule bits by progress fraction, e.g. '0.0:6,0.5:8,0.8:10' / 学習進行率に応じたビット数スケジュール（例: '0.0:6,0.5:8,0.8:10'）",
+    )
+    parser.add_argument(
+        "--dq_delta_use_triton",
+        action="store_true",
+        help="Use optional Triton kernel for dq_delta stochastic fake-quant normal path when available",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(
