@@ -21,15 +21,6 @@ else:
     _TRITON_IMPORT_ERROR = None
 
 _warned_messages: set[str] = set()
-_seed_counter = 0
-
-
-def _next_triton_seed() -> int:
-    global _seed_counter
-    _seed_counter += 1
-    # A small deterministic seed stream avoids consuming Python's global
-    # random state from inside the training forward path.
-    return (_seed_counter * 1103515245 + 12345) & 0x7FFFFFFF
 
 
 def is_triton_available() -> bool:
@@ -44,45 +35,9 @@ def _warn_once(key: str, message: str) -> None:
 
 
 if _TRITON_AVAILABLE:
-
-    @triton.jit
-    def _fake_quantize_channel_rms_stoch_3d_kernel(
-        x_ptr,
-        out_ptr,
-        rand_ptr,
-        reduction_count: tl.constexpr,
-        channel_count: tl.constexpr,
-        range_mul,
-        scale_qmax,
-        eps,
-        qmin: tl.constexpr,
-        qmax: tl.constexpr,
-        seed,
-        USE_EXTERNAL_RAND: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        c = tl.program_id(axis=0)
-        r = tl.arange(0, BLOCK_SIZE)
-        mask = r < reduction_count
-
-        # NLC contiguous: offset = (n * L + l) * C + c. r flattens N*L.
-        offsets = r * channel_count + c
-        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        sumsq = tl.sum(x * x, axis=0)
-        scale = tl.sqrt(sumsq / reduction_count + eps) * range_mul / scale_qmax
-
-        y = x / scale
-        q_floor = tl.floor(y)
-        frac = y - q_floor
-        probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
-        if USE_EXTERNAL_RAND:
-            rnd = tl.load(rand_ptr + offsets, mask=mask, other=1.0).to(tl.float32)
-        else:
-            rnd = tl.rand(seed, offsets)
-        q = q_floor + (rnd < probs).to(tl.float32)
-        q = tl.minimum(tl.maximum(q, qmin), qmax)
-        out = q * scale
-        tl.store(out_ptr + offsets, out, mask=mask)
+    # Keep scale (A) and fake-quant (B) as separate kernels. A fused A+B
+    # shortcut was tested, but changed dq_delta logs/training behavior more
+    # than the separate-kernel path, so it is intentionally not implemented.
 
     @triton.jit
     def _scale_bits_channel_rms_kernel(
@@ -138,8 +93,6 @@ if _TRITON_AVAILABLE:
         ndim: tl.constexpr,
         qmin: tl.constexpr,
         qmax: tl.constexpr,
-        seed,
-        USE_EXTERNAL_RAND: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -165,73 +118,11 @@ if _TRITON_AVAILABLE:
         q_floor = tl.floor(y)
         frac = y - q_floor
         probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
-        if USE_EXTERNAL_RAND:
-            rnd = tl.load(rand_ptr + offsets, mask=mask, other=1.0).to(tl.float32)
-        else:
-            rnd = tl.rand(seed, offsets)
+        rnd = tl.load(rand_ptr + offsets, mask=mask, other=1.0).to(tl.float32)
         q = q_floor + (rnd < probs).to(tl.float32)
         q = tl.minimum(tl.maximum(q, qmin), qmax)
         out = q * scale
         tl.store(out_ptr + offsets, out, mask=mask)
-
-
-def triton_fake_quantize_channel_rms_stoch_3d(
-    x: torch.Tensor,
-    *,
-    bits: int,
-    range_mul: float,
-    eps: float,
-    qmin: int,
-    qmax: int,
-    use_torch_rand: bool = False,
-) -> Optional[torch.Tensor]:
-    """Return fused per-channel RMS stochastic fake-quant for contiguous 3D NLC tensors."""
-    if not _TRITON_AVAILABLE:
-        return None
-    if not x.is_cuda or x.ndim != 3:
-        return None
-    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-        return None
-    if not x.is_contiguous():
-        return None
-
-    reduction_count = x.shape[0] * x.shape[1]
-    channel_count = x.shape[2]
-    if reduction_count <= 0 or channel_count <= 0:
-        return None
-    if reduction_count > 128:
-        return None
-
-    block_size = triton.next_power_of_2(reduction_count)
-    if block_size > 131072:
-        return None
-
-    out = torch.empty_like(x)
-    scale_qmax = float((1 << (bits - 1)) - 1)
-    seed = _next_triton_seed()
-    rand = torch.rand_like(x, dtype=torch.float32) if use_torch_rand else x
-
-    try:
-        _fake_quantize_channel_rms_stoch_3d_kernel[(channel_count,)](
-            x,
-            out,
-            rand,
-            reduction_count,
-            channel_count,
-            float(range_mul),
-            scale_qmax,
-            float(eps),
-            qmin,
-            qmax,
-            seed,
-            use_torch_rand,
-            BLOCK_SIZE=block_size,
-        )
-    except Exception as e:
-        _warn_once("triton_fused_3d_kernel", f"Triton fused 3D fake quant failed; falling back to PyTorch: {e}")
-        return None
-
-    return out
 
 
 def triton_compute_scale_bits_channel_rms(
@@ -241,7 +132,15 @@ def triton_compute_scale_bits_channel_rms(
     range_mul: float,
     eps: float,
 ) -> Optional[torch.Tensor]:
-    """Return per-channel RMS scale from Triton, or None when unsupported."""
+    """Mirror compute_scale_bits(..., granularity="channel", stat="rms").
+
+    Python reference:
+        sqrt(mean(x.float() ** 2, channel_reduce_dims, keepdim=True) + eps)
+        * range_mul / qmax
+
+    Returns a broadcastable float32 scale tensor, or None so callers can
+    fall back to the Python/PyTorch implementation.
+    """
     if not _TRITON_AVAILABLE:
         return None
     if not x.is_cuda or x.ndim not in (2, 3, 4):
@@ -306,9 +205,22 @@ def triton_fake_quantize_levels_stoch(
     scale: torch.Tensor,
     qmin: int,
     qmax: int,
-    use_torch_rand: bool = False,
 ) -> Optional[torch.Tensor]:
-    """Return a Triton stochastic fake-quantized tensor, or None when unsupported."""
+    """Mirror fake_quantize_levels(..., mode="stoch").
+
+    Python reference:
+        y = x.float() / scale.float()
+        q_floor = floor(y)
+        probs = clamp(y - q_floor, 0, 1)
+        q = q_floor + (torch.rand_like(probs) < probs)
+        q = clamp(q, qmin, qmax)
+        out = (q * scale).to(x.dtype)
+
+    Random numbers are intentionally generated by PyTorch and passed to the
+    Triton kernel. This matched the original stochastic path better in
+    training tests than tl.rand. STE remains in Python as
+    x + (out - x).detach().
+    """
     if not _TRITON_AVAILABLE:
         _warn_once(
             "triton_import",
@@ -331,15 +243,13 @@ def triton_fake_quantize_levels_stoch(
         return None
 
     out = torch.empty_like(x)
-    rand = torch.rand_like(x, dtype=torch.float32) if use_torch_rand else x
+    rand = torch.rand_like(x, dtype=torch.float32)
     n_elements = x.numel()
     block_size = 256
     grid = (triton.cdiv(n_elements, block_size),)
     dim1 = x.shape[1] if x.ndim >= 2 else 1
     dim2 = x.shape[2] if x.ndim >= 3 else 1
     dim3 = x.shape[3] if x.ndim >= 4 else 1
-    seed = _next_triton_seed()
-
     try:
         _fake_quantize_levels_stoch_kernel[grid](
             x,
@@ -354,8 +264,6 @@ def triton_fake_quantize_levels_stoch(
             x.ndim,
             qmin,
             qmax,
-            seed,
-            use_torch_rand,
             BLOCK_SIZE=block_size,
         )
     except Exception as e:

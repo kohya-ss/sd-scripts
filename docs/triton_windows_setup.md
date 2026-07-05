@@ -1,216 +1,143 @@
 # Triton Windows 設定メモ
 
-このメモは、フェイク量子化の optional 高速化実験で使うローカル Triton 環境と実装方針を記録するためのものです。
+このメモは、dq_delta fake quant の optional Triton 高速化実験と、現在採用している安全寄りルートを記録するためのものです。
 
-## 方針
+## 基本方針
 
-- `requirements.txt` には `triton` / `triton-windows` を追加しない。
-- Triton 対応は optional backend として扱う。
-- Triton がインストールされていて、ユーザーが明示的に有効化した場合だけ Triton path を使う。
-- Triton がない、未対応条件、実行時エラーなどの場合は、既存の PyTorch 実装へ fallback する。
+- `requirements.txt` には Triton を追加しない。
+- `--dq_delta_use_triton` が指定され、かつ Triton が import でき、対応条件を満たす場合だけ Triton path を試す。
+- Triton がない、未対応 shape/dtype/mode、kernel 実行エラーの場合は既存の PyTorch 実装へ fallback する。
+- `--dq_delta_use_triton` を付けない場合は、Triton がインストールされていても既存の PyTorch path を使う。
 
-## 確認済みのローカル環境
+## 検証環境
 
-ローカルの学習用 venv で確認したバージョン:
-
-```text
-Python: 3.10 venv
-torch: 2.9.1+cu130
-torch.version.cuda: 13.0
-torchvision: 0.24.1+cu130
-torchaudio: 2.9.1+cu130
-accelerate: 0.30.0
-triton-windows: 3.5.1.post24
-triton.__version__: 3.5.1
-```
-
-venv の metadata では以下も確認した:
+ユーザー環境で確認したバージョン:
 
 ```text
-venv Python config: 3.10.11
-venv path: D:\python\maruo-main02\sd-scripts\venv
+PyTorch: 2.9.1+cu130
+CUDA: 13.0
+Python: cp310 venv
+Triton Windows: triton-windows 3.5.1.post24
+GPU: RTX 5080
 ```
 
-## 実行したインストールコマンド
+インストールコマンド:
 
-venv を有効化した状態で以下を実行:
-
-```powershell
-python -c "import torch; print(torch.__version__, torch.version.cuda)"
+```bash
 python -m pip install -U "triton-windows>=3.5,<3.6"
 python -c "import triton; print(triton.__version__)"
 ```
 
-確認できた出力:
+## 現在の採用ルート
 
-```text
-2.9.1+cu130 13.0
-Successfully installed triton-windows-3.5.1.post24
-3.5.1
-```
-
-## このバージョン範囲にした理由
-
-この環境では PyTorch 2.9.1 + CUDA 13.0 を使っている。
-
-最初の実験では、最新版の `triton-windows` へいきなり上げるのではなく、PyTorch 2.9 世代に近い Triton 3.5 系に合わせるため、以下の範囲を指定した。
-
-```powershell
-python -m pip install -U "triton-windows>=3.5,<3.6"
-```
-
-もし RTX 5080 環境でこの組み合わせがうまく動かない場合は、次の候補として `triton-windows` 3.7 系を試す。
-
-```powershell
-python -m pip install -U "triton-windows>=3.7,<3.8"
-```
-
-## フェイク量子化追加コストの大まかな分布
-
-フェイク量子化で増えた時間を `+100` とした場合の、現時点での大まかな見立て:
-
-```text
-FQ追加コスト +100
-  |
-  |-- A. channel RMS scale計算        25-40
-  |
-  |-- B. stoch fake quant本体         35-50
-  |
-  |-- C. stats/log/auto用 reduction   10-25
-  |
-  |-- D. Python分岐/STE/contiguous等    5-10
-```
-
-各項目の意味:
-
-```text
-A:
-  compute_scale_bits(..., granularity="channel", stat="rms")
-  channel ごとに RMS を計算して scale を作る部分。
-
-B:
-  fake_quantize_levels(..., mode="stoch")
-  scale で割る、floor、乱数、確率比較、clamp、scale を掛ける、dtype を戻す部分。
-
-C:
-  dq_delta_log / dq_delta_auto_range_mul 用の統計収集。
-  clip_count、zero_count、sumsq、xq_sumsq、xxq_sum、absmax、clip_err/round_err など。
-
-D:
-  Python 側の分岐、関数呼び出し、STE の組み立て、必要に応じた contiguous 化など。
-```
-
-## このリポジトリでの使い方
-
-実装済みの有効化フラグ:
-
-```text
---dq_delta_use_triton
---dq_delta_triton_torch_rand
---dq_delta_triton_disable_fused
-```
-
-このフラグはデフォルト OFF。指定した場合のみ、対応条件を満たす通常 path の dq_delta fake quant 関連処理で Triton kernel を試す。
-
-`--dq_delta_triton_torch_rand` もデフォルト OFF。`--dq_delta_use_triton` と併用した場合だけ、stochastic rounding の乱数を PyTorch の `torch.rand_like` 系で生成し、その乱数テンソルを Triton kernel に渡す。A+B 融合や B 単体の Triton 計算は残したまま、Triton の `tl.rand` 由来の乱数パターンだけを切り分けるための検証用フラグ。
-
-`--dq_delta_triton_disable_fused` もデフォルト OFF。`--dq_delta_use_triton` と併用した場合、A+B 融合 kernel だけを使わず、A の scale 計算 Triton kernel と B の fake quant Triton kernel を別々に使う。`--dq_delta_triton_torch_rand` と併用すると、A+B 融合の影響を外した「A/B 別 Triton + PyTorch 乱数」の検証になる。
-
-予定している optional path:
-
-```text
-Triton がインストールされている
-+ 明示フラグで有効化されている（--dq_delta_use_triton）
-+ CUDA tensor
-+ 対応 dtype / shape
-+ 対応 fake-quant mode
-=> Triton kernel を使う
-
-それ以外
-=> 既存の PyTorch 実装を使う
-```
-
-現在 Triton 化している対象:
+現在の標準 Triton path は、A と B を別 kernel で実行する。
 
 ```text
 A: channel RMS scale 計算
-   x.float()
-   x ** 2
-   channel ごとに sum / mean
-   sqrt
-   range_mul / qmax を掛ける
-
-B: stochastic fake quantization
-   x / scale
-   floor
-   擬似乱数によるしきい値判定
-   clamp
-   * scale
-   dtype 戻し
+B: stochastic fake quant
 ```
 
-現在は `--dq_delta_use_triton` を付けた場合、対応条件を満たす A と B をそれぞれ別 kernel で Triton 実行する。
-
-stats 収集は PyTorch のまま残す。
-
-後続の実験候補:
+`--dq_delta_use_triton` を付けると、対応条件を満たす通常stepで以下を行う。
 
 ```text
-C: dq_delta log / auto 用 stats 収集
-A+B: scale 計算と fake quant の融合
+A: compute_scale_bits(..., granularity="channel", stat="rms") 相当を Triton で実行
+B: fake_quantize_levels(..., mode="stoch") 相当を Triton で実行
 ```
 
-A+B 融合は、通常 path の 3D tensor に対して小さく試した。
-短い単体ベンチでは `N*L=77` 程度の小さい3Dでは速く、`N*L=468` や `1872` の大きい3Dでは A/B 別kernelより遅かった。
+stochastic rounding の乱数は Triton の `tl.rand` ではなく、PyTorch の `torch.rand_like` 系で生成し、その乱数テンソルを Triton kernel に渡す。これは元の PyTorch 実装の乱数挙動に寄せるため。
 
-そのため、現状の fused 近道は無難さ優先で以下に制限している。
+STE の `x + (q - x).detach()` は Python 側に残している。
+
+## Python 実装との対応関係
+
+Triton A は [library/rounding_util.py](../library/rounding_util.py) の `compute_scale_bits` のうち、以下の条件に対応する。
 
 ```text
-x.ndim == 3
-N * L <= 128
-channel/rms/stoch/bits mode
-stats/log/auto step ではない
+granularity == "channel"
+stat == "rms"
+x.ndim in (2, 3, 4)
+x is contiguous CUDA tensor
 ```
 
-条件外では、A/B 別kernelまたは既存PyTorchルートへ fallback する。
+対応する式:
 
-## Triton path に入っているか確認する方法
+```python
+rng = torch.sqrt(torch.mean(x.to(torch.float32) ** 2, dim=reduce_dims, keepdim=True) + eps) * range_mul
+scale = (rng / qmax).to(torch.float32)
+```
 
-`--dq_delta_use_triton` を付けると、`networks.lora` にフラグが届いた時点で以下のログが出る。
+Triton B は [library/rounding_util.py](../library/rounding_util.py) の `fake_quantize_levels(..., mode="stoch")` に対応する。
+
+対応する式:
+
+```python
+y = x.to(torch.float32) / scale.to(torch.float32)
+q_floor = torch.floor(y)
+probs = (y - q_floor).clamp(0.0, 1.0)
+q = q_floor + (torch.rand_like(probs) < probs).to(y.dtype)
+q = torch.clamp(q, qmin, qmax)
+q_out = (q * scale).to(x.dtype)
+out = x + (q_out - x).detach()
+```
+
+Triton kernel 内では `q_out` までを計算し、STE は呼び出し元の Python で付ける。
+
+## A+B 融合について
+
+A+B 融合 kernel は実験したが、量子化ログと生成結果が A/B 別 kernel より変わりやすかったため削除した。
+
+特に以下の実験では、融合ありよりも融合なしの方が通常 PyTorch path に近く、生成結果も良好だった。
 
 ```text
-dq_delta_use_triton is enabled for networks.lora. Only the normal stochastic fake-quant path is eligible; stats/log steps may still use PyTorch.
+xl05:
+  A/B別Triton
+  PyTorch乱数
+  A+B融合なし
 ```
 
-大量に出る一時的な shape / summary ログは削除済み。
+そのため、現在の正式候補では `--dq_delta_use_triton` を付けても A+B 融合は使わない。
 
-## PyTorch path と Triton path の確認メモ
+## z 量子化について
 
-開発中の短い単体ベンチでは以下のような結果になった:
+`--dq_quantize_z` との組み合わせは未検証。コード上は同じ `compute_scale_bits` / `fake_quantize_levels` を通るため、対応条件を満たせばTriton pathに入る可能性はある。
+
+ただし、今回の主な検証対象は `delta` 量子化であり、`z` 量子化は experimental 扱い。
+
+## log / auto step
+
+現時点では、log / auto 用 stats 収集は PyTorch 実装のまま。
+
+今後の候補:
 
 ```text
-torch=2.9.1+cu130 cuda=13.0 device=NVIDIA GeForce RTX 5080
-dtype=torch.float16 warmup=3 iters=5
+Phase 1:
+  fake quant は現状維持
+  stats reduction だけ Triton 化
 
-      (1, 77, 768)  elements=     59136  A_scale torch=  0.0225 triton=  0.0057 speedup=  3.96x  B_quant torch=  0.0624 triton=  0.0103 speedup=  6.04x
-    (1, 468, 1280)  elements=    599040  A_scale torch=  0.0302 triton=  0.0141 speedup=  2.14x  B_quant torch=  0.0680 triton=  0.0125 speedup=  5.45x
+Phase 2:
+  log/auto step 専用に fake quant + stats reduction を Triton 化
 ```
 
-このベンチは A/B 単体の比較なので、学習全体の it/s 改善率とは一致しない。
-学習全体で差が小さい場合は、C の stats/log/auto reduction、UNet 本体などが支配的な可能性がある。
+`--dq_delta_log_error_parts` は重い調査用ログなので、Triton stats 実装では当面非対応にし、指定時は PyTorch stats path に fallback する方針。
 
-学習中の実測では、`--dq_delta_use_triton` なし/ありで以下のような差が見えた。
+## 実測メモ
+
+同一系統のテストランでの所要時間:
 
 ```text
-tritonなし: 1.33-1.37 it/s 程度
-tritonあり: 1.45-1.48 it/s 程度
+xl01 通常 PyTorch: 1:47:06
+xl03 Triton tl.rand / 融合系実験: 1:37:07
+xl04 Triton PyTorch乱数 / 融合あり: 1:37:36
+xl05 Triton PyTorch乱数 / 融合なし: 1:40:17
 ```
 
-データセット順、bucket、GPUクロック、温度、Windows側の負荷で揺れるため、最終判断は十分な step 数の平均で見る。
+xl05 は通常より 409 秒短縮、学習時間で約 6.36% 短縮、処理速度で約 6.8% 高速化。
 
-## 注意点
+xl05 のログは通常 PyTorch path に近く、生成結果も良好だったため、現在の採用候補。
 
-- Triton 側の stochastic rounding は `torch.rand_like` と完全に同じ乱数列にはならない。
-- bit-for-bit 一致ではなく、分布として同等であることを期待する。
-- STE の `x + (q - x).detach()` は、強い理由がなければ Python/PyTorch 側に残す。
-- benchmark では、速度だけでなく `ClipRate`、`QuantErrRatio`、生成サンプルも PyTorch path と比較する。
+## 注意
+
+- bit-for-bit 一致は目標にしない。
+- `--dq_delta_use_triton` を外せば既存 PyTorch path に戻る。
+- Triton path は optional であり、公開環境に Triton がなくても動く必要がある。
+- 追加実装時は、対応する Python 実装の式をコメントやdocsに明記する。

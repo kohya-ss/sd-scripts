@@ -1003,9 +1003,7 @@ class NetworkTrainer:
                 f"step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
                 f"mode={args.dq_delta_mode}, {dq_begin_info}, granularity={getattr(args,'dq_delta_granularity',None)}, "
                 f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, "
-                f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
-                f"triton_torch_rand={getattr(args,'dq_delta_triton_torch_rand', False)}, "
-                f"triton_disable_fused={getattr(args,'dq_delta_triton_disable_fused', False)}"
+                f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1740,8 +1738,6 @@ class NetworkTrainer:
                 range_mul=getattr(args, "dq_delta_range_mul", None),
                 on_z=getattr(args, "dq_quantize_z", False),
                 use_triton=getattr(args, "dq_delta_use_triton", False),
-                triton_torch_rand=getattr(args, "dq_delta_triton_torch_rand", False),
-                triton_disable_fused=getattr(args, "dq_delta_triton_disable_fused", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3256,8 +3252,6 @@ class NetworkTrainer:
                                         range_mul=getattr(args, "dq_delta_range_mul", None),
                                         on_z=getattr(args, "dq_quantize_z", False),
                                         use_triton=getattr(args, "dq_delta_use_triton", False),
-                                        triton_torch_rand=getattr(args, "dq_delta_triton_torch_rand", False),
-                                        triton_disable_fused=getattr(args, "dq_delta_triton_disable_fused", False),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3690,8 +3684,6 @@ class NetworkTrainer:
                                             range_mul=range_mul_after,
                                             on_z=getattr(args, "dq_quantize_z", False),
                                             use_triton=getattr(args, "dq_delta_use_triton", False),
-                                            triton_torch_rand=getattr(args, "dq_delta_triton_torch_rand", False),
-                                            triton_disable_fused=getattr(args, "dq_delta_triton_disable_fused", False),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -4693,17 +4685,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dq_delta_use_triton",
         action="store_true",
-        help="Use optional Triton kernel for dq_delta stochastic fake-quant normal path when available",
-    )
-    parser.add_argument(
-        "--dq_delta_triton_torch_rand",
-        action="store_true",
-        help="When using Triton dq_delta stochastic fake-quant, generate random numbers with PyTorch and pass them to Triton",
-    )
-    parser.add_argument(
-        "--dq_delta_triton_disable_fused",
-        action="store_true",
-        help="Disable fused Triton scale+fake-quant shortcut and use separate Triton scale/quant kernels when available",
+        help="Use optional Triton kernels for dq_delta channel RMS scale and stochastic fake-quant normal path when available",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(
