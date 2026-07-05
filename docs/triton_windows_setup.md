@@ -106,9 +106,15 @@ D:
 
 ```text
 --dq_delta_use_triton
+--dq_delta_triton_torch_rand
+--dq_delta_triton_disable_fused
 ```
 
 このフラグはデフォルト OFF。指定した場合のみ、対応条件を満たす通常 path の dq_delta fake quant 関連処理で Triton kernel を試す。
+
+`--dq_delta_triton_torch_rand` もデフォルト OFF。`--dq_delta_use_triton` と併用した場合だけ、stochastic rounding の乱数を PyTorch の `torch.rand_like` 系で生成し、その乱数テンソルを Triton kernel に渡す。A+B 融合や B 単体の Triton 計算は残したまま、Triton の `tl.rand` 由来の乱数パターンだけを切り分けるための検証用フラグ。
+
+`--dq_delta_triton_disable_fused` もデフォルト OFF。`--dq_delta_use_triton` と併用した場合、A+B 融合 kernel だけを使わず、A の scale 計算 Triton kernel と B の fake quant Triton kernel を別々に使う。`--dq_delta_triton_torch_rand` と併用すると、A+B 融合の影響を外した「A/B 別 Triton + PyTorch 乱数」の検証になる。
 
 予定している optional path:
 
@@ -153,6 +159,20 @@ stats 収集は PyTorch のまま残す。
 C: dq_delta log / auto 用 stats 収集
 A+B: scale 計算と fake quant の融合
 ```
+
+A+B 融合は、通常 path の 3D tensor に対して小さく試した。
+短い単体ベンチでは `N*L=77` 程度の小さい3Dでは速く、`N*L=468` や `1872` の大きい3Dでは A/B 別kernelより遅かった。
+
+そのため、現状の fused 近道は無難さ優先で以下に制限している。
+
+```text
+x.ndim == 3
+N * L <= 128
+channel/rms/stoch/bits mode
+stats/log/auto step ではない
+```
+
+条件外では、A/B 別kernelまたは既存PyTorchルートへ fallback する。
 
 ## Triton path に入っているか確認する方法
 

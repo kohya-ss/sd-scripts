@@ -169,6 +169,7 @@ def fake_quantize_levels(
     qmax: int,
     mode: RoundMode = "det",
     use_triton: bool = False,
+    use_triton_torch_rand: bool = False,
 ) -> torch.Tensor:
     """STE fake-quantization with finite integer levels and (symmetric) clamp.
 
@@ -182,7 +183,13 @@ def fake_quantize_levels(
         s = scale.to(device=x.device, dtype=torch.float32)
 
     if use_triton and mode == "stoch" and triton_fake_quantize_levels_stoch is not None and isinstance(s, torch.Tensor):
-        q_triton = triton_fake_quantize_levels_stoch(x, scale=s, qmin=qmin, qmax=qmax)
+        q_triton = triton_fake_quantize_levels_stoch(
+            x,
+            scale=s,
+            qmin=qmin,
+            qmax=qmax,
+            use_torch_rand=use_triton_torch_rand,
+        )
         if q_triton is not None:
             return _ste_from_quantized(x, q_triton)
 
