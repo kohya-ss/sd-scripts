@@ -53,7 +53,7 @@ from library.avg_ckpt_util import (
     save_lora_state_dict,
 )
 from library.utils import setup_logging, add_logging_arguments
-from library.rounding_util import round_parameters
+from library.rounding_util import round_parameters, set_dq_triton_capture_global_step
 from accelerate.utils import broadcast
 
 setup_logging()
@@ -1003,7 +1003,8 @@ class NetworkTrainer:
                 f"step={getattr(args,'dq_delta_step',None)}, bits={getattr(args,'dq_delta_bits',None)}, "
                 f"mode={args.dq_delta_mode}, {dq_begin_info}, granularity={getattr(args,'dq_delta_granularity',None)}, "
                 f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, "
-                f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}"
+                f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
+                f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1738,6 +1739,7 @@ class NetworkTrainer:
                 range_mul=getattr(args, "dq_delta_range_mul", None),
                 on_z=getattr(args, "dq_quantize_z", False),
                 use_triton=getattr(args, "dq_delta_use_triton", False),
+                triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3171,6 +3173,7 @@ class NetworkTrainer:
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
                 current_step.value = global_step
+                set_dq_triton_capture_global_step(global_step)
                 if initial_step > 0:
                     initial_step -= 1
                     continue
@@ -3252,6 +3255,7 @@ class NetworkTrainer:
                                         range_mul=getattr(args, "dq_delta_range_mul", None),
                                         on_z=getattr(args, "dq_quantize_z", False),
                                         use_triton=getattr(args, "dq_delta_use_triton", False),
+                                        triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3684,6 +3688,7 @@ class NetworkTrainer:
                                             range_mul=range_mul_after,
                                             on_z=getattr(args, "dq_quantize_z", False),
                                             use_triton=getattr(args, "dq_delta_use_triton", False),
+                                            triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -4686,6 +4691,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_use_triton",
         action="store_true",
         help="Use optional Triton kernels for dq_delta channel RMS scale and stochastic fake-quant normal path when available",
+    )
+    parser.add_argument(
+        "--dq_delta_triton_scale_only",
+        action="store_true",
+        help="Experimental: with --dq_delta_use_triton, use Triton only for dq_delta channel RMS scale and keep fake-quant in PyTorch",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(

@@ -48,6 +48,55 @@ stochastic rounding の乱数は Triton の `tl.rand` ではなく、PyTorch の
 
 STE の `x + (q - x).detach()` は Python 側に残している。
 
+## 実験用: scale only
+
+品質差の切り分け用に `--dq_delta_triton_scale_only` を追加した。
+
+```text
+--dq_delta_use_triton --dq_delta_triton_scale_only
+```
+
+この指定では、A の channel RMS scale 計算だけを Triton にし、B の stochastic fake quant 本体は PyTorch 実装に戻す。
+
+```text
+A: compute_scale_bits(... channel/rms) -> Triton
+B: fake_quantize_levels(... stoch)    -> PyTorch
+```
+
+目的は、B の Triton 化による stochastic rounding の細かな挙動差が品質に効いているかを確認すること。速度は A+B Triton より落ちる可能性があるが、元の PyTorch path への寄り具合を調べやすい。
+
+## 実験用: fake quant入力キャプチャ
+
+実学習中の `fake_quantize_levels` 入力を保存して、PyTorch / Triton の一致確認に使える。
+
+```bat
+set DQ_TRITON_CAPTURE_DIR=D:\python\maruo-main02\lora_output\dq_capture_xl_test
+set DQ_TRITON_CAPTURE_LIMIT=16
+```
+
+序盤の呼び出しを飛ばして UNet 側を狙う場合は `DQ_TRITON_CAPTURE_SKIP` を指定する。
+これは global step ではなく、`fake_quantize_levels` の呼び出し回数を飛ばす指定。
+
+```bat
+set DQ_TRITON_CAPTURE_SKIP=200
+```
+
+学習が進んだ後半stepのテンソルを保存したい場合は、global step 条件を指定する。
+`global_step` は内部の0始まり、`global_step_1based` はログと照合しやすい1始まりの値として `.pt` に保存される。
+
+```bat
+set DQ_TRITON_CAPTURE_DIR=D:\python\maruo-main02\lora_output\dq_capture_step500
+set DQ_TRITON_CAPTURE_MIN_GLOBAL_STEP=500
+set DQ_TRITON_CAPTURE_MAX_GLOBAL_STEP=505
+set DQ_TRITON_CAPTURE_LIMIT=128
+```
+
+保存後の検証:
+
+```bat
+.\venv\Scripts\python.exe tools\check_triton_fake_quant.py --capture-dir D:\python\maruo-main02\lora_output\dq_capture_xl_test
+```
+
 ## Python 実装との対応関係
 
 Triton A は [library/rounding_util.py](../library/rounding_util.py) の `compute_scale_bits` のうち、以下の条件に対応する。
