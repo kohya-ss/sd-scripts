@@ -19,6 +19,10 @@ from library.rounding_util import (
     compute_scale_bits,
     _reduce_dims_and_shape,
 )
+try:
+    from library.triton_quant import triton_collect_fake_quant_stats
+except Exception:
+    triton_collect_fake_quant_stats = None
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -399,6 +403,8 @@ class LoRAModule(torch.nn.Module):
         delta_q_use_triton: bool = False,
         delta_q_triton_scale_only: bool = False,
         delta_q_triton_div_rn: bool = False,
+        delta_q_stats_use_forward_quant: bool = False,
+        delta_q_triton_stats: bool = False,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -458,6 +464,8 @@ class LoRAModule(torch.nn.Module):
         self.delta_q_use_triton = bool(delta_q_use_triton)
         self.delta_q_triton_scale_only = bool(delta_q_triton_scale_only)
         self.delta_q_triton_div_rn = bool(delta_q_triton_div_rn)
+        self.delta_q_stats_use_forward_quant = bool(delta_q_stats_use_forward_quant)
+        self.delta_q_triton_stats = bool(delta_q_triton_stats)
         self.dq_stats_manager: Optional[DQStatsManager] = None
         self.dq_scope = "te" if lora_name.startswith("lora_te") else "unet"
 
@@ -540,6 +548,63 @@ class LoRAModule(torch.nn.Module):
                 round_err_sumsq=round_err_sumsq,
             )
 
+    def _record_dq_stats_for_quantized(
+        self,
+        x_in: torch.Tensor,
+        quantized: torch.Tensor,
+        scale: torch.Tensor,
+        qmax: int,
+    ):
+        mgr = self.dq_stats_manager
+        if mgr is None or not mgr.active or not mgr.wants_scope(self.dq_scope):
+            return
+        if mgr.target == "z" and not self.delta_q_on_z:
+            return
+        if mgr.target == "delta" and self.delta_q_on_z:
+            return
+
+        if (
+            self.delta_q_triton_stats
+            and not mgr.collect_error_parts
+            and triton_collect_fake_quant_stats is not None
+        ):
+            with torch.no_grad():
+                stats = triton_collect_fake_quant_stats(
+                    x_in,
+                    quantized,
+                    scale=scale.to(device=x_in.device, dtype=torch.float32),
+                    qmax=qmax,
+                    collect_zero=mgr.collect_zero,
+                    collect_near_zero=mgr.collect_near_zero,
+                    collect_full=mgr.collect_full,
+                )
+            if stats is not None:
+                mgr.add_stats(
+                    scope=self.dq_scope,
+                    module_name=self.lora_name,
+                    shape=str(tuple(x_in.shape)),
+                    numel=stats["numel"],
+                    clip_count=stats["clip_count"],
+                    zero_count=stats["zero_count"],
+                    near_zero_count=stats["near_zero_count"],
+                    sumsq=stats["sumsq"],
+                    xq_sumsq=stats["xq_sumsq"],
+                    xxq_sum=stats["xxq_sum"],
+                    absmax=stats["absmax"],
+                    scale_min=stats["scale_min"],
+                    scale_max=stats["scale_max"],
+                    scale_sum=stats["scale_sum"],
+                    scale_count=stats["scale_count"],
+                    clip_err_sumsq=None,
+                    round_err_sumsq=None,
+                )
+                return
+
+        with torch.no_grad():
+            s = scale.to(device=x_in.device, dtype=torch.float32)
+            q_clamp = torch.clamp(x_in.to(torch.float32) / s, -qmax, qmax)
+        self._record_dq_stats(x_in, quantized, q_clamp, s, qmax)
+
     def forward(self, x):
         org_forwarded = self.org_forward(x)
 
@@ -584,10 +649,22 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                             use_triton=self.delta_q_use_triton,
                         )
-                    lx, q_clamp, scale_t = _fake_quantize_levels_with_q(
-                        x_in, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
-                    )
-                    self._record_dq_stats(x_in, lx, q_clamp, scale_t, qmax)
+                    if self.delta_q_stats_use_forward_quant or self.delta_q_triton_stats:
+                        lx = fake_quantize_levels(
+                            x_in,
+                            scale=z_scale,
+                            qmin=-qmax,
+                            qmax=qmax,
+                            mode=self.delta_q_mode,
+                            use_triton=self.delta_q_use_triton and not self.delta_q_triton_scale_only,
+                            triton_div_rn=self.delta_q_triton_div_rn,
+                        )
+                        self._record_dq_stats_for_quantized(x_in, lx, z_scale, qmax)
+                    else:
+                        lx, q_clamp, scale_t = _fake_quantize_levels_with_q(
+                            x_in, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                        )
+                        self._record_dq_stats(x_in, lx, q_clamp, scale_t, qmax)
                 else:
                     with torch.no_grad():
                         z_scale = compute_scale_bits(
@@ -641,10 +718,22 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                             use_triton=self.delta_q_use_triton,
                         )
-                    delta, q_clamp, scale_t = _fake_quantize_levels_with_q(
-                        x_in, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
-                    )
-                    self._record_dq_stats(x_in, delta, q_clamp, scale_t, qmax)
+                    if self.delta_q_stats_use_forward_quant or self.delta_q_triton_stats:
+                        delta = fake_quantize_levels(
+                            x_in,
+                            scale=d_scale,
+                            qmin=-qmax,
+                            qmax=qmax,
+                            mode=self.delta_q_mode,
+                            use_triton=self.delta_q_use_triton and not self.delta_q_triton_scale_only,
+                            triton_div_rn=self.delta_q_triton_div_rn,
+                        )
+                        self._record_dq_stats_for_quantized(x_in, delta, d_scale, qmax)
+                    else:
+                        delta, q_clamp, scale_t = _fake_quantize_levels_with_q(
+                            x_in, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                        )
+                        self._record_dq_stats(x_in, delta, q_clamp, scale_t, qmax)
                 else:
                     with torch.no_grad():
                         d_scale = compute_scale_bits(
@@ -1468,6 +1557,8 @@ class LoRANetwork(torch.nn.Module):
         delta_q_use_triton: bool = False,
         delta_q_triton_scale_only: bool = False,
         delta_q_triton_div_rn: bool = False,
+        delta_q_stats_use_forward_quant: bool = False,
+        delta_q_triton_stats: bool = False,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -1498,6 +1589,8 @@ class LoRANetwork(torch.nn.Module):
         self.delta_q_use_triton = bool(delta_q_use_triton)
         self.delta_q_triton_scale_only = bool(delta_q_triton_scale_only)
         self.delta_q_triton_div_rn = bool(delta_q_triton_div_rn)
+        self.delta_q_stats_use_forward_quant = bool(delta_q_stats_use_forward_quant)
+        self.delta_q_triton_stats = bool(delta_q_triton_stats)
         self.dq_stats_manager = DQStatsManager()
 
         self.loraplus_lr_ratio = None
@@ -1606,6 +1699,8 @@ class LoRANetwork(torch.nn.Module):
                                 delta_q_use_triton=self.delta_q_use_triton,
                                 delta_q_triton_scale_only=self.delta_q_triton_scale_only,
                                 delta_q_triton_div_rn=self.delta_q_triton_div_rn,
+                                delta_q_stats_use_forward_quant=self.delta_q_stats_use_forward_quant,
+                                delta_q_triton_stats=self.delta_q_triton_stats,
                             )
                             lora.dq_stats_manager = self.dq_stats_manager
                             loras.append(lora)
@@ -1679,6 +1774,8 @@ class LoRANetwork(torch.nn.Module):
         use_triton: Optional[bool] = None,
         triton_scale_only: Optional[bool] = None,
         triton_div_rn: Optional[bool] = None,
+        stats_use_forward_quant: Optional[bool] = None,
+        triton_stats: Optional[bool] = None,
     ):
         self.delta_q_step = step
         self.delta_q_mode = mode
@@ -1698,6 +1795,10 @@ class LoRANetwork(torch.nn.Module):
             self.delta_q_triton_scale_only = bool(triton_scale_only)
         if triton_div_rn is not None:
             self.delta_q_triton_div_rn = bool(triton_div_rn)
+        if stats_use_forward_quant is not None:
+            self.delta_q_stats_use_forward_quant = bool(stats_use_forward_quant)
+        if triton_stats is not None:
+            self.delta_q_triton_stats = bool(triton_stats)
         for l in self.text_encoder_loras + self.unet_loras:
             l.delta_q_step = step
             l.delta_q_mode = mode
@@ -1717,6 +1818,10 @@ class LoRANetwork(torch.nn.Module):
                 l.delta_q_triton_scale_only = bool(triton_scale_only)
             if triton_div_rn is not None:
                 l.delta_q_triton_div_rn = bool(triton_div_rn)
+            if stats_use_forward_quant is not None:
+                l.delta_q_stats_use_forward_quant = bool(stats_use_forward_quant)
+            if triton_stats is not None:
+                l.delta_q_triton_stats = bool(triton_stats)
 
     def set_delta_quant_enabled(self, enabled: bool):
         for l in self.text_encoder_loras + self.unet_loras:

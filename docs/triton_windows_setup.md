@@ -137,20 +137,19 @@ xl05:
 
 ## log / auto step
 
-現時点では、log / auto 用 stats 収集は PyTorch 実装のまま。
-
-今後の候補:
+log / auto step の経路差を切り分けるため、以下の実験オプションを追加した。
 
 ```text
-Phase 1:
-  fake quant は現状維持
-  stats reduction だけ Triton 化
-
-Phase 2:
-  log/auto step 専用に fake quant + stats reduction を Triton 化
+--dq_delta_stats_use_forward_quant
 ```
 
-`--dq_delta_log_error_parts` は重い調査用ログなので、Triton stats 実装では当面非対応にし、指定時は PyTorch stats path に fallback する方針。
+この指定では、stats が有効な step でも、学習 forward に使う fake quant 出力を通常 step と同じ `fake_quantize_levels(...)` で作る。`--dq_delta_use_triton` が有効なら B も Triton path になる。stats の集計自体は PyTorch のまま。
+
+```text
+--dq_delta_triton_stats
+```
+
+この指定では、上記に加えて、対応できる場合だけ stats reduction も Triton で集計する。`--dq_delta_log_error_parts` が有効な場合や、テンソル条件が合わない場合は PyTorch stats path に fallback する。
 
 ## 実測メモ
 
