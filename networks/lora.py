@@ -398,6 +398,7 @@ class LoRAModule(torch.nn.Module):
         delta_q_on_z: bool = False,
         delta_q_use_triton: bool = False,
         delta_q_triton_scale_only: bool = False,
+        delta_q_triton_div_rn: bool = False,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -456,6 +457,7 @@ class LoRAModule(torch.nn.Module):
         self.delta_q_on_z = bool(delta_q_on_z)
         self.delta_q_use_triton = bool(delta_q_use_triton)
         self.delta_q_triton_scale_only = bool(delta_q_triton_scale_only)
+        self.delta_q_triton_div_rn = bool(delta_q_triton_div_rn)
         self.dq_stats_manager: Optional[DQStatsManager] = None
         self.dq_scope = "te" if lora_name.startswith("lora_te") else "unet"
 
@@ -603,6 +605,7 @@ class LoRAModule(torch.nn.Module):
                         qmax=qmax,
                         mode=self.delta_q_mode,
                         use_triton=self.delta_q_use_triton and not self.delta_q_triton_scale_only,
+                        triton_div_rn=self.delta_q_triton_div_rn,
                     )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
@@ -659,6 +662,7 @@ class LoRAModule(torch.nn.Module):
                         qmax=qmax,
                         mode=self.delta_q_mode,
                         use_triton=self.delta_q_use_triton and not self.delta_q_triton_scale_only,
+                        triton_div_rn=self.delta_q_triton_div_rn,
                     )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
@@ -1463,6 +1467,7 @@ class LoRANetwork(torch.nn.Module):
         delta_q_on_z: bool = False,
         delta_q_use_triton: bool = False,
         delta_q_triton_scale_only: bool = False,
+        delta_q_triton_div_rn: bool = False,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -1492,6 +1497,7 @@ class LoRANetwork(torch.nn.Module):
         self.delta_q_on_z = bool(delta_q_on_z)
         self.delta_q_use_triton = bool(delta_q_use_triton)
         self.delta_q_triton_scale_only = bool(delta_q_triton_scale_only)
+        self.delta_q_triton_div_rn = bool(delta_q_triton_div_rn)
         self.dq_stats_manager = DQStatsManager()
 
         self.loraplus_lr_ratio = None
@@ -1599,6 +1605,7 @@ class LoRANetwork(torch.nn.Module):
                                 delta_q_on_z=self.delta_q_on_z,
                                 delta_q_use_triton=self.delta_q_use_triton,
                                 delta_q_triton_scale_only=self.delta_q_triton_scale_only,
+                                delta_q_triton_div_rn=self.delta_q_triton_div_rn,
                             )
                             lora.dq_stats_manager = self.dq_stats_manager
                             loras.append(lora)
@@ -1671,6 +1678,7 @@ class LoRANetwork(torch.nn.Module):
         on_z: Optional[bool] = None,
         use_triton: Optional[bool] = None,
         triton_scale_only: Optional[bool] = None,
+        triton_div_rn: Optional[bool] = None,
     ):
         self.delta_q_step = step
         self.delta_q_mode = mode
@@ -1688,6 +1696,8 @@ class LoRANetwork(torch.nn.Module):
             self.delta_q_use_triton = bool(use_triton)
         if triton_scale_only is not None:
             self.delta_q_triton_scale_only = bool(triton_scale_only)
+        if triton_div_rn is not None:
+            self.delta_q_triton_div_rn = bool(triton_div_rn)
         for l in self.text_encoder_loras + self.unet_loras:
             l.delta_q_step = step
             l.delta_q_mode = mode
@@ -1705,6 +1715,8 @@ class LoRANetwork(torch.nn.Module):
                 l.delta_q_use_triton = bool(use_triton)
             if triton_scale_only is not None:
                 l.delta_q_triton_scale_only = bool(triton_scale_only)
+            if triton_div_rn is not None:
+                l.delta_q_triton_div_rn = bool(triton_div_rn)
 
     def set_delta_quant_enabled(self, enabled: bool):
         for l in self.text_encoder_loras + self.unet_loras:

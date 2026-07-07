@@ -1632,6 +1632,7 @@ def build_chart_payload(
     if dq_data:
         rows = dq_data.get("rows", [])
         auto_rows = dq_data.get("auto_rows", [])
+        auto_has_qerr_per_clip = any(item.get("QErrPerClip") is not None for item in auto_rows)
         x = [item.get("TrainStep") for item in rows]
         markers = list(dq_data.get("markers", []))
         dq_summary = dq_data.get("summary", {})
@@ -1768,7 +1769,7 @@ def build_chart_payload(
             },
         ]
 
-        qerr_chart_rows = rows if has_series_value("QErrPerClip") else auto_rows
+        qerr_chart_rows = auto_rows if auto_has_qerr_per_clip else rows
         qerr_chart_x = [item.get("TrainStep") for item in qerr_chart_rows]
         if has_source_series_value(qerr_chart_rows, "QErrPerClip"):
             run_qerr_threshold = dq_summary.get("run_qerr_per_clip_threshold") or DQ_LOW_QERR_PER_CLIP_THRESHOLD
@@ -1791,7 +1792,7 @@ def build_chart_payload(
                 {
                     "id": "dq_qerr_per_clip",
                     "title": "QErrPerClip",
-                    "subtitle": "QErrPerClip = QuantErrRatioEMA / max(ClipRateEMA, floor).",
+                    "subtitle": "QErrPerClip = auto quant-error EMA / max(ClipRateEMA, floor).",
                     "x_label": "TrainStep",
                     "markers": markers,
                     "x": qerr_chart_x,

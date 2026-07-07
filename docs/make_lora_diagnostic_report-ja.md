@@ -122,7 +122,6 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `ClipRateRaw`, `ClipRateEMA`
 - `QuantErrRatioRaw`, `QuantErrRatioEMA`
 - `QuantErrRMSRaw`, `QuantErrRMSEMA`
-- `QErrPerClip`, `QErrPerClipClipFloor`
 - `ActiveClipBand`, `ActiveClipLow`, `ActiveClipHigh`
 - `ClipRateLowAutoState`, `ClipRateLowAutoBad`, `ClipRateLowAutoBadStreak`
 - `TrainProgress`
@@ -319,7 +318,7 @@ DQ logsに `ActiveClipBand=low` または `ClipRateLowAuto*` 列がある場合�
 
 ### `charts` セクション
 
-DQ logsに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）、`clip_rate_low_auto Bad / Streak`、`ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。
+DQ autoログに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）を追加します。古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使用します。DQ logsに該当列がある場合は、`clip_rate_low_auto Bad / Streak`、`ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。
 `TrainProgress` と low_auto progress閾値がある場合は、min_progress / freeze_progress の位置をDQグラフの縦線マーカーに追加します。
 
 | JSONパス | 情報源 | 内容の概説 |

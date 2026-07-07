@@ -137,6 +137,38 @@ class MutationResult:
 
 
 @dataclass
+class CompareStats:
+    equal: bool
+    mismatches: int
+    max_abs_diff: float
+    fixed_tri_gt_ref: int
+    fixed_tri_lt_ref: int
+    signed_sum: float
+    signed_mean_all: float
+    signed_mean_mismatch: float
+    mean_abs_out_diff: float
+    mse_out_diff: float
+    ref_quant_noise_l1: float
+    ref_quant_noise_mse: float
+    extra_l1_ratio: float
+    extra_mse_ratio: float
+    floor_diff_count: int
+    compare_diff_count: int
+    clamp_diff_count: int
+    quant_index_diff_count: int
+    same_index_value_diff_count: int
+    unclassified_mismatch_count: int
+    saturation_ref_count: int
+    saturation_tri_count: int
+    rand_margin_min: float
+    rand_margin_median: float
+    rand_margin_mean: float
+    integer_boundary_min: float
+    integer_boundary_median: float
+    integer_boundary_mean: float
+
+
+@dataclass
 class CaptureResult:
     path: str
     global_step: str
@@ -149,14 +181,8 @@ class CaptureResult:
     scale_stride: str
     x_contig: bool
     scale_contig: bool
-    fixed_equal: bool
-    fixed_mismatches: int
-    fixed_max_abs_diff: float
-    fixed_tri_gt_ref: int
-    fixed_tri_lt_ref: int
-    fixed_signed_sum: float
-    fixed_signed_mean_all: float
-    fixed_signed_mean_mismatch: float
+    fixed_default: CompareStats
+    fixed_divrn: CompareStats
     rng_after_equal: bool
     production_equal: bool
     production_mismatches: int
@@ -166,14 +192,8 @@ class CaptureResult:
     out_aliases_x: bool
     version_before: int
     version_after: int
-    e2e_equal: bool
-    e2e_mismatches: int
-    e2e_max_abs_diff: float
-    e2e_tri_gt_ref: int
-    e2e_tri_lt_ref: int
-    e2e_signed_sum: float
-    e2e_signed_mean_all: float
-    e2e_signed_mean_mismatch: float
+    e2e_default: CompareStats
+    e2e_divrn: CompareStats
     e2e_scale_max_rel_diff: float
 
 
@@ -582,6 +602,154 @@ def _signed_diff_stats(ref: torch.Tensor, tri: torch.Tensor) -> tuple[int, int, 
     return tri_gt_ref, tri_lt_ref, signed_sum, signed_mean_all, signed_mean_mismatch
 
 
+def _broadcast_scale(scale: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    if scale.numel() == 1:
+        return scale.reshape([1] * x.ndim)
+    return scale
+
+
+def _masked_stat(values: torch.Tensor, mask: torch.Tensor) -> tuple[float, float, float]:
+    selected = values[mask]
+    if selected.numel() == 0:
+        return 0.0, 0.0, 0.0
+    return (
+        float(selected.min().item()),
+        float(selected.median().item()),
+        float(selected.mean().item()),
+    )
+
+
+def _compare_quant_outputs(
+    *,
+    x: torch.Tensor,
+    scale_ref: torch.Tensor,
+    scale_tri: torch.Tensor,
+    qmin: int,
+    qmax: int,
+    rand: torch.Tensor,
+    ref: torch.Tensor,
+    tri: torch.Tensor,
+) -> CompareStats:
+    ref_f = ref.to(torch.float32)
+    tri_f = tri.to(torch.float32)
+    x_f = x.to(torch.float32)
+    signed = tri_f - ref_f
+    abs_diff = signed.abs()
+    mismatch = ref != tri
+    mismatches = int(mismatch.sum().item())
+    tri_gt_ref = int((signed > 0).sum().item())
+    tri_lt_ref = int((signed < 0).sum().item())
+    signed_sum = float(signed.sum().item())
+    signed_mean_all = float(signed.mean().item())
+    signed_mean_mismatch = float(signed[mismatch].mean().item()) if mismatches > 0 else 0.0
+
+    ref_noise = ref_f - x_f
+    ref_noise_abs = ref_noise.abs()
+    ref_noise_sq = ref_noise * ref_noise
+    out_diff_sq = signed * signed
+    mean_abs_out_diff = float(abs_diff.mean().item())
+    mse_out_diff = float(out_diff_sq.mean().item())
+    ref_quant_noise_l1 = float(ref_noise_abs.mean().item())
+    ref_quant_noise_mse = float(ref_noise_sq.mean().item())
+    eps = 1e-30
+    extra_l1_ratio = mean_abs_out_diff / max(ref_quant_noise_l1, eps)
+    extra_mse_ratio = mse_out_diff / max(ref_quant_noise_mse, eps)
+
+    scale_ref_b = _broadcast_scale(scale_ref.to(device=x.device, dtype=torch.float32), x)
+    scale_tri_b = _broadcast_scale(scale_tri.to(device=x.device, dtype=torch.float32), x)
+    y_ref = x_f / scale_ref_b
+    y_tri = x_f / scale_tri_b
+    floor_ref = torch.floor(y_ref)
+    floor_tri = torch.floor(y_tri)
+    probs_ref = (y_ref - floor_ref).clamp(0.0, 1.0)
+    probs_tri = (y_tri - floor_tri).clamp(0.0, 1.0)
+    incr_ref = rand < probs_ref
+    incr_tri = rand < probs_tri
+    q_ref_raw = floor_ref + incr_ref.to(torch.float32)
+    q_tri_raw = floor_tri + incr_tri.to(torch.float32)
+    q_ref = torch.clamp(q_ref_raw, qmin, qmax)
+    q_tri = torch.clamp(q_tri_raw, qmin, qmax)
+    q_index_ref_from_out = torch.round(ref_f / scale_ref_b)
+    q_index_tri_from_out = torch.round(tri_f / scale_tri_b)
+    quant_index_diff = (q_index_ref_from_out != q_index_tri_from_out) & mismatch
+    same_index_value_diff = (q_index_ref_from_out == q_index_tri_from_out) & mismatch
+    clamp_diff = (q_ref != q_tri) & mismatch
+    floor_diff = (floor_ref != floor_tri) & mismatch
+    compare_diff = (floor_ref == floor_tri) & (incr_ref != incr_tri) & mismatch
+    classified = floor_diff | compare_diff | clamp_diff | quant_index_diff | same_index_value_diff
+    saturation_ref = (q_ref_raw < qmin) | (q_ref_raw > qmax)
+    saturation_tri = (q_tri_raw < qmin) | (q_tri_raw > qmax)
+    rand_margin = (rand - probs_ref).abs()
+    frac_ref = y_ref - floor_ref
+    integer_boundary_distance = torch.minimum(frac_ref.abs(), (1.0 - frac_ref).abs())
+    rand_min, rand_median, rand_mean = _masked_stat(rand_margin, mismatch)
+    boundary_min, boundary_median, boundary_mean = _masked_stat(integer_boundary_distance, mismatch)
+
+    return CompareStats(
+        equal=bool(torch.equal(ref, tri)),
+        mismatches=mismatches,
+        max_abs_diff=float(abs_diff.max().item()),
+        fixed_tri_gt_ref=tri_gt_ref,
+        fixed_tri_lt_ref=tri_lt_ref,
+        signed_sum=signed_sum,
+        signed_mean_all=signed_mean_all,
+        signed_mean_mismatch=signed_mean_mismatch,
+        mean_abs_out_diff=mean_abs_out_diff,
+        mse_out_diff=mse_out_diff,
+        ref_quant_noise_l1=ref_quant_noise_l1,
+        ref_quant_noise_mse=ref_quant_noise_mse,
+        extra_l1_ratio=extra_l1_ratio,
+        extra_mse_ratio=extra_mse_ratio,
+        floor_diff_count=int(floor_diff.sum().item()),
+        compare_diff_count=int(compare_diff.sum().item()),
+        clamp_diff_count=int(clamp_diff.sum().item()),
+        quant_index_diff_count=int(quant_index_diff.sum().item()),
+        same_index_value_diff_count=int(same_index_value_diff.sum().item()),
+        unclassified_mismatch_count=int((mismatch & ~classified).sum().item()),
+        saturation_ref_count=int(saturation_ref.sum().item()),
+        saturation_tri_count=int(saturation_tri.sum().item()),
+        rand_margin_min=rand_min,
+        rand_margin_median=rand_median,
+        rand_margin_mean=rand_mean,
+        integer_boundary_min=boundary_min,
+        integer_boundary_median=boundary_median,
+        integer_boundary_mean=boundary_mean,
+    )
+
+
+def _empty_compare_stats() -> CompareStats:
+    return CompareStats(
+        equal=False,
+        mismatches=-1,
+        max_abs_diff=float("nan"),
+        fixed_tri_gt_ref=0,
+        fixed_tri_lt_ref=0,
+        signed_sum=float("nan"),
+        signed_mean_all=float("nan"),
+        signed_mean_mismatch=float("nan"),
+        mean_abs_out_diff=float("nan"),
+        mse_out_diff=float("nan"),
+        ref_quant_noise_l1=float("nan"),
+        ref_quant_noise_mse=float("nan"),
+        extra_l1_ratio=float("nan"),
+        extra_mse_ratio=float("nan"),
+        floor_diff_count=0,
+        compare_diff_count=0,
+        clamp_diff_count=0,
+        quant_index_diff_count=0,
+        same_index_value_diff_count=0,
+        unclassified_mismatch_count=0,
+        saturation_ref_count=0,
+        saturation_tri_count=0,
+        rand_margin_min=float("nan"),
+        rand_margin_median=float("nan"),
+        rand_margin_mean=float("nan"),
+        integer_boundary_min=float("nan"),
+        integer_boundary_median=float("nan"),
+        integer_boundary_mean=float("nan"),
+    )
+
+
 def _capture_case(path: Path) -> CaptureResult:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     x_cpu = payload["x"]
@@ -591,29 +759,33 @@ def _capture_case(path: Path) -> CaptureResult:
     qmin = int(payload["qmin"])
     qmax = int(payload["qmax"])
 
-    fixed_equal = False
-    fixed_mismatches = -1
-    fixed_max_abs_diff = float("nan")
-    fixed_tri_gt_ref = 0
-    fixed_tri_lt_ref = 0
-    fixed_signed_sum = float("nan")
-    fixed_signed_mean_all = float("nan")
-    fixed_signed_mean_mismatch = float("nan")
+    fixed_default = _empty_compare_stats()
+    fixed_divrn = _empty_compare_stats()
     if x.is_contiguous() and scale.is_contiguous() and x.ndim in (2, 3, 4):
         rand = torch.rand(x.shape, device="cuda", dtype=torch.float32).contiguous()
         ref = ref_fake_quant_stoch_with_rand(x, scale, qmin, qmax, rand)
-        tri = debug_triton_fake_quant(x, scale, qmin, qmax, rand, use_div_rn=False)
-        diff = (ref.to(torch.float32) - tri.to(torch.float32)).abs()
-        fixed_equal = bool(torch.equal(ref, tri))
-        fixed_mismatches = int((ref != tri).sum().item())
-        fixed_max_abs_diff = float(diff.max().item())
-        (
-            fixed_tri_gt_ref,
-            fixed_tri_lt_ref,
-            fixed_signed_sum,
-            fixed_signed_mean_all,
-            fixed_signed_mean_mismatch,
-        ) = _signed_diff_stats(ref, tri)
+        tri_default = debug_triton_fake_quant(x, scale, qmin, qmax, rand, use_div_rn=False)
+        tri_divrn = debug_triton_fake_quant(x, scale, qmin, qmax, rand, use_div_rn=True)
+        fixed_default = _compare_quant_outputs(
+            x=x,
+            scale_ref=scale,
+            scale_tri=scale,
+            qmin=qmin,
+            qmax=qmax,
+            rand=rand,
+            ref=ref,
+            tri=tri_default,
+        )
+        fixed_divrn = _compare_quant_outputs(
+            x=x,
+            scale_ref=scale,
+            scale_tri=scale,
+            qmin=qmin,
+            qmax=qmax,
+            rand=rand,
+            ref=ref,
+            tri=tri_divrn,
+        )
 
     rng_after_equal, production_equal, production_mismatches, production_max_abs_diff = _production_compare_existing(
         x, scale, qmin, qmax
@@ -644,15 +816,28 @@ def _capture_case(path: Path) -> CaptureResult:
     )
     rand = torch.rand(x.shape, device="cuda", dtype=torch.float32).contiguous()
     e2e_ref = ref_fake_quant_stoch_with_rand(x, scale_ref, qmin, qmax, rand)
-    e2e_tri = debug_triton_fake_quant(x, scale_tri, qmin, qmax, rand, use_div_rn=False)
-    e2e_diff = (e2e_ref.to(torch.float32) - e2e_tri.to(torch.float32)).abs()
-    (
-        e2e_tri_gt_ref,
-        e2e_tri_lt_ref,
-        e2e_signed_sum,
-        e2e_signed_mean_all,
-        e2e_signed_mean_mismatch,
-    ) = _signed_diff_stats(e2e_ref, e2e_tri)
+    e2e_tri_default = debug_triton_fake_quant(x, scale_tri, qmin, qmax, rand, use_div_rn=False)
+    e2e_tri_divrn = debug_triton_fake_quant(x, scale_tri, qmin, qmax, rand, use_div_rn=True)
+    e2e_default = _compare_quant_outputs(
+        x=x,
+        scale_ref=scale_ref,
+        scale_tri=scale_tri,
+        qmin=qmin,
+        qmax=qmax,
+        rand=rand,
+        ref=e2e_ref,
+        tri=e2e_tri_default,
+    )
+    e2e_divrn = _compare_quant_outputs(
+        x=x,
+        scale_ref=scale_ref,
+        scale_tri=scale_tri,
+        qmin=qmin,
+        qmax=qmax,
+        rand=rand,
+        ref=e2e_ref,
+        tri=e2e_tri_divrn,
+    )
     e2e_scale_diff = (scale_ref.to(torch.float32) - scale_tri.to(torch.float32)).abs()
     e2e_scale_rel = e2e_scale_diff / scale_ref.to(torch.float32).abs().clamp_min(1e-30)
     return CaptureResult(
@@ -667,14 +852,8 @@ def _capture_case(path: Path) -> CaptureResult:
         scale_stride=str(tuple(scale.stride())),
         x_contig=bool(x.is_contiguous()),
         scale_contig=bool(scale.is_contiguous()),
-        fixed_equal=fixed_equal,
-        fixed_mismatches=fixed_mismatches,
-        fixed_max_abs_diff=fixed_max_abs_diff,
-        fixed_tri_gt_ref=fixed_tri_gt_ref,
-        fixed_tri_lt_ref=fixed_tri_lt_ref,
-        fixed_signed_sum=fixed_signed_sum,
-        fixed_signed_mean_all=fixed_signed_mean_all,
-        fixed_signed_mean_mismatch=fixed_signed_mean_mismatch,
+        fixed_default=fixed_default,
+        fixed_divrn=fixed_divrn,
         rng_after_equal=rng_after_equal,
         production_equal=production_equal,
         production_mismatches=production_mismatches,
@@ -684,14 +863,8 @@ def _capture_case(path: Path) -> CaptureResult:
         out_aliases_x=mutation.out_aliases_x,
         version_before=mutation.version_before,
         version_after=mutation.version_after,
-        e2e_equal=bool(torch.equal(e2e_ref, e2e_tri)),
-        e2e_mismatches=int((e2e_ref != e2e_tri).sum().item()),
-        e2e_max_abs_diff=float(e2e_diff.max().item()),
-        e2e_tri_gt_ref=e2e_tri_gt_ref,
-        e2e_tri_lt_ref=e2e_tri_lt_ref,
-        e2e_signed_sum=e2e_signed_sum,
-        e2e_signed_mean_all=e2e_signed_mean_all,
-        e2e_signed_mean_mismatch=e2e_signed_mean_mismatch,
+        e2e_default=e2e_default,
+        e2e_divrn=e2e_divrn,
         e2e_scale_max_rel_diff=float(e2e_scale_rel.max().item()),
     )
 
@@ -843,26 +1016,18 @@ def print_end_to_end_results(results: Iterable[EndToEndResult]) -> int:
 
 def print_capture_results(results: Iterable[CaptureResult]) -> int:
     failures = 0
-    fixed_total_mismatches = 0
-    fixed_total_tri_gt_ref = 0
-    fixed_total_tri_lt_ref = 0
-    fixed_total_signed_sum = 0.0
-    fixed_total_elements = 0
-    e2e_total_mismatches = 0
-    e2e_total_tri_gt_ref = 0
-    e2e_total_tri_lt_ref = 0
-    e2e_total_signed_sum = 0.0
-    e2e_total_elements = 0
+    totals: dict[str, dict[str, float]] = {}
     print("captured training tensor comparison")
     print(
         "path,global_step,global_step_1based,capture_seen,dtype,shape,stride,scale_shape,scale_stride,x_contig,scale_contig,"
-        "fixed_equal,fixed_mismatches,fixed_max_abs_diff,"
-        "fixed_tri_gt_ref,fixed_tri_lt_ref,fixed_signed_sum,fixed_signed_mean_all,fixed_signed_mean_mismatch,"
         "rng_after_equal,production_equal,production_mismatches,production_max_abs_diff,"
         "x_mutated,x_mutation_max_abs_diff,out_aliases_x,version_before,version_after,"
-        "e2e_equal,e2e_mismatches,e2e_max_abs_diff,"
-        "e2e_tri_gt_ref,e2e_tri_lt_ref,e2e_signed_sum,e2e_signed_mean_all,e2e_signed_mean_mismatch,"
-        "e2e_scale_max_rel_diff"
+        "kind,div,equal,mismatches,max_abs_diff,tri_gt_ref,tri_lt_ref,signed_sum,signed_mean_all,signed_mean_mismatch,"
+        "mean_abs_out_diff,mse_out_diff,ref_quant_noise_l1,ref_quant_noise_mse,extra_l1_ratio,extra_mse_ratio,"
+        "floor_diff_count,compare_diff_count,clamp_diff_count,quant_index_diff_count,same_index_value_diff_count,"
+        "unclassified_mismatch_count,saturation_ref_count,saturation_tri_count,"
+        "rand_margin_min,rand_margin_median,rand_margin_mean,"
+        "integer_boundary_min,integer_boundary_median,integer_boundary_mean,e2e_scale_max_rel_diff"
     )
     count = 0
     for r in results:
@@ -874,57 +1039,116 @@ def print_capture_results(results: Iterable[CaptureResult]) -> int:
                 numel *= dim
         except Exception:
             numel = 0
-        fixed_total_mismatches += max(0, r.fixed_mismatches)
-        fixed_total_tri_gt_ref += r.fixed_tri_gt_ref
-        fixed_total_tri_lt_ref += r.fixed_tri_lt_ref
-        if r.fixed_signed_sum == r.fixed_signed_sum:
-            fixed_total_signed_sum += r.fixed_signed_sum
-        fixed_total_elements += numel
-        e2e_total_mismatches += max(0, r.e2e_mismatches)
-        e2e_total_tri_gt_ref += r.e2e_tri_gt_ref
-        e2e_total_tri_lt_ref += r.e2e_tri_lt_ref
-        if r.e2e_signed_sum == r.e2e_signed_sum:
-            e2e_total_signed_sum += r.e2e_signed_sum
-        e2e_total_elements += numel
-        if not (r.fixed_equal and r.rng_after_equal and r.production_equal and not r.x_mutated and not r.out_aliases_x):
+        if not (r.fixed_default.equal and r.rng_after_equal and r.production_equal and not r.x_mutated and not r.out_aliases_x):
             failures += 1
-        print(
-            f"{r.path},{r.global_step},{r.global_step_1based},{r.capture_seen},"
-            f"{r.dtype},{r.shape},{r.stride},{r.scale_shape},{r.scale_stride},"
-            f"{r.x_contig},{r.scale_contig},"
-            f"{r.fixed_equal},{r.fixed_mismatches},{r.fixed_max_abs_diff:.9g},"
-            f"{r.fixed_tri_gt_ref},{r.fixed_tri_lt_ref},{r.fixed_signed_sum:.9g},"
-            f"{r.fixed_signed_mean_all:.9g},{r.fixed_signed_mean_mismatch:.9g},"
-            f"{r.rng_after_equal},{r.production_equal},{r.production_mismatches},{r.production_max_abs_diff:.9g},"
-            f"{r.x_mutated},{r.x_mutation_max_abs_diff:.9g},{r.out_aliases_x},{r.version_before},{r.version_after},"
-            f"{r.e2e_equal},{r.e2e_mismatches},{r.e2e_max_abs_diff:.9g},"
-            f"{r.e2e_tri_gt_ref},{r.e2e_tri_lt_ref},{r.e2e_signed_sum:.9g},"
-            f"{r.e2e_signed_mean_all:.9g},{r.e2e_signed_mean_mismatch:.9g},"
-            f"{r.e2e_scale_max_rel_diff:.9g}"
-        )
+        rows = [
+            ("fixed", "default", r.fixed_default, 0.0),
+            ("fixed", "div_rn", r.fixed_divrn, 0.0),
+            ("e2e", "default", r.e2e_default, r.e2e_scale_max_rel_diff),
+            ("e2e", "div_rn", r.e2e_divrn, r.e2e_scale_max_rel_diff),
+        ]
+        for kind, div, stats, scale_rel in rows:
+            key = f"{kind}_{div}"
+            total = totals.setdefault(
+                key,
+                {
+                    "count": 0,
+                    "elements": 0,
+                    "mismatches": 0,
+                    "tri_gt_ref": 0,
+                    "tri_lt_ref": 0,
+                    "signed_sum": 0.0,
+                    "abs_sum": 0.0,
+                    "sq_sum": 0.0,
+                    "ref_noise_abs_sum": 0.0,
+                    "ref_noise_sq_sum": 0.0,
+                    "floor_diff": 0,
+                    "compare_diff": 0,
+                    "clamp_diff": 0,
+                    "quant_index_diff": 0,
+                    "same_index_value_diff": 0,
+                    "unclassified_mismatch": 0,
+                    "saturation_ref": 0,
+                    "saturation_tri": 0,
+                },
+            )
+            total["count"] += 1
+            total["elements"] += numel
+            total["mismatches"] += max(0, stats.mismatches)
+            total["tri_gt_ref"] += stats.fixed_tri_gt_ref
+            total["tri_lt_ref"] += stats.fixed_tri_lt_ref
+            if stats.signed_sum == stats.signed_sum:
+                total["signed_sum"] += stats.signed_sum
+            if stats.mean_abs_out_diff == stats.mean_abs_out_diff:
+                total["abs_sum"] += stats.mean_abs_out_diff * numel
+            if stats.mse_out_diff == stats.mse_out_diff:
+                total["sq_sum"] += stats.mse_out_diff * numel
+            if stats.ref_quant_noise_l1 == stats.ref_quant_noise_l1:
+                total["ref_noise_abs_sum"] += stats.ref_quant_noise_l1 * numel
+            if stats.ref_quant_noise_mse == stats.ref_quant_noise_mse:
+                total["ref_noise_sq_sum"] += stats.ref_quant_noise_mse * numel
+            total["floor_diff"] += stats.floor_diff_count
+            total["compare_diff"] += stats.compare_diff_count
+            total["clamp_diff"] += stats.clamp_diff_count
+            total["quant_index_diff"] += stats.quant_index_diff_count
+            total["same_index_value_diff"] += stats.same_index_value_diff_count
+            total["unclassified_mismatch"] += stats.unclassified_mismatch_count
+            total["saturation_ref"] += stats.saturation_ref_count
+            total["saturation_tri"] += stats.saturation_tri_count
+            print(
+                f"{r.path},{r.global_step},{r.global_step_1based},{r.capture_seen},"
+                f"{r.dtype},{r.shape},{r.stride},{r.scale_shape},{r.scale_stride},"
+                f"{r.x_contig},{r.scale_contig},"
+                f"{r.rng_after_equal},{r.production_equal},{r.production_mismatches},{r.production_max_abs_diff:.9g},"
+                f"{r.x_mutated},{r.x_mutation_max_abs_diff:.9g},{r.out_aliases_x},{r.version_before},{r.version_after},"
+                f"{kind},{div},{stats.equal},{stats.mismatches},{stats.max_abs_diff:.9g},"
+                f"{stats.fixed_tri_gt_ref},{stats.fixed_tri_lt_ref},{stats.signed_sum:.9g},"
+                f"{stats.signed_mean_all:.9g},{stats.signed_mean_mismatch:.9g},"
+                f"{stats.mean_abs_out_diff:.9g},{stats.mse_out_diff:.9g},"
+                f"{stats.ref_quant_noise_l1:.9g},{stats.ref_quant_noise_mse:.9g},"
+                f"{stats.extra_l1_ratio:.9g},{stats.extra_mse_ratio:.9g},"
+                f"{stats.floor_diff_count},{stats.compare_diff_count},{stats.clamp_diff_count},"
+                f"{stats.quant_index_diff_count},{stats.same_index_value_diff_count},{stats.unclassified_mismatch_count},"
+                f"{stats.saturation_ref_count},{stats.saturation_tri_count},"
+                f"{stats.rand_margin_min:.9g},{stats.rand_margin_median:.9g},{stats.rand_margin_mean:.9g},"
+                f"{stats.integer_boundary_min:.9g},{stats.integer_boundary_median:.9g},{stats.integer_boundary_mean:.9g},"
+                f"{scale_rel:.9g}"
+            )
     if count == 0:
         print("no_capture_files_found")
         failures += 1
     else:
-        fixed_mean_all = fixed_total_signed_sum / fixed_total_elements if fixed_total_elements > 0 else 0.0
-        fixed_mean_mismatch = fixed_total_signed_sum / fixed_total_mismatches if fixed_total_mismatches > 0 else 0.0
-        e2e_mean_all = e2e_total_signed_sum / e2e_total_elements if e2e_total_elements > 0 else 0.0
-        e2e_mean_mismatch = e2e_total_signed_sum / e2e_total_mismatches if e2e_total_mismatches > 0 else 0.0
-        print("captured training tensor signed-diff summary")
+        print("captured training tensor comparison summary")
         print(
             "kind,count,total_elements,total_mismatches,tri_gt_ref,tri_lt_ref,"
-            "signed_sum,signed_mean_all,signed_mean_mismatch"
+            "signed_sum,signed_mean_all,signed_mean_mismatch,"
+            "mean_abs_out_diff,mse_out_diff,ref_quant_noise_l1,ref_quant_noise_mse,"
+            "extra_l1_ratio,extra_mse_ratio,floor_diff_count,compare_diff_count,clamp_diff_count,"
+            "quant_index_diff_count,same_index_value_diff_count,unclassified_mismatch_count,"
+            "saturation_ref_count,saturation_tri_count"
         )
-        print(
-            f"fixed,{count},{fixed_total_elements},{fixed_total_mismatches},"
-            f"{fixed_total_tri_gt_ref},{fixed_total_tri_lt_ref},"
-            f"{fixed_total_signed_sum:.9g},{fixed_mean_all:.9g},{fixed_mean_mismatch:.9g}"
-        )
-        print(
-            f"e2e,{count},{e2e_total_elements},{e2e_total_mismatches},"
-            f"{e2e_total_tri_gt_ref},{e2e_total_tri_lt_ref},"
-            f"{e2e_total_signed_sum:.9g},{e2e_mean_all:.9g},{e2e_mean_mismatch:.9g}"
-        )
+        for key, total in totals.items():
+            elements = int(total["elements"])
+            mismatches = int(total["mismatches"])
+            signed_sum = float(total["signed_sum"])
+            mean_all = signed_sum / elements if elements > 0 else 0.0
+            mean_mismatch = signed_sum / mismatches if mismatches > 0 else 0.0
+            mean_abs = float(total["abs_sum"]) / elements if elements > 0 else 0.0
+            mse = float(total["sq_sum"]) / elements if elements > 0 else 0.0
+            noise_l1 = float(total["ref_noise_abs_sum"]) / elements if elements > 0 else 0.0
+            noise_mse = float(total["ref_noise_sq_sum"]) / elements if elements > 0 else 0.0
+            extra_l1 = mean_abs / max(noise_l1, 1e-30)
+            extra_mse = mse / max(noise_mse, 1e-30)
+            print(
+                f"{key},{int(total['count'])},{elements},{mismatches},"
+                f"{int(total['tri_gt_ref'])},{int(total['tri_lt_ref'])},"
+                f"{signed_sum:.9g},{mean_all:.9g},{mean_mismatch:.9g},"
+                f"{mean_abs:.9g},{mse:.9g},{noise_l1:.9g},{noise_mse:.9g},"
+                f"{extra_l1:.9g},{extra_mse:.9g},"
+                f"{int(total['floor_diff'])},{int(total['compare_diff'])},{int(total['clamp_diff'])},"
+                f"{int(total['quant_index_diff'])},{int(total['same_index_value_diff'])},{int(total['unclassified_mismatch'])},"
+                f"{int(total['saturation_ref'])},{int(total['saturation_tri'])}"
+            )
     return failures
 
 

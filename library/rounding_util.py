@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import torch
 from typing import Iterable, Literal, Union, Optional
 
@@ -14,114 +11,6 @@ except Exception:
 
 
 RoundMode = Literal["det", "stoch"]
-_DQ_TRITON_CAPTURE_COUNT = 0
-_DQ_TRITON_CAPTURE_SEEN = 0
-_DQ_TRITON_CAPTURE_GLOBAL_STEP: Optional[int] = None
-
-
-def set_dq_triton_capture_global_step(global_step: Optional[int]) -> None:
-    """Set the current training step for optional dq_delta capture filters.
-
-    This is a diagnostic hook. It is intentionally independent from normal
-    fake-quant computation unless DQ_TRITON_CAPTURE_DIR is set.
-    """
-    global _DQ_TRITON_CAPTURE_GLOBAL_STEP
-    _DQ_TRITON_CAPTURE_GLOBAL_STEP = None if global_step is None else int(global_step)
-
-
-def _read_optional_int_env(name: str) -> Optional[int]:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
-
-
-def _maybe_capture_fake_quant_levels(
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    qmin: int,
-    qmax: int,
-    mode: str,
-    use_triton: bool,
-) -> None:
-    """Optionally save real training tensors for Triton/PyTorch comparison.
-
-    Enable with:
-        DQ_TRITON_CAPTURE_DIR=path
-
-    By default, only calls with use_triton=True are captured. Set
-    DQ_TRITON_CAPTURE_USE_TRITON_ONLY=0 to capture all calls.
-    """
-    global _DQ_TRITON_CAPTURE_COUNT, _DQ_TRITON_CAPTURE_SEEN
-
-    capture_dir = os.environ.get("DQ_TRITON_CAPTURE_DIR")
-    if not capture_dir or mode != "stoch":
-        return
-    triton_only = os.environ.get("DQ_TRITON_CAPTURE_USE_TRITON_ONLY", "1").lower() not in ("0", "false", "no")
-    if triton_only and not use_triton:
-        return
-
-    min_global_step = _read_optional_int_env("DQ_TRITON_CAPTURE_MIN_GLOBAL_STEP")
-    max_global_step = _read_optional_int_env("DQ_TRITON_CAPTURE_MAX_GLOBAL_STEP")
-    if min_global_step is not None or max_global_step is not None:
-        if _DQ_TRITON_CAPTURE_GLOBAL_STEP is None:
-            return
-        if min_global_step is not None and _DQ_TRITON_CAPTURE_GLOBAL_STEP < min_global_step:
-            return
-        if max_global_step is not None and _DQ_TRITON_CAPTURE_GLOBAL_STEP > max_global_step:
-            return
-
-    try:
-        limit = int(os.environ.get("DQ_TRITON_CAPTURE_LIMIT", "16"))
-    except ValueError:
-        limit = 16
-    if limit <= 0 or _DQ_TRITON_CAPTURE_COUNT >= limit:
-        return
-
-    try:
-        skip = int(os.environ.get("DQ_TRITON_CAPTURE_SKIP", "0"))
-    except ValueError:
-        skip = 0
-    if _DQ_TRITON_CAPTURE_SEEN < max(0, skip):
-        _DQ_TRITON_CAPTURE_SEEN += 1
-        return
-    _DQ_TRITON_CAPTURE_SEEN += 1
-
-    capture_index = _DQ_TRITON_CAPTURE_COUNT
-    _DQ_TRITON_CAPTURE_COUNT += 1
-
-    try:
-        path = Path(capture_dir)
-        path.mkdir(parents=True, exist_ok=True)
-        scale_cpu = scale.detach().cpu() if isinstance(scale, torch.Tensor) else torch.tensor(scale, dtype=torch.float32)
-        payload = {
-            "x": x.detach().cpu(),
-            "scale": scale_cpu,
-            "qmin": int(qmin),
-            "qmax": int(qmax),
-            "mode": mode,
-            "use_triton": bool(use_triton),
-            "global_step": _DQ_TRITON_CAPTURE_GLOBAL_STEP,
-            "global_step_1based": None
-            if _DQ_TRITON_CAPTURE_GLOBAL_STEP is None
-            else int(_DQ_TRITON_CAPTURE_GLOBAL_STEP) + 1,
-            "capture_seen": int(_DQ_TRITON_CAPTURE_SEEN),
-            "x_shape": tuple(x.shape),
-            "x_stride": tuple(x.stride()),
-            "x_dtype": str(x.dtype),
-            "x_is_contiguous": bool(x.is_contiguous()),
-            "scale_shape": tuple(scale.shape),
-            "scale_stride": tuple(scale.stride()),
-            "scale_dtype": str(scale.dtype),
-            "scale_is_contiguous": bool(scale.is_contiguous()),
-        }
-        torch.save(payload, path / f"dq_fake_quant_capture_{os.getpid()}_{capture_index:04d}.pt")
-    except Exception:
-        # Capture is diagnostic-only and must never disturb training.
-        return
 
 
 @torch.no_grad()
@@ -280,6 +169,7 @@ def fake_quantize_levels(
     qmax: int,
     mode: RoundMode = "det",
     use_triton: bool = False,
+    triton_div_rn: bool = False,
 ) -> torch.Tensor:
     """STE fake-quantization with finite integer levels and (symmetric) clamp.
 
@@ -292,14 +182,13 @@ def fake_quantize_levels(
     else:
         s = scale.to(device=x.device, dtype=torch.float32)
 
-    _maybe_capture_fake_quant_levels(x, s, qmin, qmax, mode, use_triton)
-
     if use_triton and mode == "stoch" and triton_fake_quantize_levels_stoch is not None and isinstance(s, torch.Tensor):
         q_triton = triton_fake_quantize_levels_stoch(
             x,
             scale=s,
             qmin=qmin,
             qmax=qmax,
+            use_div_rn=triton_div_rn,
         )
         if q_triton is not None:
             return _ste_from_quantized(x, q_triton)

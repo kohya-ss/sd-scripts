@@ -53,7 +53,7 @@ from library.avg_ckpt_util import (
     save_lora_state_dict,
 )
 from library.utils import setup_logging, add_logging_arguments
-from library.rounding_util import round_parameters, set_dq_triton_capture_global_step
+from library.rounding_util import round_parameters
 from accelerate.utils import broadcast
 
 setup_logging()
@@ -1004,7 +1004,8 @@ class NetworkTrainer:
                 f"mode={args.dq_delta_mode}, {dq_begin_info}, granularity={getattr(args,'dq_delta_granularity',None)}, "
                 f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, "
                 f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
-                f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}"
+                f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}, "
+                f"triton_div_rn={getattr(args,'dq_delta_triton_div_rn', False)}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1164,7 +1165,7 @@ class NetworkTrainer:
                 return f"{v:.6g}"
             return str(v)
 
-        def _dq_log_header(log_mode: str, include_near_zero: bool):
+        def _dq_log_header(log_mode: str, include_near_zero: bool, include_qerr_per_clip: bool = False):
             cols = [
                 "Epoch",
                 "TrainStep",
@@ -1197,9 +1198,12 @@ class NetworkTrainer:
             ]
             if include_near_zero:
                 cols.append("NearZeroRate")
+            if include_qerr_per_clip:
+                cols += [
+                    "QErrPerClip",
+                    "QErrPerClipClipFloor",
+                ]
             cols += [
-                "QErrPerClip",
-                "QErrPerClipClipFloor",
                 "ActiveClipBand",
                 "ActiveClipLow",
                 "ActiveClipHigh",
@@ -1270,7 +1274,7 @@ class NetworkTrainer:
 
         def _dq_auto_log_header(full_schema: bool, include_near_zero: bool):
             if full_schema:
-                return _dq_log_header("summary", include_near_zero)
+                return _dq_log_header("summary", include_near_zero, include_qerr_per_clip=True)
             return (
                 "TrainStep,Scope,Target,Bits,ClipRateRaw,ClipRateEMA,RangeMulBefore,RangeMulAfter,AutoApplied,"
                 "WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget,"
@@ -1740,6 +1744,7 @@ class NetworkTrainer:
                 on_z=getattr(args, "dq_quantize_z", False),
                 use_triton=getattr(args, "dq_delta_use_triton", False),
                 triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
+                triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3173,7 +3178,6 @@ class NetworkTrainer:
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
                 current_step.value = global_step
-                set_dq_triton_capture_global_step(global_step)
                 if initial_step > 0:
                     initial_step -= 1
                     continue
@@ -3256,6 +3260,7 @@ class NetworkTrainer:
                                         on_z=getattr(args, "dq_quantize_z", False),
                                         use_triton=getattr(args, "dq_delta_use_triton", False),
                                         triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
+                                        triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3689,6 +3694,7 @@ class NetworkTrainer:
                                             on_z=getattr(args, "dq_quantize_z", False),
                                             use_triton=getattr(args, "dq_delta_use_triton", False),
                                             triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
+                                            triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -3777,7 +3783,6 @@ class NetworkTrainer:
                                                             round_err_ratio = round_err_rms / (rms + 1e-12)
                                                         if err_sumsq.item() > 0:
                                                             round_share = (torch.clamp(item["round_err_sumsq"], min=0.0) / (err_sumsq + 1e-12)).item()
-                                                qerr_per_clip = _dq_qerr_per_clip(quant_err_ratio, clip_rate)
                                                 row = values + [
                                                     item["module"],
                                                     item["shape"],
@@ -3799,8 +3804,6 @@ class NetworkTrainer:
                                                 if include_near_zero:
                                                     row.append(near_zero_rate)
                                                 row += [
-                                                    qerr_per_clip if qerr_per_clip is not None else "",
-                                                    dq_qerr_per_clip_floor,
                                                     dq_auto_active_band,
                                                     dq_auto_active_clip_low,
                                                     dq_auto_active_clip_high,
@@ -3855,10 +3858,7 @@ class NetworkTrainer:
                                             ]
                                             if include_near_zero:
                                                 row.append(m["near_zero_rate"])
-                                            qerr_per_clip = _dq_qerr_per_clip(quant_err_ratio_ema, clip_rate_ema)
                                             row += [
-                                                qerr_per_clip if qerr_per_clip is not None else "",
-                                                dq_qerr_per_clip_floor,
                                                 dq_auto_active_band,
                                                 dq_auto_active_clip_low,
                                                 dq_auto_active_clip_high,
@@ -4696,6 +4696,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_triton_scale_only",
         action="store_true",
         help="Experimental: with --dq_delta_use_triton, use Triton only for dq_delta channel RMS scale and keep fake-quant in PyTorch",
+    )
+    parser.add_argument(
+        "--dq_delta_triton_div_rn",
+        action="store_true",
+        help="Experimental: use tl.div_rn in the optional Triton stochastic fake-quant kernel",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(

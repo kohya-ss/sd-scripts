@@ -93,6 +93,7 @@ if _TRITON_AVAILABLE:
         ndim: tl.constexpr,
         qmin: tl.constexpr,
         qmax: tl.constexpr,
+        USE_DIV_RN: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -114,7 +115,10 @@ if _TRITON_AVAILABLE:
             scale_offsets = offsets % dim1
 
         scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
-        y = x / scale
+        if USE_DIV_RN:
+            y = tl.div_rn(x, scale)
+        else:
+            y = x / scale
         q_floor = tl.floor(y)
         frac = y - q_floor
         probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
@@ -205,6 +209,7 @@ def triton_fake_quantize_levels_stoch(
     scale: torch.Tensor,
     qmin: int,
     qmax: int,
+    use_div_rn: bool = False,
 ) -> Optional[torch.Tensor]:
     """Mirror fake_quantize_levels(..., mode="stoch").
 
@@ -264,6 +269,7 @@ def triton_fake_quantize_levels_stoch(
             x.ndim,
             qmin,
             qmax,
+            bool(use_div_rn),
             BLOCK_SIZE=block_size,
         )
     except Exception as e:
