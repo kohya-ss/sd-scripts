@@ -286,11 +286,11 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
         noise = torch.randn_like(latents)
 
-        # Per-sample timestep bias from dataset subset config (timestep_bias in TOML)
-        tb = batch.get("timestep_biases")
+        # Per-sample timestep sampling offset from dataset subset config (timestep_sampling_offset in TOML)
+        tso = batch.get("timestep_sampling_offsets")
         noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
             args, noise_scheduler, latents, noise, accelerator.device, weight_dtype,
-            timestep_bias=tb if tb is not None and tb.abs().sum() > 0 else None,
+            timestep_sampling_offset=tso if tso is not None and tso.abs().sum() > 0 else None,
         )
         timesteps = timesteps / 1000.0  # scale to [0, 1] range. timesteps is float32
 

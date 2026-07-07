@@ -74,7 +74,7 @@ class BaseSubsetParams:
     token_warmup_min: int = 1
     token_warmup_step: float = 0
     custom_attributes: Optional[Dict[str, Any]] = None
-    timestep_bias: float = 0.0
+    timestep_sampling_offset: float = 0.0
     validation_seed: int = 0
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
@@ -201,7 +201,7 @@ class ConfigSanitizer:
         "caption_prefix": str,
         "caption_suffix": str,
         "custom_attributes": dict,
-        "timestep_bias": Any(float, int),
+        "timestep_sampling_offset": Any(float, int),
         "resize_interpolation": str,
     }
     # DO means DropOut
