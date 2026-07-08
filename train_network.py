@@ -1006,7 +1006,6 @@ class NetworkTrainer:
                 f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
                 f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}, "
                 f"triton_div_rn={getattr(args,'dq_delta_triton_div_rn', False)}, "
-                f"stats_use_forward_quant={getattr(args,'dq_delta_stats_use_forward_quant', False)}, "
                 f"triton_stats={getattr(args,'dq_delta_triton_stats', False)}"
             )
 
@@ -1747,7 +1746,6 @@ class NetworkTrainer:
                 use_triton=getattr(args, "dq_delta_use_triton", False),
                 triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                 triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
-                stats_use_forward_quant=getattr(args, "dq_delta_stats_use_forward_quant", False),
                 triton_stats=getattr(args, "dq_delta_triton_stats", False),
             )
             # no EMA-based stats to propagate (ema_* removed)
@@ -3265,7 +3263,6 @@ class NetworkTrainer:
                                         use_triton=getattr(args, "dq_delta_use_triton", False),
                                         triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                         triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
-                                        stats_use_forward_quant=getattr(args, "dq_delta_stats_use_forward_quant", False),
                                         triton_stats=getattr(args, "dq_delta_triton_stats", False),
                                     )
                                     last_applied_bits = cur_bits
@@ -3701,7 +3698,6 @@ class NetworkTrainer:
                                             use_triton=getattr(args, "dq_delta_use_triton", False),
                                             triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                             triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
-                                            stats_use_forward_quant=getattr(args, "dq_delta_stats_use_forward_quant", False),
                                             triton_stats=getattr(args, "dq_delta_triton_stats", False),
                                         )
 
@@ -4709,11 +4705,6 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_triton_div_rn",
         action="store_true",
         help="Experimental: use tl.div_rn in the optional Triton stochastic fake-quant kernel",
-    )
-    parser.add_argument(
-        "--dq_delta_stats_use_forward_quant",
-        action="store_true",
-        help="Experimental: on dq_delta log/auto steps, use the normal fake-quant path for the training forward output and compute stats separately",
     )
     parser.add_argument(
         "--dq_delta_triton_stats",

@@ -137,19 +137,19 @@ xl05:
 
 ## log / auto step
 
-log / auto step の経路差を切り分けるため、以下の実験オプションを追加した。
+`--dq_delta_use_triton` が有効な場合、stats が有効な log / auto step でも、学習 forward に使う fake quant 出力は通常 step と同じ `fake_quantize_levels(...)` で作る。
 
-```text
---dq_delta_stats_use_forward_quant
-```
+これにより、通常 step は Triton B、log / auto step だけ PyTorch B になる、という forward 経路の混在を避ける。
 
-この指定では、stats が有効な step でも、学習 forward に使う fake quant 出力を通常 step と同じ `fake_quantize_levels(...)` で作る。`--dq_delta_use_triton` が有効なら B も Triton path になる。stats の集計自体は PyTorch のまま。
+標準 Triton path では、forward の fake quant は通常 step と揃え、stats の集計自体は PyTorch のまま行う。
 
 ```text
 --dq_delta_triton_stats
 ```
 
-この指定では、上記に加えて、対応できる場合だけ stats reduction も Triton で集計する。`--dq_delta_log_error_parts` が有効な場合や、テンソル条件が合わない場合は PyTorch stats path に fallback する。
+この指定では、対応できる場合だけ stats reduction も Triton で集計する。`--dq_delta_log_error_parts` が有効な場合や、テンソル条件が合わない場合は PyTorch stats path に fallback する。
+
+`--dq_delta_triton_stats` は、log / auto step の高速化を調べるための実験用オプションとして残している。現時点では、通常の採用候補は `--dq_delta_use_triton` による forward 経路統一まで。
 
 ## 実測メモ
 
