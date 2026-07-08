@@ -68,23 +68,25 @@ class DQStatsAccumulator:
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool = True,
         collect_error_parts: bool = False,
     ):
         self.device = device
         self.collect_full = collect_full
         self.collect_zero = collect_zero
         self.collect_near_zero = collect_near_zero
+        self.collect_detail = collect_detail
         self.collect_error_parts = collect_error_parts
         self.numel = torch.zeros(1, device=device, dtype=torch.float32)
         self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
         self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
         self.near_zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_near_zero else None
         self.sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_full else None
-        self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+        self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+        self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_detail else None
+        self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+        self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+        self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
         self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
         self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
         self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
@@ -121,15 +123,15 @@ class DQStatsAccumulator:
                 self.xq_sumsq += xq_sumsq
             if xxq_sum is not None:
                 self.xxq_sum += xxq_sum
-            if absmax is not None:
+            if self.collect_detail and absmax is not None:
                 self.absmax = torch.maximum(self.absmax, absmax)
-            if scale_min is not None:
+            if self.collect_detail and scale_min is not None:
                 self.scale_min = torch.minimum(self.scale_min, scale_min)
-            if scale_max is not None:
+            if self.collect_detail and scale_max is not None:
                 self.scale_max = torch.maximum(self.scale_max, scale_max)
-            if scale_sum is not None:
+            if self.collect_detail and scale_sum is not None:
                 self.scale_sum += scale_sum
-            if scale_count is not None:
+            if self.collect_detail and scale_count is not None:
                 self.scale_count += scale_count
         if self.collect_error_parts:
             if clip_err_sumsq is not None:
@@ -145,6 +147,7 @@ class DQStatsManager:
         self.collect_full = False
         self.collect_zero = False
         self.collect_near_zero = False
+        self.collect_detail = False
         self.collect_error_parts = False
         self.log_mode = "summary"
         self.log_scope = "both"
@@ -158,10 +161,20 @@ class DQStatsManager:
     def _reset(self, device):
         self.accum = {
             "unet": DQStatsAccumulator(
-                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+                device,
+                self.collect_full,
+                self.collect_zero,
+                self.collect_near_zero,
+                collect_detail=self.collect_detail,
+                collect_error_parts=self.collect_error_parts,
             ),
             "te": DQStatsAccumulator(
-                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+                device,
+                self.collect_full,
+                self.collect_zero,
+                self.collect_near_zero,
+                collect_detail=self.collect_detail,
+                collect_error_parts=self.collect_error_parts,
             ),
         }
         self.per_module = []
@@ -176,6 +189,7 @@ class DQStatsManager:
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool,
         collect_error_parts: bool,
         log_mode: str,
         log_scope: str,
@@ -190,6 +204,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_detail = collect_detail
             self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
@@ -204,6 +219,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_detail = collect_detail
             self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
@@ -304,6 +320,7 @@ class DQStatsManager:
             "collect_full": self.collect_full,
             "collect_zero": self.collect_zero,
             "collect_near_zero": self.collect_near_zero,
+            "collect_detail": self.collect_detail,
             "collect_error_parts": self.collect_error_parts,
             "accum": self.accum,
             "per_module": self.per_module,
@@ -510,7 +527,8 @@ class LoRAModule(torch.nn.Module):
                 q_flat = q_fp32.reshape(-1)
                 xq_sumsq = torch.dot(q_flat, q_flat)
                 xxq_sum = torch.dot(x_flat, q_flat)
-                absmax = x_in.abs().max()
+                if mgr.collect_detail:
+                    absmax = x_in.abs().max()
                 if mgr.collect_error_parts and q_clamp is not None and scale is not None:
                     x_clamped = q_clamp.to(torch.float32) * scale.to(device=device, dtype=torch.float32)
                     clip_err = x_fp32 - x_clamped
@@ -520,7 +538,7 @@ class LoRAModule(torch.nn.Module):
                     clip_err_sumsq = torch.dot(clip_err_flat, clip_err_flat)
                     round_err_sumsq = torch.dot(round_err_flat, round_err_flat)
             scale_min = scale_max = scale_sum = scale_count = None
-            if mgr.collect_full and scale is not None:
+            if mgr.collect_detail and scale is not None:
                 scale_min = scale.min()
                 scale_max = scale.max()
                 scale_sum = scale.sum()
@@ -575,6 +593,7 @@ class LoRAModule(torch.nn.Module):
                     collect_zero=mgr.collect_zero,
                     collect_near_zero=mgr.collect_near_zero,
                     collect_full=mgr.collect_full,
+                    collect_detail=mgr.collect_detail,
                 )
             if stats is not None:
                 mgr.add_stats(
@@ -1831,6 +1850,7 @@ class LoRANetwork(torch.nn.Module):
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool = True,
         collect_error_parts: bool = False,
         log_mode: str,
         log_scope: str,
@@ -1847,6 +1867,7 @@ class LoRANetwork(torch.nn.Module):
             collect_full=collect_full,
             collect_zero=collect_zero,
             collect_near_zero=collect_near_zero,
+            collect_detail=collect_detail,
             collect_error_parts=collect_error_parts,
             log_mode=log_mode,
             log_scope=log_scope,

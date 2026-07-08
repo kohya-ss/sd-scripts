@@ -80,6 +80,19 @@ B: fake_quantize_levels(... stoch)    -> PyTorch
 学習本体に入れていた fake quant 入力 capture hook は、通常学習を軽く保つため削除した。
 追加調査が必要な場合は、学習本体ではなく `tools/check_triton_fake_quant.py` 側の検証で行う。
 
+## 不採用実験: B NLC 2D tile
+
+B の stochastic fake quant 本体について、NLC tensor 専用の2D tile kernelを実験した。
+
+```text
+rows = N * L
+cols = C
+```
+
+同じ PyTorch 乱数を渡した単体比較では、標準の1D B kernelと出力が完全一致することを確認した。
+
+ただし、単体ベンチではshapeによって速い/遅いが分かれ、短時間学習 `220 steps` でも明確な速度改善は見えなかった。そのため、実装は削除し、正式Triton pathでは従来の1D B kernelを使う。
+
 ## Python 実装との対応関係
 
 Triton A は [library/rounding_util.py](../library/rounding_util.py) の `compute_scale_bits` のうち、以下の条件に対応する。
@@ -149,7 +162,9 @@ xl05:
 --dq_delta_triton_stats
 ```
 
-この指定では、対応できる場合だけ stats reduction も Triton で集計する。`--dq_delta_log_error_parts` が有効な場合や、テンソル条件が合わない場合は PyTorch stats path に fallback する。
+この指定では、対応できる場合だけ stats reduction も Triton で集計する。テンソル条件が合わない場合は PyTorch stats path に fallback する。`--dq_delta_log_error_parts` は整理のため削除し、clip/round成分分解ログは新規ログでは出力しない。
+
+`--dq_delta_log_detail basic` は常用向けの軽量ログで、`ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` を計算・出力しない。詳細診断が必要な場合は `--dq_delta_log_detail full` を使う。
 
 `--dq_delta_triton_stats` は、log / auto step の高速化を調べるための実験用オプションとして残している。現時点では、通常の採用候補は `--dq_delta_use_triton` による forward 経路統一まで。
 

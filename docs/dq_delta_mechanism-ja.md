@@ -200,7 +200,7 @@ AutoStep のたびに
 
 -   clip率に対して量子化誤差が重いかを見る指標。`clip_rate_low_auto` の判定にも使う。
 
--   `--dq_delta_log_error_parts` を指定すると、`QuantErr` を `ClipErr` と `RoundErr` に分解してログに出す。第一版では判定には使わず、後から「clip由来かround由来か」を確認するための診断列として扱う。
+-   `--dq_delta_log_detail basic` では常用向けに軽量なDQログを出す。`ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` まで確認したい場合は `--dq_delta_log_detail full` を指定する。clip/round成分分解ログは整理のため新規ログでは出力しない。
 
 
 ### bits スケジュールとの関係

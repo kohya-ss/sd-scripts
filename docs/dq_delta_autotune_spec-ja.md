@@ -23,9 +23,10 @@
 - `--dq_delta_log_every <int>` : ログ間隔（optimizer step 単位、デフォルト 100）
 - `--dq_delta_log_scope {unet,te,both}` : 計測対象（未指定時は `dq_delta_scope` を継承）
 - `--dq_delta_log_mode {summary,per_module}` : 出力粒度（デフォルト summary）
+- `--dq_delta_log_detail {basic,full}` : summaryログの詳細度（デフォルト basic）。`basic` は常用向けに `ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` を省略し、`full` は従来相当の詳細診断列を出力する。`per_module` は詳細診断扱い。
 - `--dq_delta_log_file <path>` : 省略時は `--output_dir/dq_delta_logs+<output_name>.txt`
 - `--dq_delta_log_extra {near_zero_rate}` : 追加ログ項目（デフォルト無効）
-- `--dq_delta_log_error_parts` : `QuantErr` を clip 成分と round 成分に分解した診断列を追加（デフォルト無効）
+- `--dq_delta_log_error_parts` は削除。clip/round成分分解は常用診断から外し、新規ログでは出力しない。
 
 ### 計測ポイント
 
@@ -60,7 +61,7 @@
 - `active_clip_band` : 現在の目標clip帯（`default` / `low` / `mid` / `high` / `high_narrow` / `custom`）。
 - `active_clip_low,active_clip_high` : その時点でauto制御が使っている目標clip帯。`clip_rate_low_auto` では途中で `low` から `mid` に変わる。
 - `clip_rate_low_auto_state,clip_rate_low_auto_bad,clip_rate_low_auto_bad_streak` : `clip_rate_low_auto` 用の状態とbad判定。`clip_rate_low_auto` 以外では空欄。
-- 任意: `clip_err_rms,round_err_rms,clip_err_ratio,round_err_ratio,clip_share,round_share` : `--dq_delta_log_error_parts` 指定時のみ。`QuantErr` を clip 由来と round 由来に分けて確認する診断列。
+- 旧ログ互換: 古いログに `clip_err_rms,round_err_rms,clip_err_ratio,round_err_ratio,clip_share,round_share` が含まれる場合、診断レポート側では読み取り可能。ただし新規ログでは出力しない。
 - `numel` : 計測対象の要素数（集計値）
 - 任意: `near_zero_rate` : `|x| < 0.5*scale` の割合（0 になりやすい帯域）
 - `auto_applied` : AutoStep で range_mul 更新が適用された場合は 1、それ以外は 0
@@ -97,10 +98,7 @@
 - `quant_err_rms = sqrt((sumsq_sum + xq_sumsq_sum - 2*xxq_sum) / numel_sum)`
 - `quant_err_ratio = quant_err_rms / (rms + eps)`（`eps=1e-12`）
 - `qerr_per_clip = quant_err_ratio_ema / max(clip_rate_ema, dq_delta_qerr_per_clip_floor)`
-- `clip_err_rms = sqrt(sum((x - x_clamped)^2) / numel_sum)`（`--dq_delta_log_error_parts` 時）
-- `round_err_rms = sqrt(sum((x_clamped - x_q)^2) / numel_sum)`（`--dq_delta_log_error_parts` 時）
-- `clip_err_ratio = clip_err_rms / (rms + eps)`、`round_err_ratio = round_err_rms / (rms + eps)`
-- `clip_share = clip_err_sumsq / max(total_err_sumsq, eps)`、`round_share = round_err_sumsq / max(total_err_sumsq, eps)`
+- clip/round成分分解（`clip_err_rms`, `round_err_rms`, `clip_share`, `round_share`）は旧ログ互換項目。新規ログでは出力しない。
 
 ※ `range_elem` は `granularity=channel` の場合はチャネル別 range をブロードキャストした per-element range を使う。  
 ※ 分散学習時は `numel_sum/sumsq_sum/clip_count_sum/zero_count_sum` を **all-reduce (sum)** してから算出する。  
@@ -120,7 +118,7 @@
   LogStep 以外の AutoStep は最小統計に限定する。
 - `quant_err_*` は full stats の一部として **LogStep のみ**で計算する。
 - 例外として `--dq_delta_auto_preset clip_rate_low_auto` では、AutoStep の判定に `QuantErrRatioEMA` / `QErrPerClip` を使うため、AutoStep でも full stats を計測する。
-- `--dq_delta_log_error_parts` の clip/round 分解は **LogStep のみ**で計測し、`clip_rate_low_auto` の第一版判定には使わない。
+- clip/round 分解は常用診断から外し、`clip_rate_low_auto` の判定には使わない。
 
 ### 出力例（summary）
 
@@ -171,9 +169,8 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 | ClipRateLowAutoThresholdQErrRatio | low_auto QuantErrRatio閾値 | `--dq_delta_clip_rate_low_auto_qerr_ratio` の値。clip_rate_low_auto以外は空欄。 |
 | ClipRateLowAutoThresholdQErrPerClip | low_auto QErrPerClip閾値 | `--dq_delta_clip_rate_low_auto_qerr_per_clip` の値。clip_rate_low_auto以外は空欄。 |
 | ClipRateLowAutoPhase | low_auto判定フェーズ | `warmup`/`pre_min_progress`/`active`/`frozen`/`escaped`。clip_rate_low_auto以外は空欄。 |
-| ClipErrRMS | clip誤差RMS | `--dq_delta_log_error_parts`時のみ。range外でclampされた成分。 |
-| RoundErrRMS | round誤差RMS | `--dq_delta_log_error_parts`時のみ。range内で量子化丸めされた成分。 |
-| ClipErrRatio/RoundErrRatio | 各誤差RMS/RMS | clip/round どちらが重いかを見る。 |
+| ClipErrRMS/RoundErrRMS | clip/round誤差RMS | 旧ログ互換項目。新規ログでは出力しない。 |
+| ClipErrRatio/RoundErrRatio | 各誤差RMS/RMS | 旧ログ互換項目。新規ログでは出力しない。 |
 | ClipShare/RoundShare | 全QuantErr中のclip/round寄与 | lowを守るためにround誤差が支配的になっていないか確認する。 |
 | Numel | 要素数 | 統計の母数。 |
 | AutoApplied | auto適用 | 1ならrange_mulが変化。 |

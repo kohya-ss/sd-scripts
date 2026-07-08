@@ -169,6 +169,7 @@ if _TRITON_AVAILABLE:
         collect_zero: tl.constexpr,
         collect_near_zero: tl.constexpr,
         collect_full: tl.constexpr,
+        collect_detail: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -211,6 +212,7 @@ if _TRITON_AVAILABLE:
             sumsq = tl.sum(x * x, axis=0)
             xq_sumsq = tl.sum(q * q, axis=0)
             xxq_sum = tl.sum(x * q, axis=0)
+        if collect_detail:
             absmax = tl.max(tl.abs(x), axis=0)
 
         base = pid * 8
@@ -404,6 +406,7 @@ def triton_collect_fake_quant_stats(
     collect_zero: bool,
     collect_near_zero: bool,
     collect_full: bool,
+    collect_detail: bool = True,
 ) -> Optional[dict[str, Optional[torch.Tensor]]]:
     """Collect dq_delta fake-quant stats with a small Triton reduction.
 
@@ -458,6 +461,7 @@ def triton_collect_fake_quant_stats(
             bool(collect_zero),
             bool(collect_near_zero),
             bool(collect_full),
+            bool(collect_detail),
             BLOCK_SIZE=block_size,
         )
     except Exception as e:
@@ -465,7 +469,7 @@ def triton_collect_fake_quant_stats(
         return None
 
     sums = stats.sum(dim=0)
-    absmax = stats[:, 7].max().reshape(1) if collect_full else None
+    absmax = stats[:, 7].max().reshape(1) if collect_detail else None
     return {
         "numel": sums[0].reshape(1),
         "clip_count": sums[1].reshape(1),
@@ -475,8 +479,8 @@ def triton_collect_fake_quant_stats(
         "xq_sumsq": sums[5].reshape(1) if collect_full else None,
         "xxq_sum": sums[6].reshape(1) if collect_full else None,
         "absmax": absmax,
-        "scale_min": scale.min() if collect_full else None,
-        "scale_max": scale.max() if collect_full else None,
-        "scale_sum": scale.sum() if collect_full else None,
-        "scale_count": torch.tensor(float(scale.numel()), device=x.device, dtype=torch.float32) if collect_full else None,
+        "scale_min": scale.min() if collect_detail else None,
+        "scale_max": scale.max() if collect_detail else None,
+        "scale_sum": scale.sum() if collect_detail else None,
+        "scale_count": torch.tensor(float(scale.numel()), device=x.device, dtype=torch.float32) if collect_detail else None,
     }

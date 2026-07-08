@@ -128,7 +128,7 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `ClipRateLowAutoMinProgress`, `ClipRateLowAutoFreezeProgress`
 - `ClipRateLowAutoThresholdQErrRatio`, `ClipRateLowAutoThresholdQErrPerClip`
 - `ClipRateLowAutoPhase`
-- `ClipErrRMS`, `RoundErrRMS`, `ClipErrRatio`, `RoundErrRatio`, `ClipShare`, `RoundShare`
+- `ClipErrRMS`, `RoundErrRMS`, `ClipErrRatio`, `RoundErrRatio`, `ClipShare`, `RoundShare`（旧ログ互換。新規ログでは出力しない）
 - `ZeroRate`, `AbsMax`, `Range`
 - `AutoReason`
 
@@ -318,7 +318,7 @@ DQ logsに `ActiveClipBand=low` または `ClipRateLowAuto*` 列がある場合�
 
 ### `charts` セクション
 
-DQ autoログに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）を追加します。古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使用します。DQ logsに該当列がある場合は、`clip_rate_low_auto Bad / Streak`、`ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。
+DQ autoログに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）を追加します。古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使用します。DQ logsに該当列がある場合は、`clip_rate_low_auto Bad / Streak`、旧ログ互換の `ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。`--dq_delta_log_detail basic` の軽量ログでは `ZeroRate`、`AbsMax`、`Range` グラフは省略されます。
 `TrainProgress` と low_auto progress閾値がある場合は、min_progress / freeze_progress の位置をDQグラフの縦線マーカーに追加します。
 
 | JSONパス | 情報源 | 内容の概説 |

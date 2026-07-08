@@ -1013,6 +1013,7 @@ class NetworkTrainer:
         dq_log_every = max(1, int(getattr(args, "dq_delta_log_every", 100)))
         dq_log_scope = getattr(args, "dq_delta_log_scope", None) or getattr(args, "dq_delta_scope", "both")
         dq_log_mode = getattr(args, "dq_delta_log_mode", "summary")
+        dq_log_detail = getattr(args, "dq_delta_log_detail", "basic")
         dq_log_extra = set(getattr(args, "dq_delta_log_extra", []) or [])
         rank_log_enabled = bool(getattr(args, "rank_log", False))
         rank_log_every = max(1, int(getattr(args, "rank_log_every", 100)))
@@ -1051,7 +1052,7 @@ class NetworkTrainer:
         dq_auto_ema = float(getattr(args, "dq_delta_auto_ema", 0.95))
         dq_auto_use_raw = bool(getattr(args, "dq_delta_auto_use_raw", False))
         dq_qerr_per_clip_floor = max(1e-12, float(getattr(args, "dq_delta_qerr_per_clip_floor", 0.001)))
-        dq_log_error_parts = bool(getattr(args, "dq_delta_log_error_parts", False))
+        dq_log_error_parts = False
         dq_low_auto_min_progress = max(0.0, min(1.0, float(getattr(args, "dq_delta_clip_rate_low_auto_min_progress", 0.25))))
         dq_low_auto_bad_streak_threshold = max(1, int(getattr(args, "dq_delta_clip_rate_low_auto_bad_streak", 3)))
         dq_low_auto_freeze_progress = float(getattr(args, "dq_delta_clip_rate_low_auto_freeze_progress", 0.55))
@@ -1166,7 +1167,13 @@ class NetworkTrainer:
                 return f"{v:.6g}"
             return str(v)
 
-        def _dq_log_header(log_mode: str, include_near_zero: bool, include_qerr_per_clip: bool = False):
+        def _dq_log_header(
+            log_mode: str,
+            include_near_zero: bool,
+            include_qerr_per_clip: bool = False,
+            detail: str = "basic",
+        ):
+            full_detail = detail == "full" or log_mode == "per_module"
             cols = [
                 "Epoch",
                 "TrainStep",
@@ -1183,20 +1190,23 @@ class NetworkTrainer:
                 cols += ["Module", "Shape"]
             cols += [
                 "RMS",
-                "AbsMax",
-                "Range",
-                "ScaleMin",
-                "ScaleMean",
-                "ScaleMax",
-                "Qmax",
                 "ClipRateRaw",
                 "ClipRateEMA",
-                "ZeroRate",
                 "QuantErrRMSRaw",
                 "QuantErrRMSEMA",
                 "QuantErrRatioRaw",
                 "QuantErrRatioEMA",
             ]
+            if full_detail:
+                cols[cols.index("ClipRateRaw"):cols.index("ClipRateRaw")] = [
+                    "AbsMax",
+                    "Range",
+                    "ScaleMin",
+                    "ScaleMean",
+                    "ScaleMax",
+                    "Qmax",
+                ]
+                cols.insert(cols.index("QuantErrRMSRaw"), "ZeroRate")
             if include_near_zero:
                 cols.append("NearZeroRate")
             if include_qerr_per_clip:
@@ -1275,7 +1285,7 @@ class NetworkTrainer:
 
         def _dq_auto_log_header(full_schema: bool, include_near_zero: bool):
             if full_schema:
-                return _dq_log_header("summary", include_near_zero, include_qerr_per_clip=True)
+                return _dq_log_header("summary", include_near_zero, include_qerr_per_clip=True, detail="full")
             return (
                 "TrainStep,Scope,Target,Bits,ClipRateRaw,ClipRateEMA,RangeMulBefore,RangeMulAfter,AutoApplied,"
                 "WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget,"
@@ -1291,7 +1301,13 @@ class NetworkTrainer:
                 return None
             return quant_err_ratio / max(clip_rate, dq_qerr_per_clip_floor)
 
-        def _dq_reduce_stats(accum_by_scope, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
+        def _dq_reduce_stats(
+            accum_by_scope,
+            collect_full: bool,
+            collect_zero: bool,
+            collect_near_zero: bool,
+            collect_detail: bool,
+        ):
             if accelerator.num_processes <= 1 or not dist.is_available() or not dist.is_initialized():
                 return accum_by_scope
 
@@ -1317,10 +1333,11 @@ class NetworkTrainer:
                     sum_refs.append((acc, "xq_sumsq"))
                     sum_fields.append(acc.xxq_sum)
                     sum_refs.append((acc, "xxq_sum"))
-                    sum_fields.append(acc.scale_sum)
-                    sum_refs.append((acc, "scale_sum"))
-                    sum_fields.append(acc.scale_count)
-                    sum_refs.append((acc, "scale_count"))
+                    if collect_detail:
+                        sum_fields.append(acc.scale_sum)
+                        sum_refs.append((acc, "scale_sum"))
+                        sum_fields.append(acc.scale_count)
+                        sum_refs.append((acc, "scale_count"))
                     if getattr(acc, "clip_err_sumsq", None) is not None:
                         sum_fields.append(acc.clip_err_sumsq)
                         sum_refs.append((acc, "clip_err_sumsq"))
@@ -1334,7 +1351,7 @@ class NetworkTrainer:
                 for idx, (acc, name) in enumerate(sum_refs):
                     setattr(acc, name, sum_vec[idx])
 
-            if collect_full:
+            if collect_detail:
                 max_fields = []
                 max_refs = []
                 min_fields = []
@@ -1361,7 +1378,14 @@ class NetworkTrainer:
 
             return accum_by_scope
 
-        def _dq_compute_metrics(acc, qmax, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
+        def _dq_compute_metrics(
+            acc,
+            qmax,
+            collect_full: bool,
+            collect_zero: bool,
+            collect_near_zero: bool,
+            collect_detail: bool,
+        ):
             numel = acc.numel.item() if acc.numel is not None else 0.0
             clip_rate = (acc.clip_count / acc.numel).item() if numel > 0 else None
             zero_rate = (acc.zero_count / acc.numel).item() if collect_zero and numel > 0 else None
@@ -1372,11 +1396,12 @@ class NetworkTrainer:
             total_err_sumsq = None
             if collect_full and numel > 0:
                 rms = math.sqrt((acc.sumsq / acc.numel).item()) if acc.sumsq is not None else None
-                absmax = acc.absmax.item() if acc.absmax is not None else None
-                scale_min = acc.scale_min.item() if acc.scale_min is not None else None
-                scale_max = acc.scale_max.item() if acc.scale_max is not None else None
-                if acc.scale_sum is not None and acc.scale_count is not None and acc.scale_count.item() > 0:
-                    scale_mean = (acc.scale_sum / acc.scale_count).item()
+                if collect_detail:
+                    absmax = acc.absmax.item() if acc.absmax is not None else None
+                    scale_min = acc.scale_min.item() if acc.scale_min is not None else None
+                    scale_max = acc.scale_max.item() if acc.scale_max is not None else None
+                    if acc.scale_sum is not None and acc.scale_count is not None and acc.scale_count.item() > 0:
+                        scale_mean = (acc.scale_sum / acc.scale_count).item()
                 if acc.xq_sumsq is not None and acc.xxq_sum is not None and acc.sumsq is not None:
                     err_sumsq = acc.sumsq + acc.xq_sumsq - (2.0 * acc.xxq_sum)
                     err_sumsq = torch.clamp(err_sumsq, min=0.0)
@@ -1420,7 +1445,14 @@ class NetworkTrainer:
                 "round_share": round_share,
             }
 
-        def _dq_merge_acc(acc_a, acc_b, collect_full: bool, collect_zero: bool, collect_near_zero: bool):
+        def _dq_merge_acc(
+            acc_a,
+            acc_b,
+            collect_full: bool,
+            collect_zero: bool,
+            collect_near_zero: bool,
+            collect_detail: bool,
+        ):
             numel = acc_a.numel + acc_b.numel
             clip = acc_a.clip_count + acc_b.clip_count
             zero = acc_a.zero_count + acc_b.zero_count if collect_zero else None
@@ -1432,11 +1464,12 @@ class NetworkTrainer:
                 sumsq = acc_a.sumsq + acc_b.sumsq
                 xq_sumsq = acc_a.xq_sumsq + acc_b.xq_sumsq
                 xxq_sum = acc_a.xxq_sum + acc_b.xxq_sum
-                absmax = torch.maximum(acc_a.absmax, acc_b.absmax)
-                scale_min = torch.minimum(acc_a.scale_min, acc_b.scale_min)
-                scale_max = torch.maximum(acc_a.scale_max, acc_b.scale_max)
-                scale_sum = acc_a.scale_sum + acc_b.scale_sum
-                scale_count = acc_a.scale_count + acc_b.scale_count
+                if collect_detail:
+                    absmax = torch.maximum(acc_a.absmax, acc_b.absmax)
+                    scale_min = torch.minimum(acc_a.scale_min, acc_b.scale_min)
+                    scale_max = torch.maximum(acc_a.scale_max, acc_b.scale_max)
+                    scale_sum = acc_a.scale_sum + acc_b.scale_sum
+                    scale_count = acc_a.scale_count + acc_b.scale_count
                 if getattr(acc_a, "clip_err_sumsq", None) is not None and getattr(acc_b, "clip_err_sumsq", None) is not None:
                     clip_err_sumsq = acc_a.clip_err_sumsq + acc_b.clip_err_sumsq
                 if getattr(acc_a, "round_err_sumsq", None) is not None and getattr(acc_b, "round_err_sumsq", None) is not None:
@@ -1448,7 +1481,10 @@ class NetworkTrainer:
                     collect_full,
                     collect_zero,
                     collect_near_zero,
-                    getattr(acc_a, "collect_error_parts", False) or getattr(acc_b, "collect_error_parts", False),
+                    collect_detail=collect_detail,
+                    collect_error_parts=(
+                        getattr(acc_a, "collect_error_parts", False) or getattr(acc_b, "collect_error_parts", False)
+                    ),
                 )
             else:
                 temp_acc = acc_cls(acc_a.numel.device, collect_full, collect_zero, collect_near_zero)
@@ -3278,10 +3314,12 @@ class NetworkTrainer:
                                 (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or bool(dq_bits_sched)
                             ) and (args.dq_delta_stat == "rms")
                             do_auto = auto_eligible and (step_idx % dq_auto_every == 0)
+                            dq_log_full_detail = dq_log_detail == "full" or dq_log_mode == "per_module"
                             collect_full = bool(do_log or (do_auto and dq_low_auto_enabled))
-                            collect_zero = bool(do_log)
-                            collect_near_zero = bool(do_log and ("near_zero_rate" in dq_log_extra))
-                            collect_error_parts = bool(do_log and dq_log_error_parts)
+                            collect_zero = bool(do_log and dq_log_full_detail)
+                            collect_near_zero = bool(do_log and dq_log_full_detail and ("near_zero_rate" in dq_log_extra))
+                            collect_detail = bool(do_log and dq_log_full_detail)
+                            collect_error_parts = False
                             target = "z" if getattr(args, "dq_quantize_z", False) else "delta"
 
                             dq_stats_kwargs = dict(
@@ -3292,13 +3330,17 @@ class NetworkTrainer:
                                 collect_full=collect_full,
                                 collect_zero=collect_zero,
                                 collect_near_zero=collect_near_zero,
+                                collect_detail=collect_detail,
                                 log_mode=dq_log_mode,
                                 log_scope=dq_log_scope,
                                 auto_scope=getattr(args, "dq_delta_scope", "both"),
                                 target=target,
                             )
                             dq_stats_state_fn = accelerator.unwrap_model(network).set_dq_stats_state
-                            supports_error_parts = "collect_error_parts" in inspect.signature(dq_stats_state_fn).parameters
+                            dq_stats_params = inspect.signature(dq_stats_state_fn).parameters
+                            if "collect_detail" not in dq_stats_params:
+                                dq_stats_kwargs.pop("collect_detail", None)
+                            supports_error_parts = "collect_error_parts" in dq_stats_params
                             if supports_error_parts:
                                 dq_stats_state_fn(
                                     **dq_stats_kwargs,
@@ -3473,13 +3515,18 @@ class NetworkTrainer:
                                 collect_full = dq_stats["collect_full"]
                                 collect_zero = dq_stats["collect_zero"]
                                 collect_near_zero = dq_stats["collect_near_zero"]
-                                _dq_reduce_stats(accum_by_scope, collect_full, collect_zero, collect_near_zero)
+                                collect_detail = dq_stats.get("collect_detail", collect_full)
+                                _dq_reduce_stats(accum_by_scope, collect_full, collect_zero, collect_near_zero, collect_detail)
 
                                 cur_bits = last_applied_bits
                                 qmax = (1 << (cur_bits - 1)) - 1 if cur_bits is not None else None
                                 metrics = {
-                                    "unet": _dq_compute_metrics(accum_by_scope["unet"], qmax, collect_full, collect_zero, collect_near_zero),
-                                    "te": _dq_compute_metrics(accum_by_scope["te"], qmax, collect_full, collect_zero, collect_near_zero),
+                                    "unet": _dq_compute_metrics(
+                                        accum_by_scope["unet"], qmax, collect_full, collect_zero, collect_near_zero, collect_detail
+                                    ),
+                                    "te": _dq_compute_metrics(
+                                        accum_by_scope["te"], qmax, collect_full, collect_zero, collect_near_zero, collect_detail
+                                    ),
                                 }
 
                                 auto_applied = 0
@@ -3519,8 +3566,11 @@ class NetworkTrainer:
                                                 collect_full,
                                                 collect_zero,
                                                 collect_near_zero,
+                                                collect_detail,
                                             )
-                                            auto_metrics = _dq_compute_metrics(temp_acc, qmax, collect_full, collect_zero, collect_near_zero)
+                                            auto_metrics = _dq_compute_metrics(
+                                                temp_acc, qmax, collect_full, collect_zero, collect_near_zero, collect_detail
+                                            )
 
                                         clip_rate_raw = auto_metrics["clip_rate"]
                                         if clip_rate_raw is not None:
@@ -3702,8 +3752,9 @@ class NetworkTrainer:
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
-                                    include_near_zero = "near_zero_rate" in dq_log_extra
-                                    header = _dq_log_header(dq_log_mode, include_near_zero)
+                                    log_full_detail = dq_log_detail == "full" or dq_log_mode == "per_module"
+                                    include_near_zero = log_full_detail and "near_zero_rate" in dq_log_extra
+                                    header = _dq_log_header(dq_log_mode, include_near_zero, detail=dq_log_detail)
                                     log_scopes = ["unet", "te"] if dq_stats["log_scope"] == "both" else [dq_stats["log_scope"]]
                                     quant_err_rms_ema = dq_quant_err_rms_ema_state
                                     quant_err_ratio_ema = dq_quant_err_ratio_ema_state
@@ -3714,8 +3765,11 @@ class NetworkTrainer:
                                             collect_full,
                                             collect_zero,
                                             collect_near_zero,
+                                            collect_detail,
                                         )
-                                        ema_metrics = _dq_compute_metrics(ema_acc, qmax, collect_full, collect_zero, collect_near_zero)
+                                        ema_metrics = _dq_compute_metrics(
+                                            ema_acc, qmax, collect_full, collect_zero, collect_near_zero, collect_detail
+                                        )
                                     else:
                                         ema_metrics = metrics[dq_stats["log_scope"]]
                                     if ema_metrics is not None:
@@ -3787,19 +3841,23 @@ class NetworkTrainer:
                                                             round_err_ratio = round_err_rms / (rms + 1e-12)
                                                         if err_sumsq.item() > 0:
                                                             round_share = (torch.clamp(item["round_err_sumsq"], min=0.0) / (err_sumsq + 1e-12)).item()
-                                                row = values + [
-                                                    item["module"],
-                                                    item["shape"],
-                                                    rms,
-                                                    absmax,
-                                                    range_val,
-                                                    scale_min,
-                                                    scale_mean,
-                                                    scale_max,
-                                                    qmax if qmax is not None else "",
+                                                row = values + [item["module"], item["shape"], rms]
+                                                if log_full_detail:
+                                                    row += [
+                                                        absmax,
+                                                        range_val,
+                                                        scale_min,
+                                                        scale_mean,
+                                                        scale_max,
+                                                        qmax if qmax is not None else "",
+                                                    ]
+                                                row += [
                                                     clip_rate,
                                                     clip_rate_ema if clip_rate_ema is not None else "",
-                                                    zero_rate,
+                                                ]
+                                                if log_full_detail:
+                                                    row.append(zero_rate)
+                                                row += [
                                                     quant_err_rms,
                                                     quant_err_rms_ema if quant_err_rms_ema is not None else "",
                                                     quant_err_ratio,
@@ -3821,15 +3879,6 @@ class NetworkTrainer:
                                                     dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
                                                     low_auto_phase if dq_low_auto_enabled else "",
                                                 ]
-                                                if dq_log_error_parts:
-                                                    row += [
-                                                        clip_err_rms if clip_err_rms is not None else "",
-                                                        round_err_rms if round_err_rms is not None else "",
-                                                        clip_err_ratio if clip_err_ratio is not None else "",
-                                                        round_err_ratio if round_err_ratio is not None else "",
-                                                        clip_share if clip_share is not None else "",
-                                                        round_share if round_share is not None else "",
-                                                    ]
                                                 row += [
                                                     numel,
                                                     auto_applied,
@@ -3844,17 +3893,23 @@ class NetworkTrainer:
                                                 ]
                                                 _write_csv(dq_log_path, header, ",".join(_dq_format_value(v) for v in row))
                                         else:
-                                            row = values + [
-                                                m["rms"],
-                                                m["absmax"],
-                                                m["range"],
-                                                m["scale_min"],
-                                                m["scale_mean"],
-                                                m["scale_max"],
-                                                qmax if qmax is not None else "",
+                                            row = values + [m["rms"]]
+                                            if log_full_detail:
+                                                row += [
+                                                    m["absmax"],
+                                                    m["range"],
+                                                    m["scale_min"],
+                                                    m["scale_mean"],
+                                                    m["scale_max"],
+                                                    qmax if qmax is not None else "",
+                                                ]
+                                            row += [
                                                 m["clip_rate"],
                                                 clip_rate_ema if clip_rate_ema is not None else "",
-                                                m["zero_rate"],
+                                            ]
+                                            if log_full_detail:
+                                                row.append(m["zero_rate"])
+                                            row += [
                                                 m["quant_err_rms"],
                                                 quant_err_rms_ema if quant_err_rms_ema is not None else "",
                                                 m["quant_err_ratio"],
@@ -3876,15 +3931,6 @@ class NetworkTrainer:
                                                 dq_low_auto_qerr_per_clip_threshold if dq_low_auto_enabled else "",
                                                 low_auto_phase if dq_low_auto_enabled else "",
                                             ]
-                                            if dq_log_error_parts:
-                                                row += [
-                                                    m["clip_err_rms"] if m["clip_err_rms"] is not None else "",
-                                                    m["round_err_rms"] if m["round_err_rms"] is not None else "",
-                                                    m["clip_err_ratio"] if m["clip_err_ratio"] is not None else "",
-                                                    m["round_err_ratio"] if m["round_err_ratio"] is not None else "",
-                                                    m["clip_share"] if m["clip_share"] is not None else "",
-                                                    m["round_share"] if m["round_share"] is not None else "",
-                                                ]
                                             row += [
                                                 m["numel"],
                                                 auto_applied,
@@ -4709,7 +4755,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dq_delta_triton_stats",
         action="store_true",
-        help="Experimental: collect dq_delta log/auto stats with Triton when supported; falls back to PyTorch, especially with --dq_delta_log_error_parts",
+        help="Experimental: collect dq_delta log/auto stats with Triton when supported; falls back to PyTorch when unsupported",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(
@@ -4736,6 +4782,13 @@ def setup_parser() -> argparse.ArgumentParser:
         default="summary",
         choices=["summary", "per_module"],
         help="dq_delta log mode: summary or per_module / dq_delta ログ粒度（summary/per_module）",
+    )
+    parser.add_argument(
+        "--dq_delta_log_detail",
+        type=str,
+        default="basic",
+        choices=["basic", "full"],
+        help="dq_delta log detail: basic or full / dq_delta log detail（basic/full）",
     )
     parser.add_argument(
         "--dq_delta_log_file",
@@ -4907,11 +4960,6 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.001,
         help="ClipRate floor for QErrPerClip diagnostics / QErrPerClip 診断で使う ClipRate 下限",
-    )
-    parser.add_argument(
-        "--dq_delta_log_error_parts",
-        action="store_true",
-        help="Log clip/round components of dq_delta quantization error / dq_delta量子化誤差のclip/round成分をログ出力",
     )
     # ema_* options removed
     # LoRA rounding options
