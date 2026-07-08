@@ -80,6 +80,31 @@ if _TRITON_AVAILABLE:
         tl.store(scale_ptr + c, scale)
 
     @triton.jit
+    def _scale_bits_channel_rms_nlc_kernel(
+        x_ptr,
+        scale_ptr,
+        reduction_count: tl.constexpr,
+        channel_count: tl.constexpr,
+        range_mul,
+        qmax,
+        eps,
+        BLOCK_R: tl.constexpr,
+        BLOCK_C: tl.constexpr,
+    ):
+        c_offsets = tl.program_id(axis=0) * BLOCK_C + tl.arange(0, BLOCK_C)
+        r_offsets = tl.arange(0, BLOCK_R)
+        mask = (r_offsets[:, None] < reduction_count) & (c_offsets[None, :] < channel_count)
+
+        # NLC contiguous: rows are N * L, channels are C. This 2D tile keeps
+        # channel loads contiguous instead of gathering one strided channel at a time.
+        offsets = r_offsets[:, None] * channel_count + c_offsets[None, :]
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        sumsq = tl.sum(x * x, axis=0)
+        rms = tl.sqrt(sumsq / reduction_count + eps)
+        scale = rms * range_mul / qmax
+        tl.store(scale_ptr + c_offsets, scale, mask=c_offsets < channel_count)
+
+    @triton.jit
     def _fake_quantize_levels_stoch_kernel(
         x_ptr,
         scale_ptr,
@@ -246,6 +271,27 @@ def triton_compute_scale_bits_channel_rms(
 
     scale_flat = torch.empty((channel_count,), device=x.device, dtype=torch.float32)
     qmax = float((1 << (bits - 1)) - 1)
+
+    if x.ndim == 3 and channel_count >= 4096 and block_size * 16 <= 131072:
+        try:
+            _scale_bits_channel_rms_nlc_kernel[(triton.cdiv(channel_count, 16),)](
+                x,
+                scale_flat,
+                reduction_count,
+                channel_count,
+                float(range_mul),
+                qmax,
+                float(eps),
+                BLOCK_R=block_size,
+                BLOCK_C=16,
+                num_warps=8,
+            )
+        except Exception as e:
+            _warn_once("triton_scale_nlc_kernel", f"Triton NLC scale kernel failed; falling back to PyTorch: {e}")
+            return None
+
+        return scale_flat.view(*out_shape)
+
     size0 = x.shape[0]
     size1 = x.shape[1] if x.ndim >= 2 else 1
     size2 = x.shape[2] if x.ndim >= 3 else 1

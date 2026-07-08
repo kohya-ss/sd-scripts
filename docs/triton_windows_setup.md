@@ -98,6 +98,8 @@ rng = torch.sqrt(torch.mean(x.to(torch.float32) ** 2, dim=reduce_dims, keepdim=T
 scale = (rng / qmax).to(torch.float32)
 ```
 
+3D NLC tensor では、A の scale 計算だけ NLC 専用の2D tile kernelを使う。これは同じ式を `rows = N * L`, `cols = C` として処理し、channel方向をまとめて読むことで、従来の channelごとの strided load を避けるため。
+
 Triton B は [library/rounding_util.py](../library/rounding_util.py) の `fake_quantize_levels(..., mode="stoch")` に対応する。
 
 対応する式:
