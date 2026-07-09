@@ -341,3 +341,9 @@ DQ autoログに該当列がある場合は、`QErrPerClip`（run指定閾値の
 - 学習安定性判定: `grad.summary`, `dq.summary`, `diagnostics`
 - 重みの偏り判定: `lora.summary`, `lora.module_summary`, `lora.diagnostic`
 - 学習推移判定: `lora_trend.checkpoints`, `lora_trend.modules[].legend_rows`
+
+## dq_delta basicログで省略されるグラフ
+
+`--dq_delta_log_detail basic` の `dq_delta_logs` には、軽量化のため `ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` が出力されない。そのためHTMLレポートでも、該当列がない場合は `ZeroRate`, `AbsMax`, `Range` 系のグラフを表示しない。
+
+`QErrPerClip` グラフは主に `dq_delta_auto` 側の `QErrPerClip` 列から作る。autoログに数値が1つ以上ある場合に表示され、古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使う。

@@ -154,6 +154,67 @@ if _TRITON_AVAILABLE:
         tl.store(out_ptr + offsets, out, mask=mask)
 
     @triton.jit
+    def _fake_quantize_levels_stoch_stats_kernel(
+        x_ptr,
+        scale_ptr,
+        out_ptr,
+        rand_ptr,
+        stats_ptr,
+        n_elements: tl.constexpr,
+        scale_numel: tl.constexpr,
+        dim1: tl.constexpr,
+        dim2: tl.constexpr,
+        dim3: tl.constexpr,
+        ndim: tl.constexpr,
+        qmin: tl.constexpr,
+        qmax: tl.constexpr,
+        USE_DIV_RN: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        pid = tl.program_id(axis=0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+
+        if scale_numel == 1:
+            scale_offsets = tl.full((BLOCK_SIZE,), 0, tl.int64)
+        elif ndim == 4:
+            scale_offsets = (offsets // (dim2 * dim3)) % dim1
+        elif ndim == 3:
+            scale_offsets = offsets % dim2
+        else:
+            scale_offsets = offsets % dim1
+
+        scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
+        if USE_DIV_RN:
+            y = tl.div_rn(x, scale)
+        else:
+            y = x / scale
+        q_floor = tl.floor(y)
+        frac = y - q_floor
+        probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
+        rnd = tl.load(rand_ptr + offsets, mask=mask, other=1.0).to(tl.float32)
+        q = q_floor + (rnd < probs).to(tl.float32)
+        q = tl.minimum(tl.maximum(q, qmin), qmax)
+        out = q * scale
+        tl.store(out_ptr + offsets, out, mask=mask)
+        out_stored = tl.load(out_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+
+        numel = tl.sum(mask.to(tl.float32), axis=0)
+        clip_count = tl.sum(((tl.abs(y) >= qmax) & mask).to(tl.float32), axis=0)
+        sumsq = tl.sum(x * x, axis=0)
+        xq_sumsq = tl.sum(out_stored * out_stored, axis=0)
+        xxq_sum = tl.sum(x * out_stored, axis=0)
+
+        base = pid * 5
+        tl.store(stats_ptr + base + 0, numel)
+        tl.store(stats_ptr + base + 1, clip_count)
+        tl.store(stats_ptr + base + 2, sumsq)
+        tl.store(stats_ptr + base + 3, xq_sumsq)
+        tl.store(stats_ptr + base + 4, xxq_sum)
+
+    @triton.jit
     def _fake_quant_stats_kernel(
         x_ptr,
         q_ptr,
@@ -395,6 +456,112 @@ def triton_fake_quantize_levels_stoch(
         return None
 
     return out
+
+
+def _check_fake_quant_inputs(x: torch.Tensor, scale: torch.Tensor) -> Optional[tuple[torch.Tensor, int, int, int, int]]:
+    if not x.is_cuda or not scale.is_cuda:
+        return None
+    if x.ndim not in (2, 3, 4):
+        return None
+    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return None
+    if not x.is_contiguous() or not scale.is_contiguous():
+        return None
+
+    scale_flat = scale.reshape(-1)
+    scale_numel = scale_flat.numel()
+    if scale_numel not in (1, x.shape[1] if x.ndim in (2, 4) else x.shape[2]):
+        return None
+
+    dim1 = x.shape[1] if x.ndim >= 2 else 1
+    dim2 = x.shape[2] if x.ndim >= 3 else 1
+    dim3 = x.shape[3] if x.ndim >= 4 else 1
+    return scale_flat, scale_numel, dim1, dim2, dim3
+
+
+def triton_fake_quantize_levels_stoch_with_stats(
+    x: torch.Tensor,
+    *,
+    scale: torch.Tensor,
+    qmin: int,
+    qmax: int,
+    use_div_rn: bool = False,
+    rand: Optional[torch.Tensor] = None,
+) -> Optional[tuple[torch.Tensor, dict[str, Optional[torch.Tensor]]]]:
+    """Fuse stochastic fake quant B with the minimal dq_delta basic stats.
+
+    Python reference for the forward value is fake_quantize_levels(...,
+    mode="stoch"). The returned tensor is the dequantized forward value; STE is
+    intentionally applied by the caller so gradients stay identical to the
+    normal Python/Triton path.
+
+    Collected stats are the qerr-basic subset:
+        numel, clip_count, sumsq, xq_sumsq, xxq_sum
+    """
+    if not _TRITON_AVAILABLE:
+        _warn_once(
+            "triton_import",
+            f"Triton fused fake quant requested, but Triton is unavailable: {_TRITON_IMPORT_ERROR}",
+        )
+        return None
+
+    checked = _check_fake_quant_inputs(x, scale)
+    if checked is None:
+        return None
+    scale_flat, scale_numel, dim1, dim2, dim3 = checked
+
+    if rand is not None:
+        if rand.shape != x.shape or not rand.is_cuda or not rand.is_contiguous():
+            return None
+        rand_t = rand.to(device=x.device, dtype=torch.float32)
+    else:
+        rand_t = torch.rand_like(x, dtype=torch.float32)
+
+    n_elements = x.numel()
+    if n_elements <= 0:
+        return None
+    out = torch.empty_like(x)
+    block_size = 256
+    n_blocks = triton.cdiv(n_elements, block_size)
+    stats = torch.empty((n_blocks, 5), device=x.device, dtype=torch.float32)
+
+    try:
+        _fake_quantize_levels_stoch_stats_kernel[(n_blocks,)](
+            x,
+            scale_flat,
+            out,
+            rand_t,
+            stats,
+            n_elements,
+            scale_numel,
+            dim1,
+            dim2,
+            dim3,
+            x.ndim,
+            qmin,
+            qmax,
+            bool(use_div_rn),
+            BLOCK_SIZE=block_size,
+        )
+    except Exception as e:
+        _warn_once("triton_fused_stats_kernel", f"Triton fused fake quant stats failed; falling back: {e}")
+        return None
+
+    sums = stats.sum(dim=0)
+    return out, {
+        "numel": sums[0].reshape(1),
+        "clip_count": sums[1].reshape(1),
+        "zero_count": None,
+        "near_zero_count": None,
+        "sumsq": sums[2].reshape(1),
+        "xq_sumsq": sums[3].reshape(1),
+        "xxq_sum": sums[4].reshape(1),
+        "absmax": None,
+        "scale_min": None,
+        "scale_max": None,
+        "scale_sum": None,
+        "scale_count": None,
+    }
 
 
 def triton_collect_fake_quant_stats(

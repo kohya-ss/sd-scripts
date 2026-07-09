@@ -19,6 +19,10 @@ else:
     TRITON_IMPORT_ERROR = None
 
 from library.rounding_util import compute_scale_bits, fake_quantize_levels
+try:
+    from library.triton_quant import triton_fake_quantize_levels_stoch_with_stats
+except Exception:
+    triton_fake_quantize_levels_stoch_with_stats = None
 
 
 if triton is not None:
@@ -69,6 +73,44 @@ if triton is not None:
         out = q * scale
         tl.store(out_ptr + offsets, out, mask=mask)
 
+    @triton.jit
+    def _debug_clip_count_kernel(
+        x_ptr,
+        scale_ptr,
+        stats_ptr,
+        n_elements: tl.constexpr,
+        scale_numel: tl.constexpr,
+        dim1: tl.constexpr,
+        dim2: tl.constexpr,
+        dim3: tl.constexpr,
+        ndim: tl.constexpr,
+        qmax: tl.constexpr,
+        USE_DIV_RN: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        pid = tl.program_id(axis=0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+
+        if scale_numel == 1:
+            scale_offsets = tl.full((BLOCK_SIZE,), 0, tl.int64)
+        elif ndim == 4:
+            scale_offsets = (offsets // (dim2 * dim3)) % dim1
+        elif ndim == 3:
+            scale_offsets = offsets % dim2
+        else:
+            scale_offsets = offsets % dim1
+
+        scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
+        if USE_DIV_RN:
+            y = tl.div_rn(x, scale)
+        else:
+            y = x / scale
+        clip_count = tl.sum(((tl.abs(y) >= qmax) & mask).to(tl.float32), axis=0)
+        tl.store(stats_ptr + pid, clip_count)
+
 
 @dataclass
 class CaseResult:
@@ -90,6 +132,20 @@ class ScaleResult:
     max_abs_diff: float
     max_rel_diff: float
     mean_abs_diff: float
+
+
+@dataclass
+class FusedStatsResult:
+    dtype: str
+    shape: str
+    div: str
+    out_equal: bool
+    out_mismatches: int
+    out_max_abs_diff: float
+    clip_count_abs_diff: float
+    sumsq_rel_diff: float
+    xq_sumsq_rel_diff: float
+    xxq_sum_rel_diff: float
 
 
 @dataclass
@@ -280,6 +336,40 @@ def debug_triton_fake_quant(
         BLOCK_SIZE=block_size,
     )
     return out
+
+
+def debug_triton_clip_count(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    qmax: int,
+    *,
+    use_div_rn: bool,
+) -> torch.Tensor:
+    if triton is None:
+        raise RuntimeError(f"Triton import failed: {TRITON_IMPORT_ERROR}")
+    scale_flat = scale.reshape(-1).contiguous()
+    n_elements = x.numel()
+    block_size = 256
+    n_blocks = triton.cdiv(n_elements, block_size)
+    stats = torch.empty((n_blocks,), device=x.device, dtype=torch.float32)
+    dim1 = x.shape[1] if x.ndim >= 2 else 1
+    dim2 = x.shape[2] if x.ndim >= 3 else 1
+    dim3 = x.shape[3] if x.ndim >= 4 else 1
+    _debug_clip_count_kernel[(n_blocks,)](
+        x,
+        scale_flat,
+        stats,
+        n_elements,
+        scale_flat.numel(),
+        dim1,
+        dim2,
+        dim3,
+        x.ndim,
+        qmax,
+        use_div_rn,
+        BLOCK_SIZE=block_size,
+    )
+    return stats.sum().reshape(1)
 
 
 def _case_results(
@@ -946,6 +1036,65 @@ def run_scale_checks() -> list[ScaleResult]:
     return results
 
 
+def _rel_diff(a: torch.Tensor, b: torch.Tensor) -> float:
+    return float(((a - b).abs() / a.abs().clamp_min(1e-30)).max().item())
+
+
+def _fused_stats_case(*, dtype: torch.dtype, shape: tuple[int, ...], use_div_rn: bool) -> FusedStatsResult:
+    if triton_fake_quantize_levels_stoch_with_stats is None:
+        raise RuntimeError("triton_fake_quantize_levels_stoch_with_stats is unavailable")
+
+    channel_count = shape[1] if len(shape) in (2, 4) else shape[2]
+    scale_flat = torch.linspace(0.0007, 0.0031, channel_count, device="cuda", dtype=torch.float32)
+    scale = _scale_to_shape(scale_flat, torch.empty(shape, device="cuda"), "channel").contiguous()
+    x = _make_x(shape, dtype, scale, "random").contiguous()
+    rand = torch.rand(x.shape, device="cuda", dtype=torch.float32).contiguous()
+
+    tri = debug_triton_fake_quant(x, scale, -127, 127, rand, use_div_rn=use_div_rn)
+    fused = triton_fake_quantize_levels_stoch_with_stats(
+        x,
+        scale=scale,
+        qmin=-127,
+        qmax=127,
+        use_div_rn=use_div_rn,
+        rand=rand,
+    )
+    if fused is None:
+        raise RuntimeError(f"fused stats returned None for shape={shape} dtype={dtype}")
+    fused_out, stats = fused
+
+    clip_count_ref = debug_triton_clip_count(x, scale, 127, use_div_rn=use_div_rn)
+    x_fp32 = x.to(torch.float32)
+    q_fp32 = fused_out.to(torch.float32)
+    sumsq_ref = torch.dot(x_fp32.reshape(-1), x_fp32.reshape(-1)).reshape(1)
+    xq_sumsq_ref = torch.dot(q_fp32.reshape(-1), q_fp32.reshape(-1)).reshape(1)
+    xxq_sum_ref = torch.dot(x_fp32.reshape(-1), q_fp32.reshape(-1)).reshape(1)
+
+    out_diff = (tri.to(torch.float32) - fused_out.to(torch.float32)).abs()
+    return FusedStatsResult(
+        dtype=str(dtype).replace("torch.", ""),
+        shape=str(tuple(shape)),
+        div="div_rn" if use_div_rn else "default",
+        out_equal=bool(torch.equal(tri, fused_out)),
+        out_mismatches=int((tri != fused_out).sum().item()),
+        out_max_abs_diff=float(out_diff.max().item()),
+        clip_count_abs_diff=float((clip_count_ref - stats["clip_count"]).abs().max().item()),
+        sumsq_rel_diff=_rel_diff(sumsq_ref, stats["sumsq"]),
+        xq_sumsq_rel_diff=_rel_diff(xq_sumsq_ref, stats["xq_sumsq"]),
+        xxq_sum_rel_diff=_rel_diff(xxq_sum_ref, stats["xxq_sum"]),
+    )
+
+
+def run_fused_stats_checks() -> list[FusedStatsResult]:
+    torch.manual_seed(2468)
+    results: list[FusedStatsResult] = []
+    for dtype in _supported_dtypes():
+        for shape in [(17, 13), (3, 19, 11), (2, 7, 5, 3), (1, 77, 1280)]:
+            for use_div_rn in (False, True):
+                results.append(_fused_stats_case(dtype=dtype, shape=shape, use_div_rn=use_div_rn))
+    return results
+
+
 def print_results(results: Iterable[CaseResult]) -> int:
     failures = 0
     print("forward fixed-rand comparison")
@@ -1010,6 +1159,31 @@ def print_end_to_end_results(results: Iterable[EndToEndResult]) -> int:
             f"{r.name},{r.dtype},{r.shape},{r.scale},"
             f"{r.equal},{r.mismatches},{r.max_abs_diff:.9g},{r.mean_abs_diff:.9g},"
             f"{r.scale_max_abs_diff:.9g},{r.scale_max_rel_diff:.9g}"
+        )
+    return failures
+
+
+def print_fused_stats_results(results: Iterable[FusedStatsResult]) -> int:
+    failures = 0
+    print("fused B+stats fixed-rand comparison")
+    print(
+        "dtype,shape,div,out_equal,out_mismatches,out_max_abs_diff,"
+        "clip_count_abs_diff,sumsq_rel_diff,xq_sumsq_rel_diff,xxq_sum_rel_diff"
+    )
+    for r in results:
+        ok = (
+            r.out_equal
+            and r.clip_count_abs_diff == 0.0
+            and r.sumsq_rel_diff < 1e-5
+            and r.xq_sumsq_rel_diff < 1e-5
+            and r.xxq_sum_rel_diff < 1e-5
+        )
+        if not ok:
+            failures += 1
+        print(
+            f"{r.dtype},{r.shape},{r.div},{r.out_equal},{r.out_mismatches},{r.out_max_abs_diff:.9g},"
+            f"{r.clip_count_abs_diff:.9g},{r.sumsq_rel_diff:.9g},"
+            f"{r.xq_sumsq_rel_diff:.9g},{r.xxq_sum_rel_diff:.9g}"
         )
     return failures
 
@@ -1177,6 +1351,11 @@ def main() -> int:
         help="Skip end-to-end scale+fake-quant fixed-rand comparison",
     )
     parser.add_argument(
+        "--skip-fused-stats",
+        action="store_true",
+        help="Skip fused B+stats fixed-rand comparison",
+    )
+    parser.add_argument(
         "--skip-mutation",
         action="store_true",
         help="Skip production wrapper input mutation/alias check",
@@ -1203,6 +1382,8 @@ def main() -> int:
         failures += print_mutation_results(run_mutation_checks())
     if not args.skip_e2e:
         failures += print_end_to_end_results(run_end_to_end_checks())
+    if not args.skip_fused_stats:
+        failures += print_fused_stats_results(run_fused_stats_checks())
     if args.capture_dir is not None:
         failures += print_capture_results(run_capture_checks(args.capture_dir))
     failures += print_scale_results(run_scale_checks())

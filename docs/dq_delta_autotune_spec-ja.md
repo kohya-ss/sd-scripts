@@ -483,3 +483,12 @@ auto_every | auto_ema | 実効履歴(更新回) | 実効履歴(optimizer step)
 - TE と UNet で別々に range_mul を持つ（scope 分離）
 - clip_rate のみならず zero_rate を使った下限制御の追加
 - 量子化ノイズの推定（RMS 誤差）ログの追加
+
+## Triton stats mode
+
+`--dq_delta_triton_stats_mode {separate,fused}` は、`--dq_delta_triton_stats` 有効時のstats計算方式を選ぶ。
+
+- `separate`: 既存方式。forward fake quant後に、別Triton kernelでstatsを読む。
+- `fused`: 実験方式。stats有効stepだけ、stochastic fake quant B と basic stats の部分集計を同じTriton kernelで行う。
+
+`fused` v1は `--dq_delta_log_detail basic` 相当の最小統計だけを対象にする。対象は `numel`, `clip_count`, `sumsq`, `xq_sumsq`, `xxq_sum`。`full`, `per_module`, `near_zero_rate`, `ZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` が必要な場合は既存経路にfallbackする。

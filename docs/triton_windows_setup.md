@@ -189,3 +189,37 @@ xl05 のログは通常 PyTorch path に近く、生成結果も良好だった�
 - `--dq_delta_use_triton` を外せば既存 PyTorch path に戻る。
 - Triton path は optional であり、公開環境に Triton がなくても動く必要がある。
 - 追加実装時は、対応する Python 実装の式をコメントやdocsに明記する。
+
+## B+stats fused 実験ルート
+
+`--dq_delta_triton_stats_mode {separate,fused}` を追加した。
+
+- `separate` は従来の stats 用Triton kernelを別に起動する方式。
+- `fused` は stats有効stepだけ、stochastic fake quant B と basic stats の部分集計を同じTriton kernelで行う方式。
+- 既定値は `separate`。`fused` は明示指定した場合だけ使う実験ルート。
+
+`fused` が使われる条件は安全側に絞っている。
+
+```text
+--dq_delta_use_triton
+--dq_delta_triton_stats
+--dq_delta_triton_stats_mode fused
+mode=stoch
+--dq_delta_triton_scale_only なし
+--dq_delta_log_detail basic 相当
+per_module/near_zero/full detail なし
+```
+
+条件外では既存の `separate` またはPyTorch statsにfallbackする。`--dq_delta_triton_div_rn` を指定した場合、fused側の fake quant と clip_count 判定でも同じ `tl.div_rn` 由来の値を使う。
+
+fused v1で集計するのは basic/auto 判定に必要な最小統計のみ。
+
+```text
+numel
+clip_count
+sumsq
+xq_sumsq
+xxq_sum
+```
+
+`ZeroRate`, `NearZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` は full/detail 用として、fused v1では扱わない。

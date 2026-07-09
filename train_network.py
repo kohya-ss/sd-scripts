@@ -1006,7 +1006,8 @@ class NetworkTrainer:
                 f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
                 f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}, "
                 f"triton_div_rn={getattr(args,'dq_delta_triton_div_rn', False)}, "
-                f"triton_stats={getattr(args,'dq_delta_triton_stats', False)}"
+                f"triton_stats={getattr(args,'dq_delta_triton_stats', False)}, "
+                f"triton_stats_mode={getattr(args,'dq_delta_triton_stats_mode', 'separate')}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1783,6 +1784,7 @@ class NetworkTrainer:
                 triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                 triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                 triton_stats=getattr(args, "dq_delta_triton_stats", False),
+                triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3300,6 +3302,7 @@ class NetworkTrainer:
                                         triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                         triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                         triton_stats=getattr(args, "dq_delta_triton_stats", False),
+                                        triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3749,6 +3752,7 @@ class NetworkTrainer:
                                             triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
                                             triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                             triton_stats=getattr(args, "dq_delta_triton_stats", False),
+                                            triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -4756,6 +4760,13 @@ def setup_parser() -> argparse.ArgumentParser:
         "--dq_delta_triton_stats",
         action="store_true",
         help="Experimental: collect dq_delta log/auto stats with Triton when supported; falls back to PyTorch when unsupported",
+    )
+    parser.add_argument(
+        "--dq_delta_triton_stats_mode",
+        type=str,
+        default="separate",
+        choices=["separate", "fused"],
+        help="Experimental: Triton dq_delta stats mode. separate keeps the current stats kernel; fused combines stochastic fake-quant B with basic stats.",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(
