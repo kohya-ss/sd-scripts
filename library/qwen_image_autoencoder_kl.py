@@ -103,34 +103,11 @@ class DiagonalGaussianDistribution(object):
 
 class ChunkedConv2d(nn.Conv2d):
     """
-    Convolutional layer that processes input in chunks to reduce memory usage.
+    Convolutional layer that processes input in height chunks to reduce memory usage.
 
-    Parameters
-    ----------
-    spatial_chunk_size : int, optional
-        Size of chunks to process at a time. Default is None, which means no chunking.
-
-    TODO: Commonize with similar implementation in hunyuan_image_vae.py
-
-    Anima 修复说明：
-    原实现按输入高度切 chunk。，当 spatial_chunk_size 很小，尤其是 --vae_chunk_size=1
-    或被自动修正为 2 时，stride=2 的 3x3 Conv2d 可能拿到高度只有 2 的输入块，
-    导致 PyTorch 报错：
-
-        Calculated padded input size per channel: (2 x xxxx).
-        Kernel size: (3 x 3). Kernel size can't be greater than actual input size.
-
-    新实现改为“按输出高度切块”，每个输出 chunk 会反推它真正需要的输入范围，
-    并手动补齐 padding。这样即使 spatial_chunk_size=1，也会保证送进 3x3
-    卷积的输入高度足够，不会因为小 chunk 损坏 VAE 编码。
-
-    修复目标：
-    1. 不裁剪原图。
-    2. 不缩放原图。
-    3. 不丢失图像信息。
-    4. 兼容 stride=1 / stride=2。
-    5. 兼容 padding=0 / padding=1。
-    6. 保留空间分块以降低显存占用。
+    This implementation chunks by output height, then computes the required input
+    range for each output chunk. This keeps very small chunk sizes safe for
+    stride=1/2 and padding=0/1 convolutions.
     """
 
     def __init__(self, *args, **kwargs):
@@ -147,16 +124,15 @@ class ChunkedConv2d(nn.Conv2d):
         assert self.kernel_size[0] == self.kernel_size[1], "Only square kernels are supported."
         assert self.stride[0] == self.stride[1], "Only equal strides are supported."
 
-        # 保存原始 padding。forward 分块时会手动 padding，因此模块自身 padding 设为 0。
+        # Store original padding. Chunked forward applies padding manually.
         self.original_padding = self.padding
         self.padding = (0, 0)  # We handle padding manually in forward
 
     def _forward_no_chunk(self, x: torch.Tensor) -> torch.Tensor:
         """
-        不分块执行原始 Conv2d。
+        Run the original Conv2d without chunking.
 
-        这里临时恢复 PyTorch Conv2d 的原始 padding，执行完后再设回 0。
-        使用 try/finally 是为了避免 forward 中途报错后 self.padding 留在错误状态。
+        Restore Conv2d padding temporarily and always reset it afterwards.
         """
         self.padding = self.original_padding
         try:
@@ -165,44 +141,29 @@ class ChunkedConv2d(nn.Conv2d):
             self.padding = (0, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # If chunking is not needed, process normally. We chunk only along height dimension.
+        # If chunking is disabled, process normally.
         if self.spatial_chunk_size is None or self.spatial_chunk_size <= 0:
             return self._forward_no_chunk(x)
 
-        # 当前 Conv2d 的基础参数。
+        # Basic Conv2d parameters.
         batch_size, _, input_height, input_width = x.shape
         kernel_h, kernel_w = self.kernel_size
         stride_h, stride_w = self.stride
         pad_h, pad_w = self.original_padding
 
-        # PyTorch Conv2d 输出尺寸公式：
-        # out = floor((in + 2 * padding - kernel) / stride) + 1
+        # PyTorch Conv2d output size formula.
         y_height = (input_height + 2 * pad_h - kernel_h) // stride_h + 1
         y_width = (input_width + 2 * pad_w - kernel_w) // stride_w + 1
 
-        # 如果输入太小，交给原始 Conv2d 报出真实错误；
-        # 正常图像不会走到这里。
+        # Let the original Conv2d raise the real error for invalid input sizes.
         if y_height <= 0 or y_width <= 0:
             return self._forward_no_chunk(x)
 
-        # 小图或者不值得分块时，直接走原始 Conv2d，减少额外开销。
-        # 注意这里不再使用旧逻辑中的 kernel_size + chunk_size // 4 判断，
-        # 因为旧逻辑在 stride=2 且 chunk 很小时可能生成高度不足 3 的 chunk。
+        # Avoid chunking when it is unnecessary.
         if input_height <= self.spatial_chunk_size:
             return self._forward_no_chunk(x)
 
-        # ------------------------------------------------------------
-        # Anima 修复核心：
-        # 按“输出高度”切块，而不是按“输入高度”切块。
-        #
-        # 对每一段输出 [out_y0, out_y1)，反推出它需要的输入范围：
-        #
-        #   input_start = out_y0 * stride - padding
-        #   input_end   = (out_y1 - 1) * stride - padding + kernel
-        #
-        # 然后对超出输入边界的部分做 zero padding。
-        # 这样可以保证每个 chunk 送进 3x3 Conv2d 前都至少覆盖完整卷积核。
-        # ------------------------------------------------------------
+        # Chunk by output height and derive the required input range.
         out_chunk_rows = max(1, int(self.spatial_chunk_size))
 
         y = x.new_zeros((batch_size, self.out_channels, y_height, y_width))
@@ -211,25 +172,21 @@ class ChunkedConv2d(nn.Conv2d):
         while out_y0 < y_height:
             out_y1 = min(out_y0 + out_chunk_rows, y_height)
 
-            # 当前输出 chunk 对应的理论输入范围，允许越界，越界部分稍后 padding。
+            # The theoretical input range needed for this output chunk.
             in_y0 = out_y0 * stride_h - pad_h
             in_y1 = (out_y1 - 1) * stride_h - pad_h + kernel_h
 
-            # 计算需要补的上下 padding。
+            # Padding needed beyond real input bounds.
             pad_top = max(0, -in_y0)
             pad_bottom = max(0, in_y1 - input_height)
 
-            # 裁到真实输入范围。
+            # Clamp to the real input range.
             real_in_y0 = max(0, in_y0)
             real_in_y1 = min(input_height, in_y1)
 
             chunk = x[:, :, real_in_y0:real_in_y1, :]
 
-            # 手动 padding：
-            # F.pad 的顺序是 (left, right, top, bottom)。
-            #
-            # 宽度方向不切块，所以直接使用原始 pad_w；
-            # 高度方向只补当前输出 chunk 实际需要的 pad_top / pad_bottom。
+            # Width is not chunked, so use the original horizontal padding.
             if pad_w > 0 or pad_top > 0 or pad_bottom > 0:
                 chunk = F.pad(
                     chunk,
@@ -238,22 +195,20 @@ class ChunkedConv2d(nn.Conv2d):
                     value=0,
                 )
 
-            # 分块卷积时 self.padding 必须保持 0，因为 padding 已经手动完成。
+            # Keep module padding disabled because padding was applied manually.
             self.padding = (0, 0)
             out_chunk = super().forward(chunk)
 
             expected_h = out_y1 - out_y0
 
-            # 理论上 out_chunk.shape[2] 应该等于 expected_h。
-            # 这里保留安全修正，避免极端尺寸下出现 1 像素误差。
+            # Safety correction for rare off-by-one shapes.
             if out_chunk.shape[2] > expected_h:
                 out_chunk = out_chunk[:, :, :expected_h, :]
             elif out_chunk.shape[2] < expected_h:
                 missing_h = expected_h - out_chunk.shape[2]
                 out_chunk = F.pad(out_chunk, (0, 0, 0, missing_h), mode="constant", value=0)
 
-            # 理论上 out_chunk.shape[3] 应该等于 y_width。
-            # 宽度方向不切块，但这里也做安全修正。
+            # Safety correction for output width.
             if out_chunk.shape[3] > y_width:
                 out_chunk = out_chunk[:, :, :, :y_width]
             elif out_chunk.shape[3] < y_width:
