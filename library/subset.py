@@ -33,7 +33,6 @@ class BaseSubset:
         token_warmup_min: int,
         token_warmup_step: Union[float, int],
         custom_attributes: Optional[Dict[str, Any]] = None,
-        timestep_sampling_offset: float = 0.0,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
@@ -61,7 +60,6 @@ class BaseSubset:
         self.token_warmup_step = token_warmup_step  # N（N<1ならN*max_train_steps）ステップ目でタグの数が最大になる
 
         self.custom_attributes = custom_attributes if custom_attributes is not None else {}
-        self.timestep_sampling_offset = timestep_sampling_offset
 
         self.img_count = 0
 
@@ -99,7 +97,6 @@ class DreamBoothSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
-        timestep_sampling_offset: float = 0.0,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
@@ -128,7 +125,6 @@ class DreamBoothSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
-            timestep_sampling_offset=timestep_sampling_offset,
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
@@ -172,7 +168,6 @@ class FineTuningSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
-        timestep_sampling_offset: float = 0.0,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
@@ -201,7 +196,6 @@ class FineTuningSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
-            timestep_sampling_offset=timestep_sampling_offset,
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
@@ -241,7 +235,6 @@ class ControlNetSubset(BaseSubset):
         token_warmup_min,
         token_warmup_step,
         custom_attributes: Optional[Dict[str, Any]] = None,
-        timestep_sampling_offset: float = 0.0,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
@@ -270,7 +263,6 @@ class ControlNetSubset(BaseSubset):
             token_warmup_min,
             token_warmup_step,
             custom_attributes=custom_attributes,
-            timestep_sampling_offset=timestep_sampling_offset,
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,

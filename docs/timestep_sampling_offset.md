@@ -1,10 +1,10 @@
-# Per-subset timestep sampling offset (`timestep_sampling_offset`)
+# Per-subset timestep sampling offset (`custom_attributes.timestep_sampling.offset`)
 
 ## Overview
 
-For flow-matching models, the noise level (timestep) at which each sample is trained materially affects the final result. `timestep_sampling_offset` shifts the flow-matching timestep sampling distribution per dataset subset toward higher- or lower-noise regions.
+For flow-matching models, the noise level (timestep) at which each sample is trained materially affects the final result. The `timestep_sampling.offset` custom attribute shifts the flow-matching timestep sampling distribution per dataset subset toward higher- or lower-noise regions.
 
-It is applied as an offset to the pre-sigmoid normal sample of the logit-normal (sigmoid / shift / flux_shift) schedule. Default `0.0` leaves sampling unchanged.
+It is applied as an offset to the pre-sigmoid normal sample of the logit-normal (sigmoid / shift / flux_shift) schedule. Default `0.0` (or omitted) leaves sampling unchanged.
 
 - **Negative** value → biases toward lower-noise timesteps (detail-focused steps)
 - **Positive** value → biases toward higher-noise timesteps (structure-focused steps)
@@ -28,20 +28,22 @@ SGA analyzes flow-matching fine-tuning as a quadratic form governed by a Neural 
 
 ## Usage
 
-In your dataset TOML config, set `timestep_sampling_offset` per subset:
+This feature uses `custom_attributes` to avoid expanding the subset public schema. Set it per subset in your dataset TOML config:
 
 ```toml
 [[datasets.subsets]]
 image_dir = "closeup_shots"
-timestep_sampling_offset = -0.5   # lower noise → detail refinement
+[datasets.subsets.custom_attributes]
+timestep_sampling = { offset = -0.5 }
 
 [[datasets.subsets]]
 image_dir = "full_body_shots"
-timestep_sampling_offset = 0.5    # higher noise → structure learning
+[datasets.subsets.custom_attributes]
+timestep_sampling = { offset = 0.5 }
 
 [[datasets.subsets]]
 image_dir = "other"
-# default 0.0 = unchanged
+# no custom_attributes needed — default is no offset
 ```
 
 Useful magnitudes are typically in the range of `-1.0` to `1.0`. The offset is applied before the sigmoid transform, so the effect on the final sigma distribution is nonlinear and saturates at large values.
@@ -50,4 +52,5 @@ Useful magnitudes are typically in the range of `-1.0` to `1.0`. The offset is a
 
 - Applies to `sigmoid`, `shift`, and `flux_shift` timestep sampling modes.
 - `uniform` and `sigma` (density-based) modes are not affected.
-- Currently wired in `anima_train_network.py`; other trainers can opt in with a one-line change.
+- Currently consumed by `anima_train_network.py`. Other trainers (FLUX, SD3, etc.) do not read this attribute; setting it for those trainers is a no-op.
+- The offset is applied only during **training**. Validation uses unbiased sampling for comparable loss metrics.
