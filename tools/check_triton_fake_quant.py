@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import torch
+from torch.utils.checkpoint import checkpoint
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 try:
     import triton
@@ -19,6 +25,7 @@ else:
     TRITON_IMPORT_ERROR = None
 
 import library.rounding_util as rounding_util
+import networks.lora as lora_impl
 from library.rounding_util import compute_scale_bits, fake_quantize_levels
 try:
     from library.triton_quant import (
@@ -189,6 +196,35 @@ class FallbackResult:
     rng_after_equal: bool
     mismatches: int
     max_abs_diff: float
+
+
+@dataclass
+class FusedRouteResult:
+    out_equal: bool
+    rand_equal: bool
+    rng_after_equal: bool
+    stats_numel_equal: bool
+    counters_equal: bool
+    mismatches: int
+    max_abs_diff: float
+
+
+@dataclass
+class FusedSteResult:
+    ok: bool
+    grad_min: float
+    grad_max: float
+    grad_mean: float
+    stats_numel_equal: bool
+    counters_equal: bool
+
+
+@dataclass
+class CheckpointTraceResult:
+    use_reentrant: bool
+    calls_after_forward: int
+    calls_after_backward: int
+    recompute_calls: int
 
 
 @dataclass
@@ -1230,6 +1266,177 @@ def run_forced_fallback_check() -> FallbackResult:
     )
 
 
+def _make_fused_route_module() -> tuple[lora_impl.LoRAModule, lora_impl.DQStatsManager]:
+    org_module = torch.nn.Linear(11, 11, bias=False, device="cuda", dtype=torch.float16)
+    module = lora_impl.LoRAModule(
+        "lora_unet_test",
+        org_module,
+        lora_dim=4,
+        alpha=4,
+        delta_q_mode="stoch",
+        delta_q_granularity="channel",
+        delta_q_stat="rms",
+        delta_q_bits=8,
+        delta_q_range_mul=3.0,
+        delta_q_use_triton=True,
+        delta_q_triton_div_rn=True,
+        delta_q_triton_stats=True,
+        delta_q_triton_stats_mode="fused",
+    )
+    manager = lora_impl.DQStatsManager()
+    module.dq_stats_manager = manager
+    manager.begin_step(
+        step_idx=1,
+        device=torch.device("cuda"),
+        do_log=True,
+        do_auto=False,
+        collect_full=True,
+        collect_zero=False,
+        collect_near_zero=False,
+        collect_detail=False,
+        collect_error_parts=False,
+        log_mode="summary",
+        log_scope="unet",
+        auto_scope="unet",
+        target="delta",
+    )
+    return module, manager
+
+
+def _fused_route_input() -> tuple[torch.Tensor, torch.Tensor]:
+    shape = (3, 19, 11)
+    seed_scale = torch.linspace(0.0007, 0.0031, shape[-1], device="cuda", dtype=torch.float32).view(1, 1, -1)
+    x = _make_x(shape, torch.float16, seed_scale, "random").contiguous().detach().requires_grad_(True)
+    scale = compute_scale_bits(
+        x.detach(),
+        bits=8,
+        granularity="channel",
+        stat="rms",
+        range_mul=3.0,
+        use_triton=True,
+    ).contiguous()
+    return x, scale
+
+
+def run_fused_route_fallback_check() -> FusedRouteResult:
+    module, manager = _make_fused_route_module()
+    x, scale = _fused_route_input()
+    captured: dict[str, torch.Tensor] = {}
+    original_fused = lora_impl.triton_fake_quantize_levels_stoch_with_stats
+    original_fake_quant = lora_impl.fake_quantize_levels
+
+    def forced_fused_failure(*args, rand=None, **kwargs):
+        if rand is not None:
+            captured["fused_rand"] = rand.detach().clone()
+        return None
+
+    def normal_b_spy(*args, rand=None, **kwargs):
+        if rand is not None:
+            captured["normal_rand"] = rand.detach().clone()
+        return original_fake_quant(*args, rand=rand, **kwargs)
+
+    state0 = torch.cuda.get_rng_state()
+    try:
+        lora_impl.triton_fake_quantize_levels_stoch_with_stats = forced_fused_failure
+        lora_impl.fake_quantize_levels = normal_b_spy
+        torch.cuda.set_rng_state(state0)
+        out = module._fake_quantize_levels_with_fused_stats(x, scale=scale, qmin=-127, qmax=127)
+        torch.cuda.synchronize()
+        after_fallback = torch.cuda.get_rng_state()
+    finally:
+        lora_impl.triton_fake_quantize_levels_stoch_with_stats = original_fused
+        lora_impl.fake_quantize_levels = original_fake_quant
+
+    if out is None:
+        raise RuntimeError("LoRAModule fused fallback returned None")
+    torch.cuda.set_rng_state(state0)
+    rand_ref = torch.rand_like(x, dtype=torch.float32)
+    raw_ref = triton_fake_quantize_levels_stoch(
+        x.detach(),
+        scale=scale,
+        qmin=-127,
+        qmax=127,
+        use_div_rn=True,
+        rand=rand_ref,
+    )
+    if raw_ref is None:
+        raise RuntimeError("normal production B returned None in fused route fallback check")
+    out_ref = x + (raw_ref - x).detach()
+    torch.cuda.synchronize()
+    after_ref = torch.cuda.get_rng_state()
+    report = manager.get_path_report()
+    stats_numel = float(manager.accum["unet"].numel.item())
+    diff = (out.detach().to(torch.float32) - out_ref.detach().to(torch.float32)).abs()
+    return FusedRouteResult(
+        out_equal=bool(torch.equal(out.detach(), out_ref.detach())),
+        rand_equal=bool(
+            "fused_rand" in captured
+            and "normal_rand" in captured
+            and torch.equal(captured["fused_rand"], captured["normal_rand"])
+            and torch.equal(captured["fused_rand"], rand_ref)
+        ),
+        rng_after_equal=bool(torch.equal(after_fallback, after_ref)),
+        stats_numel_equal=stats_numel == float(x.numel()),
+        counters_equal=bool(
+            report["fused_stats_calls"] == 0
+            and report["separate_stats_calls"] == 0
+            and report["pytorch_stats_calls"] == 1
+            and report["fused_fallback_calls"] == 1
+        ),
+        mismatches=int((out.detach() != out_ref.detach()).sum().item()),
+        max_abs_diff=float(diff.max().item()),
+    )
+
+
+def run_fused_route_ste_check() -> FusedSteResult:
+    module, manager = _make_fused_route_module()
+    x, scale = _fused_route_input()
+    out = module._fake_quantize_levels_with_fused_stats(x, scale=scale, qmin=-127, qmax=127)
+    if out is None:
+        raise RuntimeError("LoRAModule fused STE route returned None")
+    out.to(torch.float32).sum().backward()
+    grad = x.grad.detach().to(torch.float32)
+    report = manager.get_path_report()
+    stats_numel = float(manager.accum["unet"].numel.item())
+    return FusedSteResult(
+        ok=bool(torch.allclose(grad, torch.ones_like(grad), atol=0.0, rtol=0.0)),
+        grad_min=float(grad.min().item()),
+        grad_max=float(grad.max().item()),
+        grad_mean=float(grad.mean().item()),
+        stats_numel_equal=stats_numel == float(x.numel()),
+        counters_equal=bool(report["fused_stats_calls"] == 1 and report["fused_elements"] == x.numel()),
+    )
+
+
+def _checkpoint_trace_case(use_reentrant: bool) -> CheckpointTraceResult:
+    module, manager = _make_fused_route_module()
+    x, scale = _fused_route_input()
+
+    def checkpointed_quant(value: torch.Tensor) -> torch.Tensor:
+        quantized = module._fake_quantize_levels_with_fused_stats(value, scale=scale, qmin=-127, qmax=127)
+        if quantized is None:
+            raise RuntimeError("checkpoint fused route returned None")
+        return torch.sin(quantized.to(torch.float32)).sum()
+
+    loss = checkpoint(checkpointed_quant, x, use_reentrant=use_reentrant, preserve_rng_state=True)
+    calls_after_forward = manager.total_stats_calls()
+    trace_snapshot = manager.trace_snapshot()
+    loss.backward()
+    calls_after_backward = manager.total_stats_calls()
+    manager.record_backward_trace(trace_snapshot)
+    report = manager.get_path_report()
+    return CheckpointTraceResult(
+        use_reentrant=use_reentrant,
+        calls_after_forward=calls_after_forward,
+        calls_after_backward=calls_after_backward,
+        recompute_calls=report["backward_recompute_stats_calls"],
+    )
+
+
+def run_checkpoint_trace_checks() -> list[CheckpointTraceResult]:
+    return [_checkpoint_trace_case(False), _checkpoint_trace_case(True)]
+
+
 def print_results(results: Iterable[CaseResult]) -> int:
     failures = 0
     print("forward fixed-rand comparison")
@@ -1270,6 +1477,44 @@ def print_fallback_result(result: FallbackResult) -> int:
         f"{result.mismatches},{result.max_abs_diff:.9g}"
     )
     return 0 if result.out_equal and result.rand_equal and result.rng_after_equal else 1
+
+
+def print_fused_route_results(fallback: FusedRouteResult, ste: FusedSteResult) -> int:
+    print("LoRAModule fused fallback route comparison")
+    print("out_equal,rand_equal,rng_after_equal,stats_numel_equal,counters_equal,mismatches,max_abs_diff")
+    print(
+        f"{fallback.out_equal},{fallback.rand_equal},{fallback.rng_after_equal},"
+        f"{fallback.stats_numel_equal},{fallback.counters_equal},{fallback.mismatches},{fallback.max_abs_diff:.9g}"
+    )
+    print("LoRAModule fused STE check")
+    print("ok,grad_min,grad_max,grad_mean,stats_numel_equal,counters_equal")
+    print(
+        f"{ste.ok},{ste.grad_min:.9g},{ste.grad_max:.9g},{ste.grad_mean:.9g},"
+        f"{ste.stats_numel_equal},{ste.counters_equal}"
+    )
+    fallback_ok = (
+        fallback.out_equal
+        and fallback.rand_equal
+        and fallback.rng_after_equal
+        and fallback.stats_numel_equal
+        and fallback.counters_equal
+    )
+    ste_ok = ste.ok and ste.stats_numel_equal and ste.counters_equal
+    return 0 if fallback_ok and ste_ok else 1
+
+
+def print_checkpoint_trace_results(results: Iterable[CheckpointTraceResult]) -> int:
+    print("gradient checkpointing stats recompute trace (informational)")
+    print("use_reentrant,calls_after_forward,calls_after_backward,recompute_calls")
+    failures = 0
+    for result in results:
+        if result.calls_after_forward <= 0 or result.calls_after_backward < result.calls_after_forward:
+            failures += 1
+        print(
+            f"{result.use_reentrant},{result.calls_after_forward},"
+            f"{result.calls_after_backward},{result.recompute_calls}"
+        )
+    return failures
 
 
 def print_mutation_results(results: Iterable[MutationResult]) -> int:
@@ -1506,6 +1751,16 @@ def main() -> int:
         help="Skip production wrapper input mutation/alias check",
     )
     parser.add_argument(
+        "--skip-fused-route",
+        action="store_true",
+        help="Skip LoRAModule fused fallback and STE checks",
+    )
+    parser.add_argument(
+        "--skip-checkpoint-trace",
+        action="store_true",
+        help="Skip informational gradient-checkpointing stats recompute trace",
+    )
+    parser.add_argument(
         "--capture-dir",
         type=Path,
         default=None,
@@ -1524,6 +1779,10 @@ def main() -> int:
     if not args.skip_production_rng:
         failures += print_rng_results(run_production_rng_checks() + run_fused_rng_checks())
         failures += print_fallback_result(run_forced_fallback_check())
+    if not args.skip_fused_route:
+        failures += print_fused_route_results(run_fused_route_fallback_check(), run_fused_route_ste_check())
+    if not args.skip_checkpoint_trace:
+        failures += print_checkpoint_trace_results(run_checkpoint_trace_checks())
     if not args.skip_mutation:
         failures += print_mutation_results(run_mutation_checks())
     if not args.skip_e2e:

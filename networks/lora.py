@@ -189,6 +189,15 @@ class DQStatsManager:
         self.do_auto = False
         self.accum = {}
         self.per_module = []
+        self.path_counts = {
+            "fused_stats_calls": 0,
+            "separate_stats_calls": 0,
+            "pytorch_stats_calls": 0,
+            "fused_fallback_calls": 0,
+            "fused_elements": 0,
+            "backward_trace_windows": 0,
+            "backward_recompute_stats_calls": 0,
+        }
 
     def _reset(self, device):
         self.accum = {
@@ -264,6 +273,38 @@ class DQStatsManager:
         if self.step_idx == step_idx:
             self.active = False
             self.step_idx = None
+
+    def record_stats_path(self, path: str, *, numel: int = 0):
+        key = f"{path}_stats_calls"
+        if key not in self.path_counts:
+            raise ValueError(f"unknown dq stats path: {path}")
+        self.path_counts[key] += 1
+        if path == "fused":
+            self.path_counts["fused_elements"] += int(numel)
+
+    def record_fused_fallback(self):
+        self.path_counts["fused_fallback_calls"] += 1
+
+    def total_stats_calls(self) -> int:
+        return sum(self.path_counts[key] for key in ("fused_stats_calls", "separate_stats_calls", "pytorch_stats_calls"))
+
+    def trace_snapshot(self) -> Optional[int]:
+        if not self.active:
+            return None
+        return self.total_stats_calls()
+
+    def record_backward_trace(self, before_backward: Optional[int]):
+        if before_backward is None:
+            return
+        self.path_counts["backward_trace_windows"] += 1
+        recompute_calls = self.total_stats_calls() - int(before_backward)
+        if recompute_calls > 0:
+            self.path_counts["backward_recompute_stats_calls"] += recompute_calls
+
+    def get_path_report(self) -> Dict[str, int]:
+        report = dict(self.path_counts)
+        report["total_stats_calls"] = self.total_stats_calls()
+        return report
 
     def _scope_enabled(self, scope: str) -> bool:
         if not self.active:
@@ -583,6 +624,7 @@ class LoRAModule(torch.nn.Module):
                 scale_sum = scale.sum()
                 scale_count = torch.tensor(float(scale.numel()), device=device, dtype=torch.float32)
 
+            mgr.record_stats_path("pytorch", numel=x_in.numel())
             mgr.add_stats(
                 scope=self.dq_scope,
                 module_name=self.lora_name,
@@ -636,6 +678,7 @@ class LoRAModule(torch.nn.Module):
                     collect_detail=mgr.collect_detail,
                 )
             if stats is not None:
+                mgr.record_stats_path("separate", numel=x_in.numel())
                 mgr.add_stats(
                     scope=self.dq_scope,
                     module_name=self.lora_name,
@@ -708,6 +751,7 @@ class LoRAModule(torch.nn.Module):
                 rand=rand_t,
             )
         if fused is None:
+            mgr.record_fused_fallback()
             quantized = fake_quantize_levels(
                 x_in,
                 scale=scale,
@@ -722,6 +766,7 @@ class LoRAModule(torch.nn.Module):
             return quantized
 
         quantized_raw, stats = fused
+        mgr.record_stats_path("fused", numel=x_in.numel())
         mgr.add_basic_stats(scope=self.dq_scope, packed=stats["packed"])
         return x_in + (quantized_raw - x_in).detach()
 
@@ -2011,6 +2056,21 @@ class LoRANetwork(torch.nn.Module):
         if self.dq_stats_manager is None:
             return None
         return self.dq_stats_manager.export()
+
+    def get_dq_stats_path_report(self):
+        if self.dq_stats_manager is None:
+            return None
+        return self.dq_stats_manager.get_path_report()
+
+    def get_dq_stats_trace_snapshot(self):
+        if self.dq_stats_manager is None:
+            return None
+        return self.dq_stats_manager.trace_snapshot()
+
+    def record_dq_stats_backward_trace(self, before_backward: Optional[int]):
+        if self.dq_stats_manager is None:
+            return
+        self.dq_stats_manager.record_backward_trace(before_backward)
 
     def compute_rank_stats(self, scope: str = "unet", eps: float = 1e-12):
         if scope != "unet":

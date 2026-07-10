@@ -156,7 +156,7 @@ xl05:
 
 これにより、通常 step は Triton B、log / auto step だけ PyTorch B になる、という forward 経路の混在を避ける。
 
-標準 Triton path では、forward の fake quant は通常 step と揃え、stats の集計自体は PyTorch のまま行う。
+`--dq_delta_triton_stats` を指定しない標準 Triton pathでは、forwardのfake quantだけを通常stepと揃え、stats集計はPyTorchのまま行う。
 
 ```text
 --dq_delta_triton_stats
@@ -166,11 +166,11 @@ xl05:
 
 `--dq_delta_log_detail basic` は常用向けの軽量ログで、`ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` を計算・出力しない。詳細診断が必要な場合は `--dq_delta_log_detail full` を使う。
 
-`--dq_delta_triton_stats` は、log / auto step の高速化を調べるための実験用オプションとして残している。現時点では、通常の採用候補は `--dq_delta_use_triton` による forward 経路統一まで。
+`--dq_delta_triton_stats` は、log / auto stepの高速化を調べるための明示的な実験オプションとして残している。fused v2は長時間ランまで正常完走しているが、全体時間の改善はラン差に隠れる規模なので、既定値にはしていない。
 
-## 実測メモ
+## 初期実測メモ
 
-同一系統のテストランでの所要時間:
+forward経路を決める過程で行った、初期の同一系統テストランの所要時間:
 
 ```text
 xl01 通常 PyTorch: 1:47:06
@@ -181,7 +181,7 @@ xl05 Triton PyTorch乱数 / 融合なし: 1:40:17
 
 xl05 は通常より 409 秒短縮、学習時間で約 6.36% 短縮、処理速度で約 6.8% 高速化。
 
-xl05 のログは通常 PyTorch path に近く、生成結果も良好だったため、現在の採用候補。
+この初期実験を受けて、A/B別kernelとPyTorch乱数を使う現在のforward経路を採用した。その後、stats有効stepでも同じforward経路を使うよう統一し、fused stats v2まで追加している。
 
 ## 注意
 
@@ -211,7 +211,7 @@ mode=stoch
 per_module/near_zero/full detail なし
 ```
 
-条件外では既存の `separate` またはPyTorch statsにfallbackする。`--dq_delta_triton_div_rn` を指定した場合、fused側の fake quant と clip_count 判定でも同じ `tl.div_rn` 由来の値を使う。
+`--dq_delta_triton_stats_mode fused` で条件外になった場合は、通常Bでforwardを作り、statsはPyTorchで集計する。`separate` statsを使うのはmodeを明示的に`separate`にした場合だけ。`--dq_delta_triton_div_rn` を指定した場合、fused側のfake quantとclip_count判定でも同じ `tl.div_rn` 由来の値を使う。
 
 fused v1で集計するのは basic/auto 判定に必要な最小統計のみ。
 
@@ -238,4 +238,61 @@ B + partial stats Triton kernel
 
 検証スクリプトでは、production Bとfused production Bを直接比較し、実戦大shape、RNG終了状態、強制fallbackを確認する。検証用randを指定するCLIは追加しない。
 
-`ZeroRate`, `NearZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` は full/detail 用として、fused v1では扱わない。
+`ZeroRate`, `NearZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` はfull/detail用として、fused v2では扱わない。
+
+### fused v2の長時間確認
+
+fused v2を使った8400 stepのテストラン（xl17）は`1:38:54`で完走した。DQログにNaN/Inf、auto判定異常、fallbackを疑う値はなく、生成用LoRAも正常だった。直前の同系統ランとの差は数十秒で、ラン変動を含むため、v2単独の全体速度改善量とは断定しない。
+
+## 計測ツール
+
+### 単体CUDAベンチ
+
+モデルやデータセットを読み込まず、代表shapeの疑似tensorをCUDA Eventsで測る。
+
+```bash
+python tools/benchmark_triton_quant.py
+python tools/benchmark_triton_quant.py --quick
+```
+
+主な測定対象:
+
+```text
+normal B (fixed rand / PyTorch rand)
+normal B + PyTorch stats
+normal B + separate Triton stats
+fused v2
+partial stats: torch.sum vs Triton reduction
+packed accumulator add
+```
+
+`reduce_speedup`、`separate_to_fused`、`pytorch_stats_to_fused` は`1.0`より大きいほどfused/Triton側が速い。コンパイルをwarmupから除外し、各測定のmedianとminを出力する。
+
+RTX 5080環境でwarmup 50回、1000 iteration、7 repeatを測った時点では、fused v2はseparate stats比で代表5 shape中4 shapeが約1.04～1.25倍、1 shapeが約0.97倍だった。second-stage reduction単体はshapeによりPyTorchと同等か遅く、fused全体の主な利点はBとstatsの同時処理、およびpacked accumulatorにある。これは単体kernelの傾向であり、学習全体の短縮率ではない。
+
+### 回帰チェック
+
+```bash
+python tools/check_triton_fake_quant.py --skip-e2e
+```
+
+通常Bとfused Bのfixed-rand一致、大shape、RNG、入力非破壊に加え、LoRAModuleのfused失敗fallback、fused STE、gradient checkpointing時のstats再加算traceを確認する。
+
+### 実学習のstats経路集計
+
+statsを1回以上収集した学習では、終了時にmain rankのローカル集計を1行だけ出力する。
+
+```text
+dq_delta stats paths (main rank):
+  fused_stats_calls=...
+  separate_stats_calls=...
+  pytorch_stats_calls=...
+  fused_fallback_calls=...
+  fused_elements=...
+  backward_trace_windows=...
+  backward_recompute_stats_calls=...
+```
+
+`fused_fallback_calls=0`なら、試行したfused kernelはすべて成功している。gradient checkpointing利用時に`backward_recompute_stats_calls>0`なら、backward再計算中にもstatsが再加算されている。現段階ではtraceのみで、収集停止処理はまだ入れていない。
+
+同一条件の3 step短縮ランで全stepをlog/auto対象にした場合、gradient checkpointingなしでは`fused_stats_calls=2166`、ありでは`fused_stats_calls=4266`かつ`backward_recompute_stats_calls=2100`だった。実モデルでもbackward再計算による重複収集が確認できたため、次段階では再計算中のstats収集を停止できるかを検討する。

@@ -3091,6 +3091,12 @@ class NetworkTrainer:
         else:
             on_step_start = lambda *args, **kwargs: None
 
+        dq_stats_trace_network = None
+        if args.gradient_checkpointing:
+            candidate = accelerator.unwrap_model(network)
+            if hasattr(candidate, "get_dq_stats_trace_snapshot"):
+                dq_stats_trace_network = candidate
+
         # function for saving/removing
         def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
             os.makedirs(args.output_dir, exist_ok=True)
@@ -3428,7 +3434,13 @@ class NetworkTrainer:
                         train_unet=train_unet,
                     )
 
+                    dq_stats_before_backward = None
+                    if dq_stats_trace_network is not None:
+                        dq_stats_before_backward = dq_stats_trace_network.get_dq_stats_trace_snapshot()
+
                     accelerator.backward(loss)
+                    if dq_stats_trace_network is not None and dq_stats_before_backward is not None:
+                        dq_stats_trace_network.record_dq_stats_backward_trace(dq_stats_before_backward)
                     loss_scalar = loss.detach().item()
                     skip_step = False
                     if check_gradients_and_skip_update(network, epoch, step, loss_scalar):
@@ -4385,6 +4397,22 @@ class NetworkTrainer:
 
         if is_main_process:
             network = accelerator.unwrap_model(network)
+            if hasattr(network, "get_dq_stats_path_report"):
+                dq_path_report = network.get_dq_stats_path_report()
+                if dq_path_report is not None and (
+                    dq_path_report.get("total_stats_calls", 0) > 0 or getattr(args, "dq_delta_triton_stats", False)
+                ):
+                    report_keys = (
+                        "fused_stats_calls",
+                        "separate_stats_calls",
+                        "pytorch_stats_calls",
+                        "fused_fallback_calls",
+                        "fused_elements",
+                        "backward_trace_windows",
+                        "backward_recompute_stats_calls",
+                    )
+                    report_text = ", ".join(f"{key}={dq_path_report.get(key, 0)}" for key in report_keys)
+                    logger.info(f"dq_delta stats paths (main rank): {report_text}")
 
         accelerator.end_training()
 
