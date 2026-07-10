@@ -59,29 +59,15 @@ The offset is applied before the sigmoid transform, so the effect on the final s
 
 ## Understanding the offset
 
-### What timestep means
+### Timestep ranges and learning behavior
 
-In diffusion and flow-matching models, timestep `t ∈ [0, 1]` represents the interpolation position between a clean image and pure noise:
-
-- `t ≈ 0`: nearly clean image (minimal noise)
-- `t ≈ 1`: nearly pure Gaussian noise (original content unrecognizable)
-
-During training, the model receives a noised image at a randomly sampled `t` and learns the denoising direction (U-Net predicts noise ε; flow matching predicts velocity field v). **The sampling distribution of `t` determines which noise levels receive more training signal.**
-
-### Why different timestep ranges matter
-
-| Range | Noise level | What the model learns to restore |
+| Range (approximate) | Noise level | What the model learns to restore |
 |---|---|---|
-| **High t** (0.7–1.0) | High | Global structure from near-pure noise — composition, spatial layout, overall tone |
-| **Mid t** (0.3–0.7) | Medium | Mid-level information on top of coarse structure — proportions, lighting, regional color |
-| **Low t** (0.0–0.3) | Low | Fine texture on a nearly complete image — line quality, material detail, high-frequency information |
+| **High t** (0.7–1.0) | High | Global structure — composition, spatial layout, overall tone |
+| **Mid t** (0.3–0.7) | Medium | Mid-level structure — proportions, lighting, regional color |
+| **Low t** (0.0–0.3) | Low | Fine texture — line quality, material detail, high-frequency information |
 
-The two major architectures have **different inherent biases** across these ranges:
-
-- **Flow Matching** (FLUX / SD3 / Anima): continuous ODE flow modeling excels at global structure restoration in high-t ranges, but is relatively weaker at fine texture reconstruction.
-- **U-Net diffusion**: multi-scale skip connections preserve spatial detail, excelling at texture restoration in low-t ranges, but with less natural strength in global structure.
-
-The value of offset lies in **compensating for the architecture's own weakness**. FM models are naturally strong at global composition but relatively weak at fine texture restoration, so offset helps adjust the learning emphasis to provide appropriate gradient signal in the ranges where the model needs it most, adapted to the training content. U-Net architectures have the opposite bias, so similar techniques take effect in different ranges with different tuning directions. This means the same offset value produces subtly different effects on the two architectures — parameters cannot be directly transferred between them.
+Offset adjusts the learning emphasis across these ranges to match the training content. Note that FM and U-Net architectures have different inherent biases across these ranges, so the same offset value may produce different effects depending on the architecture.
 
 ### How offset shifts the distribution
 
@@ -89,20 +75,18 @@ Default `logit_normal` sampling draws `z ~ N(0, 1)` then `t = sigmoid(z)`, produ
 
 Adding offset shifts the mean: `z ~ N(offset, 1)`.
 
-- **Positive offset** (e.g. +0.5): distribution shifts toward high t, mean moves from 0.500 → ≈0.622. The model receives more gradient updates at high-noise timesteps.
-- **Negative offset** (e.g. −0.5): distribution shifts toward low t, mean moves from 0.500 → ≈0.378. The model receives more gradient updates at low-noise timesteps.
+- **Positive offset** (e.g. +0.5): distribution shifts toward high t, mean moves from 0.500 → ≈0.622.
+- **Negative offset** (e.g. −0.5): distribution shifts toward low t, mean moves from 0.500 → ≈0.378.
 
 ![offset distribution comparison](images/timestep_bias/offset_distribution_comparison.png)
 
+Note: when `sigmoid_scale ≠ 1.0`, the effective shift is `sigmoid_scale × offset`. The means above assume the default scale of 1.0.
+
 ### Risk of excessive offset
 
-FM/Anima models' default timestep sampling is built on a **logit-normal Gaussian kernel** (`z ~ N(0, 1), t = sigmoid(z)`), which is already a bell-shaped distribution centered at `t = 0.5`, not uniform. Together with other bias techniques introduced during training (e.g. sigmoid scaling), **the model effectively learns denoising capability on a Gaussian kernel that already carries some bias**.
+The default logit-normal sampling is already a biased (bell-shaped) distribution. Offset stacks additional shift on top of it. Values beyond ±0.5 should be used with caution:
 
-Applying offset on top of this means **stacking additional shift onto an already biased distribution**. This is why offset must be controlled carefully:
+- **Tail starvation**: extreme offset skews the distribution so that some timestep ranges are rarely sampled, degrading detail quality (positive offset) or structural quality (negative offset).
+- **Velocity field degradation**: the velocity field must be accurate across the full path `t ∈ [0, 1]`. Under-trained ranges degrade inference quality and may cause artifacts along the inference trajectory.
 
-- **Distribution collapse**: at offset=1.0, the distribution becomes severely skewed and low-t ranges are rarely sampled — fine detail learning degrades severely, producing images with correct global style but blurry details and rough lines.
-- **Gradient signal imbalance**: the velocity field must be accurate across the entire path `t ∈ [0, 1]`. Ranges that are barely trained will degrade at inference, potentially causing discontinuities in the inference trajectory.
-- **Increased overfitting risk**: concentrating training on a narrow timestep range effectively reduces training data diversity, making overfitting in that range more likely.
-- **FM amplification effect**: FM architectures have a wider expression space, making them more sensitive to timestep distribution changes than U-Net — coarse parameter tuning that merely "worked a bit worse" in the U-Net era may cause convergence failure in the FM era.
-
-**Empirical conclusion**: ±0.5 is a stable range validated across multiple datasets. An offset of 0.5 corresponds to approximately 0.5 standard deviations of shift in logit space — enough to produce observable style guidance effects while maintaining reasonable distribution coverage without sacrificing training quality in any timestep range.
+**Recommended range: ±0.5.** This range worked well in our experiments across several datasets, producing observable improvements without sacrificing coverage in any timestep range.
