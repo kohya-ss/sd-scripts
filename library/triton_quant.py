@@ -215,6 +215,21 @@ if _TRITON_AVAILABLE:
         tl.store(stats_ptr + base + 4, xxq_sum)
 
     @triton.jit
+    def _reduce_stats_rows_kernel(
+        stats_ptr,
+        out_ptr,
+        n_rows,
+        N_COLS: tl.constexpr,
+        BLOCK_ROWS: tl.constexpr,
+    ):
+        col = tl.program_id(axis=0)
+        group = tl.program_id(axis=1)
+        rows = group * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
+        mask = rows < n_rows
+        values = tl.load(stats_ptr + rows * N_COLS + col, mask=mask, other=0.0).to(tl.float32)
+        tl.store(out_ptr + group * N_COLS + col, tl.sum(values, axis=0))
+
+    @triton.jit
     def _fake_quant_stats_kernel(
         x_ptr,
         q_ptr,
@@ -389,6 +404,7 @@ def triton_fake_quantize_levels_stoch(
     qmin: int,
     qmax: int,
     use_div_rn: bool = False,
+    rand: Optional[torch.Tensor] = None,
 ) -> Optional[torch.Tensor]:
     """Mirror fake_quantize_levels(..., mode="stoch").
 
@@ -426,8 +442,14 @@ def triton_fake_quantize_levels_stoch(
     if scale_numel not in (1, x.shape[1] if x.ndim in (2, 4) else x.shape[2]):
         return None
 
+    if rand is not None:
+        if rand.shape != x.shape or not rand.is_cuda or rand.device != x.device:
+            return None
+        rand_t = rand.to(dtype=torch.float32).contiguous()
+    else:
+        rand_t = torch.rand_like(x, dtype=torch.float32)
+
     out = torch.empty_like(x)
-    rand = torch.rand_like(x, dtype=torch.float32)
     n_elements = x.numel()
     block_size = 256
     grid = (triton.cdiv(n_elements, block_size),)
@@ -439,7 +461,7 @@ def triton_fake_quantize_levels_stoch(
             x,
             scale_flat,
             out,
-            rand,
+            rand_t,
             n_elements,
             scale_numel,
             dim1,
@@ -479,6 +501,50 @@ def _check_fake_quant_inputs(x: torch.Tensor, scale: torch.Tensor) -> Optional[t
     return scale_flat, scale_numel, dim1, dim2, dim3
 
 
+def _reduce_fused_basic_stats(stats: torch.Tensor) -> torch.Tensor:
+    """Reduce an [n_blocks, 5] partial buffer without generic PyTorch reduction."""
+    n_rows, n_cols = stats.shape
+    if n_cols != 5 or n_rows <= 0:
+        raise ValueError(f"unexpected fused stats shape: {tuple(stats.shape)}")
+
+    block_rows = 1024
+    sums = torch.empty((n_cols,), device=stats.device, dtype=torch.float32)
+    try:
+        if n_rows <= block_rows:
+            _reduce_stats_rows_kernel[(n_cols, 1)](
+                stats,
+                sums,
+                n_rows,
+                N_COLS=n_cols,
+                BLOCK_ROWS=triton.next_power_of_2(n_rows),
+            )
+            return sums
+
+        n_groups = triton.cdiv(n_rows, block_rows)
+        stage2 = torch.empty((n_groups, n_cols), device=stats.device, dtype=torch.float32)
+        _reduce_stats_rows_kernel[(n_cols, n_groups)](
+            stats,
+            stage2,
+            n_rows,
+            N_COLS=n_cols,
+            BLOCK_ROWS=block_rows,
+        )
+        _reduce_stats_rows_kernel[(n_cols, 1)](
+            stage2,
+            sums,
+            n_groups,
+            N_COLS=n_cols,
+            BLOCK_ROWS=triton.next_power_of_2(n_groups),
+        )
+        return sums
+    except Exception as e:
+        _warn_once(
+            "triton_fused_stats_reduce_kernel",
+            f"Triton fused stats reduction failed; falling back to PyTorch reduction: {e}",
+        )
+        return stats.sum(dim=0)
+
+
 def triton_fake_quantize_levels_stoch_with_stats(
     x: torch.Tensor,
     *,
@@ -511,9 +577,9 @@ def triton_fake_quantize_levels_stoch_with_stats(
     scale_flat, scale_numel, dim1, dim2, dim3 = checked
 
     if rand is not None:
-        if rand.shape != x.shape or not rand.is_cuda or not rand.is_contiguous():
+        if rand.shape != x.shape or not rand.is_cuda or rand.device != x.device:
             return None
-        rand_t = rand.to(device=x.device, dtype=torch.float32)
+        rand_t = rand.to(dtype=torch.float32).contiguous()
     else:
         rand_t = torch.rand_like(x, dtype=torch.float32)
 
@@ -547,8 +613,9 @@ def triton_fake_quantize_levels_stoch_with_stats(
         _warn_once("triton_fused_stats_kernel", f"Triton fused fake quant stats failed; falling back: {e}")
         return None
 
-    sums = stats.sum(dim=0)
+    sums = _reduce_fused_basic_stats(stats)
     return out, {
+        "packed": sums,
         "numel": sums[0].reshape(1),
         "clip_count": sums[1].reshape(1),
         "zero_count": None,

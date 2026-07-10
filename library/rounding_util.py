@@ -170,6 +170,7 @@ def fake_quantize_levels(
     mode: RoundMode = "det",
     use_triton: bool = False,
     triton_div_rn: bool = False,
+    rand: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """STE fake-quantization with finite integer levels and (symmetric) clamp.
 
@@ -182,13 +183,24 @@ def fake_quantize_levels(
     else:
         s = scale.to(device=x.device, dtype=torch.float32)
 
+    rand_t = None
+    if mode == "stoch" and rand is not None:
+        if rand.shape != x.shape:
+            raise ValueError(f"rand shape {tuple(rand.shape)} does not match x shape {tuple(x.shape)}")
+        rand_t = rand.to(device=x.device, dtype=torch.float32).contiguous()
+
     if use_triton and mode == "stoch" and triton_fake_quantize_levels_stoch is not None and isinstance(s, torch.Tensor):
+        if rand_t is None:
+            # Generate once in the caller so a failed Triton launch can reuse
+            # the same stochastic decisions in the PyTorch fallback below.
+            rand_t = torch.rand_like(x, dtype=torch.float32)
         q_triton = triton_fake_quantize_levels_stoch(
             x,
             scale=s,
             qmin=qmin,
             qmax=qmax,
             use_div_rn=triton_div_rn,
+            rand=rand_t,
         )
         if q_triton is not None:
             return _ste_from_quantized(x, q_triton)
@@ -199,7 +211,9 @@ def fake_quantize_levels(
     elif mode == "stoch":
         frac = y - torch.floor(y)
         probs = frac.clamp(0.0, 1.0)
-        q = torch.floor(y) + (torch.rand_like(probs) < probs).to(y.dtype)
+        if rand_t is None:
+            rand_t = torch.rand_like(probs)
+        q = torch.floor(y) + (rand_t < probs).to(y.dtype)
     else:
         raise ValueError(f"unknown round mode: {mode}")
     q = torch.clamp(q, qmin, qmax)

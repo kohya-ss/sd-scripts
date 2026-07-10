@@ -78,20 +78,51 @@ class DQStatsAccumulator:
         self.collect_near_zero = collect_near_zero
         self.collect_detail = collect_detail
         self.collect_error_parts = collect_error_parts
-        self.numel = torch.zeros(1, device=device, dtype=torch.float32)
-        self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
-        self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
-        self.near_zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_near_zero else None
-        self.sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
-        self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_detail else None
-        self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
-        self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
-        self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
-        self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
-        self.round_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+        use_basic_packed = bool(
+            collect_full
+            and not collect_zero
+            and not collect_near_zero
+            and not collect_detail
+            and not collect_error_parts
+        )
+        self.basic_stats = torch.zeros(5, device=device, dtype=torch.float32) if use_basic_packed else None
+        if self.basic_stats is not None:
+            self.numel = self.basic_stats[0:1]
+            self.clip_count = self.basic_stats[1:2]
+            self.sumsq = self.basic_stats[2:3]
+            self.xq_sumsq = self.basic_stats[3:4]
+            self.xxq_sum = self.basic_stats[4:5]
+            self.zero_count = None
+            self.near_zero_count = None
+            self.absmax = None
+            self.scale_min = None
+            self.scale_max = None
+            self.scale_sum = None
+            self.scale_count = None
+            self.clip_err_sumsq = None
+            self.round_err_sumsq = None
+        else:
+            self.numel = torch.zeros(1, device=device, dtype=torch.float32)
+            self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
+            self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
+            self.near_zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_near_zero else None
+            self.sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+            self.round_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+
+    def add_basic_stats(self, packed: torch.Tensor):
+        if self.basic_stats is None:
+            raise RuntimeError("packed basic stats are not enabled for this accumulator")
+        if packed.numel() != self.basic_stats.numel():
+            raise ValueError(f"unexpected packed stats size: {packed.numel()}")
+        self.basic_stats.add_(packed.reshape_as(self.basic_stats))
 
     def add(
         self,
@@ -306,6 +337,11 @@ class DQStatsManager:
                     "round_err_sumsq": round_err_sumsq.detach() if round_err_sumsq is not None else None,
                 }
             )
+
+    def add_basic_stats(self, *, scope: str, packed: torch.Tensor):
+        if not self._scope_enabled(scope):
+            return
+        self.accum[scope].add_basic_stats(packed)
 
     def export(self):
         if not self.active:
@@ -662,36 +698,31 @@ class LoRAModule(torch.nn.Module):
             return None
 
         with torch.no_grad():
+            rand_t = torch.rand_like(x_in, dtype=torch.float32)
             fused = triton_fake_quantize_levels_stoch_with_stats(
                 x_in,
                 scale=scale.to(device=x_in.device, dtype=torch.float32),
                 qmin=qmin,
                 qmax=qmax,
                 use_div_rn=self.delta_q_triton_div_rn,
+                rand=rand_t,
             )
         if fused is None:
-            return None
+            quantized = fake_quantize_levels(
+                x_in,
+                scale=scale,
+                qmin=qmin,
+                qmax=qmax,
+                mode="stoch",
+                use_triton=True,
+                triton_div_rn=self.delta_q_triton_div_rn,
+                rand=rand_t,
+            )
+            self._record_dq_stats_for_quantized(x_in, quantized, scale, qmax)
+            return quantized
 
         quantized_raw, stats = fused
-        mgr.add_stats(
-            scope=self.dq_scope,
-            module_name=self.lora_name,
-            shape=str(tuple(x_in.shape)),
-            numel=stats["numel"],
-            clip_count=stats["clip_count"],
-            zero_count=None,
-            near_zero_count=None,
-            sumsq=stats["sumsq"],
-            xq_sumsq=stats["xq_sumsq"],
-            xxq_sum=stats["xxq_sum"],
-            absmax=None,
-            scale_min=None,
-            scale_max=None,
-            scale_sum=None,
-            scale_count=None,
-            clip_err_sumsq=None,
-            round_err_sumsq=None,
-        )
+        mgr.add_basic_stats(scope=self.dq_scope, packed=stats["packed"])
         return x_in + (quantized_raw - x_in).detach()
 
     def forward(self, x):
@@ -738,8 +769,8 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                             use_triton=self.delta_q_use_triton,
                         )
-                    # Keep the training forward fake-quant path identical to normal Triton steps.
-                    # Stats are collected separately so log/auto steps do not switch B back to PyTorch.
+                    # Keep the training fake-quant decisions identical to normal Triton steps.
+                    # Eligible basic stats use fused B; other modes collect stats after normal B.
                     lx_fused = self._fake_quantize_levels_with_fused_stats(
                         x_in,
                         scale=z_scale,
@@ -817,8 +848,8 @@ class LoRAModule(torch.nn.Module):
                             range_mul=self.delta_q_range_mul,
                             use_triton=self.delta_q_use_triton,
                         )
-                    # Keep the training forward fake-quant path identical to normal Triton steps.
-                    # Stats are collected separately so log/auto steps do not switch B back to PyTorch.
+                    # Keep the training fake-quant decisions identical to normal Triton steps.
+                    # Eligible basic stats use fused B; other modes collect stats after normal B.
                     delta_fused = self._fake_quantize_levels_with_fused_stats(
                         x_in,
                         scale=d_scale,

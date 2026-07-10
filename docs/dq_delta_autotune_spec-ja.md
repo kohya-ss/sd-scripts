@@ -44,26 +44,22 @@
 - 統計は各モジュールでローカルに加算し、DDP all-reduce は **reduce 種別ごとに各1回/AutoStep（またはLogStep）**にまとめる  
   例: sum 系を1回、max 系を1回、min 系を1回
 
-### ログ項目（summary）
+### ログ項目（summary/basic）
 
 - `epoch,TrainStep,scope,target,bits,DQStepSize,range_mul,stat,granularity,mode`
-- `rms,absmax,range,scale_min,scale_mean,scale_max,qmax`
+- `rms`
 - `clip_rate_raw` : 今回計測した clip_rate
 - `clip_rate_ema` : EMA 平滑化した clip_rate（制御に使用）
-- `zero_rate` : 量子化後に 0 になった割合
 - `quant_err_rms_raw` : `RMS(x - x_q)`（フェイク量子化の誤差）
 - `quant_err_rms_ema` : `quant_err_rms_raw` の EMA（係数は `dq_delta_auto_ema`）
 - `quant_err_ratio_raw` : `quant_err_rms_raw / (rms + eps)`（`eps=1e-12`）
 - `quant_err_ratio_ema` : `quant_err_ratio_raw` の EMA（係数は `dq_delta_auto_ema`）
   - EMA は scope 共通の 1 系列。`log_scope=both` の場合は unet+te 合算で更新。
-- `qerr_per_clip` : `quant_err_ratio_ema / max(clip_rate_ema, dq_delta_qerr_per_clip_floor)`。clip率に対して量子化誤差が重いかを見る診断値。
-- `qerr_per_clip_clip_floor` : `qerr_per_clip` の分母に使う clip率下限（デフォルト 0.001）。clip率が極端に低い時の過敏な比率上昇を抑える。
 - `active_clip_band` : 現在の目標clip帯（`default` / `low` / `mid` / `high` / `high_narrow` / `custom`）。
 - `active_clip_low,active_clip_high` : その時点でauto制御が使っている目標clip帯。`clip_rate_low_auto` では途中で `low` から `mid` に変わる。
 - `clip_rate_low_auto_state,clip_rate_low_auto_bad,clip_rate_low_auto_bad_streak` : `clip_rate_low_auto` 用の状態とbad判定。`clip_rate_low_auto` 以外では空欄。
 - 旧ログ互換: 古いログに `clip_err_rms,round_err_rms,clip_err_ratio,round_err_ratio,clip_share,round_share` が含まれる場合、診断レポート側では読み取り可能。ただし新規ログでは出力しない。
 - `numel` : 計測対象の要素数（集計値）
-- 任意: `near_zero_rate` : `|x| < 0.5*scale` の割合（0 になりやすい帯域）
 - `auto_applied` : AutoStep で range_mul 更新が適用された場合は 1、それ以外は 0
 - `range_mul_before,range_mul_after` : AutoStep 以外は **同値で埋める**（`auto_applied=0`）
 - `warmup_active` : warmup 中は 1、それ以外は 0
@@ -72,6 +68,14 @@
 - `auto_init_mul_applied` : 初期 range_mul の自動上書きが行われた場合は 1
 - `auto_init_mul_value` : 自動算出された初期 range_mul
 - `auto_init_clip_target` : `(clip_low + clip_high) / 2`
+
+### ログ項目（summary/full）
+
+`summary/full` は `summary/basic` の全項目に、次の詳細診断列を追加する。
+
+- `absmax,range,scale_min,scale_mean,scale_max,qmax`
+- `zero_rate` : 量子化後に 0 になった割合
+- 任意: `near_zero_rate` : `--dq_delta_log_extra near_zero_rate` 指定時の `|x| < 0.5*scale` の割合
 
 ※ `range = scale * qmax`、`scale_*` は bits モード時に有効。step モードは `range/scale_*/qmax` を空欄扱い。  
 ※ `granularity=channel` の場合、`scale_*` は `min/mean/max` を記録する（tensor の場合は同値）。
@@ -103,7 +107,7 @@
 ※ `range_elem` は `granularity=channel` の場合はチャネル別 range をブロードキャストした per-element range を使う。  
 ※ 分散学習時は `numel_sum/sumsq_sum/clip_count_sum/zero_count_sum` を **all-reduce (sum)** してから算出する。  
 ※ `absmax` は **MAX reduce**、`scale_min` は **MIN reduce**、`scale_max` は **MAX reduce** とする。  
-※ `scale_mean` は **各rankの mean を平均**（近似）とする。  
+※ `scale_mean` は各rankの `scale_sum` と `scale_count` を all-reduce (sum) し、`scale_sum / scale_count` で算出する。
 ※ `clip_count_sum` は `|x| > range` の代わりに、**clamp 後（round 前）の q_clamp で |q_clamp| >= Qmax を数える**ことを推奨（低負荷）。  
   量子化で既に計算している q_clamp を利用し、追加で x.abs() や range_elem を生成して比較しない。  
   `mode=det` の場合に限り、round 後の q で近似してもよい。  
@@ -120,7 +124,13 @@
 - 例外として `--dq_delta_auto_preset clip_rate_low_auto` では、AutoStep の判定に `QuantErrRatioEMA` / `QErrPerClip` を使うため、AutoStep でも full stats を計測する。
 - clip/round 分解は常用診断から外し、`clip_rate_low_auto` の判定には使わない。
 
-### 出力例（summary）
+### 出力例（summary/basic）
+
+```text
+Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,ClipRateRaw,ClipRateEMA,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,TrainProgress,ClipRateLowAutoMinProgress,ClipRateLowAutoFreezeProgress,ClipRateLowAutoThresholdQErrRatio,ClipRateLowAutoThresholdQErrPerClip,ClipRateLowAutoPhase,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
+```
+
+### 出力例（summary/full）
 
 ```
 Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
@@ -129,7 +139,9 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 
 ## ログの見方（初心者向け）
 
-### logs（`--dq_delta_log`）: summary
+### logs（`--dq_delta_log`）: summary/basic と summary/full
+
+以下の表は両形式をまとめたもの。`AbsMax`, `Range`, `ScaleMin/Mean/Max`, `Qmax`, `ZeroRate`, `NearZeroRate` は `full` のみで、`basic` には列自体が存在しない。
 
 | 項目名 | 説明 | 読み取り方 |
 | --- | --- | --- |
@@ -144,20 +156,20 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 | Granularity | 粒度 | `tensor`/`channel`。 |
 | Mode | 丸め方式 | `det`/`stoch`。 |
 | RMS | 入力のRMS | 大きいほどΔが大きい。 |
-| AbsMax | 入力の最大絶対値 | 外れ値の指標。 |
-| Range | 有効レンジ | `ScaleMean * Qmax` の目安。 |
-| ScaleMin | scale最小 | チャネル差の下側。 |
-| ScaleMean | scale平均 | Range算出に使う中心値。 |
-| ScaleMax | scale最大 | チャネル差の上側。 |
-| Qmax | 量子化上限 | 6bitなら31など。 |
+| AbsMax | 入力の最大絶対値（fullのみ） | 外れ値の指標。 |
+| Range | 有効レンジ（fullのみ） | `ScaleMean * Qmax` の目安。 |
+| ScaleMin | scale最小（fullのみ） | チャネル差の下側。 |
+| ScaleMean | scale平均（fullのみ） | Range算出に使う中心値。 |
+| ScaleMax | scale最大（fullのみ） | チャネル差の上側。 |
+| Qmax | 量子化上限（fullのみ） | 6bitなら31など。 |
 | ClipRateRaw | 生のクリップ率 | 目標帯域に収まるか確認。 |
 | ClipRateEMA | EMA平滑値 | auto判定に使う値。 |
-| ZeroRate | 量子化後0の割合 | 潰れの兆候。 |
+| ZeroRate | 量子化後0の割合（fullのみ） | 潰れの兆候。 |
 | QuantErrRMSRaw | 量子化誤差のRMS | 「クリップは少ないが刻みが粗い」を検出。 |
 | QuantErrRMSEMA | QuantErrRMS のEMA | ノイズの安定した傾向を見る。 |
 | QuantErrRatioRaw | 誤差RMS/入力RMS | 入力に対する誤差の割合。 |
 | QuantErrRatioEMA | QuantErrRatio のEMA | 比率の安定した傾向を見る。 |
-| NearZeroRate | 0近傍の割合 | `--dq_delta_log_extra near_zero_rate`時のみ。 |
+| NearZeroRate | 0近傍の割合（fullのみ） | `--dq_delta_log_extra near_zero_rate`時のみ。 |
 | ActiveClipBand | 現在の目標clip帯 | `clip_rate_low_auto` では `low` から `mid` へ切り替わる。通常presetでも比較用に出力。 |
 | ActiveClipLow/High | 現在のclip帯下限/上限 | autoがどの帯を狙っているか確認する。 |
 | ClipRateLowAutoState | clip_rate_low_auto 状態 | `observe`/`keep_low`/`escape_to_mid`/`mid_lock`/`frozen`。clip_rate_low_auto以外は空欄。 |

@@ -185,7 +185,8 @@ xl05 のログは通常 PyTorch path に近く、生成結果も良好だった�
 
 ## 注意
 
-- bit-for-bit 一致は目標にしない。
+- 通常PyTorch BとTriton Bのbit-for-bit一致は必須目標にしない。
+- 通常Triton Bとfused Triton Bは、同じ入力・scale・固定randならbit-for-bit一致を必須とする。
 - `--dq_delta_use_triton` を外せば既存 PyTorch path に戻る。
 - Triton path は optional であり、公開環境に Triton がなくても動く必要がある。
 - 追加実装時は、対応する Python 実装の式をコメントやdocsに明記する。
@@ -221,5 +222,20 @@ sumsq
 xq_sumsq
 xxq_sum
 ```
+
+### fused stats v2
+
+fused v2ではforward値とログ定義を変えず、stats後段だけを高速化する。
+
+```text
+B + partial stats Triton kernel
+  -> Triton second-stage reduction
+  -> 5要素 packed stats
+  -> scope accumulatorへ1回のadd
+```
+
+従来の `stats.sum(dim=0)` と、moduleごとの5回のscalar加算を置き換える。通常Bとfused Bには内部検証用の固定randを渡せるが、通常学習ではこれまで通りPyTorch乱数を毎回1回生成する。fused失敗時は同じrandを通常B/PyTorch fallbackへ渡し、失敗の有無でCUDA RNG stateが余分に進まないようにする。
+
+検証スクリプトでは、production Bとfused production Bを直接比較し、実戦大shape、RNG終了状態、強制fallbackを確認する。検証用randを指定するCLIは追加しない。
 
 `ZeroRate`, `NearZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` は full/detail 用として、fused v1では扱わない。

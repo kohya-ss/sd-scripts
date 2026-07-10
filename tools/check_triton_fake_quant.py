@@ -18,10 +18,15 @@ except Exception as e:  # pragma: no cover - diagnostic script
 else:
     TRITON_IMPORT_ERROR = None
 
+import library.rounding_util as rounding_util
 from library.rounding_util import compute_scale_bits, fake_quantize_levels
 try:
-    from library.triton_quant import triton_fake_quantize_levels_stoch_with_stats
+    from library.triton_quant import (
+        triton_fake_quantize_levels_stoch,
+        triton_fake_quantize_levels_stoch_with_stats,
+    )
 except Exception:
+    triton_fake_quantize_levels_stoch = None
     triton_fake_quantize_levels_stoch_with_stats = None
 
 
@@ -175,6 +180,15 @@ class RngResult:
     before_hash: str
     after_ref_hash: str
     after_tri_hash: str
+
+
+@dataclass
+class FallbackResult:
+    out_equal: bool
+    rand_equal: bool
+    rng_after_equal: bool
+    mismatches: int
+    max_abs_diff: float
 
 
 @dataclass
@@ -1041,8 +1055,8 @@ def _rel_diff(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 def _fused_stats_case(*, dtype: torch.dtype, shape: tuple[int, ...], use_div_rn: bool) -> FusedStatsResult:
-    if triton_fake_quantize_levels_stoch_with_stats is None:
-        raise RuntimeError("triton_fake_quantize_levels_stoch_with_stats is unavailable")
+    if triton_fake_quantize_levels_stoch is None or triton_fake_quantize_levels_stoch_with_stats is None:
+        raise RuntimeError("production Triton fake-quant wrappers are unavailable")
 
     channel_count = shape[1] if len(shape) in (2, 4) else shape[2]
     scale_flat = torch.linspace(0.0007, 0.0031, channel_count, device="cuda", dtype=torch.float32)
@@ -1050,7 +1064,16 @@ def _fused_stats_case(*, dtype: torch.dtype, shape: tuple[int, ...], use_div_rn:
     x = _make_x(shape, dtype, scale, "random").contiguous()
     rand = torch.rand(x.shape, device="cuda", dtype=torch.float32).contiguous()
 
-    tri = debug_triton_fake_quant(x, scale, -127, 127, rand, use_div_rn=use_div_rn)
+    tri = triton_fake_quantize_levels_stoch(
+        x,
+        scale=scale,
+        qmin=-127,
+        qmax=127,
+        use_div_rn=use_div_rn,
+        rand=rand,
+    )
+    if tri is None:
+        raise RuntimeError(f"production B returned None for shape={shape} dtype={dtype}")
     fused = triton_fake_quantize_levels_stoch_with_stats(
         x,
         scale=scale,
@@ -1092,7 +1115,119 @@ def run_fused_stats_checks() -> list[FusedStatsResult]:
         for shape in [(17, 13), (3, 19, 11), (2, 7, 5, 3), (1, 77, 1280)]:
             for use_div_rn in (False, True):
                 results.append(_fused_stats_case(dtype=dtype, shape=shape, use_div_rn=use_div_rn))
+    for shape in [(1, 480, 1280), (1, 480, 10240), (1, 468, 1280), (1, 468, 10240)]:
+        for use_div_rn in (False, True):
+            results.append(_fused_stats_case(dtype=torch.float16, shape=shape, use_div_rn=use_div_rn))
     return results
+
+
+def _fused_rng_case(*, shape: tuple[int, ...], use_div_rn: bool) -> RngResult:
+    if triton_fake_quantize_levels_stoch is None or triton_fake_quantize_levels_stoch_with_stats is None:
+        raise RuntimeError("production Triton fake-quant wrappers are unavailable")
+
+    dtype = torch.float16
+    channel_count = shape[1] if len(shape) in (2, 4) else shape[2]
+    scale_flat = torch.linspace(0.0007, 0.0031, channel_count, device="cuda", dtype=torch.float32)
+    scale = _scale_to_shape(scale_flat, torch.empty(shape, device="cuda"), "channel").contiguous()
+    x = _make_x(shape, dtype, scale, "random").contiguous()
+    warm_rand = torch.rand(x.shape, device="cuda", dtype=torch.float32).contiguous()
+    _ = triton_fake_quantize_levels_stoch(
+        x, scale=scale, qmin=-127, qmax=127, use_div_rn=use_div_rn, rand=warm_rand
+    )
+    _ = triton_fake_quantize_levels_stoch_with_stats(
+        x, scale=scale, qmin=-127, qmax=127, use_div_rn=use_div_rn, rand=warm_rand
+    )
+    torch.cuda.synchronize()
+
+    state0 = torch.cuda.get_rng_state()
+    torch.cuda.set_rng_state(state0)
+    out_normal = triton_fake_quantize_levels_stoch(
+        x, scale=scale, qmin=-127, qmax=127, use_div_rn=use_div_rn
+    )
+    torch.cuda.synchronize()
+    after_normal = torch.cuda.get_rng_state()
+
+    torch.cuda.set_rng_state(state0)
+    fused = triton_fake_quantize_levels_stoch_with_stats(
+        x, scale=scale, qmin=-127, qmax=127, use_div_rn=use_div_rn
+    )
+    torch.cuda.synchronize()
+    after_fused = torch.cuda.get_rng_state()
+    if out_normal is None or fused is None:
+        raise RuntimeError(f"production RNG comparison failed to run for shape={shape}")
+    out_fused, _ = fused
+    diff = (out_normal.to(torch.float32) - out_fused.to(torch.float32)).abs()
+    return RngResult(
+        name=f"normal_vs_fused/{'div_rn' if use_div_rn else 'default'}",
+        dtype=str(dtype).replace("torch.", ""),
+        shape=str(tuple(shape)),
+        scale="channel",
+        rng_after_equal=bool(torch.equal(after_normal, after_fused)),
+        out_equal=bool(torch.equal(out_normal, out_fused)),
+        mismatches=int((out_normal != out_fused).sum().item()),
+        max_abs_diff=float(diff.max().item()),
+        before_hash=_rng_hash(state0),
+        after_ref_hash=_rng_hash(after_normal),
+        after_tri_hash=_rng_hash(after_fused),
+    )
+
+
+def run_fused_rng_checks() -> list[RngResult]:
+    torch.manual_seed(8642)
+    return [
+        _fused_rng_case(shape=shape, use_div_rn=use_div_rn)
+        for shape in [(3, 19, 11), (1, 480, 1280), (1, 468, 10240)]
+        for use_div_rn in (False, True)
+    ]
+
+
+def run_forced_fallback_check() -> FallbackResult:
+    shape = (3, 19, 11)
+    dtype = torch.float16
+    channel_count = shape[2]
+    scale_flat = torch.linspace(0.0007, 0.0031, channel_count, device="cuda", dtype=torch.float32)
+    scale = _scale_to_shape(scale_flat, torch.empty(shape, device="cuda"), "channel").contiguous()
+    x = _make_x(shape, dtype, scale, "random").contiguous()
+    captured: dict[str, torch.Tensor] = {}
+
+    original = rounding_util.triton_fake_quantize_levels_stoch
+
+    def forced_failure(*args, rand=None, **kwargs):
+        if rand is not None:
+            captured["rand"] = rand.detach().clone()
+        return None
+
+    state0 = torch.cuda.get_rng_state()
+    try:
+        rounding_util.triton_fake_quantize_levels_stoch = forced_failure
+        torch.cuda.set_rng_state(state0)
+        out = rounding_util.fake_quantize_levels(
+            x,
+            scale=scale,
+            qmin=-127,
+            qmax=127,
+            mode="stoch",
+            use_triton=True,
+        )
+        torch.cuda.synchronize()
+        after_fallback = torch.cuda.get_rng_state()
+    finally:
+        rounding_util.triton_fake_quantize_levels_stoch = original
+
+    torch.cuda.set_rng_state(state0)
+    rand_ref = torch.rand_like(x, dtype=torch.float32)
+    quantized_ref = ref_fake_quant_stoch_with_rand(x, scale, -127, 127, rand_ref)
+    out_ref = x + (quantized_ref - x).detach()
+    torch.cuda.synchronize()
+    after_ref = torch.cuda.get_rng_state()
+    diff = (out.detach().to(torch.float32) - out_ref.to(torch.float32)).abs()
+    return FallbackResult(
+        out_equal=bool(torch.equal(out.detach(), out_ref)),
+        rand_equal=bool("rand" in captured and torch.equal(captured["rand"], rand_ref)),
+        rng_after_equal=bool(torch.equal(after_fallback, after_ref)),
+        mismatches=int((out.detach() != out_ref).sum().item()),
+        max_abs_diff=float(diff.max().item()),
+    )
 
 
 def print_results(results: Iterable[CaseResult]) -> int:
@@ -1111,7 +1246,7 @@ def print_results(results: Iterable[CaseResult]) -> int:
 
 def print_rng_results(results: Iterable[RngResult]) -> int:
     failures = 0
-    print("production wrapper same-rng-state comparison")
+    print("production/fused wrapper same-rng-state comparison")
     print(
         "case,dtype,shape,scale,rng_after_equal,out_equal,mismatches,max_abs_diff,"
         "before_hash,after_ref_hash,after_tri_hash"
@@ -1125,6 +1260,16 @@ def print_rng_results(results: Iterable[RngResult]) -> int:
             f"{r.before_hash},{r.after_ref_hash},{r.after_tri_hash}"
         )
     return failures
+
+
+def print_fallback_result(result: FallbackResult) -> int:
+    print("forced Triton failure fallback comparison")
+    print("out_equal,rand_equal,rng_after_equal,mismatches,max_abs_diff")
+    print(
+        f"{result.out_equal},{result.rand_equal},{result.rng_after_equal},"
+        f"{result.mismatches},{result.max_abs_diff:.9g}"
+    )
+    return 0 if result.out_equal and result.rand_equal and result.rng_after_equal else 1
 
 
 def print_mutation_results(results: Iterable[MutationResult]) -> int:
@@ -1377,7 +1522,8 @@ def main() -> int:
     results = run_forward_checks(include_div_rn=not args.no_div_rn)
     failures = print_results(results)
     if not args.skip_production_rng:
-        failures += print_rng_results(run_production_rng_checks())
+        failures += print_rng_results(run_production_rng_checks() + run_fused_rng_checks())
+        failures += print_fallback_result(run_forced_fallback_check())
     if not args.skip_mutation:
         failures += print_mutation_results(run_mutation_checks())
     if not args.skip_e2e:

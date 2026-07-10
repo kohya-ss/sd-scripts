@@ -135,6 +135,7 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 補足:
 
 - `dq.rows[].Epoch` は `dq_delta_logs` 側に無ければ、`grad.steps_per_epoch` から推定補完されます。
+- `--dq_delta_log_detail basic` のログには `ZeroRate`, `AbsMax`, `Range` が存在せず、JSONでは `null` になります。これらを使うグラフや診断は `full` ログがある場合だけ生成されます。
 
 `dq.auto_rows[]` の主なキー:
 
