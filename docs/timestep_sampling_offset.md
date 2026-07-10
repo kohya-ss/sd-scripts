@@ -52,5 +52,5 @@ Useful magnitudes are typically in the range of `-1.0` to `1.0`. The offset is a
 
 - Applies to `sigmoid`, `shift`, and `flux_shift` timestep sampling modes.
 - `uniform` and `sigma` (density-based) modes are not affected.
-- Currently consumed by `anima_train_network.py`. Other trainers (FLUX, SD3, etc.) do not read this attribute; setting it for those trainers is a no-op.
+- Currently consumed by `anima_train_network.py` and `flux_train_network.py`. Other trainers (SD3, Lumina, etc.) do not read this attribute; setting it for those trainers is a no-op.
 - The offset is applied only during **training**. Validation uses unbiased sampling for comparable loss metrics.
