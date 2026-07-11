@@ -29,10 +29,12 @@ import networks.lora as lora_impl
 from library.rounding_util import compute_scale_bits, fake_quantize_levels
 try:
     from library.triton_quant import (
+        _FUSED_STATS_LARGE_MIN_ELEMENTS,
         triton_fake_quantize_levels_stoch,
         triton_fake_quantize_levels_stoch_with_stats,
     )
 except Exception:
+    _FUSED_STATS_LARGE_MIN_ELEMENTS = None
     triton_fake_quantize_levels_stoch = None
     triton_fake_quantize_levels_stoch_with_stats = None
 
@@ -1120,7 +1122,7 @@ def _fused_stats_case(*, dtype: torch.dtype, shape: tuple[int, ...], use_div_rn:
     )
     if fused is None:
         raise RuntimeError(f"fused stats returned None for shape={shape} dtype={dtype}")
-    fused_out, stats = fused
+    fused_out, packed_stats = fused
 
     clip_count_ref = debug_triton_clip_count(x, scale, 127, use_div_rn=use_div_rn)
     x_fp32 = x.to(torch.float32)
@@ -1137,10 +1139,10 @@ def _fused_stats_case(*, dtype: torch.dtype, shape: tuple[int, ...], use_div_rn:
         out_equal=bool(torch.equal(tri, fused_out)),
         out_mismatches=int((tri != fused_out).sum().item()),
         out_max_abs_diff=float(out_diff.max().item()),
-        clip_count_abs_diff=float((clip_count_ref - stats["clip_count"]).abs().max().item()),
-        sumsq_rel_diff=_rel_diff(sumsq_ref, stats["sumsq"]),
-        xq_sumsq_rel_diff=_rel_diff(xq_sumsq_ref, stats["xq_sumsq"]),
-        xxq_sum_rel_diff=_rel_diff(xxq_sum_ref, stats["xxq_sum"]),
+        clip_count_abs_diff=float((clip_count_ref - packed_stats[1]).abs().max().item()),
+        sumsq_rel_diff=_rel_diff(sumsq_ref, packed_stats[2]),
+        xq_sumsq_rel_diff=_rel_diff(xq_sumsq_ref, packed_stats[3]),
+        xxq_sum_rel_diff=_rel_diff(xxq_sum_ref, packed_stats[4]),
     )
 
 
@@ -1151,7 +1153,17 @@ def run_fused_stats_checks() -> list[FusedStatsResult]:
         for shape in [(17, 13), (3, 19, 11), (2, 7, 5, 3), (1, 77, 1280)]:
             for use_div_rn in (False, True):
                 results.append(_fused_stats_case(dtype=dtype, shape=shape, use_div_rn=use_div_rn))
-    for shape in [(1, 480, 1280), (1, 480, 10240), (1, 468, 1280), (1, 468, 10240)]:
+    launch_boundary = int(_FUSED_STATS_LARGE_MIN_ELEMENTS)
+    for shape in [
+        (1, launch_boundary - 1),
+        (1, launch_boundary),
+        (480, 1280),
+        (1, 320, 48, 40),
+        (1, 480, 1280),
+        (1, 480, 10240),
+        (1, 468, 1280),
+        (1, 468, 10240),
+    ]:
         for use_div_rn in (False, True):
             results.append(_fused_stats_case(dtype=torch.float16, shape=shape, use_div_rn=use_div_rn))
     return results

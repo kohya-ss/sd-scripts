@@ -22,6 +22,12 @@ else:
 
 _warned_messages: set[str] = set()
 
+_FUSED_STATS_LARGE_MIN_ELEMENTS = 65536
+_FUSED_STATS_LARGE_BLOCK_SIZE = 1024
+_FUSED_STATS_LARGE_NUM_WARPS = 2
+_FUSED_STATS_SMALL_BLOCK_SIZE = 256
+_FUSED_STATS_SMALL_NUM_WARPS = 4
+
 
 def is_triton_available() -> bool:
     return _TRITON_AVAILABLE
@@ -502,7 +508,7 @@ def _check_fake_quant_inputs(x: torch.Tensor, scale: torch.Tensor) -> Optional[t
 
 
 def _reduce_fused_basic_stats(stats: torch.Tensor) -> torch.Tensor:
-    """Reduce an [n_blocks, 5] partial buffer without generic PyTorch reduction."""
+    """Experimental Triton reduction retained for the standalone benchmark."""
     n_rows, n_cols = stats.shape
     if n_cols != 5 or n_rows <= 0:
         raise ValueError(f"unexpected fused stats shape: {tuple(stats.shape)}")
@@ -553,7 +559,7 @@ def triton_fake_quantize_levels_stoch_with_stats(
     qmax: int,
     use_div_rn: bool = False,
     rand: Optional[torch.Tensor] = None,
-) -> Optional[tuple[torch.Tensor, dict[str, Optional[torch.Tensor]]]]:
+) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
     """Fuse stochastic fake quant B with the minimal dq_delta basic stats.
 
     Python reference for the forward value is fake_quantize_levels(...,
@@ -561,7 +567,7 @@ def triton_fake_quantize_levels_stoch_with_stats(
     intentionally applied by the caller so gradients stay identical to the
     normal Python/Triton path.
 
-    Collected stats are the qerr-basic subset:
+    The second return value packs the qerr-basic stats in this order:
         numel, clip_count, sumsq, xq_sumsq, xxq_sum
     """
     if not _TRITON_AVAILABLE:
@@ -587,7 +593,11 @@ def triton_fake_quantize_levels_stoch_with_stats(
     if n_elements <= 0:
         return None
     out = torch.empty_like(x)
-    block_size = 256
+    # Larger blocks reduce the partial stats rows substantially on the common
+    # SDXL tensors. Keep the smaller launch for genuinely small tensors.
+    use_large_launch = n_elements >= _FUSED_STATS_LARGE_MIN_ELEMENTS
+    block_size = _FUSED_STATS_LARGE_BLOCK_SIZE if use_large_launch else _FUSED_STATS_SMALL_BLOCK_SIZE
+    num_warps = _FUSED_STATS_LARGE_NUM_WARPS if use_large_launch else _FUSED_STATS_SMALL_NUM_WARPS
     n_blocks = triton.cdiv(n_elements, block_size)
     stats = torch.empty((n_blocks, 5), device=x.device, dtype=torch.float32)
 
@@ -608,27 +618,16 @@ def triton_fake_quantize_levels_stoch_with_stats(
             qmax,
             bool(use_div_rn),
             BLOCK_SIZE=block_size,
+            num_warps=num_warps,
         )
     except Exception as e:
         _warn_once("triton_fused_stats_kernel", f"Triton fused fake quant stats failed; falling back: {e}")
         return None
 
-    sums = _reduce_fused_basic_stats(stats)
-    return out, {
-        "packed": sums,
-        "numel": sums[0].reshape(1),
-        "clip_count": sums[1].reshape(1),
-        "zero_count": None,
-        "near_zero_count": None,
-        "sumsq": sums[2].reshape(1),
-        "xq_sumsq": sums[3].reshape(1),
-        "xxq_sum": sums[4].reshape(1),
-        "absmax": None,
-        "scale_min": None,
-        "scale_max": None,
-        "scale_sum": None,
-        "scale_count": None,
-    }
+    # With the larger first-stage block this buffer is small enough that the
+    # native one-kernel reduction is faster than the two-stage Triton helper.
+    sums = stats.sum(dim=0)
+    return out, sums
 
 
 def triton_collect_fake_quant_stats(

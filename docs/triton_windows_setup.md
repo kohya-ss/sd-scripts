@@ -162,7 +162,7 @@ xl05:
 --dq_delta_triton_stats
 ```
 
-この指定では、対応できる場合だけ stats reduction も Triton で集計する。テンソル条件が合わない場合は PyTorch stats path に fallback する。`--dq_delta_log_error_parts` は整理のため削除し、clip/round成分分解ログは新規ログでは出力しない。
+この指定では、対応できる場合だけstats集計の主要部分もTritonで処理する。`separate`はstats専用Triton kernelの後にPyTorchで集約し、`fused`はBとpartial statsを同じTriton kernelで処理した後に `torch.sum(dim=0)` で集約する。テンソル条件が合わない場合はPyTorch stats pathへfallbackする。`--dq_delta_log_error_parts` は整理のため削除し、clip/round成分分解ログは新規ログでは出力しない。
 
 `--dq_delta_log_detail basic` は常用向けの軽量ログで、`ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` を計算・出力しない。詳細診断が必要な場合は `--dq_delta_log_detail full` を使う。
 
@@ -223,18 +223,33 @@ xq_sumsq
 xxq_sum
 ```
 
-### fused stats v2
+### fused stats v2と後続チューニング
 
 fused v2ではforward値とログ定義を変えず、stats後段だけを高速化する。
 
 ```text
 B + partial stats Triton kernel
-  -> Triton second-stage reduction
+  -> partial statsの一括reduction
   -> 5要素 packed stats
   -> scope accumulatorへ1回のadd
 ```
 
-従来の `stats.sum(dim=0)` と、moduleごとの5回のscalar加算を置き換える。通常Bとfused Bには内部検証用の固定randを渡せるが、通常学習ではこれまで通りPyTorch乱数を毎回1回生成する。fused失敗時は同じrandを通常B/PyTorch fallbackへ渡し、失敗の有無でCUDA RNG stateが余分に進まないようにする。
+初期v2はTritonのsecond-stage reductionを使っていた。その後のRTX 5080実測では、first-stageを大きくしてpartial行数を減らしたうえで `torch.sum(dim=0)` を1回使う方が一貫して速かったため、現在は次の構成にしている。
+
+```text
+n_elements >= 65536:
+  BLOCK_SIZE=1024, num_warps=2
+small tensor:
+  BLOCK_SIZE=256, num_warps=4
+partial stats:
+  torch.sum(dim=0)
+```
+
+これは `--dq_delta_triton_stats_mode fused` を選んだ場合の正式構成として採用する。CLI既定値の`separate`は変更せず、比較用および互換ルートとして維持する。
+
+学習側が使うのは5要素packed statsだけなので、moduleごとの辞書と個別view tensorも作らない。実験した出力値のレジスタ内castは一貫した高速化にならなかったため採用していない。旧Triton reduction helperは比較ベンチ用に残す。
+
+通常Bとfused Bには内部検証用の固定randを渡せるが、通常学習ではこれまで通りPyTorch乱数を毎回1回生成する。fused失敗時は同じrandを通常B/PyTorch fallbackへ渡し、失敗の有無でCUDA RNG stateが余分に進まないようにする。
 
 検証スクリプトでは、production Bとfused production Bを直接比較し、実戦大shape、RNG終了状態、強制fallbackを確認する。検証用randを指定するCLIは追加しない。
 
@@ -268,7 +283,9 @@ packed accumulator add
 
 `reduce_speedup`、`separate_to_fused`、`pytorch_stats_to_fused` は`1.0`より大きいほどfused/Triton側が速い。コンパイルをwarmupから除外し、各測定のmedianとminを出力する。
 
-RTX 5080環境でwarmup 50回、1000 iteration、7 repeatを測った時点では、fused v2はseparate stats比で代表5 shape中4 shapeが約1.04～1.25倍、1 shapeが約0.97倍だった。second-stage reduction単体はshapeによりPyTorchと同等か遅く、fused全体の主な利点はBとstatsの同時処理、およびpacked accumulatorにある。これは単体kernelの傾向であり、学習全体の短縮率ではない。
+RTX 5080環境でwarmup 50回、1000 iteration、7 repeatを測った時点では、チューニング後fusedはseparate stats比で代表5 shapeすべて約2.17～2.76倍だった。初期fused v2比では、小shapeが約49%、中shapeが約57～59%、大shapeが約78%短い。forward出力はfixed-randで完全一致し、packed statsの相対差は最大でも約 `1.6e-7` だった。これはstats対象moduleの処理時間であり、学習全体の短縮率ではない。
+
+全50 stepをlog/auto対象にした短縮学習では、separateが約40秒・1.24 it/s、チューニング後fusedが約38秒・1.30 it/sだった。通常の50/100 step間隔では対象stepが少ないため、8400 step全体への寄与は数秒程度と見積もる。
 
 ### 回帰チェック
 
@@ -295,4 +312,4 @@ dq_delta stats paths (main rank):
 
 `fused_fallback_calls=0`なら、試行したfused kernelはすべて成功している。gradient checkpointing利用時に`backward_recompute_stats_calls>0`なら、backward再計算中にもstatsが再加算されている。現段階ではtraceのみで、収集停止処理はまだ入れていない。
 
-同一条件の3 step短縮ランで全stepをlog/auto対象にした場合、gradient checkpointingなしでは`fused_stats_calls=2166`、ありでは`fused_stats_calls=4266`かつ`backward_recompute_stats_calls=2100`だった。実モデルでもbackward再計算による重複収集が確認できたため、次段階では再計算中のstats収集を停止できるかを検討する。
+同一条件の3 step短縮ランで全stepをlog/auto対象にした場合、gradient checkpointingなしでは`fused_stats_calls=2166`、ありでは`fused_stats_calls=4266`かつ`backward_recompute_stats_calls=2100`だった。実モデルでもbackward再計算による重複収集を確認した。`--gradient_checkpointing`を使わない通常運用には関係しないため、現時点では将来このオプションを使う場合の課題として記録するだけとし、収集停止処理は実装しない。

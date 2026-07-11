@@ -23,6 +23,9 @@ else:
     TRITON_IMPORT_ERROR = None
 
 from library.triton_quant import (
+    _FUSED_STATS_LARGE_BLOCK_SIZE,
+    _FUSED_STATS_LARGE_MIN_ELEMENTS,
+    _FUSED_STATS_SMALL_BLOCK_SIZE,
     _reduce_fused_basic_stats,
     triton_collect_fake_quant_stats,
     triton_fake_quantize_levels_stoch,
@@ -133,8 +136,13 @@ def run_shape(
     x = (torch.randn(shape, device=device, dtype=torch.float32) * 0.05).to(dtype).contiguous()
     scale = channel_scale(shape, device)
     fixed_rand = torch.rand(shape, device=device, dtype=torch.float32).contiguous()
-    n_blocks = math.ceil(x.numel() / 256)
-    partial_stats = torch.rand((n_blocks, 5), device=device, dtype=torch.float32)
+    fused_block_size = (
+        _FUSED_STATS_LARGE_BLOCK_SIZE
+        if x.numel() >= _FUSED_STATS_LARGE_MIN_ELEMENTS
+        else _FUSED_STATS_SMALL_BLOCK_SIZE
+    )
+    partial_rows = math.ceil(x.numel() / fused_block_size)
+    partial_stats = torch.rand((partial_rows, 5), device=device, dtype=torch.float32)
     packed_sum = partial_stats.sum(dim=0)
     accumulator = torch.zeros(5, device=device, dtype=torch.float32)
 
@@ -265,7 +273,7 @@ def main() -> int:
         f"device={torch.cuda.get_device_name()} dtype={args.dtype} div_rn={not args.no_div_rn} "
         f"warmup={warmup} iterations={iterations} repeats={repeats}"
     )
-    print("shape,numel,n_blocks,operation,median_ms,min_ms")
+    print("shape,numel,fused_block_size,partial_rows,operation,median_ms,min_ms")
     for shape in shapes:
         results = run_shape(
             shape,
@@ -277,9 +285,17 @@ def main() -> int:
         )
         by_name = {result.operation: result for result in results}
         numel = math.prod(shape)
-        n_blocks = math.ceil(numel / 256)
+        fused_block_size = (
+            _FUSED_STATS_LARGE_BLOCK_SIZE
+            if numel >= _FUSED_STATS_LARGE_MIN_ELEMENTS
+            else _FUSED_STATS_SMALL_BLOCK_SIZE
+        )
+        partial_rows = math.ceil(numel / fused_block_size)
         for result in results:
-            print(f'"{shape}",{numel},{n_blocks},{result.operation},{result.median_ms:.9g},{result.min_ms:.9g}')
+            print(
+                f'"{shape}",{numel},{fused_block_size},{partial_rows},'
+                f"{result.operation},{result.median_ms:.9g},{result.min_ms:.9g}"
+            )
 
         torch_reduce = by_name["partial_reduce_torch"].median_ms
         triton_reduce = by_name["partial_reduce_triton"].median_ms

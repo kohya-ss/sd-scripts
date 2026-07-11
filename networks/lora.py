@@ -765,9 +765,9 @@ class LoRAModule(torch.nn.Module):
             self._record_dq_stats_for_quantized(x_in, quantized, scale, qmax)
             return quantized
 
-        quantized_raw, stats = fused
+        quantized_raw, packed_stats = fused
         mgr.record_stats_path("fused", numel=x_in.numel())
-        mgr.add_basic_stats(scope=self.dq_scope, packed=stats["packed"])
+        mgr.add_basic_stats(scope=self.dq_scope, packed=packed_stats)
         return x_in + (quantized_raw - x_in).detach()
 
     def forward(self, x):
