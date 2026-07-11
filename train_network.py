@@ -62,6 +62,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _set_delta_fake_quant_compat(network, step, mode, **kwargs):
+    """Call older network implementations without Triton-only kwargs."""
+    setter = network.set_delta_fake_quant
+    parameters = inspect.signature(setter).parameters
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+    if not accepts_kwargs:
+        for name in ("use_triton", "triton_stats"):
+            if name not in parameters:
+                kwargs.pop(name, None)
+    setter(step, mode, **kwargs)
+
+
 @dataclass
 class GradNormGuardianConfig:
     skip_grad_norm: bool
@@ -1836,7 +1848,8 @@ class NetworkTrainer:
         # Configure LoRA delta fake-quantization if available
         if (((getattr(args, "dq_delta_step", None) is not None and args.dq_delta_step) or (getattr(args, "dq_delta_bits", None) is not None and args.dq_delta_bits) or dq_bits_sched) and hasattr(network, "set_delta_fake_quant")):
             unwrapped = accelerator.unwrap_model(network)
-            unwrapped.set_delta_fake_quant(
+            _set_delta_fake_quant_compat(
+                unwrapped,
                 getattr(args, "dq_delta_step", None),
                 args.dq_delta_mode,
                 granularity=args.dq_delta_granularity,
@@ -3351,7 +3364,8 @@ class NetworkTrainer:
                                     else:
                                         break
                                 if dq_bits_force_apply or (cur_bits != last_applied_bits):
-                                    accelerator.unwrap_model(network).set_delta_fake_quant(
+                                    _set_delta_fake_quant_compat(
+                                        accelerator.unwrap_model(network),
                                         getattr(args, "dq_delta_step", None),
                                         args.dq_delta_mode,
                                         granularity=args.dq_delta_granularity,
@@ -3798,7 +3812,8 @@ class NetworkTrainer:
 
                                     if range_mul_after is not None:
                                         args.dq_delta_range_mul = range_mul_after
-                                        accelerator.unwrap_model(network).set_delta_fake_quant(
+                                        _set_delta_fake_quant_compat(
+                                            accelerator.unwrap_model(network),
                                             getattr(args, "dq_delta_step", None),
                                             args.dq_delta_mode,
                                             granularity=args.dq_delta_granularity,
@@ -4437,6 +4452,9 @@ class NetworkTrainer:
             with open(log_file_path, "a") as f:
                 f.writelines(grad_norm_guardian.log_buffer)
             grad_norm_guardian.log_buffer.clear()
+
+        if is_main_process:
+            network = accelerator.unwrap_model(network)
 
         accelerator.end_training()
 
