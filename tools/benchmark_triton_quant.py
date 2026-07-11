@@ -26,8 +26,6 @@ from library.triton_quant import (
     _FUSED_STATS_LARGE_BLOCK_SIZE,
     _FUSED_STATS_LARGE_MIN_ELEMENTS,
     _FUSED_STATS_SMALL_BLOCK_SIZE,
-    _reduce_fused_basic_stats,
-    triton_collect_fake_quant_stats,
     triton_fake_quantize_levels_stoch,
     triton_fake_quantize_levels_stoch_with_stats,
 )
@@ -127,7 +125,6 @@ def run_shape(
     shape: tuple[int, ...],
     *,
     dtype: torch.dtype,
-    use_div_rn: bool,
     warmup: int,
     iterations: int,
     repeats: int,
@@ -143,10 +140,7 @@ def run_shape(
         else _FUSED_STATS_SMALL_BLOCK_SIZE
     )
     partial_rows = math.ceil(x.numel() / fused_block_size)
-    partial_stats = torch.rand((partial_rows, 5), device=device, dtype=torch.float32)
-    packed_sum = partial_stats.sum(dim=0)
-    accumulator = torch.zeros(5, device=device, dtype=torch.float32)
-    separate_accumulators = [torch.zeros(1, device=device, dtype=torch.float32) for _ in range(5)]
+    pytorch_accumulator = torch.zeros(5, device=device, dtype=torch.float32)
     fused_accumulator = torch.zeros(5, device=device, dtype=torch.float32)
 
     def normal_fixed():
@@ -156,7 +150,6 @@ def run_shape(
                 scale=scale,
                 qmin=qmin,
                 qmax=qmax,
-                use_div_rn=use_div_rn,
                 rand=fixed_rand,
             ),
             "normal B",
@@ -169,7 +162,6 @@ def run_shape(
                 scale=scale,
                 qmin=qmin,
                 qmax=qmax,
-                use_div_rn=use_div_rn,
             ),
             "normal B with PyTorch rand",
         )
@@ -178,33 +170,9 @@ def run_shape(
         quantized = normal_fixed()
         return pytorch_basic_stats(x, quantized, scale, qmax)
 
-    def collect_separate_stats(quantized: torch.Tensor):
-        return require_result(
-            triton_collect_fake_quant_stats(
-                x,
-                quantized,
-                scale=scale,
-                qmax=qmax,
-                collect_zero=False,
-                collect_near_zero=False,
-                collect_full=True,
-                collect_detail=False,
-            ),
-            "separate Triton stats",
-        )
-
-    def normal_plus_separate_stats():
-        stats = collect_separate_stats(normal_fixed())
-        return stats["sumsq"]
-
-    def production_separate_random():
-        stats = collect_separate_stats(normal_random())
-        for accumulator_t, key in zip(
-            separate_accumulators,
-            ("numel", "clip_count", "sumsq", "xq_sumsq", "xxq_sum"),
-        ):
-            accumulator_t.add_(stats[key])
-        return separate_accumulators[0]
+    def production_pytorch_stats_random():
+        stats = pytorch_basic_stats(x, normal_random(), scale, qmax)
+        return pytorch_accumulator.add_(stats)
 
     def fused_fixed():
         return require_result(
@@ -213,10 +181,9 @@ def run_shape(
                 scale=scale,
                 qmin=qmin,
                 qmax=qmax,
-                use_div_rn=use_div_rn,
                 rand=fixed_rand,
             ),
-            "fused v2",
+            "fused B+stats",
         )
 
     def fused_random():
@@ -226,9 +193,8 @@ def run_shape(
                 scale=scale,
                 qmin=qmin,
                 qmax=qmax,
-                use_div_rn=use_div_rn,
             ),
-            "fused v2 with PyTorch rand",
+            "fused B+stats with PyTorch rand",
         )
 
     def production_fused_random():
@@ -239,14 +205,10 @@ def run_shape(
         ("normal_b_fixed_rand", normal_fixed),
         ("normal_b_pytorch_rand", normal_random),
         ("normal_b_plus_pytorch_stats", normal_plus_pytorch_stats),
-        ("normal_b_plus_separate_triton_stats", normal_plus_separate_stats),
-        ("fused_v2_fixed_rand", fused_fixed),
-        ("fused_v2_pytorch_rand", fused_random),
-        ("production_separate_pytorch_rand", production_separate_random),
+        ("fused_stats_fixed_rand", fused_fixed),
+        ("fused_stats_pytorch_rand", fused_random),
+        ("production_pytorch_stats_rand", production_pytorch_stats_random),
         ("production_fused_pytorch_rand", production_fused_random),
-        ("partial_reduce_torch", lambda: partial_stats.sum(dim=0)),
-        ("partial_reduce_triton", lambda: _reduce_fused_basic_stats(partial_stats)),
-        ("packed_accumulator_add", lambda: accumulator.add_(packed_sum)),
     ]
 
     normal_out = normal_fixed()
@@ -271,7 +233,6 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=50)
     parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--no-div-rn", action="store_true")
     parser.add_argument("--quick", action="store_true", help="Use a short 5/20/3 warmup/iteration/repeat run")
     args = parser.parse_args()
 
@@ -290,7 +251,7 @@ def main() -> int:
 
     print(
         f"torch={torch.__version__} cuda={torch.version.cuda} triton={triton.__version__} "
-        f"device={torch.cuda.get_device_name()} dtype={args.dtype} div_rn={not args.no_div_rn} "
+        f"device={torch.cuda.get_device_name()} dtype={args.dtype} "
         f"warmup={warmup} iterations={iterations} repeats={repeats}"
     )
     print("shape,numel,fused_block_size,partial_rows,operation,median_ms,min_ms")
@@ -298,7 +259,6 @@ def main() -> int:
         results = run_shape(
             shape,
             dtype=dtype,
-            use_div_rn=not args.no_div_rn,
             warmup=warmup,
             iterations=iterations,
             repeats=repeats,
@@ -317,17 +277,13 @@ def main() -> int:
                 f"{result.operation},{result.median_ms:.9g},{result.min_ms:.9g}"
             )
 
-        torch_reduce = by_name["partial_reduce_torch"].median_ms
-        triton_reduce = by_name["partial_reduce_triton"].median_ms
-        separate = by_name["normal_b_plus_separate_triton_stats"].median_ms
-        fused = by_name["fused_v2_fixed_rand"].median_ms
+        fused = by_name["fused_stats_fixed_rand"].median_ms
         pytorch_stats = by_name["normal_b_plus_pytorch_stats"].median_ms
-        production_separate = by_name["production_separate_pytorch_rand"].median_ms
+        production_pytorch = by_name["production_pytorch_stats_rand"].median_ms
         production_fused = by_name["production_fused_pytorch_rand"].median_ms
         print(
-            f'# summary shape={shape} reduce_speedup={torch_reduce / triton_reduce:.4f}x '
-            f'separate_to_fused={separate / fused:.4f}x pytorch_stats_to_fused={pytorch_stats / fused:.4f}x '
-            f'production_separate_to_fused={production_separate / production_fused:.4f}x'
+            f'# summary shape={shape} pytorch_stats_to_fused={pytorch_stats / fused:.4f}x '
+            f'production_pytorch_to_fused={production_pytorch / production_fused:.4f}x'
         )
         torch.cuda.synchronize()
         torch.cuda.empty_cache()

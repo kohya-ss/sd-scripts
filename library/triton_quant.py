@@ -124,7 +124,6 @@ if _TRITON_AVAILABLE:
         ndim: tl.constexpr,
         qmin: tl.constexpr,
         qmax: tl.constexpr,
-        USE_DIV_RN: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -146,10 +145,7 @@ if _TRITON_AVAILABLE:
             scale_offsets = offsets % dim1
 
         scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
-        if USE_DIV_RN:
-            y = tl.div_rn(x, scale)
-        else:
-            y = x / scale
+        y = tl.div_rn(x, scale)
         q_floor = tl.floor(y)
         frac = y - q_floor
         probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
@@ -174,7 +170,6 @@ if _TRITON_AVAILABLE:
         ndim: tl.constexpr,
         qmin: tl.constexpr,
         qmax: tl.constexpr,
-        USE_DIV_RN: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -193,10 +188,7 @@ if _TRITON_AVAILABLE:
             scale_offsets = offsets % dim1
 
         scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
-        if USE_DIV_RN:
-            y = tl.div_rn(x, scale)
-        else:
-            y = x / scale
+        y = tl.div_rn(x, scale)
         q_floor = tl.floor(y)
         frac = y - q_floor
         probs = tl.minimum(tl.maximum(frac, 0.0), 1.0)
@@ -219,94 +211,6 @@ if _TRITON_AVAILABLE:
         tl.store(stats_ptr + base + 2, sumsq)
         tl.store(stats_ptr + base + 3, xq_sumsq)
         tl.store(stats_ptr + base + 4, xxq_sum)
-
-    @triton.jit
-    def _reduce_stats_rows_kernel(
-        stats_ptr,
-        out_ptr,
-        n_rows,
-        N_COLS: tl.constexpr,
-        BLOCK_ROWS: tl.constexpr,
-    ):
-        col = tl.program_id(axis=0)
-        group = tl.program_id(axis=1)
-        rows = group * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
-        mask = rows < n_rows
-        values = tl.load(stats_ptr + rows * N_COLS + col, mask=mask, other=0.0).to(tl.float32)
-        tl.store(out_ptr + group * N_COLS + col, tl.sum(values, axis=0))
-
-    @triton.jit
-    def _fake_quant_stats_kernel(
-        x_ptr,
-        q_ptr,
-        scale_ptr,
-        stats_ptr,
-        n_elements: tl.constexpr,
-        scale_numel: tl.constexpr,
-        dim1: tl.constexpr,
-        dim2: tl.constexpr,
-        dim3: tl.constexpr,
-        ndim: tl.constexpr,
-        qmax: tl.constexpr,
-        collect_zero: tl.constexpr,
-        collect_near_zero: tl.constexpr,
-        collect_full: tl.constexpr,
-        collect_detail: tl.constexpr,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        pid = tl.program_id(axis=0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-
-        x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        q = tl.load(q_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-
-        if scale_numel == 1:
-            scale_offsets = tl.full((BLOCK_SIZE,), 0, tl.int64)
-        elif ndim == 4:
-            scale_offsets = (offsets // (dim2 * dim3)) % dim1
-        elif ndim == 3:
-            scale_offsets = offsets % dim2
-        else:
-            scale_offsets = offsets % dim1
-
-        scale = tl.load(scale_ptr + scale_offsets, mask=mask, other=1.0).to(tl.float32)
-        y = x / scale
-        q_clamp = tl.minimum(tl.maximum(y, -qmax), qmax)
-        clipped = tl.abs(y) >= qmax
-
-        numel = tl.sum(mask.to(tl.float32), axis=0)
-        clip_count = tl.sum((clipped & mask).to(tl.float32), axis=0)
-
-        zero_count = 0.0
-        if collect_zero:
-            zero_count = tl.sum(((q == 0.0) & mask).to(tl.float32), axis=0)
-
-        near_zero_count = 0.0
-        if collect_near_zero:
-            near_zero_count = tl.sum(((tl.abs(x) < (0.5 * scale)) & mask).to(tl.float32), axis=0)
-
-        sumsq = 0.0
-        xq_sumsq = 0.0
-        xxq_sum = 0.0
-        absmax = 0.0
-        if collect_full:
-            sumsq = tl.sum(x * x, axis=0)
-            xq_sumsq = tl.sum(q * q, axis=0)
-            xxq_sum = tl.sum(x * q, axis=0)
-        if collect_detail:
-            absmax = tl.max(tl.abs(x), axis=0)
-
-        base = pid * 8
-        tl.store(stats_ptr + base + 0, numel)
-        tl.store(stats_ptr + base + 1, clip_count)
-        tl.store(stats_ptr + base + 2, zero_count)
-        tl.store(stats_ptr + base + 3, near_zero_count)
-        tl.store(stats_ptr + base + 4, sumsq)
-        tl.store(stats_ptr + base + 5, xq_sumsq)
-        tl.store(stats_ptr + base + 6, xxq_sum)
-        tl.store(stats_ptr + base + 7, absmax)
-
 
 def triton_compute_scale_bits_channel_rms(
     x: torch.Tensor,
@@ -409,7 +313,6 @@ def triton_fake_quantize_levels_stoch(
     scale: torch.Tensor,
     qmin: int,
     qmax: int,
-    use_div_rn: bool = False,
     rand: Optional[torch.Tensor] = None,
 ) -> Optional[torch.Tensor]:
     """Mirror fake_quantize_levels(..., mode="stoch").
@@ -476,7 +379,6 @@ def triton_fake_quantize_levels_stoch(
             x.ndim,
             qmin,
             qmax,
-            bool(use_div_rn),
             BLOCK_SIZE=block_size,
         )
     except Exception as e:
@@ -507,57 +409,12 @@ def _check_fake_quant_inputs(x: torch.Tensor, scale: torch.Tensor) -> Optional[t
     return scale_flat, scale_numel, dim1, dim2, dim3
 
 
-def _reduce_fused_basic_stats(stats: torch.Tensor) -> torch.Tensor:
-    """Experimental Triton reduction retained for the standalone benchmark."""
-    n_rows, n_cols = stats.shape
-    if n_cols != 5 or n_rows <= 0:
-        raise ValueError(f"unexpected fused stats shape: {tuple(stats.shape)}")
-
-    block_rows = 1024
-    sums = torch.empty((n_cols,), device=stats.device, dtype=torch.float32)
-    try:
-        if n_rows <= block_rows:
-            _reduce_stats_rows_kernel[(n_cols, 1)](
-                stats,
-                sums,
-                n_rows,
-                N_COLS=n_cols,
-                BLOCK_ROWS=triton.next_power_of_2(n_rows),
-            )
-            return sums
-
-        n_groups = triton.cdiv(n_rows, block_rows)
-        stage2 = torch.empty((n_groups, n_cols), device=stats.device, dtype=torch.float32)
-        _reduce_stats_rows_kernel[(n_cols, n_groups)](
-            stats,
-            stage2,
-            n_rows,
-            N_COLS=n_cols,
-            BLOCK_ROWS=block_rows,
-        )
-        _reduce_stats_rows_kernel[(n_cols, 1)](
-            stage2,
-            sums,
-            n_groups,
-            N_COLS=n_cols,
-            BLOCK_ROWS=triton.next_power_of_2(n_groups),
-        )
-        return sums
-    except Exception as e:
-        _warn_once(
-            "triton_fused_stats_reduce_kernel",
-            f"Triton fused stats reduction failed; falling back to PyTorch reduction: {e}",
-        )
-        return stats.sum(dim=0)
-
-
 def triton_fake_quantize_levels_stoch_with_stats(
     x: torch.Tensor,
     *,
     scale: torch.Tensor,
     qmin: int,
     qmax: int,
-    use_div_rn: bool = False,
     rand: Optional[torch.Tensor] = None,
 ) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
     """Fuse stochastic fake quant B with the minimal dq_delta basic stats.
@@ -616,7 +473,6 @@ def triton_fake_quantize_levels_stoch_with_stats(
             x.ndim,
             qmin,
             qmax,
-            bool(use_div_rn),
             BLOCK_SIZE=block_size,
             num_warps=num_warps,
         )
@@ -628,92 +484,3 @@ def triton_fake_quantize_levels_stoch_with_stats(
     # native one-kernel reduction is faster than the two-stage Triton helper.
     sums = stats.sum(dim=0)
     return out, sums
-
-
-def triton_collect_fake_quant_stats(
-    x: torch.Tensor,
-    quantized: torch.Tensor,
-    *,
-    scale: torch.Tensor,
-    qmax: int,
-    collect_zero: bool,
-    collect_near_zero: bool,
-    collect_full: bool,
-    collect_detail: bool = True,
-) -> Optional[dict[str, Optional[torch.Tensor]]]:
-    """Collect dq_delta fake-quant stats with a small Triton reduction.
-
-    This mirrors LoRAModule._record_dq_stats for the common bits/channel/rms
-    path, except clip/round error parts are intentionally not handled here.
-    The quantized tensor is supplied by the normal fake_quantize_levels path so
-    stats steps can observe the same forward output used for training.
-    """
-    if not _TRITON_AVAILABLE:
-        return None
-    if not x.is_cuda or not quantized.is_cuda or not scale.is_cuda:
-        return None
-    if x.shape != quantized.shape:
-        return None
-    if x.ndim not in (2, 3, 4):
-        return None
-    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-        return None
-    if quantized.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-        return None
-    if not x.is_contiguous() or not quantized.is_contiguous() or not scale.is_contiguous():
-        return None
-
-    scale_flat = scale.reshape(-1)
-    scale_numel = scale_flat.numel()
-    if scale_numel not in (1, x.shape[1] if x.ndim in (2, 4) else x.shape[2]):
-        return None
-
-    n_elements = x.numel()
-    if n_elements <= 0:
-        return None
-    block_size = 256
-    n_blocks = triton.cdiv(n_elements, block_size)
-    stats = torch.empty((n_blocks, 8), device=x.device, dtype=torch.float32)
-    dim1 = x.shape[1] if x.ndim >= 2 else 1
-    dim2 = x.shape[2] if x.ndim >= 3 else 1
-    dim3 = x.shape[3] if x.ndim >= 4 else 1
-
-    try:
-        _fake_quant_stats_kernel[(n_blocks,)](
-            x,
-            quantized,
-            scale_flat,
-            stats,
-            n_elements,
-            scale_numel,
-            dim1,
-            dim2,
-            dim3,
-            x.ndim,
-            int(qmax),
-            bool(collect_zero),
-            bool(collect_near_zero),
-            bool(collect_full),
-            bool(collect_detail),
-            BLOCK_SIZE=block_size,
-        )
-    except Exception as e:
-        _warn_once("triton_stats_kernel", f"Triton fake quant stats failed; falling back to PyTorch: {e}")
-        return None
-
-    sums = stats.sum(dim=0)
-    absmax = stats[:, 7].max().reshape(1) if collect_detail else None
-    return {
-        "numel": sums[0].reshape(1),
-        "clip_count": sums[1].reshape(1),
-        "zero_count": sums[2].reshape(1) if collect_zero else None,
-        "near_zero_count": sums[3].reshape(1) if collect_near_zero else None,
-        "sumsq": sums[4].reshape(1) if collect_full else None,
-        "xq_sumsq": sums[5].reshape(1) if collect_full else None,
-        "xxq_sum": sums[6].reshape(1) if collect_full else None,
-        "absmax": absmax,
-        "scale_min": scale.min() if collect_detail else None,
-        "scale_max": scale.max() if collect_detail else None,
-        "scale_sum": scale.sum() if collect_detail else None,
-        "scale_count": torch.tensor(float(scale.numel()), device=x.device, dtype=torch.float32) if collect_detail else None,
-    }

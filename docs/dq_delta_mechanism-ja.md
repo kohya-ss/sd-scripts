@@ -49,7 +49,10 @@
 | `--dq_delta_range_mul <float>` | bits モード×`stat=rms`時の有効レンジ倍率（range=倍率×RMS、既定3.0）。 |
 | `--dq_delta_bits_sched 'p1:bits1,p2:bits2,...'` | 学習進行率 p でビット数を段階的に切替（例: `0.0:6,0.5:8,0.8:10`）。 |
 | `--dq_quantize_z` | Δ ではなく `z=A(x)` を量子化（`B(Q(z))`）。rank r の z を対象に統計を取るため軽量化。 |
+| `--dq_delta_use_triton` | 対応するdq_delta scale/fake quantをoptional Triton kernelで高速化。未対応時はPyTorchへfallback。 |
+| `--dq_delta_triton_stats` | `--dq_delta_use_triton`と併用し、対応するbasic log/auto statsをfake quant Bへ融合。 |
 
+Tritonの導入方法、コード上の対応条件、長時間学習で検証済みの範囲は [triton_windows_setup.md](triton_windows_setup.md) を参照。
 
 ### 量子化モードの前提
 

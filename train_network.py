@@ -1004,10 +1004,7 @@ class NetworkTrainer:
                 f"mode={args.dq_delta_mode}, {dq_begin_info}, granularity={getattr(args,'dq_delta_granularity',None)}, "
                 f"stat={getattr(args,'dq_delta_stat',None)}, range_mul={getattr(args,'dq_delta_range_mul',None)}, "
                 f"bits_sched={dq_bits_sched}, use_triton={getattr(args,'dq_delta_use_triton', False)}, "
-                f"triton_scale_only={getattr(args,'dq_delta_triton_scale_only', False)}, "
-                f"triton_div_rn={getattr(args,'dq_delta_triton_div_rn', False)}, "
-                f"triton_stats={getattr(args,'dq_delta_triton_stats', False)}, "
-                f"triton_stats_mode={getattr(args,'dq_delta_triton_stats_mode', 'separate')}"
+                f"triton_stats={getattr(args,'dq_delta_triton_stats', False)}"
             )
 
         dq_log_enabled = bool(getattr(args, "dq_delta_log", False))
@@ -1016,6 +1013,73 @@ class NetworkTrainer:
         dq_log_mode = getattr(args, "dq_delta_log_mode", "summary")
         dq_log_detail = getattr(args, "dq_delta_log_detail", "basic")
         dq_log_extra = set(getattr(args, "dq_delta_log_extra", []) or [])
+        dq_triton_enabled = bool(getattr(args, "dq_delta_use_triton", False))
+        dq_triton_stats_enabled = bool(getattr(args, "dq_delta_triton_stats", False))
+        if dq_triton_stats_enabled and not dq_triton_enabled:
+            logger.warning(
+                "--dq_delta_triton_stats requires --dq_delta_use_triton; stats will use the PyTorch path."
+            )
+        if dq_triton_enabled:
+            unvalidated = []
+            if dq_bits_sched:
+                unvalidated.append("bits schedule")
+            elif getattr(args, "dq_delta_bits", None) != 8:
+                unvalidated.append(f"bits={getattr(args, 'dq_delta_bits', None)}")
+            if getattr(args, "dq_delta_granularity", None) != "channel":
+                unvalidated.append(f"granularity={getattr(args, 'dq_delta_granularity', None)}")
+            if getattr(args, "dq_delta_stat", None) != "rms":
+                unvalidated.append(f"stat={getattr(args, 'dq_delta_stat', None)}")
+            if getattr(args, "dq_delta_mode", None) != "stoch":
+                unvalidated.append(f"mode={getattr(args, 'dq_delta_mode', None)}")
+            if getattr(args, "dq_quantize_z", False):
+                unvalidated.append("target=z")
+            if getattr(args, "dq_delta_scope", None) != "unet":
+                unvalidated.append(f"scope={getattr(args, 'dq_delta_scope', None)}")
+            if getattr(args, "mixed_precision", None) != "fp16":
+                unvalidated.append(f"mixed_precision={getattr(args, 'mixed_precision', None)}")
+            if unvalidated:
+                logger.warning(
+                    "dq_delta Triton is outside the end-to-end validated training profile "
+                    "(8bit/channel/rms/stoch, delta, UNet, fp16): %s. Supported kernels are used where eligible; "
+                    "other work falls back to PyTorch.",
+                    ", ".join(unvalidated),
+                )
+        if (
+            dq_triton_enabled
+            and dq_triton_stats_enabled
+            and dq_log_enabled
+            and (dq_log_detail == "full" or dq_log_mode == "per_module")
+        ):
+            logger.warning(
+                "dq_delta Triton stats: full/per_module LogSteps require detail fields and therefore use PyTorch "
+                "stats. Fake-quant forward remains on the normal Triton path; eligible Auto-only/basic steps may "
+                "still use fused stats."
+            )
+        if (
+            dq_triton_enabled
+            and dq_triton_stats_enabled
+            and (
+                getattr(args, "dq_delta_mode", None) != "stoch"
+                or not (getattr(args, "dq_delta_bits", None) or dq_bits_sched)
+            )
+        ):
+            logger.warning(
+                "dq_delta Triton fused stats require bits mode with stochastic rounding; stats will use PyTorch "
+                "for the current quantization mode."
+            )
+        if dq_triton_stats_enabled and not (dq_log_enabled or getattr(args, "dq_delta_auto_range_mul", False)):
+            logger.warning("--dq_delta_triton_stats has no effect unless dq_delta log or auto stats are enabled.")
+        if (
+            dq_triton_enabled
+            and dq_triton_stats_enabled
+            and getattr(args, "dq_delta_auto_range_mul", False)
+            and getattr(args, "dq_delta_auto_preset", None) != "clip_rate_low_auto"
+        ):
+            logger.warning(
+                "dq_delta Triton stats currently fuse the qerr-basic set used by summary/basic logs and "
+                "clip_rate_low_auto. With other auto presets, AutoSteps that do not overlap an eligible basic "
+                "LogStep use PyTorch stats."
+            )
         rank_log_enabled = bool(getattr(args, "rank_log", False))
         rank_log_every = max(1, int(getattr(args, "rank_log_every", 100)))
         rank_log_mode = getattr(args, "rank_log_mode", "summary")
@@ -1781,10 +1845,7 @@ class NetworkTrainer:
                 range_mul=getattr(args, "dq_delta_range_mul", None),
                 on_z=getattr(args, "dq_quantize_z", False),
                 use_triton=getattr(args, "dq_delta_use_triton", False),
-                triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
-                triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                 triton_stats=getattr(args, "dq_delta_triton_stats", False),
-                triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
             )
             # no EMA-based stats to propagate (ema_* removed)
             # Scope control: unet / te / both
@@ -3091,12 +3152,6 @@ class NetworkTrainer:
         else:
             on_step_start = lambda *args, **kwargs: None
 
-        dq_stats_trace_network = None
-        if args.gradient_checkpointing:
-            candidate = accelerator.unwrap_model(network)
-            if hasattr(candidate, "get_dq_stats_trace_snapshot"):
-                dq_stats_trace_network = candidate
-
         # function for saving/removing
         def save_model(ckpt_name, unwrapped_nw, steps, epoch_no, force_sync_upload=False):
             os.makedirs(args.output_dir, exist_ok=True)
@@ -3305,10 +3360,7 @@ class NetworkTrainer:
                                         range_mul=getattr(args, "dq_delta_range_mul", None),
                                         on_z=getattr(args, "dq_quantize_z", False),
                                         use_triton=getattr(args, "dq_delta_use_triton", False),
-                                        triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
-                                        triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                         triton_stats=getattr(args, "dq_delta_triton_stats", False),
-                                        triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
                                     )
                                     last_applied_bits = cur_bits
                                     dq_bits_force_apply = False
@@ -3434,13 +3486,7 @@ class NetworkTrainer:
                         train_unet=train_unet,
                     )
 
-                    dq_stats_before_backward = None
-                    if dq_stats_trace_network is not None:
-                        dq_stats_before_backward = dq_stats_trace_network.get_dq_stats_trace_snapshot()
-
                     accelerator.backward(loss)
-                    if dq_stats_trace_network is not None and dq_stats_before_backward is not None:
-                        dq_stats_trace_network.record_dq_stats_backward_trace(dq_stats_before_backward)
                     loss_scalar = loss.detach().item()
                     skip_step = False
                     if check_gradients_and_skip_update(network, epoch, step, loss_scalar):
@@ -3761,10 +3807,7 @@ class NetworkTrainer:
                                             range_mul=range_mul_after,
                                             on_z=getattr(args, "dq_quantize_z", False),
                                             use_triton=getattr(args, "dq_delta_use_triton", False),
-                                            triton_scale_only=getattr(args, "dq_delta_triton_scale_only", False),
-                                            triton_div_rn=getattr(args, "dq_delta_triton_div_rn", False),
                                             triton_stats=getattr(args, "dq_delta_triton_stats", False),
-                                            triton_stats_mode=getattr(args, "dq_delta_triton_stats_mode", "separate"),
                                         )
 
                                 if dq_stats["do_log"] and accelerator.is_main_process and dq_log_path:
@@ -4395,25 +4438,6 @@ class NetworkTrainer:
                 f.writelines(grad_norm_guardian.log_buffer)
             grad_norm_guardian.log_buffer.clear()
 
-        if is_main_process:
-            network = accelerator.unwrap_model(network)
-            if hasattr(network, "get_dq_stats_path_report"):
-                dq_path_report = network.get_dq_stats_path_report()
-                if dq_path_report is not None and (
-                    dq_path_report.get("total_stats_calls", 0) > 0 or getattr(args, "dq_delta_triton_stats", False)
-                ):
-                    report_keys = (
-                        "fused_stats_calls",
-                        "separate_stats_calls",
-                        "pytorch_stats_calls",
-                        "fused_fallback_calls",
-                        "fused_elements",
-                        "backward_trace_windows",
-                        "backward_recompute_stats_calls",
-                    )
-                    report_text = ", ".join(f"{key}={dq_path_report.get(key, 0)}" for key in report_keys)
-                    logger.info(f"dq_delta stats paths (main rank): {report_text}")
-
         accelerator.end_training()
 
         if is_main_process and (args.save_state or args.save_state_on_train_end):
@@ -4536,7 +4560,7 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "warmup steps for Text Encoder 1 when using --lr_scheduler constant_with_warmup. "
-            "Use an int for steps, a float below 1 for train-step ratio, or a percentage like 5%."
+            "Use an int for steps, a float below 1 for train-step ratio, or a percentage like 5%%."
         ),
     )
     parser.add_argument(
@@ -4545,7 +4569,7 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "warmup steps for Text Encoder 2 when using --lr_scheduler constant_with_warmup. "
-            "Use an int for steps, a float below 1 for train-step ratio, or a percentage like 5%."
+            "Use an int for steps, a float below 1 for train-step ratio, or a percentage like 5%%."
         ),
     )
     parser.add_argument(
@@ -4772,29 +4796,12 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dq_delta_use_triton",
         action="store_true",
-        help="Use optional Triton kernels for dq_delta channel RMS scale and stochastic fake-quant normal path when available",
-    )
-    parser.add_argument(
-        "--dq_delta_triton_scale_only",
-        action="store_true",
-        help="Experimental: with --dq_delta_use_triton, use Triton only for dq_delta channel RMS scale and keep fake-quant in PyTorch",
-    )
-    parser.add_argument(
-        "--dq_delta_triton_div_rn",
-        action="store_true",
-        help="Experimental: use tl.div_rn in the optional Triton stochastic fake-quant kernel",
+        help="Use optional Triton kernels for eligible dq_delta scale and stochastic fake-quant work; falls back to PyTorch",
     )
     parser.add_argument(
         "--dq_delta_triton_stats",
         action="store_true",
-        help="Experimental: collect dq_delta log/auto stats with Triton when supported; falls back to PyTorch when unsupported",
-    )
-    parser.add_argument(
-        "--dq_delta_triton_stats_mode",
-        type=str,
-        default="separate",
-        choices=["separate", "fused"],
-        help="Experimental: Triton dq_delta stats mode. separate keeps the current stats kernel; fused combines stochastic fake-quant B with basic stats.",
+        help="Fuse eligible dq_delta basic log/auto stats into the Triton stochastic fake-quant kernel; detail stats fall back to PyTorch",
     )
     # dq_delta logging / auto-tuning
     parser.add_argument(

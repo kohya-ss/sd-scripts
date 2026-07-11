@@ -496,13 +496,12 @@ auto_every | auto_ema | 実効履歴(更新回) | 実効履歴(optimizer step)
 - clip_rate のみならず zero_rate を使った下限制御の追加
 - 量子化ノイズの推定（RMS 誤差）ログの追加
 
-## Triton stats mode
+## Triton stats
 
-`--dq_delta_triton_stats_mode {separate,fused}` は、`--dq_delta_triton_stats` 有効時のstats計算方式を選ぶ。
+`--dq_delta_use_triton --dq_delta_triton_stats`を指定すると、対応するstats有効stepでstochastic fake quant Bとbasic statsを同じTriton kernelで処理する。
 
-- `separate`: 既存方式。forward fake quant後に、別Triton kernelでstatsを読む。
-- `fused`: 速度面の採用候補。stats有効stepだけ、stochastic fake quant B と basic stats の部分集計を同じTriton kernelで行う。
+`clip_rate_low_auto`以外のauto presetはclip-only統計を使うため、AutoStepが対応するbasic LogStepと重ならない場合はPyTorch statsへfallbackする。該当設定では学習開始時にwarningを表示する。
 
-現在のfused statsは `--dq_delta_log_detail basic` 相当の最小統計だけを対象にする。対象は `numel`, `clip_count`, `sumsq`, `xq_sumsq`, `xxq_sum`。`full`, `per_module`, `near_zero_rate`, `ZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` が必要な場合は既存経路にfallbackする。
+対象は`--dq_delta_log_detail basic`相当の`numel`, `clip_count`, `sumsq`, `xq_sumsq`, `xxq_sum`。`full`, `per_module`, `near_zero_rate`, `ZeroRate`, `AbsMax`, `ScaleMin/Mean/Max`が必要なLogStepはPyTorch statsへfallbackする。fake quantのforward自体は通常Triton pathを維持する。
 
-CLI既定値は比較・互換用の`separate`のままです。最新のfused launch設定はGPU回帰、単体ベンチ、50-step短縮学習まで確認済みで、通常間隔の長時間ラン後に既定値変更と実験オプション整理を判断する。実装条件、検証コマンド、採否の経緯は [triton_windows_setup.md](triton_windows_setup.md) を参照。
+full/per_moduleでfallbackする場合は学習開始時にwarningを出す。対応条件、長時間学習で検証済みの設定、検証コマンドは [triton_windows_setup.md](triton_windows_setup.md) を参照。
