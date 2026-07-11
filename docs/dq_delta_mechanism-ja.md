@@ -34,7 +34,7 @@
     
 ### dq\_delta オプション一覧（基本）
 
-※ `--dq_delta_log` / `--dq_delta_auto_range_mul` 系は [docs/dq_delta_autotune_spec-ja.md](docs/dq_delta_autotune_spec-ja.md) に記載。
+※ `--dq_delta_log` / `--dq_delta_auto_range_mul` 系は [dq_delta_autotune_spec-ja.md](dq_delta_autotune_spec-ja.md) に記載。
 
 | オプション | 説明 |
 | --- | --- |

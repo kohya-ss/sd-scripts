@@ -9,6 +9,31 @@
 - Triton がない、未対応 shape/dtype/mode、kernel 実行エラーの場合は既存の PyTorch 実装へ fallback する。
 - `--dq_delta_use_triton` を付けない場合は、Triton がインストールされていても既存の PyTorch path を使う。
 
+## まず読む現在地
+
+公開時の安全な既定動作はPyTorch pathのままです。Tritonを使う場合の現時点の最終テスト候補は次の構成です。
+
+```text
+--dq_delta_use_triton
+--dq_delta_triton_div_rn
+--dq_delta_triton_stats
+--dq_delta_triton_stats_mode fused
+--dq_delta_log_detail basic
+```
+
+これは `8bit / channel / rms / stoch` のdq_deltaを主対象に検証した構成で、Tritonを公開環境の必須依存にはしません。CLI既定値と、検証中の推奨構成は意図的に分けています。
+
+| オプション | CLI既定 | 現在の位置付け |
+| --- | --- | --- |
+| `--dq_delta_use_triton` | OFF | Triton全体の明示的な入口。今後もopt-inを維持する。 |
+| `--dq_delta_triton_scale_only` | OFF | A/B差の切り分け専用。通常運用には不要。 |
+| `--dq_delta_triton_div_rn` | OFF | PyTorch Bの除算に寄せる最終候補。最新構成の長時間確認後に統合・整理を判断する。 |
+| `--dq_delta_triton_stats` | OFF | log/auto stats高速化の入口。未対応条件はPyTorchへfallbackする。 |
+| `--dq_delta_triton_stats_mode` | `separate` | `fused`が速度面の採用候補。最新チューニング後の長時間確認までは既定値を変えない。 |
+| `--dq_delta_log_detail` | `basic` | 常用向けとして採用済み。`full`は詳細診断用。 |
+
+最新のfused stats launch設定は、GPU回帰、単体ベンチ、50-step短縮学習まで確認済みです。最新設定での通常間隔・8400 step相当の長時間ランは未実施なので、オプション削除や既定値変更はその確認後に行います。
+
 ## 検証環境
 
 ユーザー環境で確認したバージョン:
@@ -27,6 +52,19 @@ GPU: RTX 5080
 python -m pip install -U "triton-windows>=3.5,<3.6"
 python -c "import triton; print(triton.__version__)"
 ```
+
+## 検証の流れ
+
+この実装は、次の順で計算差と速度差を切り分けた結果です。
+
+1. PyTorch実装を基準に、A（channel RMS scale）とB（stochastic fake quant）を分離した。
+2. 同じ入力・scale・固定randを使う単体比較と、実学習から一時取得したtensorの比較で、乱数差と算術差を分けた。学習本体のcapture hookは検証後に削除した。
+3. A+B融合はログと生成結果が変わりやすかったため不採用とし、A/B別kernelとPyTorch乱数をforwardの採用ルートにした。
+4. log/auto stepだけforwardがPyTorch Bへ戻らないよう、stats有効stepも通常stepと同じTriton Bへ統一した。
+5. statsは、別kernelの`separate`から、Bと最小statsを同時に処理する`fused`へ段階的に進めた。通常Triton Bとfused Bは固定randでbit-for-bit一致を条件にした。
+6. GPU回帰、CUDA単体ベンチ、全step statsの短縮学習、通常間隔の長時間学習の順で確認した。単体倍率だけで学習全体の短縮を判断しない。
+
+以降の「不採用実験」は、同じ案を再実装しないための判断記録です。再現コマンドと各ツールの保証範囲は「検証ツールと再現手順」にまとめています。
 
 ## 現在の採用ルート
 
@@ -92,6 +130,19 @@ cols = C
 同じ PyTorch 乱数を渡した単体比較では、標準の1D B kernelと出力が完全一致することを確認した。
 
 ただし、単体ベンチではshapeによって速い/遅いが分かれ、短時間学習 `220 steps` でも明確な速度改善は見えなかった。そのため、実装は削除し、正式Triton pathでは従来の1D B kernelを使う。
+
+## 不採用実験: A NLC C=1280 config sweep
+
+全stepで使うAのchannel RMSについて、generic kernelを使っている `C=1280` でもNLC 2Dが有利かを確認した。
+
+```text
+generic: num_warps=2/4/8
+NLC 2D: BLOCK_C=8/16/32, num_warps=4/8
+```
+
+`L=32/77/468/480` と既存NLC pathの `C=10240` を比較したが、C=1280で現行genericを平均5%以上短縮し、かつ出力を維持する候補はなかった。一部のNLC候補はscaleに約 `2e-7` の相対差が出て、fixed-rand B出力も変化した。そのためAの実装は変更しない。
+
+この比較に使ったconfig sweepスクリプトは一時検証用で、採否決定後に削除した。候補kernelも本番コードへ残していない。
 
 ## Python 実装との対応関係
 
@@ -257,18 +308,52 @@ partial stats:
 
 ### fused v2の長時間確認
 
-fused v2を使った8400 stepのテストラン（xl17）は`1:38:54`で完走した。DQログにNaN/Inf、auto判定異常、fallbackを疑う値はなく、生成用LoRAも正常だった。直前の同系統ランとの差は数十秒で、ラン変動を含むため、v2単独の全体速度改善量とは断定しない。
+初期fused v2を使った8400 stepのテストラン（xl17）は`1:38:54`で完走した。DQログにNaN/Inf、auto判定異常、fallbackを疑う値はなく、生成用LoRAも正常だった。直前の同系統ランとの差は数十秒で、ラン変動を含むため、v2単独の全体速度改善量とは断定しない。
 
-## 計測ツール
+この完走後に、large tensorの`BLOCK_SIZE=1024, num_warps=2`化と、後段を`torch.sum(dim=0)`へ戻すチューニングを行った。こちらはGPU回帰、正式単体ベンチ、50-step短縮学習まで確認済みで、通常間隔の長時間ランは次の最終確認として残っている。
+
+## 検証ツールと再現手順
+
+以下のコマンドは、venvを有効にしてリポジトリrootから実行する。検証は目的の異なる5段階に分け、上の段階が通っても下の段階の代わりにはならない。
+
+### PyTorch基準の単体テスト
+
+```bash
+python -m pytest tests/test_rounding.py
+```
+
+Tritonを使わず、元の丸め、fake quant、channel scale、STEの基本契約を確認する。Triton変更時にも、比較基準そのものを壊していないことを先に確認する。
+
+これは`pytest`導入済みの開発環境向けです。上記のRTX 5080検証venvには`pytest`を追加しておらず、今回のTriton検証では次のGPU回帰スクリプトを主に使った。公開requirementsにも、この検証だけのために`pytest`やTritonを追加しない。
+
+### Triton GPU回帰チェック
+
+通常のB/stats変更後に使った短い回帰コマンド:
+
+```bash
+python tools/check_triton_fake_quant.py --skip-e2e
+```
+
+通常Bとfused Bのfixed-rand一致、大shape、PyTorch乱数を使った終了RNG state、入力非破壊、fallback時のrand再利用、LoRAModuleのSTE、stats値、gradient checkpointing時の再計算traceを確認する。終了コード`0`を合格条件とする。
+
+Aのscale計算、broadcast、A+B end-to-endまで変更した場合は、`--skip-e2e`を外して実行する。
+
+```bash
+python tools/check_triton_fake_quant.py
+```
+
+fixed-randは、乱数列の違いを除いて算術とindexingだけを比較するために使う。`--capture-dir`は調査中に保存した既存captureを再検証するための互換機能であり、現在の学習本体にはcapture生成hookを残していない。
 
 ### 単体CUDAベンチ
 
 モデルやデータセットを読み込まず、代表shapeの疑似tensorをCUDA Eventsで測る。
 
 ```bash
-python tools/benchmark_triton_quant.py
 python tools/benchmark_triton_quant.py --quick
+python tools/benchmark_triton_quant.py --warmup 50 --iterations 1000 --repeats 7
 ```
+
+`--quick`はkernelが起動し、比較前のfixed-rand一致検査が通ることを見るsmoke testとして使う。速度採否には2行目の正式条件を使った。`--shape 1,480,10240`は繰り返し指定でき、`--dtype`と`--no-div-rn`で条件を変えられる。
 
 主な測定対象:
 
@@ -277,23 +362,45 @@ normal B (fixed rand / PyTorch rand)
 normal B + PyTorch stats
 normal B + separate Triton stats
 fused v2
+production-like separate (PyTorch rand + stats + scalar accumulator)
+production-like fused (PyTorch rand + packed accumulator)
 partial stats: torch.sum vs Triton reduction
 packed accumulator add
 ```
 
-`reduce_speedup`、`separate_to_fused`、`pytorch_stats_to_fused` は`1.0`より大きいほどfused/Triton側が速い。コンパイルをwarmupから除外し、各測定のmedianとminを出力する。
+`reduce_speedup`、`separate_to_fused`、`pytorch_stats_to_fused`、`production_separate_to_fused`は`1.0`より大きいほど右辺側の処理が速い。特に`production_separate_to_fused`が、PyTorch乱数生成とscope accumulator更新を含む最も本番に近い単体比較である。コンパイルをwarmupから除外し、各測定のmedianとminを出力する。
 
-RTX 5080環境でwarmup 50回、1000 iteration、7 repeatを測った時点では、チューニング後fusedはseparate stats比で代表5 shapeすべて約2.17～2.76倍だった。初期fused v2比では、小shapeが約49%、中shapeが約57～59%、大shapeが約78%短い。forward出力はfixed-randで完全一致し、packed statsの相対差は最大でも約 `1.6e-7` だった。これはstats対象moduleの処理時間であり、学習全体の短縮率ではない。
+RTX 5080環境でwarmup 50回、1000 iteration、7 repeatを測った時点では、チューニング後fusedはseparate stats比で代表6 shapeすべて約2.09～2.59倍だった。PyTorch乱数とaccumulator更新を含む本番相当比較でも約2.15～2.47倍だった。`(1,32,1280)` のsmall launch側も約2.24倍で、65536要素の分岐より小さいshapeに悪化は見られなかった。forward出力はfixed-randで完全一致し、packed statsの相対差は最大でも約 `1.6e-7` だった。これはstats対象moduleの処理時間であり、学習全体の短縮率ではない。
 
 全50 stepをlog/auto対象にした短縮学習では、separateが約40秒・1.24 it/s、チューニング後fusedが約38秒・1.30 it/sだった。通常の50/100 step間隔では対象stepが少ないため、8400 step全体への寄与は数秒程度と見積もる。
 
-### 回帰チェック
+同じ50 stepログを比較すると、`QErrPerClip` は48/51行で異なり最大相対差は約15%だった。一方、`ClipRateLowAutoBad`, bad streak, `AutoReason`, auto decision, `RangeMulAfter` は全51行で一致した。派生QErr値にはreduction定義・順序の差が見えるが、この短縮確認ではauto制御結果は変わっていない。
 
-```bash
-python tools/check_triton_fake_quant.py --skip-e2e
+### 全step statsの短縮学習
+
+通常の学習コマンドへ次を追加し、`separate`と`fused`で出力名だけを変えて各50 step実行した。
+
+```text
+--max_train_steps 50
+--dq_delta_log --dq_delta_log_every 1 --dq_delta_log_detail basic
+--dq_delta_auto_range_mul --dq_delta_auto_every 1
+--dq_delta_use_triton --dq_delta_triton_div_rn
+--dq_delta_triton_stats --dq_delta_triton_stats_mode separate
+
+# 比較側では最後だけ変更
+--dq_delta_triton_stats_mode fused
 ```
 
-通常Bとfused Bのfixed-rand一致、大shape、RNG、入力非破壊に加え、LoRAModuleのfused失敗fallback、fused STE、gradient checkpointing時のstats再加算traceを確認する。
+これはlog/auto対象stepを意図的に増やし、stats経路の速度とログを短時間で比較する負荷試験である。品質評価や通常間隔での全体短縮率の代わりにはしない。同じseedと学習条件を使い、Tritonの初回コンパイルを含む最初の1回だけで採否を決めない。
+
+### 通常間隔の最終学習
+
+最終確認では`dq_delta_log_every=100`、`dq_delta_auto_every=50`の通常間隔へ戻し、「まず読む現在地」の候補構成で長時間ランを行う。確認項目は次の通り。
+
+- 学習完走、生成画像、DQログとautoログに異常がない。
+- 終了時の`fused_stats_calls`が0より大きく、`fused_fallback_calls=0`。
+- `AutoReason`, auto decision, `RangeMulAfter`に不自然な変化がない。
+- 所要時間は数十秒のラン変動を考慮し、近い条件の複数ランと比較する。
 
 ### 実学習のstats経路集計
 

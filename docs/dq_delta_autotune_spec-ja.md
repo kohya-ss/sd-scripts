@@ -501,6 +501,8 @@ auto_every | auto_ema | 実効履歴(更新回) | 実効履歴(optimizer step)
 `--dq_delta_triton_stats_mode {separate,fused}` は、`--dq_delta_triton_stats` 有効時のstats計算方式を選ぶ。
 
 - `separate`: 既存方式。forward fake quant後に、別Triton kernelでstatsを読む。
-- `fused`: 実験方式。stats有効stepだけ、stochastic fake quant B と basic stats の部分集計を同じTriton kernelで行う。
+- `fused`: 速度面の採用候補。stats有効stepだけ、stochastic fake quant B と basic stats の部分集計を同じTriton kernelで行う。
 
-`fused` v1は `--dq_delta_log_detail basic` 相当の最小統計だけを対象にする。対象は `numel`, `clip_count`, `sumsq`, `xq_sumsq`, `xxq_sum`。`full`, `per_module`, `near_zero_rate`, `ZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` が必要な場合は既存経路にfallbackする。
+現在のfused statsは `--dq_delta_log_detail basic` 相当の最小統計だけを対象にする。対象は `numel`, `clip_count`, `sumsq`, `xq_sumsq`, `xxq_sum`。`full`, `per_module`, `near_zero_rate`, `ZeroRate`, `AbsMax`, `ScaleMin/Mean/Max` が必要な場合は既存経路にfallbackする。
+
+CLI既定値は比較・互換用の`separate`のままです。最新のfused launch設定はGPU回帰、単体ベンチ、50-step短縮学習まで確認済みで、通常間隔の長時間ラン後に既定値変更と実験オプション整理を判断する。実装条件、検証コマンド、採否の経緯は [triton_windows_setup.md](triton_windows_setup.md) を参照。
