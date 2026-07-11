@@ -418,6 +418,7 @@ def parse_dq_logs(
                     "Bits": safe_float(row.get("Bits")),
                     "ClipRateRaw": safe_float(row.get("ClipRateRaw")),
                     "ClipRateEMA": safe_float(row.get("ClipRateEMA")),
+                    "RangeMul": safe_float(row.get("RangeMul") or row.get("RangeMulAfter")),
                     "RangeMulBefore": safe_float(row.get("RangeMulBefore")),
                     "RangeMulAfter": safe_float(row.get("RangeMulAfter")),
                     "AutoApplied": safe_int(row.get("AutoApplied")),
@@ -1630,8 +1631,10 @@ def build_chart_payload(
         ]
 
     if dq_data:
-        rows = dq_data.get("rows", [])
+        log_rows = dq_data.get("rows", [])
         auto_rows = dq_data.get("auto_rows", [])
+        rows = log_rows if log_rows else auto_rows
+        auto_has_qerr_per_clip = any(item.get("QErrPerClip") is not None for item in auto_rows)
         x = [item.get("TrainStep") for item in rows]
         markers = list(dq_data.get("markers", []))
         dq_summary = dq_data.get("summary", {})
@@ -1658,117 +1661,148 @@ def build_chart_payload(
         def has_source_series_value(source_rows: List[Dict[str, Any]], field: str) -> bool:
             return any(item.get(field) is not None for item in source_rows)
 
-        payload["dq"] = [
-            {
-                "id": "dq_bits",
-                "title": "Bits",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_tick_step": 1.0,
-                "y_tick_integer": True,
-                "y_min_floor": 0.0,
-                "series": series_for([("Bits", "Bits", ColorPalette[0])]),
-            },
-            {
-                "id": "dq_range_mul",
-                "title": "RangeMul",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_tick_step": 0.1,
-                "y_tick_precision": 1,
-                "series": series_for([("RangeMul", "RangeMul", ColorPalette[1])]),
-            },
-            {
-                "id": "dq_clip",
-                "title": "ClipRateRaw / ClipRateEMA",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_max_fixed": 0.008,
-                "y_tick_step": 0.001,
-                "y_tick_precision": 3,
-                "series": series_for(
-                    [
-                        ("ClipRateRaw", "ClipRateRaw", ColorPalette[2]),
-                        ("ClipRateEMA", "ClipRateEMA", ColorPalette[0]),
-                        ("ActiveClipLow", "ActiveClipLow", "#64748b"),
-                        ("ActiveClipHigh", "ActiveClipHigh", "#334155"),
-                    ]
-                ),
-            },
-            {
-                "id": "dq_qerr_ratio",
-                "title": "QuantErrRatioRaw / QuantErrRatioEMA",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_max_fixed": 0.8,
-                "y_tick_step": 0.1,
-                "y_tick_precision": 1,
-                "series": series_for(
-                    [
-                        ("QuantErrRatioRaw", "QuantErrRatioRaw", ColorPalette[2]),
-                        ("QuantErrRatioEMA", "QuantErrRatioEMA", ColorPalette[0]),
-                    ]
-                ),
-            },
-            {
-                "id": "dq_qerr_rms",
-                "title": "QuantErrRMSRaw / QuantErrRMSEMA",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_tick_step": 0.05,
-                "y_tick_precision": 2,
-                "series": series_for(
-                    [
-                        ("QuantErrRMSRaw", "QuantErrRMSRaw", ColorPalette[2]),
-                        ("QuantErrRMSEMA", "QuantErrRMSEMA", ColorPalette[0]),
-                    ]
-                ),
-            },
-            {
-                "id": "dq_zero_rate",
-                "title": "ZeroRate",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_tick_step": 0.02,
-                "y_tick_precision": 2,
-                "series": series_for([("ZeroRate", "ZeroRate", ColorPalette[3])]),
-            },
-            {
-                "id": "dq_absmax",
-                "title": "AbsMax",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_max_fixed": 1000.0,
-                "y_tick_nice_integer": True,
-                "y_min_floor": 0.0,
-                "series": series_for([("AbsMax", "AbsMax", ColorPalette[4])]),
-            },
-            {
-                "id": "dq_range",
-                "title": "Range",
-                "x_label": "TrainStep",
-                "markers": markers,
-                "x": x,
-                "y_min_fixed": 0.0,
-                "y_tick_step": 0.1,
-                "y_tick_precision": 1,
-                "series": series_for([("Range", "Range", ColorPalette[5])]),
-            },
-        ]
+        payload["dq"] = []
 
-        qerr_chart_rows = rows if has_series_value("QErrPerClip") else auto_rows
+        if has_series_value("Bits"):
+            payload["dq"].append(
+                {
+                    "id": "dq_bits",
+                    "title": "Bits",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_tick_step": 1.0,
+                    "y_tick_integer": True,
+                    "y_min_floor": 0.0,
+                    "series": series_for([("Bits", "Bits", ColorPalette[0])]),
+                }
+            )
+
+        if has_series_value("RangeMul"):
+            payload["dq"].append(
+                {
+                    "id": "dq_range_mul",
+                    "title": "RangeMul",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_tick_step": 0.1,
+                    "y_tick_precision": 1,
+                    "series": series_for([("RangeMul", "RangeMul", ColorPalette[1])]),
+                }
+            )
+
+        if has_series_value("ClipRateRaw") or has_series_value("ClipRateEMA"):
+            payload["dq"].append(
+                {
+                    "id": "dq_clip",
+                    "title": "ClipRateRaw / ClipRateEMA",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_max_fixed": 0.008,
+                    "y_tick_step": 0.001,
+                    "y_tick_precision": 3,
+                    "series": series_for(
+                        [
+                            ("ClipRateRaw", "ClipRateRaw", ColorPalette[2]),
+                            ("ClipRateEMA", "ClipRateEMA", ColorPalette[0]),
+                            ("ActiveClipLow", "ActiveClipLow", "#64748b"),
+                            ("ActiveClipHigh", "ActiveClipHigh", "#334155"),
+                        ]
+                    ),
+                }
+            )
+
+        if has_series_value("QuantErrRatioRaw") or has_series_value("QuantErrRatioEMA"):
+            payload["dq"].append(
+                {
+                    "id": "dq_qerr_ratio",
+                    "title": "QuantErrRatioRaw / QuantErrRatioEMA",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_max_fixed": 0.8,
+                    "y_tick_step": 0.1,
+                    "y_tick_precision": 1,
+                    "series": series_for(
+                        [
+                            ("QuantErrRatioRaw", "QuantErrRatioRaw", ColorPalette[2]),
+                            ("QuantErrRatioEMA", "QuantErrRatioEMA", ColorPalette[0]),
+                        ]
+                    ),
+                }
+            )
+
+        if has_series_value("QuantErrRMSRaw") or has_series_value("QuantErrRMSEMA"):
+            payload["dq"].append(
+                {
+                    "id": "dq_qerr_rms",
+                    "title": "QuantErrRMSRaw / QuantErrRMSEMA",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_tick_step": 0.05,
+                    "y_tick_precision": 2,
+                    "series": series_for(
+                        [
+                            ("QuantErrRMSRaw", "QuantErrRMSRaw", ColorPalette[2]),
+                            ("QuantErrRMSEMA", "QuantErrRMSEMA", ColorPalette[0]),
+                        ]
+                    ),
+                }
+            )
+
+        if has_series_value("ZeroRate"):
+            payload["dq"].append(
+                {
+                    "id": "dq_zero_rate",
+                    "title": "ZeroRate",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_tick_step": 0.02,
+                    "y_tick_precision": 2,
+                    "series": series_for([("ZeroRate", "ZeroRate", ColorPalette[3])]),
+                }
+            )
+
+        if has_series_value("AbsMax"):
+            payload["dq"].append(
+                {
+                    "id": "dq_absmax",
+                    "title": "AbsMax",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_max_fixed": 1000.0,
+                    "y_tick_nice_integer": True,
+                    "y_min_floor": 0.0,
+                    "series": series_for([("AbsMax", "AbsMax", ColorPalette[4])]),
+                }
+            )
+
+        if has_series_value("Range"):
+            payload["dq"].append(
+                {
+                    "id": "dq_range",
+                    "title": "Range",
+                    "x_label": "TrainStep",
+                    "markers": markers,
+                    "x": x,
+                    "y_min_fixed": 0.0,
+                    "y_tick_step": 0.1,
+                    "y_tick_precision": 1,
+                    "series": series_for([("Range", "Range", ColorPalette[5])]),
+                }
+            )
+
+        qerr_chart_rows = auto_rows if auto_has_qerr_per_clip else rows
         qerr_chart_x = [item.get("TrainStep") for item in qerr_chart_rows]
         if has_source_series_value(qerr_chart_rows, "QErrPerClip"):
             run_qerr_threshold = dq_summary.get("run_qerr_per_clip_threshold") or DQ_LOW_QERR_PER_CLIP_THRESHOLD
@@ -1791,7 +1825,7 @@ def build_chart_payload(
                 {
                     "id": "dq_qerr_per_clip",
                     "title": "QErrPerClip",
-                    "subtitle": "QErrPerClip = QuantErrRatioEMA / max(ClipRateEMA, floor).",
+                    "subtitle": "QErrPerClip = auto quant-error EMA / max(ClipRateEMA, floor).",
                     "x_label": "TrainStep",
                     "markers": markers,
                     "x": qerr_chart_x,

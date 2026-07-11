@@ -122,20 +122,20 @@ JSONは時系列配列（`x`, `rows`, `series[*].y` など）が非常に長く�
 - `ClipRateRaw`, `ClipRateEMA`
 - `QuantErrRatioRaw`, `QuantErrRatioEMA`
 - `QuantErrRMSRaw`, `QuantErrRMSEMA`
-- `QErrPerClip`, `QErrPerClipClipFloor`
 - `ActiveClipBand`, `ActiveClipLow`, `ActiveClipHigh`
 - `ClipRateLowAutoState`, `ClipRateLowAutoBad`, `ClipRateLowAutoBadStreak`
 - `TrainProgress`
 - `ClipRateLowAutoMinProgress`, `ClipRateLowAutoFreezeProgress`
 - `ClipRateLowAutoThresholdQErrRatio`, `ClipRateLowAutoThresholdQErrPerClip`
 - `ClipRateLowAutoPhase`
-- `ClipErrRMS`, `RoundErrRMS`, `ClipErrRatio`, `RoundErrRatio`, `ClipShare`, `RoundShare`
+- `ClipErrRMS`, `RoundErrRMS`, `ClipErrRatio`, `RoundErrRatio`, `ClipShare`, `RoundShare`（旧ログ互換。新規ログでは出力しない）
 - `ZeroRate`, `AbsMax`, `Range`
 - `AutoReason`
 
 補足:
 
 - `dq.rows[].Epoch` は `dq_delta_logs` 側に無ければ、`grad.steps_per_epoch` から推定補完されます。
+- `--dq_delta_log_detail basic` のログには `ZeroRate`, `AbsMax`, `Range` が存在せず、JSONでは `null` になります。これらを使うグラフや診断は `full` ログがある場合だけ生成されます。
 
 `dq.auto_rows[]` の主なキー:
 
@@ -319,7 +319,7 @@ DQ logsに `ActiveClipBand=low` または `ClipRateLowAuto*` 列がある場合�
 
 ### `charts` セクション
 
-DQ logsに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）、`clip_rate_low_auto Bad / Streak`、`ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。
+DQ autoログに該当列がある場合は、`QErrPerClip`（run指定閾値の水平線つき。130と異なる場合は固定130も表示）を追加します。古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使用します。DQ logsに該当列がある場合は、`clip_rate_low_auto Bad / Streak`、旧ログ互換の `ClipErrRatio / RoundErrRatio`、`ClipShare / RoundShare` のグラフを追加します。`--dq_delta_log_detail basic` の軽量ログでは `ZeroRate`、`AbsMax`、`Range` グラフは省略されます。
 `TrainProgress` と low_auto progress閾値がある場合は、min_progress / freeze_progress の位置をDQグラフの縦線マーカーに追加します。
 
 | JSONパス | 情報源 | 内容の概説 |
@@ -342,3 +342,9 @@ DQ logsに該当列がある場合は、`QErrPerClip`（run指定閾値の水平
 - 学習安定性判定: `grad.summary`, `dq.summary`, `diagnostics`
 - 重みの偏り判定: `lora.summary`, `lora.module_summary`, `lora.diagnostic`
 - 学習推移判定: `lora_trend.checkpoints`, `lora_trend.modules[].legend_rows`
+
+## dq_delta basicログで省略されるグラフ
+
+`--dq_delta_log_detail basic` の `dq_delta_logs` には、軽量化のため `ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` が出力されない。そのためHTMLレポートでも、該当列がない場合は `ZeroRate`, `AbsMax`, `Range` 系のグラフを表示しない。
+
+`QErrPerClip` グラフは主に `dq_delta_auto` 側の `QErrPerClip` 列から作る。autoログに数値が1つ以上ある場合に表示され、古いログで `dq_delta_logs` 側にのみ `QErrPerClip` がある場合はfallbackとして使う。

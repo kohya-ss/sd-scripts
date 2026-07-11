@@ -19,6 +19,10 @@ from library.rounding_util import (
     compute_scale_bits,
     _reduce_dims_and_shape,
 )
+try:
+    from library.triton_quant import triton_fake_quantize_levels_stoch_with_stats
+except Exception:
+    triton_fake_quantize_levels_stoch_with_stats = None
 from library.utils import setup_logging
 from library.sdxl_original_unet import SdxlUNet2DConditionModel
 
@@ -64,27 +68,60 @@ class DQStatsAccumulator:
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool = True,
         collect_error_parts: bool = False,
     ):
         self.device = device
         self.collect_full = collect_full
         self.collect_zero = collect_zero
         self.collect_near_zero = collect_near_zero
+        self.collect_detail = collect_detail
         self.collect_error_parts = collect_error_parts
-        self.numel = torch.zeros(1, device=device, dtype=torch.float32)
-        self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
-        self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
-        self.near_zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_near_zero else None
-        self.sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_full else None
-        self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
-        self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
-        self.round_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+        use_basic_packed = bool(
+            collect_full
+            and not collect_zero
+            and not collect_near_zero
+            and not collect_detail
+            and not collect_error_parts
+        )
+        self.basic_stats = torch.zeros(5, device=device, dtype=torch.float32) if use_basic_packed else None
+        if self.basic_stats is not None:
+            self.numel = self.basic_stats[0:1]
+            self.clip_count = self.basic_stats[1:2]
+            self.sumsq = self.basic_stats[2:3]
+            self.xq_sumsq = self.basic_stats[3:4]
+            self.xxq_sum = self.basic_stats[4:5]
+            self.zero_count = None
+            self.near_zero_count = None
+            self.absmax = None
+            self.scale_min = None
+            self.scale_max = None
+            self.scale_sum = None
+            self.scale_count = None
+            self.clip_err_sumsq = None
+            self.round_err_sumsq = None
+        else:
+            self.numel = torch.zeros(1, device=device, dtype=torch.float32)
+            self.clip_count = torch.zeros(1, device=device, dtype=torch.float32)
+            self.zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_zero else None
+            self.near_zero_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_near_zero else None
+            self.sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.absmax = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_min = torch.full((1,), float("inf"), device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_max = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.scale_count = torch.zeros(1, device=device, dtype=torch.float32) if collect_detail else None
+            self.xq_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.xxq_sum = torch.zeros(1, device=device, dtype=torch.float32) if collect_full else None
+            self.clip_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+            self.round_err_sumsq = torch.zeros(1, device=device, dtype=torch.float32) if collect_error_parts else None
+
+    def add_basic_stats(self, packed: torch.Tensor):
+        if self.basic_stats is None:
+            raise RuntimeError("packed basic stats are not enabled for this accumulator")
+        if packed.numel() != self.basic_stats.numel():
+            raise ValueError(f"unexpected packed stats size: {packed.numel()}")
+        self.basic_stats.add_(packed.reshape_as(self.basic_stats))
 
     def add(
         self,
@@ -117,15 +154,15 @@ class DQStatsAccumulator:
                 self.xq_sumsq += xq_sumsq
             if xxq_sum is not None:
                 self.xxq_sum += xxq_sum
-            if absmax is not None:
+            if self.collect_detail and absmax is not None:
                 self.absmax = torch.maximum(self.absmax, absmax)
-            if scale_min is not None:
+            if self.collect_detail and scale_min is not None:
                 self.scale_min = torch.minimum(self.scale_min, scale_min)
-            if scale_max is not None:
+            if self.collect_detail and scale_max is not None:
                 self.scale_max = torch.maximum(self.scale_max, scale_max)
-            if scale_sum is not None:
+            if self.collect_detail and scale_sum is not None:
                 self.scale_sum += scale_sum
-            if scale_count is not None:
+            if self.collect_detail and scale_count is not None:
                 self.scale_count += scale_count
         if self.collect_error_parts:
             if clip_err_sumsq is not None:
@@ -141,6 +178,7 @@ class DQStatsManager:
         self.collect_full = False
         self.collect_zero = False
         self.collect_near_zero = False
+        self.collect_detail = False
         self.collect_error_parts = False
         self.log_mode = "summary"
         self.log_scope = "both"
@@ -154,10 +192,20 @@ class DQStatsManager:
     def _reset(self, device):
         self.accum = {
             "unet": DQStatsAccumulator(
-                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+                device,
+                self.collect_full,
+                self.collect_zero,
+                self.collect_near_zero,
+                collect_detail=self.collect_detail,
+                collect_error_parts=self.collect_error_parts,
             ),
             "te": DQStatsAccumulator(
-                device, self.collect_full, self.collect_zero, self.collect_near_zero, self.collect_error_parts
+                device,
+                self.collect_full,
+                self.collect_zero,
+                self.collect_near_zero,
+                collect_detail=self.collect_detail,
+                collect_error_parts=self.collect_error_parts,
             ),
         }
         self.per_module = []
@@ -172,6 +220,7 @@ class DQStatsManager:
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool,
         collect_error_parts: bool,
         log_mode: str,
         log_scope: str,
@@ -186,6 +235,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_detail = collect_detail
             self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
@@ -200,6 +250,7 @@ class DQStatsManager:
             self.collect_full = collect_full
             self.collect_zero = collect_zero
             self.collect_near_zero = collect_near_zero
+            self.collect_detail = collect_detail
             self.collect_error_parts = collect_error_parts
             self.log_mode = log_mode
             self.log_scope = log_scope
@@ -286,6 +337,11 @@ class DQStatsManager:
                 }
             )
 
+    def add_basic_stats(self, *, scope: str, packed: torch.Tensor):
+        if not self._scope_enabled(scope):
+            return
+        self.accum[scope].add_basic_stats(packed)
+
     def export(self):
         if not self.active:
             return None
@@ -300,6 +356,7 @@ class DQStatsManager:
             "collect_full": self.collect_full,
             "collect_zero": self.collect_zero,
             "collect_near_zero": self.collect_near_zero,
+            "collect_detail": self.collect_detail,
             "collect_error_parts": self.collect_error_parts,
             "accum": self.accum,
             "per_module": self.per_module,
@@ -396,6 +453,8 @@ class LoRAModule(torch.nn.Module):
         delta_q_range_mul: float = 3.0,
         delta_q_ema_decay: float = 0.99,
         delta_q_on_z: bool = False,
+        delta_q_use_triton: bool = False,
+        delta_q_triton_stats: bool = False,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling)."""
         super().__init__()
@@ -452,6 +511,8 @@ class LoRAModule(torch.nn.Module):
         # when True, quantize z=A(x) and then apply B: Delta' = B(Q(z))
         # otherwise quantize Delta directly: Delta' = Q(B(z))
         self.delta_q_on_z = bool(delta_q_on_z)
+        self.delta_q_use_triton = bool(delta_q_use_triton)
+        self.delta_q_triton_stats = bool(delta_q_triton_stats)
         self.dq_stats_manager: Optional[DQStatsManager] = None
         self.dq_scope = "te" if lora_name.startswith("lora_te") else "unet"
 
@@ -498,7 +559,8 @@ class LoRAModule(torch.nn.Module):
                 q_flat = q_fp32.reshape(-1)
                 xq_sumsq = torch.dot(q_flat, q_flat)
                 xxq_sum = torch.dot(x_flat, q_flat)
-                absmax = x_in.abs().max()
+                if mgr.collect_detail:
+                    absmax = x_in.abs().max()
                 if mgr.collect_error_parts and q_clamp is not None and scale is not None:
                     x_clamped = q_clamp.to(torch.float32) * scale.to(device=device, dtype=torch.float32)
                     clip_err = x_fp32 - x_clamped
@@ -508,7 +570,7 @@ class LoRAModule(torch.nn.Module):
                     clip_err_sumsq = torch.dot(clip_err_flat, clip_err_flat)
                     round_err_sumsq = torch.dot(round_err_flat, round_err_flat)
             scale_min = scale_max = scale_sum = scale_count = None
-            if mgr.collect_full and scale is not None:
+            if mgr.collect_detail and scale is not None:
                 scale_min = scale.min()
                 scale_max = scale.max()
                 scale_sum = scale.sum()
@@ -533,6 +595,85 @@ class LoRAModule(torch.nn.Module):
                 clip_err_sumsq=clip_err_sumsq,
                 round_err_sumsq=round_err_sumsq,
             )
+
+    def _record_dq_stats_for_quantized(
+        self,
+        x_in: torch.Tensor,
+        quantized: torch.Tensor,
+        scale: torch.Tensor,
+        qmax: int,
+    ):
+        mgr = self.dq_stats_manager
+        if mgr is None or not mgr.active or not mgr.wants_scope(self.dq_scope):
+            return
+        if mgr.target == "z" and not self.delta_q_on_z:
+            return
+        if mgr.target == "delta" and self.delta_q_on_z:
+            return
+
+        with torch.no_grad():
+            s = scale.to(device=x_in.device, dtype=torch.float32)
+            q_clamp = torch.clamp(x_in.to(torch.float32) / s, -qmax, qmax)
+        self._record_dq_stats(x_in, quantized, q_clamp, s, qmax)
+
+    def _can_use_fused_triton_stats(self) -> bool:
+        mgr = self.dq_stats_manager
+        return bool(
+            mgr is not None
+            and mgr.active
+            and mgr.wants_scope(self.dq_scope)
+            and self.delta_q_triton_stats
+            and self.delta_q_use_triton
+            and self.delta_q_mode == "stoch"
+            and mgr.collect_full
+            and not mgr.collect_zero
+            and not mgr.collect_near_zero
+            and not mgr.collect_detail
+            and not mgr.collect_error_parts
+            and triton_fake_quantize_levels_stoch_with_stats is not None
+        )
+
+    def _fake_quantize_levels_with_fused_stats(
+        self,
+        x_in: torch.Tensor,
+        *,
+        scale: torch.Tensor,
+        qmin: int,
+        qmax: int,
+    ) -> Optional[torch.Tensor]:
+        mgr = self.dq_stats_manager
+        if not self._can_use_fused_triton_stats():
+            return None
+        if mgr.target == "z" and not self.delta_q_on_z:
+            return None
+        if mgr.target == "delta" and self.delta_q_on_z:
+            return None
+
+        with torch.no_grad():
+            rand_t = torch.rand_like(x_in, dtype=torch.float32)
+            fused = triton_fake_quantize_levels_stoch_with_stats(
+                x_in,
+                scale=scale.to(device=x_in.device, dtype=torch.float32),
+                qmin=qmin,
+                qmax=qmax,
+                rand=rand_t,
+            )
+        if fused is None:
+            quantized = fake_quantize_levels(
+                x_in,
+                scale=scale,
+                qmin=qmin,
+                qmax=qmax,
+                mode="stoch",
+                use_triton=True,
+                rand=rand_t,
+            )
+            self._record_dq_stats_for_quantized(x_in, quantized, scale, qmax)
+            return quantized
+
+        quantized_raw, packed_stats = fused
+        mgr.add_basic_stats(scope=self.dq_scope, packed=packed_stats)
+        return x_in + (quantized_raw - x_in).detach()
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -566,23 +707,61 @@ class LoRAModule(torch.nn.Module):
         # Optionally apply fake quantization to z before up-projection
         if self.training and self.delta_q_enabled and self.delta_q_on_z:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
-                with torch.no_grad():
-                    z_scale = compute_scale_bits(
-                        lx,
-                        bits=self.delta_q_bits,
-                        granularity=self.delta_q_granularity,
-                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
-                        range_mul=self.delta_q_range_mul,
-                    )
-                    qmax = (1 << (self.delta_q_bits - 1)) - 1
+                qmax = (1 << (self.delta_q_bits - 1)) - 1
                 x_in = lx
                 if self.dq_stats_manager is not None and self.dq_stats_manager.wants_scope(self.dq_scope) and self.dq_stats_manager.active:
-                    lx, q_clamp, scale_t = _fake_quantize_levels_with_q(
-                        x_in, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                    with torch.no_grad():
+                        z_scale = compute_scale_bits(
+                            lx,
+                            bits=self.delta_q_bits,
+                            granularity=self.delta_q_granularity,
+                            stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                            range_mul=self.delta_q_range_mul,
+                            use_triton=self.delta_q_use_triton,
+                        )
+                    # Keep the training fake-quant decisions identical to normal Triton steps.
+                    # Eligible basic stats use fused B; other modes collect stats after normal B.
+                    lx_fused = self._fake_quantize_levels_with_fused_stats(
+                        x_in,
+                        scale=z_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
                     )
-                    self._record_dq_stats(x_in, lx, q_clamp, scale_t, qmax)
+                    if lx_fused is not None:
+                        lx = lx_fused
+                    elif self.delta_q_use_triton:
+                        lx = fake_quantize_levels(
+                            x_in,
+                            scale=z_scale,
+                            qmin=-qmax,
+                            qmax=qmax,
+                            mode=self.delta_q_mode,
+                            use_triton=True,
+                        )
+                        self._record_dq_stats_for_quantized(x_in, lx, z_scale, qmax)
+                    else:
+                        lx, q_clamp, scale_t = _fake_quantize_levels_with_q(
+                            x_in, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                        )
+                        self._record_dq_stats(x_in, lx, q_clamp, scale_t, qmax)
                 else:
-                    lx = fake_quantize_levels(lx, scale=z_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+                    with torch.no_grad():
+                        z_scale = compute_scale_bits(
+                            lx,
+                            bits=self.delta_q_bits,
+                            granularity=self.delta_q_granularity,
+                            stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                            range_mul=self.delta_q_range_mul,
+                            use_triton=self.delta_q_use_triton,
+                        )
+                    lx = fake_quantize_levels(
+                        lx,
+                        scale=z_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
+                        mode=self.delta_q_mode,
+                        use_triton=self.delta_q_use_triton,
+                    )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
                     with torch.no_grad():
@@ -605,23 +784,61 @@ class LoRAModule(torch.nn.Module):
         if self.training and self.delta_q_enabled and not self.delta_q_on_z:
             if self.delta_q_bits is not None and self.delta_q_bits > 0:
                 # bits mode: compute scale per setting (tensor or per-channel)
-                with torch.no_grad():
-                    d_scale = compute_scale_bits(
-                        delta,
-                        bits=self.delta_q_bits,
-                        granularity=self.delta_q_granularity,
-                        stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
-                        range_mul=self.delta_q_range_mul,
-                    )
-                    qmax = (1 << (self.delta_q_bits - 1)) - 1
+                qmax = (1 << (self.delta_q_bits - 1)) - 1
                 x_in = delta
                 if self.dq_stats_manager is not None and self.dq_stats_manager.wants_scope(self.dq_scope) and self.dq_stats_manager.active:
-                    delta, q_clamp, scale_t = _fake_quantize_levels_with_q(
-                        x_in, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                    with torch.no_grad():
+                        d_scale = compute_scale_bits(
+                            delta,
+                            bits=self.delta_q_bits,
+                            granularity=self.delta_q_granularity,
+                            stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                            range_mul=self.delta_q_range_mul,
+                            use_triton=self.delta_q_use_triton,
+                        )
+                    # Keep the training fake-quant decisions identical to normal Triton steps.
+                    # Eligible basic stats use fused B; other modes collect stats after normal B.
+                    delta_fused = self._fake_quantize_levels_with_fused_stats(
+                        x_in,
+                        scale=d_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
                     )
-                    self._record_dq_stats(x_in, delta, q_clamp, scale_t, qmax)
+                    if delta_fused is not None:
+                        delta = delta_fused
+                    elif self.delta_q_use_triton:
+                        delta = fake_quantize_levels(
+                            x_in,
+                            scale=d_scale,
+                            qmin=-qmax,
+                            qmax=qmax,
+                            mode=self.delta_q_mode,
+                            use_triton=True,
+                        )
+                        self._record_dq_stats_for_quantized(x_in, delta, d_scale, qmax)
+                    else:
+                        delta, q_clamp, scale_t = _fake_quantize_levels_with_q(
+                            x_in, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode
+                        )
+                        self._record_dq_stats(x_in, delta, q_clamp, scale_t, qmax)
                 else:
-                    delta = fake_quantize_levels(delta, scale=d_scale, qmin=-qmax, qmax=qmax, mode=self.delta_q_mode)
+                    with torch.no_grad():
+                        d_scale = compute_scale_bits(
+                            delta,
+                            bits=self.delta_q_bits,
+                            granularity=self.delta_q_granularity,
+                            stat=(self.delta_q_stat if self.delta_q_stat != "none" else "rms"),
+                            range_mul=self.delta_q_range_mul,
+                            use_triton=self.delta_q_use_triton,
+                        )
+                    delta = fake_quantize_levels(
+                        delta,
+                        scale=d_scale,
+                        qmin=-qmax,
+                        qmax=qmax,
+                        mode=self.delta_q_mode,
+                        use_triton=self.delta_q_use_triton,
+                    )
             elif self.delta_q_step is not None and self.delta_q_step > 0:
                 if self.delta_q_granularity == "channel":
                     with torch.no_grad():
@@ -1423,6 +1640,8 @@ class LoRANetwork(torch.nn.Module):
         delta_q_bits: Optional[int] = None,
         delta_q_range_mul: float = 3.0,
         delta_q_on_z: bool = False,
+        delta_q_use_triton: bool = False,
+        delta_q_triton_stats: bool = False,
     ) -> None:
         """
         LoRA network: すごく引数が多いが、パターンは以下の通り
@@ -1450,6 +1669,8 @@ class LoRANetwork(torch.nn.Module):
         self.delta_q_bits = delta_q_bits
         self.delta_q_range_mul = delta_q_range_mul
         self.delta_q_on_z = bool(delta_q_on_z)
+        self.delta_q_use_triton = bool(delta_q_use_triton)
+        self.delta_q_triton_stats = bool(delta_q_triton_stats)
         self.dq_stats_manager = DQStatsManager()
 
         self.loraplus_lr_ratio = None
@@ -1555,6 +1776,8 @@ class LoRANetwork(torch.nn.Module):
                                 delta_q_bits=self.delta_q_bits,
                                 delta_q_range_mul=self.delta_q_range_mul,
                                 delta_q_on_z=self.delta_q_on_z,
+                                delta_q_use_triton=self.delta_q_use_triton,
+                                delta_q_triton_stats=self.delta_q_triton_stats,
                             )
                             lora.dq_stats_manager = self.dq_stats_manager
                             loras.append(lora)
@@ -1625,6 +1848,8 @@ class LoRANetwork(torch.nn.Module):
         bits: Optional[int] = None,
         range_mul: Optional[float] = None,
         on_z: Optional[bool] = None,
+        use_triton: Optional[bool] = None,
+        triton_stats: Optional[bool] = None,
     ):
         self.delta_q_step = step
         self.delta_q_mode = mode
@@ -1638,6 +1863,10 @@ class LoRANetwork(torch.nn.Module):
             self.delta_q_range_mul = range_mul
         if on_z is not None:
             self.delta_q_on_z = bool(on_z)
+        if use_triton is not None:
+            self.delta_q_use_triton = bool(use_triton)
+        if triton_stats is not None:
+            self.delta_q_triton_stats = bool(triton_stats)
         for l in self.text_encoder_loras + self.unet_loras:
             l.delta_q_step = step
             l.delta_q_mode = mode
@@ -1651,6 +1880,10 @@ class LoRANetwork(torch.nn.Module):
                 l.delta_q_range_mul = range_mul
             if on_z is not None:
                 l.delta_q_on_z = bool(on_z)
+            if use_triton is not None:
+                l.delta_q_use_triton = bool(use_triton)
+            if triton_stats is not None:
+                l.delta_q_triton_stats = bool(triton_stats)
 
     def set_delta_quant_enabled(self, enabled: bool):
         for l in self.text_encoder_loras + self.unet_loras:
@@ -1666,6 +1899,7 @@ class LoRANetwork(torch.nn.Module):
         collect_full: bool,
         collect_zero: bool,
         collect_near_zero: bool,
+        collect_detail: bool = True,
         collect_error_parts: bool = False,
         log_mode: str,
         log_scope: str,
@@ -1682,6 +1916,7 @@ class LoRANetwork(torch.nn.Module):
             collect_full=collect_full,
             collect_zero=collect_zero,
             collect_near_zero=collect_near_zero,
+            collect_detail=collect_detail,
             collect_error_parts=collect_error_parts,
             log_mode=log_mode,
             log_scope=log_scope,

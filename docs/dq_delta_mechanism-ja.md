@@ -34,7 +34,7 @@
     
 ### dq\_delta オプション一覧（基本）
 
-※ `--dq_delta_log` / `--dq_delta_auto_range_mul` 系は [docs/dq_delta_autotune_spec-ja.md](docs/dq_delta_autotune_spec-ja.md) に記載。
+※ `--dq_delta_log` / `--dq_delta_auto_range_mul` 系は [dq_delta_autotune_spec-ja.md](dq_delta_autotune_spec-ja.md) に記載。
 
 | オプション | 説明 |
 | --- | --- |
@@ -49,7 +49,10 @@
 | `--dq_delta_range_mul <float>` | bits モード×`stat=rms`時の有効レンジ倍率（range=倍率×RMS、既定3.0）。 |
 | `--dq_delta_bits_sched 'p1:bits1,p2:bits2,...'` | 学習進行率 p でビット数を段階的に切替（例: `0.0:6,0.5:8,0.8:10`）。 |
 | `--dq_quantize_z` | Δ ではなく `z=A(x)` を量子化（`B(Q(z))`）。rank r の z を対象に統計を取るため軽量化。 |
+| `--dq_delta_use_triton` | 対応するdq_delta scale/fake quantをoptional Triton kernelで高速化。未対応時はPyTorchへfallback。 |
+| `--dq_delta_triton_stats` | `--dq_delta_use_triton`と併用し、対応するbasic log/auto statsをfake quant Bへ融合。 |
 
+Tritonの導入方法、コード上の対応条件、長時間学習で検証済みの範囲は [triton_windows_setup.md](triton_windows_setup.md) を参照。
 
 ### 量子化モードの前提
 
@@ -200,7 +203,7 @@ AutoStep のたびに
 
 -   clip率に対して量子化誤差が重いかを見る指標。`clip_rate_low_auto` の判定にも使う。
 
--   `--dq_delta_log_error_parts` を指定すると、`QuantErr` を `ClipErr` と `RoundErr` に分解してログに出す。第一版では判定には使わず、後から「clip由来かround由来か」を確認するための診断列として扱う。
+-   `--dq_delta_log_detail basic` では常用向けに軽量なDQログを出す。`ZeroRate`, `AbsMax`, `Range`, `ScaleMin/Mean/Max` まで確認したい場合は `--dq_delta_log_detail full` を指定する。clip/round成分分解ログは整理のため新規ログでは出力しない。
 
 
 ### bits スケジュールとの関係

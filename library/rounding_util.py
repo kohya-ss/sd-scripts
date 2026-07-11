@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 from typing import Iterable, Literal, Union, Optional
 
+try:
+    from library.triton_quant import triton_compute_scale_bits_channel_rms, triton_fake_quantize_levels_stoch
+except Exception:
+    triton_compute_scale_bits_channel_rms = None
+    triton_fake_quantize_levels_stoch = None
+
 
 RoundMode = Literal["det", "stoch"]
 
@@ -162,6 +168,8 @@ def fake_quantize_levels(
     qmin: int,
     qmax: int,
     mode: RoundMode = "det",
+    use_triton: bool = False,
+    rand: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """STE fake-quantization with finite integer levels and (symmetric) clamp.
 
@@ -174,13 +182,36 @@ def fake_quantize_levels(
     else:
         s = scale.to(device=x.device, dtype=torch.float32)
 
+    rand_t = None
+    if mode == "stoch" and rand is not None:
+        if rand.shape != x.shape:
+            raise ValueError(f"rand shape {tuple(rand.shape)} does not match x shape {tuple(x.shape)}")
+        rand_t = rand.to(device=x.device, dtype=torch.float32).contiguous()
+
+    if use_triton and mode == "stoch" and triton_fake_quantize_levels_stoch is not None and isinstance(s, torch.Tensor):
+        if rand_t is None:
+            # Generate once in the caller so a failed Triton launch can reuse
+            # the same stochastic decisions in the PyTorch fallback below.
+            rand_t = torch.rand_like(x, dtype=torch.float32)
+        q_triton = triton_fake_quantize_levels_stoch(
+            x,
+            scale=s,
+            qmin=qmin,
+            qmax=qmax,
+            rand=rand_t,
+        )
+        if q_triton is not None:
+            return _ste_from_quantized(x, q_triton)
+
     y = x.to(torch.float32) / s
     if mode == "det":
         q = torch.round(y)
     elif mode == "stoch":
         frac = y - torch.floor(y)
         probs = frac.clamp(0.0, 1.0)
-        q = torch.floor(y) + (torch.rand_like(probs) < probs).to(y.dtype)
+        if rand_t is None:
+            rand_t = torch.rand_like(probs)
+        q = torch.floor(y) + (rand_t < probs).to(y.dtype)
     else:
         raise ValueError(f"unknown round mode: {mode}")
     q = torch.clamp(q, qmin, qmax)
@@ -206,6 +237,7 @@ def compute_scale_bits(
     stat: Literal["rms", "absmax"] = "rms",
     range_mul: float = 3.0,
     eps: float = 1e-8,
+    use_triton: bool = False,
 ) -> torch.Tensor:
     """Compute per-tensor/per-channel scale for symmetric signed N-bit quant.
 
@@ -233,6 +265,10 @@ def compute_scale_bits(
     if stat == "absmax":
         rng = torch.amax(torch.abs(x.to(torch.float32)), dim=reduce_dims, keepdim=True) + eps
     elif stat == "rms":
+        if use_triton and triton_compute_scale_bits_channel_rms is not None:
+            scale_triton = triton_compute_scale_bits_channel_rms(x, bits=bits, range_mul=range_mul, eps=eps)
+            if scale_triton is not None:
+                return scale_triton
         rng = torch.sqrt(torch.mean(x.to(torch.float32) ** 2, dim=reduce_dims, keepdim=True) + eps) * range_mul
     else:
         raise ValueError(f"unknown stat: {stat}")
