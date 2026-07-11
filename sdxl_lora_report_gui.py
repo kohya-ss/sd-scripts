@@ -370,12 +370,14 @@ class MainWindow(QMainWindow):
         remove_button = QPushButton("Remove")
         move_up_button = QPushButton("Move up")
         move_down_button = QPushButton("Move down")
+        clear_all_button = QPushButton("Clear all")
         controls.addWidget(add_condition_button, 0, 0)
         controls.addWidget(add_selected_button, 0, 1)
         controls.addWidget(duplicate_button, 1, 0)
         controls.addWidget(remove_button, 1, 1)
         controls.addWidget(move_up_button, 2, 0)
         controls.addWidget(move_down_button, 2, 1)
+        controls.addWidget(clear_all_button, 3, 0, 1, 2)
         layout.addLayout(controls)
 
         self.condition_tree.itemChanged.connect(self.on_condition_item_changed)
@@ -385,6 +387,7 @@ class MainWindow(QMainWindow):
         remove_button.clicked.connect(self.remove_selected_condition_items)
         move_up_button.clicked.connect(lambda: self.move_selected_condition(-1))
         move_down_button.clicked.connect(lambda: self.move_selected_condition(1))
+        clear_all_button.clicked.connect(self.clear_all_conditions)
         return panel
 
     def _build_settings_panel(self) -> QWidget:
@@ -669,6 +672,21 @@ class MainWindow(QMainWindow):
                 if condition.condition_id == condition_id and 0 <= item_index < len(condition.items):
                     condition.items.pop(item_index)
                     break
+        self.refresh_condition_tree()
+
+    def clear_all_conditions(self):
+        if not self.conditions:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Clear comparison conditions",
+            "Clear all registered comparison conditions?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.conditions.clear()
         self.refresh_condition_tree()
 
     def selected_assets(self) -> list[LoraAsset]:
