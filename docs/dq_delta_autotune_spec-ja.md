@@ -133,8 +133,8 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 ### 出力例（summary/full）
 
 ```
-Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
-2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,low,0.0005,0.0022,keep_low,0,0,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
+Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,TrainProgress,ClipRateLowAutoMinProgress,ClipRateLowAutoFreezeProgress,ClipRateLowAutoThresholdQErrRatio,ClipRateLowAutoThresholdQErrPerClip,ClipRateLowAutoPhase,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
+2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,low,0.0005,0.0022,keep_low,0,0,0.4048,0.25,0.55,0.25,130,active,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
 ```
 
 ## ログの見方（初心者向け）
