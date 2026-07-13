@@ -102,11 +102,14 @@ class DiagonalGaussianDistribution(object):
 
 class ChunkedConv2d(nn.Conv2d):
     """
-    Convolutional layer that processes input in height chunks to reduce memory usage.
+    Convolutional layer that processes input in chunks to reduce memory usage.
 
-    This implementation chunks by output height, then computes the required input
-    range for each output chunk. This keeps very small chunk sizes safe for
-    stride=1/2 and padding=0/1 convolutions.
+    Parameters
+    ----------
+    spatial_chunk_size : int, optional
+        Size of chunks to process at a time. Default is None, which means no chunking.
+
+    TODO: Commonize with similar implementation in hunyuan_image_vae.py
     """
 
     def __init__(self, *args, **kwargs):
@@ -114,110 +117,73 @@ class ChunkedConv2d(nn.Conv2d):
             self.spatial_chunk_size = kwargs.pop("spatial_chunk_size", None)
         else:
             self.spatial_chunk_size = None
-
         super().__init__(*args, **kwargs)
-
         assert self.padding_mode == "zeros", "Only 'zeros' padding mode is supported."
         assert self.dilation == (1, 1), "Only dilation=1 is supported."
         assert self.groups == 1, "Only groups=1 is supported."
         assert self.kernel_size[0] == self.kernel_size[1], "Only square kernels are supported."
         assert self.stride[0] == self.stride[1], "Only equal strides are supported."
-
-        # Store original padding. Chunked forward applies padding manually.
         self.original_padding = self.padding
         self.padding = (0, 0)  # We handle padding manually in forward
 
-    def _forward_no_chunk(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Run the original Conv2d without chunking.
-
-        Restore Conv2d padding temporarily and always reset it afterwards.
-        """
-        self.padding = self.original_padding
-        try:
-            return super().forward(x)
-        finally:
-            self.padding = (0, 0)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # If chunking is disabled, process normally.
-        if self.spatial_chunk_size is None or self.spatial_chunk_size <= 0:
-            return self._forward_no_chunk(x)
-
-        # Basic Conv2d parameters.
-        batch_size, _, input_height, input_width = x.shape
-        kernel_h, kernel_w = self.kernel_size
-        stride_h, stride_w = self.stride
-        pad_h, pad_w = self.original_padding
-
-        # PyTorch Conv2d output size formula.
-        y_height = (input_height + 2 * pad_h - kernel_h) // stride_h + 1
-        y_width = (input_width + 2 * pad_w - kernel_w) // stride_w + 1
-
-        # Let the original Conv2d raise the real error for invalid input sizes.
-        if y_height <= 0 or y_width <= 0:
-            return self._forward_no_chunk(x)
-
-        # Avoid chunking when it is unnecessary.
-        if input_height <= self.spatial_chunk_size:
-            return self._forward_no_chunk(x)
-
-        # Chunk by output height and derive the required input range.
-        out_chunk_rows = max(1, int(self.spatial_chunk_size))
-
-        y = x.new_zeros((batch_size, self.out_channels, y_height, y_width))
-
-        out_y0 = 0
-        while out_y0 < y_height:
-            out_y1 = min(out_y0 + out_chunk_rows, y_height)
-
-            # The theoretical input range needed for this output chunk.
-            in_y0 = out_y0 * stride_h - pad_h
-            in_y1 = (out_y1 - 1) * stride_h - pad_h + kernel_h
-
-            # Padding needed beyond real input bounds.
-            pad_top = max(0, -in_y0)
-            pad_bottom = max(0, in_y1 - input_height)
-
-            # Clamp to the real input range.
-            real_in_y0 = max(0, in_y0)
-            real_in_y1 = min(input_height, in_y1)
-
-            chunk = x[:, :, real_in_y0:real_in_y1, :]
-
-            # Width is not chunked, so use the original horizontal padding.
-            if pad_w > 0 or pad_top > 0 or pad_bottom > 0:
-                chunk = F.pad(
-                    chunk,
-                    (pad_w, pad_w, pad_top, pad_bottom),
-                    mode="constant",
-                    value=0,
-                )
-
-            # Keep module padding disabled because padding was applied manually.
+        # If chunking is not needed, process normally. We chunk only along height dimension.
+        if (
+            self.spatial_chunk_size is None
+            or x.shape[2] <= self.spatial_chunk_size + self.kernel_size[0] + self.spatial_chunk_size // 4
+        ):
+            self.padding = self.original_padding
+            x = super().forward(x)
             self.padding = (0, 0)
-            out_chunk = super().forward(chunk)
+            return x
 
-            expected_h = out_y1 - out_y0
+        # Process input in chunks to reduce memory usage
+        org_shape = x.shape
 
-            # Safety correction for rare off-by-one shapes.
-            if out_chunk.shape[2] > expected_h:
-                out_chunk = out_chunk[:, :, :expected_h, :]
-            elif out_chunk.shape[2] < expected_h:
-                missing_h = expected_h - out_chunk.shape[2]
-                out_chunk = F.pad(out_chunk, (0, 0, 0, missing_h), mode="constant", value=0)
+        # If kernel size is not 1, we need to use overlapping chunks
+        overlap = self.kernel_size[0] // 2  # 1 for kernel size 3
+        if self.original_padding[0] == 0:
+            overlap = 0
 
-            # Safety correction for output width.
-            if out_chunk.shape[3] > y_width:
-                out_chunk = out_chunk[:, :, :, :y_width]
-            elif out_chunk.shape[3] < y_width:
-                missing_w = y_width - out_chunk.shape[3]
-                out_chunk = F.pad(out_chunk, (0, missing_w, 0, 0), mode="constant", value=0)
+        # If stride > 1, QwenImageVAE pads manually with zeros before convolution, so we do not need to consider it here
+        y_height = (org_shape[2] + 2 * self.original_padding[0] - self.kernel_size[0]) // self.stride[0] + 1
+        y_width = (org_shape[3] + 2 * self.original_padding[1] - self.kernel_size[1]) // self.stride[1] + 1
+        y = torch.zeros((org_shape[0], self.out_channels, y_height, y_width), dtype=x.dtype, device=x.device)
+        yi = 0
+        i = 0
+        while i < org_shape[2]:
+            si = i if i == 0 else i - overlap
+            ei = i + self.spatial_chunk_size + overlap + self.stride[0] - 1
 
-            y[:, :, out_y0:out_y1, :] = out_chunk
+            # Check last chunk. If remaining part is small, include it in last chunk
+            if ei > org_shape[2] or ei + self.spatial_chunk_size // 4 > org_shape[2]:
+                ei = org_shape[2]
 
-            del chunk, out_chunk
-            out_y0 = out_y1
+            chunk = x[:, :, si:ei, :]
+
+            # Pad chunk if needed: This is as the original Conv2d with padding
+            if i == 0 and overlap > 0:  # First chunk
+                # Pad except bottom
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap, overlap, 0), mode="constant", value=0)
+            elif ei == org_shape[2] and overlap > 0:  # Last chunk
+                # Pad except top
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap, 0, overlap), mode="constant", value=0)
+            elif overlap > 0:  # Middle chunks
+                # Pad left and right only
+                chunk = torch.nn.functional.pad(chunk, (overlap, overlap), mode="constant", value=0)
+
+            # print(f"Processing chunk: org_shape={org_shape}, si={si}, ei={ei}, chunk.shape={chunk.shape}, overlap={overlap}")
+            chunk = super().forward(chunk)
+            # print(f"  -> chunk after conv shape: {chunk.shape}")
+            y[:, :, yi : yi + chunk.shape[2], :] = chunk
+            yi += chunk.shape[2]
+            del chunk
+
+            if ei == org_shape[2]:
+                break
+            i += self.spatial_chunk_size
+
+        assert yi == y_height, f"yi={yi}, y_height={y_height}"
 
         return y
 
