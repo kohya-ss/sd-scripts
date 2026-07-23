@@ -3,6 +3,7 @@ import torch
 from unittest.mock import MagicMock, patch
 from library.flux_train_utils import (
     get_noisy_model_input_and_timesteps,
+    get_show_timesteps_offset,
 )
 
 # Mock classes and functions
@@ -330,3 +331,31 @@ class TestTimestepSamplingOffset:
         # Negative offset → lower timestep, positive → higher
         assert ts_offset[0] < ts_baseline[0]
         assert ts_offset[3] > ts_baseline[3]
+
+
+class TestGetShowTimestepsOffset:
+    """Tests for the --show_timesteps_offset resolution helper."""
+
+    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift"])
+    def test_offset_applied_for_supported_modes(self, args, mode):
+        args.timestep_sampling = mode
+        args.show_timesteps_offset = -0.5
+        offset, note = get_show_timesteps_offset(args)
+        assert offset == -0.5
+        assert "IGNORED" not in note
+        assert "-0.5" in note
+
+    @pytest.mark.parametrize("mode", ["uniform", "sigma"])
+    def test_offset_ignored_for_unsupported_modes(self, args, mode):
+        args.timestep_sampling = mode
+        args.show_timesteps_offset = -0.5
+        offset, note = get_show_timesteps_offset(args)
+        assert offset is None
+        assert "IGNORED" in note
+
+    def test_zero_offset_returns_none(self, args):
+        args.timestep_sampling = "shift"
+        args.show_timesteps_offset = 0.0
+        offset, note = get_show_timesteps_offset(args)
+        assert offset is None
+        assert note == ""

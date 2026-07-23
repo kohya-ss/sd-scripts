@@ -706,6 +706,17 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         " / --show_timesteps が解像度依存サンプリング（flux_shift等）で想定する画像解像度（ピクセル）。"
         "カンマ区切りで、数値が1つならH/W両方に、2つならH,Wに使用（W,Hでも結果は同じ）。デフォルト: 1024。",
     )
+    parser.add_argument(
+        "--show_timesteps_offset",
+        type=float,
+        default=0.0,
+        help="timestep sampling offset applied by --show_timesteps, to preview the distribution for a subset with "
+        "custom_attributes.timestep_sampling.offset (see docs/timestep_sampling_offset.md). "
+        "Only effective for timestep_sampling sigmoid/shift/flux_shift. Default: 0.0. "
+        " / --show_timesteps でタイムステップ分布に適用するオフセット。custom_attributes.timestep_sampling.offset を"
+        "指定した subset の分布を事前確認するために使用（docs/timestep_sampling_offset.md 参照）。"
+        "timestep_sampling が sigmoid/shift/flux_shift の場合のみ有効。デフォルト: 0.0。",
+    )
 
     # offloading
     parser.add_argument(
