@@ -35,4 +35,4 @@ tak="tak"
 temperal="temperal"
 
 [files]
-extend-exclude = ["_typos.toml", "venv", "configs"]
+extend-exclude = ["_typos.toml", "venv", "configs", "library/ipex", "library/hunyuan_image_text_encoder.py"]

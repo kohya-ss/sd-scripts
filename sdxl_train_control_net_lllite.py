@@ -228,7 +228,7 @@ def train(args):
         info = unet_lllite.load_lllite_weights(args.network_weights, unet_sd)
         accelerator.print(f"load ControlNet-LLLite weights from {args.network_weights}: {info}")
     else:
-        # cosumes large memory, so send to GPU before creating the LLLite model
+        # consumes large memory, so send to GPU before creating the LLLite model
         accelerator.print("sending U-Net to GPU")
         unet.to(accelerator.device, dtype=weight_dtype)
         unet_sd = unet.state_dict()

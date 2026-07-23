@@ -576,12 +576,12 @@ if __name__ == "__main__":
                     elif opt.startswith("g"):
                         guidance = float(opt[1:].strip())
                     elif opt.startswith("m"):
-                        mutipliers = opt[1:].strip().split(",")
-                        if len(mutipliers) != len(lora_models):
+                        multipliers = opt[1:].strip().split(",")
+                        if len(multipliers) != len(lora_models):
                             logger.error(f"Invalid number of multipliers, expected {len(lora_models)}")
                             continue
                         for i, lora_model in enumerate(lora_models):
-                            lora_model.set_multiplier(float(mutipliers[i]))
+                            lora_model.set_multiplier(float(multipliers[i]))
                     elif opt.startswith("n"):
                         negative_prompt = opt[1:].strip()
                         if negative_prompt == "-":
