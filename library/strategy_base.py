@@ -376,7 +376,7 @@ class TextEncoderOutputsCachingStrategy:
 
 
 class LatentsCachingStrategy:
-    # TODO commonize utillity functions to this class, such as npz handling etc.
+    # TODO commonize utility functions to this class, such as npz handling etc.
 
     _strategy = None  # strategy instance: actual strategy class
 
