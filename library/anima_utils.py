@@ -316,5 +316,5 @@ def save_anima_model(
         metadata = {}
     metadata["format"] = "pt"  # For compatibility with the official .safetensors file
 
-    save_file(prefixed_sd, save_path, metadata=metadata)  # safetensors.save_file cosumes a lot of memory, but Anima is small enough
+    save_file(prefixed_sd, save_path, metadata=metadata)  # safetensors.save_file consumes a lot of memory, but Anima is small enough
     logger.info(f"Saved Anima model to {save_path}")
