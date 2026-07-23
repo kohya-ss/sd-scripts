@@ -471,7 +471,8 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
 
 
 def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
+    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype,
+    timestep_sampling_offset: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
     assert bsz > 0, "Batch size not large enough"
@@ -480,7 +481,10 @@ def get_noisy_model_input_and_timesteps(
         # Simple random sigma-based noise sampling
         if args.timestep_sampling == "sigmoid":
             # https://github.com/XLabs-AI/x-flux/tree/main
-            sigmas = torch.sigmoid(args.sigmoid_scale * torch.randn((bsz,), device=device))
+            r = torch.randn((bsz,), device=device)
+            if timestep_sampling_offset is not None:
+                r = r + timestep_sampling_offset.to(device=device, dtype=r.dtype)
+            sigmas = torch.sigmoid(args.sigmoid_scale * r)
         else:
             sigmas = torch.rand((bsz,), device=device)
 
@@ -488,12 +492,16 @@ def get_noisy_model_input_and_timesteps(
     elif args.timestep_sampling == "shift":
         shift = args.discrete_flow_shift
         sigmas = torch.randn(bsz, device=device)
+        if timestep_sampling_offset is not None:
+            sigmas = sigmas + timestep_sampling_offset.to(device=device, dtype=sigmas.dtype)
         sigmas = sigmas * args.sigmoid_scale  # larger scale for more uniform sampling
         sigmas = sigmas.sigmoid()
         sigmas = (sigmas * shift) / (1 + (shift - 1) * sigmas)
         timesteps = sigmas * num_timesteps
     elif args.timestep_sampling == "flux_shift":
         sigmas = torch.randn(bsz, device=device)
+        if timestep_sampling_offset is not None:
+            sigmas = sigmas + timestep_sampling_offset.to(device=device, dtype=sigmas.dtype)
         sigmas = sigmas * args.sigmoid_scale  # larger scale for more uniform sampling
         sigmas = sigmas.sigmoid()
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))  # we are pre-packed so must adjust for packed size
@@ -536,6 +544,27 @@ def get_noisy_model_input_and_timesteps(
 # ("uniform", "sigmoid", "flux_shift") ignore discrete_flow_shift entirely. This is shared by both
 # FLUX and Anima since Anima reuses get_noisy_model_input_and_timesteps below.
 _SHIFT_AWARE_TIMESTEP_SAMPLING = ("sigma", "shift")
+
+# timestep_sampling values that support timestep_sampling_offset (per-subset custom attribute,
+# see docs/timestep_sampling_offset.md). Applied to the pre-sigmoid normal sample.
+_OFFSET_AWARE_TIMESTEP_SAMPLING = ("sigmoid", "shift", "flux_shift")
+
+
+def get_show_timesteps_offset(args) -> Tuple[Optional[float], str]:
+    """Resolve ``--show_timesteps_offset`` into ``(offset or None, header note)``. Shared by FLUX and Anima.
+
+    Returns ``None`` when the offset is 0.0 or the chosen ``--timestep_sampling`` ignores it,
+    mirroring the training-time behavior of per-subset ``timestep_sampling.offset``.
+    """
+    offset = getattr(args, "show_timesteps_offset", 0.0) or 0.0
+    if offset == 0.0:
+        return None, ""
+    if args.timestep_sampling in _OFFSET_AWARE_TIMESTEP_SAMPLING:
+        return offset, f", timestep_sampling_offset={offset}"
+    return None, (
+        f", timestep_sampling_offset={offset} (IGNORED for timestep_sampling='{args.timestep_sampling}'; "
+        "only 'sigmoid', 'shift' and 'flux_shift' use it)"
+    )
 
 
 def get_timestep_sampling_info(args) -> str:
@@ -597,11 +626,15 @@ def show_timesteps(args):
     # latent size for the assumed image resolution (flux_shift reads h, w for the packed-size shift)
     h, w = parse_show_timesteps_latent_size(args)
     device, dtype = device_utils.get_preferred_device(), torch.float32
+    offset, offset_note = get_show_timesteps_offset(args)
 
     def sample_timesteps(bsz):
         latents = torch.zeros(bsz, 16, h, w, dtype=dtype, device=device)
         noise = torch.ones_like(latents)
-        _, timesteps, _ = get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
+        tso = None if offset is None else torch.full((bsz,), offset, dtype=dtype, device=device)
+        _, timesteps, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=tso
+        )
         return timesteps
 
     def compute_weighting(timesteps):
@@ -612,6 +645,7 @@ def show_timesteps(args):
     header = (
         "Timestep distribution / タイムステップ分布:\n  "
         + get_timestep_sampling_info(args)
+        + offset_note
         + f", resolution={args.show_timesteps_resolution} (latent {h}x{w}), model_prediction_type={args.model_prediction_type}"
     )
     timestep_visualization.show_timestep_distribution(

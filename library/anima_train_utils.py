@@ -255,11 +255,15 @@ def show_timesteps(args):
     )
     h, w = flux_train_utils.parse_show_timesteps_latent_size(args)  # latent size for the assumed image resolution
     device, dtype = device_utils.get_preferred_device(), torch.float32
+    offset, offset_note = flux_train_utils.get_show_timesteps_offset(args)
 
     def sample_timesteps(bsz):
         latents = torch.zeros(bsz, 16, h, w, dtype=dtype, device=device)
         noise = torch.ones_like(latents)
-        _, timesteps, _ = flux_train_utils.get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
+        tso = None if offset is None else torch.full((bsz,), offset, dtype=dtype, device=device)
+        _, timesteps, _ = flux_train_utils.get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=tso
+        )
         return timesteps
 
     def compute_weighting(timesteps):
@@ -269,6 +273,7 @@ def show_timesteps(args):
     header = (
         "Timestep distribution / タイムステップ分布:\n  "
         + flux_train_utils.get_timestep_sampling_info(args)
+        + offset_note
         + f", resolution={args.show_timesteps_resolution} (latent {h}x{w})"
     )
     timestep_visualization.show_timestep_distribution(

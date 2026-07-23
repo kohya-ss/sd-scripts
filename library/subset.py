@@ -9,6 +9,14 @@ sampling settings applied to it.
 from typing import Any, Dict, Optional, Tuple, Union
 
 
+def _to_plain_dict(obj):
+    if isinstance(obj, dict):
+        return {k: _to_plain_dict(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_plain_dict(v) for v in obj]
+    return obj
+
+
 class BaseSubset:
     def __init__(
         self,
@@ -59,7 +67,7 @@ class BaseSubset:
         self.token_warmup_min = token_warmup_min  # step=0におけるタグの数
         self.token_warmup_step = token_warmup_step  # N（N<1ならN*max_train_steps）ステップ目でタグの数が最大になる
 
-        self.custom_attributes = custom_attributes if custom_attributes is not None else {}
+        self.custom_attributes = _to_plain_dict(custom_attributes) if custom_attributes is not None else {}
 
         self.img_count = 0
 
