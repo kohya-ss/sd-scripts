@@ -218,3 +218,115 @@ def test_different_timestep_count(args, device):
     assert timesteps.shape == (2,)
     # Check that timesteps are within the proper range
     assert torch.all(timesteps < 500)
+
+
+# Tests for timestep_sampling_offset
+class TestTimestepSamplingOffset:
+    """Regression tests for per-subset timestep sampling offset."""
+
+    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift"])
+    def test_none_offset_matches_baseline(self, args, noise_scheduler, device, mode):
+        """offset=None should produce identical results to no offset."""
+        args.timestep_sampling = mode
+        args.sigmoid_scale = 1.0
+        bsz = 64
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype
+        )
+        torch.manual_seed(42)
+        _, ts_none, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=None
+        )
+        assert torch.allclose(ts_baseline, ts_none)
+
+    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift"])
+    def test_zero_offset_matches_baseline(self, args, noise_scheduler, device, mode):
+        """offset=0.0 should produce identical results to no offset."""
+        args.timestep_sampling = mode
+        args.sigmoid_scale = 1.0
+        bsz = 64
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype
+        )
+        torch.manual_seed(42)
+        _, ts_zero, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype,
+            timestep_sampling_offset=torch.zeros(bsz)
+        )
+        assert torch.allclose(ts_baseline, ts_zero)
+
+    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift"])
+    def test_positive_offset_increases_mean_timestep(self, args, noise_scheduler, device, mode):
+        """Positive offset should shift timestep distribution upward (higher noise)."""
+        args.timestep_sampling = mode
+        args.sigmoid_scale = 1.0
+        bsz = 256
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype
+        )
+        torch.manual_seed(42)
+        _, ts_offset, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype,
+            timestep_sampling_offset=torch.full((bsz,), 1.0)
+        )
+        assert ts_offset.mean() > ts_baseline.mean()
+
+    def test_offset_does_not_affect_uniform(self, args, noise_scheduler, device):
+        """Uniform sampling ignores offset (offset code path is not reached)."""
+        args.timestep_sampling = "uniform"
+        bsz = 64
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype
+        )
+        torch.manual_seed(42)
+        _, ts_offset, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype,
+            timestep_sampling_offset=torch.full((bsz,), 1.0)
+        )
+        assert torch.allclose(ts_baseline, ts_offset)
+
+    def test_per_sample_offset_broadcasting(self, args, noise_scheduler, device):
+        """Different offsets per sample should produce different shifts."""
+        args.timestep_sampling = "sigmoid"
+        args.sigmoid_scale = 1.0
+        bsz = 4
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+        offset = torch.tensor([-1.0, 0.0, 0.0, 1.0])
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype
+        )
+        torch.manual_seed(42)
+        _, ts_offset, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype,
+            timestep_sampling_offset=offset
+        )
+        # Samples with offset=0 should match baseline
+        assert torch.allclose(ts_offset[1], ts_baseline[1])
+        assert torch.allclose(ts_offset[2], ts_baseline[2])
+        # Negative offset → lower timestep, positive → higher
+        assert ts_offset[0] < ts_baseline[0]
+        assert ts_offset[3] > ts_baseline[3]
