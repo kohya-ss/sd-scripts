@@ -71,6 +71,8 @@ Offset adjusts the learning emphasis across these ranges to match the training c
 
 ### How offset shifts the distribution
 
+The figures and numbers in this section assume `timestep_sampling = "sigmoid"` (equivalently, `shift` with `discrete_flow_shift = 1.0`). See the next section for how the picture changes under the commonly used `shift` / `flux_shift` modes.
+
 Default `logit_normal` sampling draws `z ~ N(0, 1)` then `t = sigmoid(z)`, producing a symmetric bell curve centered at `t = 0.5`.
 
 Adding offset shifts the mean: `z ~ N(offset, 1)`.
@@ -81,6 +83,36 @@ Adding offset shifts the mean: `z ~ N(offset, 1)`.
 ![offset distribution comparison](images/timestep_bias/offset_distribution_comparison.png)
 
 Note: when `sigmoid_scale ≠ 1.0`, the effective shift is `sigmoid_scale × offset`. The means above assume the default scale of 1.0.
+
+### Interaction with `shift` / `flux_shift`
+
+In practice, FLUX is often trained with `shift` or `flux_shift`, and Anima with `shift` and `discrete_flow_shift = 3.0` (the same value used for Anima inference). These modes apply a monotonic warp after the sigmoid, so the baseline distribution is **already skewed toward high t** before any offset is applied: with `discrete_flow_shift = 3.0`, the no-offset mean is ≈0.714 and the median 0.750 (not 0.5 as in the figure above). `flux_shift` at 1024px resolution is equivalent to `shift ≈ 3.16`, giving a very similar shape.
+
+| offset | mean (shift = 3.0) | median (shift = 3.0) |
+|---|---|---|
+| −0.5 | 0.621 | 0.645 |
+| 0.0 | 0.714 | 0.750 |
+| +0.5 | 0.793 | 0.832 |
+
+![offset distribution comparison under shift=3.0](images/timestep_bias/offset_distribution_shift3.png)
+
+Two practical consequences:
+
+- **The effect is asymmetric.** The warp compresses the high-t side, so positive offsets saturate (median +0.08 for +0.5) while negative offsets act more strongly (median −0.105 for −0.5). A negative offset partially undoes the shift-induced skew, moving the distribution back toward the center.
+- **Positive offsets starve low t sooner.** The baseline already concentrates mass at high t; a positive offset pushes further into that dense region, so the low-t tail (fine detail) thins out faster than in `sigmoid` mode. Be more conservative with positive offsets under `shift` / `flux_shift`.
+
+The qualitative meaning is unchanged in every mode — the offset is always a mean shift in logit space, and positive/negative always means higher/lower noise — only the quantitative effect differs.
+
+### Previewing the distribution
+
+Use `--show_timesteps console` (or `image`) together with `--show_timesteps_offset` to preview the exact distribution your settings produce before training, e.g.:
+
+```bash
+python anima_train_network.py --timestep_sampling shift --discrete_flow_shift 3.0 \
+  --show_timesteps console --show_timesteps_offset -0.5 ...
+```
+
+This renders the sampled-timestep histogram with the given offset applied, using the same code path as training.
 
 ### Risk of excessive offset
 
