@@ -545,6 +545,27 @@ def get_noisy_model_input_and_timesteps(
 # FLUX and Anima since Anima reuses get_noisy_model_input_and_timesteps below.
 _SHIFT_AWARE_TIMESTEP_SAMPLING = ("sigma", "shift")
 
+# timestep_sampling values that support timestep_sampling_offset (per-subset custom attribute,
+# see docs/timestep_sampling_offset.md). Applied to the pre-sigmoid normal sample.
+_OFFSET_AWARE_TIMESTEP_SAMPLING = ("sigmoid", "shift", "flux_shift")
+
+
+def get_show_timesteps_offset(args) -> Tuple[Optional[float], str]:
+    """Resolve ``--show_timesteps_offset`` into ``(offset or None, header note)``. Shared by FLUX and Anima.
+
+    Returns ``None`` when the offset is 0.0 or the chosen ``--timestep_sampling`` ignores it,
+    mirroring the training-time behavior of per-subset ``timestep_sampling.offset``.
+    """
+    offset = getattr(args, "show_timesteps_offset", 0.0) or 0.0
+    if offset == 0.0:
+        return None, ""
+    if args.timestep_sampling in _OFFSET_AWARE_TIMESTEP_SAMPLING:
+        return offset, f", timestep_sampling_offset={offset}"
+    return None, (
+        f", timestep_sampling_offset={offset} (IGNORED for timestep_sampling='{args.timestep_sampling}'; "
+        "only 'sigmoid', 'shift' and 'flux_shift' use it)"
+    )
+
 
 def get_timestep_sampling_info(args) -> str:
     """One-line, human-readable summary of the timestep sampling config.
@@ -605,11 +626,15 @@ def show_timesteps(args):
     # latent size for the assumed image resolution (flux_shift reads h, w for the packed-size shift)
     h, w = parse_show_timesteps_latent_size(args)
     device, dtype = device_utils.get_preferred_device(), torch.float32
+    offset, offset_note = get_show_timesteps_offset(args)
 
     def sample_timesteps(bsz):
         latents = torch.zeros(bsz, 16, h, w, dtype=dtype, device=device)
         noise = torch.ones_like(latents)
-        _, timesteps, _ = get_noisy_model_input_and_timesteps(args, noise_scheduler, latents, noise, device, dtype)
+        tso = None if offset is None else torch.full((bsz,), offset, dtype=dtype, device=device)
+        _, timesteps, _ = get_noisy_model_input_and_timesteps(
+            args, noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=tso
+        )
         return timesteps
 
     def compute_weighting(timesteps):
@@ -620,6 +645,7 @@ def show_timesteps(args):
     header = (
         "Timestep distribution / タイムステップ分布:\n  "
         + get_timestep_sampling_info(args)
+        + offset_note
         + f", resolution={args.show_timesteps_resolution} (latent {h}x{w}), model_prediction_type={args.model_prediction_type}"
     )
     timestep_visualization.show_timestep_distribution(
