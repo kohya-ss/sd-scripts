@@ -1,7 +1,7 @@
 from functools import wraps
 import torch
 import diffusers # pylint: disable=import-error
-from diffusers.utils import torch_utils # pylint: disable=import-error, unused-import # noqa: F401
+from diffusers.utils import torch_utils # pylint: disable=import-error, unused-import # noqa: F401,RUF100
 
 # pylint: disable=protected-access, missing-function-docstring, line-too-long
 
@@ -23,11 +23,10 @@ class FluxPosEmbed(torch.nn.Module):
         self.axes_dim = axes_dim
 
     def forward(self, ids: torch.Tensor) -> torch.Tensor:
-        n_axes = ids.shape[-1]
         cos_out = []
         sin_out = []
-        pos = ids.float()
-        for i in range(n_axes):
+        pos = ids.to(dtype=torch.float32)
+        for i in range(ids.shape[-1]):
             cos, sin = diffusers.models.embeddings.get_1d_rotary_pos_embed(
                 self.axes_dim[i],
                 pos[:, i],
@@ -51,7 +50,7 @@ def hidream_rope(pos: torch.Tensor, dim: int, theta: int) -> torch.Tensor:
     scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
     omega = 1.0 / (theta**scale)
 
-    batch_size, seq_length = pos.shape
+    batch_size, _seq_length = pos.shape
     out = torch.einsum("...n,d->...nd", pos, omega)
     cos_out = torch.cos(out)
     sin_out = torch.sin(out)
@@ -99,12 +98,12 @@ def apply_rotary_emb(x, freqs_cis, use_real: bool = True, use_real_unbind_dim: i
         else:
             raise ValueError(f"`use_real_unbind_dim={use_real_unbind_dim}` but should be -1 or -2.")
 
-        out = (x.float() * cos + x_rotated.float() * sin).to(x.dtype)
+        out = (x.to(dtype=torch.float32) * cos + x_rotated.to(dtype=torch.float32) * sin).to(x.dtype)
         return out
     else:
         # used for lumina
         # force cpu with Alchemist
-        x_rotated = torch.view_as_complex(x.to("cpu").float().reshape(*x.shape[:-1], -1, 2))
+        x_rotated = torch.view_as_complex(x.to("cpu").to(dtype=torch.float32).reshape(*x.shape[:-1], -1, 2))
         freqs_cis = freqs_cis.to("cpu").unsqueeze(2)
         x_out = torch.view_as_real(x_rotated * freqs_cis).flatten(3)
         return x_out.type_as(x).to(x.device)
@@ -114,13 +113,15 @@ def ipex_diffusers(device_supports_fp64=False):
     diffusers.utils.torch_utils.fourier_filter = fourier_filter
     if not device_supports_fp64:
         # get around lazy imports
-        from diffusers.models import embeddings as diffusers_embeddings # pylint: disable=import-error, unused-import # noqa: F401
-        from diffusers.models import transformers as diffusers_transformers # pylint: disable=import-error, unused-import # noqa: F401
-        from diffusers.models import controlnets as diffusers_controlnets # pylint: disable=import-error, unused-import # noqa: F401
+        from diffusers.models import embeddings as diffusers_embeddings # pylint: disable=import-error, unused-import # noqa: F401,RUF100
+        from diffusers.models import transformers as diffusers_transformers # pylint: disable=import-error, unused-import # noqa: F401,RUF100
+        from diffusers.models import controlnets as diffusers_controlnets # pylint: disable=import-error, unused-import # noqa: F401,RUF100
         diffusers.models.embeddings.get_1d_sincos_pos_embed_from_grid = get_1d_sincos_pos_embed_from_grid
         diffusers.models.embeddings.FluxPosEmbed = FluxPosEmbed
         diffusers.models.embeddings.apply_rotary_emb = apply_rotary_emb
         diffusers.models.transformers.transformer_flux.FluxPosEmbed = FluxPosEmbed
+        diffusers.models.transformers.transformer_flux2.Flux2PosEmbed = FluxPosEmbed
         diffusers.models.transformers.transformer_lumina2.apply_rotary_emb = apply_rotary_emb
-        diffusers.models.controlnets.controlnet_flux.FluxPosEmbed = FluxPosEmbed
         diffusers.models.transformers.transformer_hidream_image.rope = hidream_rope
+        diffusers.models.transformers.transformer_chroma.FluxPosEmbed = FluxPosEmbed
+        diffusers.models.controlnets.controlnet_flux.FluxPosEmbed = FluxPosEmbed
