@@ -96,6 +96,11 @@ class NetworkTrainer:
             logs["norm/avg_combined_norm"] = mean_combined_norm
 
         lrs = lr_scheduler.get_last_lr()
+        optimizer_type_lower = (args.optimizer_type or "").lower()
+        is_dadapt_optimizer = optimizer_type_lower.startswith("dadapt")
+        is_prodigy_optimizer = "prodigy" in optimizer_type_lower
+        is_prodigy_schedule_free = optimizer_type_lower.endswith("prodigyplusschedulefree")
+
         for i, lr in enumerate(lrs):
             if lr_descriptions is not None:
                 lr_desc = lr_descriptions[i]
@@ -111,8 +116,11 @@ class NetworkTrainer:
 
             logs[f"lr/{lr_desc}"] = lr
 
-            if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower().startswith("Prodigy".lower()):
-                opt = lr_scheduler.optimizers[-1] if hasattr(lr_scheduler, "optimizers") else optimizer
+            if is_dadapt_optimizer or is_prodigy_optimizer:
+                if is_prodigy_schedule_free:
+                    opt = optimizer
+                else:
+                    opt = lr_scheduler.optimizers[-1] if hasattr(lr_scheduler, "optimizers") else optimizer
                 if opt is not None:
                     logs[f"lr/d*lr/{lr_desc}"] = opt.param_groups[i]["d"] * opt.param_groups[i]["lr"]
                     if "effective_lr" in opt.param_groups[i]:
