@@ -908,6 +908,39 @@ def add_dataset_arguments(
     parser.add_argument(
         "--shuffle_caption", action="store_true", help="shuffle separated caption / 区切られたcaptionの各要素をshuffleする"
     )
+    parser.add_argument(
+        "--enable_fad", action="store_true", help="enable Frequency-Aware Dropout (FAD) / Frequency-Aware Dropout (FAD) を有効にする"
+    )
+    parser.add_argument(
+        "--fad_curriculum", action="store_true", help="enable Curriculum-inspired Scheduling for FAD (sFAD) / sFAD (Curriculum-inspired Scheduling) を有効にする"
+    )
+    parser.add_argument(
+        "--fad_p_min", type=float, default=0.35, help="minimum dropout probability for FAD / FADの最小ドロップアウト確率"
+    )
+    parser.add_argument(
+        "--fad_p_max", type=float, default=1.0, help="maximum dropout probability for FAD / FADの最大ドロップアウト確率"
+    )
+    parser.add_argument(
+        "--fad_alpha", type=float, default=10.0, help="alpha value (sigmoid slope) for FAD / FADのシグモイドスロープのアルファ値"
+    )
+    parser.add_argument(
+        "--fad_c", type=float, default=0.5, help="center ratio for FAD / FADのセンター比率"
+    )
+    parser.add_argument(
+        "--fad_curriculum_start", type=float, default=0.1, help="warmup ratio (iw) for sFAD / sFADのウォームアップ比率"
+    )
+    parser.add_argument(
+        "--fad_curriculum_end", type=float, default=0.8, help="end ratio (if) for sFAD / sFADの終了比率"
+    )
+    parser.add_argument(
+        "--fad_curriculum_beta", type=float, default=3.0, help="beta value for sFAD / sFADのベータ値"
+    )
+    parser.add_argument(
+        "--fad_step_start", type=float, default=0.0, help="minimum p_step scaling factor for sFAD / sFADの最小p_stepスケーリング係数"
+    )
+    parser.add_argument(
+        "--fad_step_end", type=float, default=1.0, help="maximum p_step scaling factor for sFAD / sFADの最大p_stepスケーリング係数"
+    )
     parser.add_argument("--caption_separator", type=str, default=",", help="separator for caption / captionの区切り文字")
     parser.add_argument(
         "--caption_extension", type=str, default=".caption", help="extension of caption files / 読み込むcaptionファイルの拡張子"

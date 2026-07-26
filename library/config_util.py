@@ -57,6 +57,8 @@ class BaseSubsetParams:
     image_dir: Optional[str] = None
     num_repeats: int = 1
     shuffle_caption: bool = False
+    enable_fad: bool = False
+    fad_curriculum: bool = False
     caption_separator: str = (",",)
     keep_tokens: int = 0
     keep_tokens_separator: str = (None,)
@@ -111,6 +113,17 @@ class BaseDatasetParams:
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
     skip_image_resolution: Optional[Tuple[int, int]] = None
+    enable_fad: bool = False
+    fad_curriculum: bool = False
+    fad_p_min: float = 0.35
+    fad_p_max: float = 1.0
+    fad_alpha: float = 10.0
+    fad_c: float = 0.5
+    fad_curriculum_start: float = 0.1
+    fad_curriculum_end: float = 0.8
+    fad_curriculum_beta: float = 3.0
+    fad_step_start: float = 0.0
+    fad_step_end: float = 1.0
 
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
@@ -190,6 +203,8 @@ class ConfigSanitizer:
         "num_repeats": int,
         "random_crop": bool,
         "shuffle_caption": bool,
+        "enable_fad": bool,
+        "fad_curriculum": bool,
         "keep_tokens": int,
         "keep_tokens_separator": str,
         "secondary_separator": str,
@@ -248,6 +263,17 @@ class ConfigSanitizer:
         "network_multiplier": float,
         "resize_interpolation": str,
         "skip_image_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
+        "enable_fad": bool,
+        "fad_curriculum": bool,
+        "fad_p_min": Any(float, int),
+        "fad_p_max": Any(float, int),
+        "fad_alpha": Any(float, int),
+        "fad_c": Any(float, int),
+        "fad_curriculum_start": Any(float, int),
+        "fad_curriculum_end": Any(float, int),
+        "fad_curriculum_beta": Any(float, int),
+        "fad_step_start": Any(float, int),
+        "fad_step_end": Any(float, int),
     }
 
     # options handled by argparse but not handled by user config
@@ -537,6 +563,17 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                   skip_image_resolution: {dataset.skip_image_resolution}
                   resize_interpolation: {dataset.resize_interpolation}
                   enable_bucket: {dataset.enable_bucket}
+                  enable_fad: {getattr(dataset, "enable_fad", False)}
+                  fad_curriculum: {getattr(dataset, "fad_curriculum", False)}
+                  fad_p_min: {getattr(dataset, "fad_p_min", 0.35)}
+                  fad_p_max: {getattr(dataset, "fad_p_max", 1.0)}
+                  fad_alpha: {getattr(dataset, "fad_alpha", 10.0)}
+                  fad_c: {getattr(dataset, "fad_c", 0.5)}
+                  fad_curriculum_start: {getattr(dataset, "fad_curriculum_start", 0.1)}
+                  fad_curriculum_end: {getattr(dataset, "fad_curriculum_end", 0.8)}
+                  fad_curriculum_beta: {getattr(dataset, "fad_curriculum_beta", 3.0)}
+                  fad_step_start: {getattr(dataset, "fad_step_start", 0.0)}
+                  fad_step_end: {getattr(dataset, "fad_step_end", 1.0)}
             """)
 
             if dataset.enable_bucket:
@@ -556,6 +593,8 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                     image_count: {subset.img_count}
                     num_repeats: {subset.num_repeats}
                     shuffle_caption: {subset.shuffle_caption}
+                    enable_fad: {subset.enable_fad}
+                    fad_curriculum: {subset.fad_curriculum}
                     keep_tokens: {subset.keep_tokens}
                     caption_dropout_rate: {subset.caption_dropout_rate}
                     caption_dropout_every_n_epochs: {subset.caption_dropout_every_n_epochs}
