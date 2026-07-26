@@ -3,6 +3,8 @@ import random
 import sys
 import threading
 from typing import *
+import sys
+import io
 
 import torch
 from torchvision import transforms
@@ -13,6 +15,10 @@ import cv2
 from PIL import Image
 import numpy as np
 
+try:
+    from PIL import ImageCms
+except:
+    print( "ImageCms not available. Images will not be converted to sRGB. Colours may be handled incorrectly." )
 
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
@@ -167,13 +173,45 @@ IMAGE_TRANSFORMS = transforms.Compose(
 )
 
 
-def load_image(image_path, alpha=False):
+def load_image(image_path, alpha : bool =False):
     try:
         with Image.open(image_path) as image:
+            if getattr(image, "is_animated", False):
+                logger.warning( f"{image_path} is animated" )
+
+            # Convert image to sRGB
+            if "PIL.ImageCms" in sys.modules:
+                icc = image.info.get('icc_profile', None)
+                if icc:
+                    try:
+                        src_profile = ImageCms.ImageCmsProfile( io.BytesIO(icc) )
+                        srgb_profile = ImageCms.createProfile( "sRGB" )
+
+                        if image.mode == "P":
+                            # Indexed mode does not play well with profile conversion to rgb
+                            image = image.convert("RGBA")
+
+                        if "A" in image.getbands():
+                            image = ImageCms.profileToProfile(image, src_profile, srgb_profile, outputMode="RGBA")
+                        else:
+                            image = ImageCms.profileToProfile(image, src_profile, srgb_profile, outputMode="RGB")
+
+                        image.info["icc_profile"] = ImageCms.ImageCmsProfile(srgb_profile).tobytes()
+                    except Exception as e:
+                        logger.warning( f"Could not convert {image_path} to sRGB. Using image as is. {e}" )
+
             if alpha:
                 if not image.mode == "RGBA":
                     image = image.convert("RGBA")
             else:
+                if image.mode != "RGBA" or image.mode != "RGB":
+                    # Various pallette formats and others
+                    image = image.convert("RGBA")
+
+                if "A" in  image.getbands():
+                    bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    image = Image.alpha_composite( bg, image ).convert("RGB")
+
                 if not image.mode == "RGB":
                     image = image.convert("RGB")
             img = np.array(image, np.uint8)
