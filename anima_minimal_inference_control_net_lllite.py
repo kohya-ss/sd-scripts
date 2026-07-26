@@ -51,6 +51,7 @@ from networks.control_net_lllite_anima import (
     build_cond_tensors,
     encode_reference_hidden_states,
     load_lllite_weights,
+    parse_ref_blocks,
 )
 from library.utils import setup_logging
 
@@ -221,8 +222,11 @@ def parse_args() -> argparse.Namespace:
         help="override cond_input_space from weights metadata (pixel/latent)",
     )
     parser.add_argument(
-        "--lllite_ref_block", type=int, default=None,
-        help="[semantic trunk] override ref_block from weights metadata",
+        "--lllite_ref_block", type=str, default=None,
+        help=(
+            "[semantic trunk] override ref_block from weights metadata "
+            "(comma-separated for the dual/multi concat trunk, e.g. '2,13')"
+        ),
     )
     parser.add_argument(
         "--lllite_ref_timestep", type=float, default=None,
@@ -369,10 +373,11 @@ def load_dit_model(args, device, dit_weight_dtype=None):
     )
     # trunk (v3). メタデータ欠落時は stem (旧重み互換)
     trunk = meta.get("lllite.trunk", "stem")
-    ref_block = (
+    # single は "13"、dual/multi は "2,13" (カンマ区切り、v3 dual)
+    ref_blocks = parse_ref_blocks(
         args.lllite_ref_block
         if args.lllite_ref_block is not None
-        else (int(meta["lllite.ref_block"]) if "lllite.ref_block" in meta else None)
+        else meta.get("lllite.ref_block")
     )
     ref_timestep = (
         args.lllite_ref_timestep
@@ -384,7 +389,8 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
     )
     trunk_log = (
-        f", trunk=semantic(ref_block={ref_block}, ref_timestep={ref_timestep})"
+        f", trunk=semantic(ref_blocks={list(ref_blocks) if ref_blocks else None}, "
+        f"ref_timestep={ref_timestep})"
         if trunk == "semantic"
         else ""
     )
@@ -410,7 +416,7 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         inpaint_masked_input=inpaint_masked_input,
         cond_input_space=cond_input_space,
         trunk=trunk,
-        ref_block=ref_block,
+        ref_block=ref_blocks,
         ref_timestep=ref_timestep,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
@@ -499,12 +505,12 @@ def generate_body(
             device_type=device.type, dtype=torch.bfloat16, enabled=args.fp8
         ):
             h_ref = encode_reference_hidden_states(
-                anima, cond_image, anima.lllite.ref_block, anima.lllite.ref_timestep
+                anima, cond_image, anima.lllite.ref_blocks, anima.lllite.ref_timestep
             )
         anima.lllite.set_cond_hidden_states(h_ref)
         logger.info(
             f"LLLite reference forward: h_ref={tuple(h_ref.shape)} "
-            f"(ref_block={anima.lllite.ref_block}, ref_timestep={anima.lllite.ref_timestep})"
+            f"(ref_blocks={list(anima.lllite.ref_blocks)}, ref_timestep={anima.lllite.ref_timestep})"
         )
     else:
         anima.lllite.set_cond_image(cond_image, cond_mask)

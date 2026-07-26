@@ -91,6 +91,33 @@ def parse_target_layers(spec: str) -> Tuple[str, ...]:
     return tuple(a for a in ATOMIC_SPECIFIERS if a in parts)
 
 
+def parse_ref_blocks(spec) -> Optional[Tuple[int, ...]]:
+    """ref_block 指定を canonical な tuple に解決する (v3 semantic trunk).
+
+    受理する形式:
+      - None (デフォルト解決を後段 = ControlNetLLLiteDiT に委ねる)
+      - int 単体 (v3 single)
+      - int の sequence / カンマ区切り文字列 "2,13" (v3 dual/multi concat)
+
+    返り値は昇順・重複なしの tuple。concat の並び順はこの昇順で固定される
+    (保存重み proj_in の列レイアウトと一致させるため)。
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, int):
+        blocks = [spec]
+    elif isinstance(spec, str):
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+        if not parts:
+            raise ValueError("ref_block spec is empty")
+        blocks = [int(p) for p in parts]
+    else:
+        blocks = [int(b) for b in spec]
+    if len(set(blocks)) != len(blocks):
+        raise ValueError(f"duplicate ref_block index in {blocks}")
+    return tuple(sorted(blocks))
+
+
 def _gn(channels: int) -> nn.GroupNorm:
     """channels を割り切れる範囲で 8 を上限とする GroupNorm."""
     g = 8
@@ -289,13 +316,18 @@ class _Conditioning1(nn.Module):
 class _ConditioningSemanticTrunk(nn.Module):
     """v3 semantic trunk: 凍結 DiT の中間 hidden states を条件源にする.
 
-      in  h_ref (B, T=1, H, W, D_model)   # encode_reference_hidden_states の出力 (token 解像度)
-      -> LayerNorm(D_model)               # 層ごとのスケール差を吸収
-      -> Linear D_model -> cond_dim       # 共有 down 射影 (「選択と整列」なので低ランクで足りる)
+      in  h_ref (B, T=1, H, W, D_model)          # encode_reference_hidden_states の出力 (token 解像度)
+          または (B, K, T=1, H, W, D_model)       # dual/multi: K 個の ref block を concat
+      -> LayerNorm(D_model)  [per-block]         # 層ごとのスケール差を吸収
+      -> concat (K*D_model) -> Linear -> cond_dim # 共有 down 射影 (「選択と整列」なので低ランクで足りる)
       -> (B, cond_dim, H, W)
-      -> ResBlock x N / (ASPP)            # 中域文脈の拡張 (stem trunk と同じ部品)
+      -> ResBlock x N / (ASPP)                   # 中域文脈の拡張 (stem trunk と同じ部品)
       -> Conv 1x1 -> cond_emb_dim
       -> flatten (B, S, cond_emb_dim) -> LayerNorm
+
+    num_ref_blocks == 1 のとき ln_in は素の LayerNorm、proj_in は D_model -> cond_dim で
+    v3 single の保存キー・形状と完全互換。K > 1 のとき ln_in は per-block の ModuleList、
+    proj_in は K*D_model -> cond_dim になる (single 重みとは非互換、ロード時に検出される)。
 
     t_proj は本体の timestep embedding (t_embedding_norm 出力 (B, T, D_model)) を
     cond_emb_dim へ落とす zero-init 射影。cond_local に加算され、既存の FiLM / mid / gate が
@@ -310,10 +342,20 @@ class _ConditioningSemanticTrunk(nn.Module):
         n_resblocks: int,
         use_aspp: bool = False,
         aspp_dilations: Tuple[int, ...] = ASPP_DEFAULT_DILATIONS,
+        num_ref_blocks: int = 1,
     ):
         super().__init__()
-        self.ln_in = nn.LayerNorm(model_dim)
-        self.proj_in = nn.Linear(model_dim, cond_dim)
+        assert num_ref_blocks >= 1, f"num_ref_blocks must be >= 1, got {num_ref_blocks}"
+        self.num_ref_blocks = num_ref_blocks
+
+        if num_ref_blocks == 1:
+            self.ln_in = nn.LayerNorm(model_dim)
+            self.proj_in = nn.Linear(model_dim, cond_dim)
+        else:
+            # per-block LayerNorm: LN 自体はトークン毎の正規化なので共有でも数値は同じだが、
+            # affine をブロック毎に持たせて深さの違う特徴のスケール/シフトを独立に学ばせる
+            self.ln_in = nn.ModuleList([nn.LayerNorm(model_dim) for _ in range(num_ref_blocks)])
+            self.proj_in = nn.Linear(model_dim * num_ref_blocks, cond_dim)
 
         self.resblocks = nn.ModuleList([_ResBlock(cond_dim) for _ in range(n_resblocks)])
         self.aspp = _ASPP(cond_dim, aspp_dilations) if use_aspp else None
@@ -327,10 +369,23 @@ class _ConditioningSemanticTrunk(nn.Module):
         nn.init.zeros_(self.t_proj.bias)
 
     def forward(self, h_ref: torch.Tensor) -> torch.Tensor:
-        assert h_ref.dim() == 5, f"semantic trunk expects (B, T, H, W, D), got {tuple(h_ref.shape)}"
-        b, t, hh, ww, _ = h_ref.shape
+        # (B, T, H, W, D) [K=1] または (B, K, T, H, W, D) を受理し、K 次元へ正規化する
+        if h_ref.dim() == 5:
+            h_ref = h_ref.unsqueeze(1)
+        assert h_ref.dim() == 6, (
+            f"semantic trunk expects (B, T, H, W, D) or (B, K, T, H, W, D), got {tuple(h_ref.shape)}"
+        )
+        b, k, t, hh, ww, _ = h_ref.shape
+        assert k == self.num_ref_blocks, (
+            f"semantic trunk was built for {self.num_ref_blocks} ref block(s) but got {k} "
+            f"(check ref_block vs the trained weights)"
+        )
         assert t == 1, f"semantic trunk supports T=1 only, got T={t}"
-        h = self.proj_in(self.ln_in(h_ref))  # (B, 1, H, W, cond_dim)
+        if self.num_ref_blocks == 1:
+            h = self.proj_in(self.ln_in(h_ref[:, 0]))  # (B, 1, H, W, cond_dim)
+        else:
+            normed = [ln(h_ref[:, i]) for i, ln in enumerate(self.ln_in)]
+            h = self.proj_in(torch.cat(normed, dim=-1))  # (B, 1, H, W, cond_dim)
         h = h.squeeze(1).permute(0, 3, 1, 2).contiguous()  # (B, cond_dim, H, W)
         for rb in self.resblocks:
             h = rb(h)
@@ -521,7 +576,7 @@ class ControlNetLLLiteDiT(nn.Module):
         inpaint_masked_input: bool = False,
         cond_input_space: str = "pixel",
         trunk: str = "stem",
-        ref_block: Optional[int] = None,
+        ref_block=None,  # int / "2,13" 形式の str / int sequence (parse_ref_blocks 参照)
         ref_timestep: float = 0.0,
     ):
         super().__init__()
@@ -570,23 +625,26 @@ class ControlNetLLLiteDiT(nn.Module):
                 "cannot infer the DiT hidden dim (model_channels / blocks[0].x_dim) for the semantic trunk"
             )
             num_dit_blocks = len(dit.blocks)
-            if ref_block is None:
-                ref_block = num_dit_blocks // 2
-            assert 0 <= ref_block < num_dit_blocks, (
-                f"ref_block {ref_block} out of range (num_blocks={num_dit_blocks})"
-            )
+            ref_blocks = parse_ref_blocks(ref_block)
+            if ref_blocks is None:
+                ref_blocks = (num_dit_blocks // 2,)
+            for rb in ref_blocks:
+                assert 0 <= rb < num_dit_blocks, (
+                    f"ref_block {rb} out of range (num_blocks={num_dit_blocks})"
+                )
             self.model_dim = int(model_dim)
-            self.ref_block = ref_block
+            self.ref_blocks = ref_blocks
             self.ref_timestep = float(ref_timestep)
 
-            # semantic trunk: hidden states (B, T, H, W, D_model) -> (B, S, cond_emb_dim)
+            # semantic trunk: hidden states (B, [K,] T, H, W, D_model) -> (B, S, cond_emb_dim)
             self.conditioning1 = _ConditioningSemanticTrunk(
                 self.model_dim, cond_dim, cond_emb_dim, cond_resblocks,
                 use_aspp=use_aspp, aspp_dilations=aspp_dilations,
+                num_ref_blocks=len(ref_blocks),
             )
         else:
             self.model_dim = None
-            self.ref_block = None
+            self.ref_blocks = None
             self.ref_timestep = 0.0
 
             # pixel : cond image  (B, cond_in_channels, H*16, W*16) -> (B, S, cond_emb_dim)
@@ -634,7 +692,7 @@ class ControlNetLLLiteDiT(nn.Module):
             f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
         )
         trunk_info = (
-            f"trunk=semantic(ref_block={self.ref_block}, ref_timestep={self.ref_timestep}, "
+            f"trunk=semantic(ref_blocks={list(self.ref_blocks)}, ref_timestep={self.ref_timestep}, "
             f"model_dim={self.model_dim})"
             if trunk == "semantic"
             else "trunk=stem"
@@ -652,6 +710,12 @@ class ControlNetLLLiteDiT(nn.Module):
     def target_atomics_str(self) -> str:
         """canonical atomic specifier をカンマ区切り文字列で返す (メタデータ保存用)."""
         return ",".join(self.target_atomics)
+
+    @property
+    def ref_blocks_str(self) -> str:
+        """ref_blocks をカンマ区切り文字列で返す (メタデータ保存用。semantic trunk のみ)."""
+        assert self.ref_blocks is not None, "ref_blocks_str is only for trunk='semantic'"
+        return ",".join(str(b) for b in self.ref_blocks)
 
     @staticmethod
     def _attn_atomic_match(is_self_attn: bool, child_name: str, atomics: Tuple[str, ...]) -> bool:
@@ -739,11 +803,14 @@ class ControlNetLLLiteDiT(nn.Module):
         self._distribute_cond_emb(cx)
 
     def set_cond_hidden_states(self, hidden_states: torch.Tensor):
-        """v3 (semantic trunk): encode_reference_hidden_states の出力 (B, T=1, H, W, D_model) を
-        semantic trunk に通し、全 LLLite モジュールに cond_emb を配る。"""
+        """v3 (semantic trunk): encode_reference_hidden_states の出力を semantic trunk に通し、
+        全 LLLite モジュールに cond_emb を配る。
+
+        single (K=1): (B, T=1, H, W, D_model) / dual・multi: (B, K, T=1, H, W, D_model)。
+        K の検証は trunk の forward が行う。"""
         assert self.trunk == "semantic", "set_cond_hidden_states is only for trunk='semantic'"
         cx = self.conditioning1(hidden_states)  # (B, S, cond_emb_dim)
-        self.last_cond_hw = (hidden_states.shape[2], hidden_states.shape[3])
+        self.last_cond_hw = (hidden_states.shape[-3], hidden_states.shape[-2])
         self._distribute_cond_emb(cx)
 
     def _distribute_cond_emb(self, cx: torch.Tensor):
@@ -785,12 +852,15 @@ class ControlNetLLLiteDiT(nn.Module):
 def encode_reference_hidden_states(
     dit: nn.Module,
     cond_latent: torch.Tensor,
-    ref_block: int,
+    ref_block,
     ref_timestep: float = 0.0,
     padding_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """v3 (semantic trunk): 凍結 Anima DiT に cond latent を通し、blocks[ref_block] 出力の
-    hidden states を返す。ref_block 以降のブロックは実行しない。
+    hidden states を返す。max(ref_block) 以降のブロックは実行しない。
+
+    dual/multi (sequence 指定) では 1 回の参照フォワードで各 index の出力を収集する。
+    実行コストは max(ref_block) で決まるため、浅いブロックの追加コストはゼロ。
 
     cross-attn の context にはゼロテンソルを渡す。Anima は padding トークンをゼロ潰しして
     そのまま attend させる規約で、かつ k_proj/v_proj は bias なしなので、ゼロ context では
@@ -804,14 +874,20 @@ def encode_reference_hidden_states(
     Args:
         dit: 凍結 Anima モデル
         cond_latent: (B, 16, h, w) or (B, 16, 1, h, w) の正規化済み VAE latent
-        ref_block: hidden states を取り出すブロック index
+        ref_block: hidden states を取り出すブロック index。int 単体、または
+                   sequence / "2,13" 形式の str (dual/multi concat、昇順に正規化される)
         ref_timestep: 参照フォワードの timestep。学習ループと同じ [0, 1] スケール (0 = clean)
         padding_mask: (B, 1, h, w)。None ならゼロ
 
     Returns:
-        (B, 1, H, W, D_model) hidden states (token 解像度 = latent の 1/2)
+        int 指定:              (B, 1, H, W, D_model) hidden states (token 解像度 = latent の 1/2)
+        sequence / str 指定:   (B, K, 1, H, W, D_model)、K 次元は ref_block の昇順
     """
     from library import attention as attention_lib
+
+    single = isinstance(ref_block, int)
+    ref_blocks = parse_ref_blocks(ref_block)
+    assert ref_blocks is not None and len(ref_blocks) >= 1, f"invalid ref_block: {ref_block!r}"
 
     if cond_latent.dim() == 4:
         cond_latent = cond_latent.unsqueeze(2)  # (B, 16, 1, h, w)
@@ -837,9 +913,12 @@ def encode_reference_hidden_states(
     attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
     use_fp32 = x.dtype == torch.float16
 
-    assert 0 <= ref_block < len(dit.blocks), (
-        f"ref_block {ref_block} out of range (num_blocks={len(dit.blocks)})"
+    assert 0 <= ref_blocks[0] and ref_blocks[-1] < len(dit.blocks), (
+        f"ref_block {list(ref_blocks)} out of range (num_blocks={len(dit.blocks)})"
     )
+    ref_set = set(ref_blocks)
+    max_block = ref_blocks[-1]
+    collected: List[torch.Tensor] = []
     for block_idx, block in enumerate(dit.blocks):
         x = block(
             x,
@@ -851,9 +930,14 @@ def encode_reference_hidden_states(
             adaln_lora_B_T_3D=adaln_lora_B_T_3D,
             extra_per_block_pos_emb=extra_pos_emb,
         )
-        if block_idx == ref_block:
-            return x
-    raise AssertionError("unreachable")  # ref_block は range 内なのでここには来ない
+        if block_idx in ref_set:
+            collected.append(x)
+        if block_idx == max_block:
+            break
+    assert len(collected) == len(ref_blocks)
+    if single:
+        return collected[0]  # (B, T, H, W, D)
+    return torch.stack(collected, dim=1)  # (B, K, T, H, W, D)
 
 
 class AnimaControlNetLLLiteWrapper(nn.Module):
@@ -897,7 +981,7 @@ class AnimaControlNetLLLiteWrapper(nn.Module):
                     h_ref = encode_reference_hidden_states(
                         self.dit,
                         cond_image,
-                        self.lllite.ref_block,
+                        self.lllite.ref_blocks,
                         self.lllite.ref_timestep,
                         padding_mask=kwargs.get("padding_mask"),
                     )
@@ -1162,6 +1246,24 @@ def load_lllite_weights(lllite: ControlNetLLLiteDiT, file: str, strict: bool = F
             f"but this LLLite was built with trunk='{lllite.trunk}'. "
             f"Check --lllite_trunk / the 'lllite.trunk' metadata."
         )
+
+    # semantic trunk の single / dual (ref block 数) 取り違え検出。
+    # proj_in の形状不一致でもロードは失敗するが、原因が ref_block 指定だと分かる形で早期に落とす。
+    if file_trunk == "semantic" and lllite.trunk == "semantic":
+        if any(k == _SAVED_COND_PREFIX + "ln_in.weight" for k in weights_sd):
+            file_k = 1
+        else:
+            ln_prefix = _SAVED_COND_PREFIX + "ln_in."
+            file_k = len(
+                {k[len(ln_prefix):].split(".")[0] for k in weights_sd if k.startswith(ln_prefix)}
+            )
+        model_k = len(lllite.ref_blocks)
+        if file_k != model_k:
+            raise RuntimeError(
+                f"ref block count mismatch: weights at {file} were trained with {file_k} ref block(s), "
+                f"but this LLLite was built with ref_blocks={list(lllite.ref_blocks)} ({model_k}). "
+                f"Check --lllite_ref_block / the 'lllite.ref_block' metadata."
+            )
 
     # pixel / latent の取り違え検出 (stem trunk のみ。semantic は latent 固定)。
     file_space = None
@@ -1681,7 +1783,8 @@ if __name__ == "__main__":
         cond_input_space="latent", trunk="semantic", ref_block=2, ref_timestep=0.0,
     )
     assert lllite_v3.trunk == "semantic"
-    assert lllite_v3.ref_block == 2
+    assert lllite_v3.ref_blocks == (2,)
+    assert lllite_v3.ref_blocks_str == "2"
     assert lllite_v3.model_dim == MODEL_DIM
     keys_v3 = list(lllite_v3.state_dict().keys())
     assert any(k.startswith("conditioning1.proj_in.") for k in keys_v3), keys_v3[:8]
@@ -1699,8 +1802,23 @@ if __name__ == "__main__":
         _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
         cond_input_space="latent", trunk="semantic",
     )
-    assert lllite_v3_d.ref_block == 2, lllite_v3_d.ref_block
+    assert lllite_v3_d.ref_blocks == (2,), lllite_v3_d.ref_blocks
     logger.info("  v3 ref_block default (num_blocks // 2) OK")
+
+    # parse_ref_blocks の単体検証
+    assert parse_ref_blocks(None) is None
+    assert parse_ref_blocks(13) == (13,)
+    assert parse_ref_blocks("13") == (13,)
+    assert parse_ref_blocks("2,13") == (2, 13)
+    assert parse_ref_blocks("13, 2") == (2, 13)  # 昇順に正規化
+    assert parse_ref_blocks([13, 2]) == (2, 13)
+    for bad in ("", "2,2", [3, 3]):
+        try:
+            parse_ref_blocks(bad)
+            raise AssertionError(f"expected ValueError for {bad!r}")
+        except ValueError:
+            pass
+    logger.info("  parse_ref_blocks OK")
 
     # semantic は latent 入力必須 / inpaint (4ch) 非対応
     try:
@@ -1800,4 +1918,95 @@ if __name__ == "__main__":
         if os.path.exists(tmp_v3):
             os.unlink(tmp_v3)
 
-    logger.info("Phase A (v2 + v3) dummy check PASSED")
+    # ------------------------------------------------------------------
+    # v3 dual: ref_block 2 個の concat trunk
+    # ------------------------------------------------------------------
+    dit_dual = _DummyDiTV3(num_blocks=4)
+    lllite_dual = ControlNetLLLiteDiT(
+        dit_dual, cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+        cond_dim=64, cond_resblocks=1,
+        cond_input_space="latent", trunk="semantic", ref_block="1,3", ref_timestep=0.0,
+    )
+    assert lllite_dual.ref_blocks == (1, 3)
+    assert lllite_dual.ref_blocks_str == "1,3"
+    assert lllite_dual.conditioning1.num_ref_blocks == 2
+    keys_dual = list(lllite_dual.state_dict().keys())
+    assert "conditioning1.ln_in.0.weight" in keys_dual and "conditioning1.ln_in.1.weight" in keys_dual, keys_dual[:8]
+    assert "conditioning1.ln_in.weight" not in keys_dual
+    assert lllite_dual.conditioning1.proj_in.weight.shape == (64, 2 * MODEL_DIM)
+    logger.info("  v3 dual build / keys / proj_in shape OK")
+
+    # dual: set_cond_hidden_states (6-dim) + zero-init forward + K 不一致 assert
+    lllite_dual.apply_to()
+    h_ref_dual = torch.randn(1, 2, 1, H_v3, W_v3, MODEL_DIM)
+    lllite_dual.set_cond_hidden_states(h_ref_dual)
+    lllite_dual._update_t_local(t_emb)
+    assert lllite_dual.last_cond_hw == (H_v3, W_v3)
+    mod_dual = lllite_dual.lllite_modules[0]
+    assert mod_dual.cond_emb is not None and mod_dual.cond_emb.shape == (1, H_v3 * W_v3, 32)
+    x_dual = torch.randn(1, H_v3 * W_v3, mod_dual.org_module[0].in_features)
+    assert torch.allclose(mod_dual(x_dual), mod_dual.org_forward(x_dual)), "v3 dual zero-init forward mismatch"
+    lllite_dual.clear_cond_image()
+    try:
+        lllite_dual.set_cond_hidden_states(h_ref)  # 5-dim (K=1) を dual trunk に渡すと拒否
+        raise AssertionError("expected K mismatch assert")
+    except AssertionError as e:
+        assert "ref block" in str(e), str(e)
+    try:
+        lllite_v3.set_cond_hidden_states(h_ref_dual)  # 6-dim (K=2) を single trunk に渡すと拒否
+        raise AssertionError("expected K mismatch assert (dual -> single)")
+    except AssertionError as e:
+        assert "ref block" in str(e), str(e)
+    lllite_v3.clear_cond_image()
+    logger.info("  v3 dual set_cond_hidden_states / zero-init forward / K mismatch asserts OK")
+
+    # dual: save/load round-trip + single/dual 取り違え検出
+    tmp_dual = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False).name
+    try:
+        save_lllite_model(tmp_dual, lllite_dual, dtype=torch.float32, metadata={
+            "lllite.version": LLLITE_ARCH_VERSION_SEMANTIC,
+            "lllite.trunk": "semantic",
+            "lllite.cond_input_space": "latent",
+            "lllite.ref_block": lllite_dual.ref_blocks_str,
+        })
+        lllite_dual_b = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+            cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=(1, 3),
+        )
+        load_lllite_weights(lllite_dual_b, tmp_dual, strict=True)
+        sd_da = lllite_dual.state_dict()
+        sd_db = lllite_dual_b.state_dict()
+        assert set(sd_da.keys()) == set(sd_db.keys())
+        for k in sd_da:
+            assert torch.allclose(sd_da[k].float(), sd_db[k].float()), f"dual round-trip mismatch at {k}"
+        logger.info("  v3 dual save / load round-trip OK")
+
+        # dual 重みを single モデルへ / single 重みを dual モデルへ → 明示エラー
+        lllite_single = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+            cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=2,
+        )
+        try:
+            load_lllite_weights(lllite_single, tmp_dual, strict=False)
+            raise AssertionError("expected ref block count mismatch error (dual -> single)")
+        except RuntimeError as e:
+            assert "ref block count mismatch" in str(e), str(e)
+        tmp_single = tmp_dual + ".single.safetensors"
+        try:
+            save_lllite_model(tmp_single, lllite_single, dtype=torch.float32)
+            try:
+                load_lllite_weights(lllite_dual_b, tmp_single, strict=False)
+                raise AssertionError("expected ref block count mismatch error (single -> dual)")
+            except RuntimeError as e:
+                assert "ref block count mismatch" in str(e), str(e)
+        finally:
+            if os.path.exists(tmp_single):
+                os.unlink(tmp_single)
+        logger.info("  v3 single/dual mix-up detection OK")
+    finally:
+        if os.path.exists(tmp_dual):
+            os.unlink(tmp_dual)
+
+    logger.info("Phase A (v2 + v3 + dual) dummy check PASSED")

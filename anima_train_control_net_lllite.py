@@ -193,7 +193,7 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None, dit=None):
             lllite.clear_cond_image()
             with torch.no_grad():
                 h_ref = encode_reference_hidden_states(
-                    dit, cond_image, lllite.ref_block, lllite.ref_timestep
+                    dit, cond_image, lllite.ref_blocks, lllite.ref_timestep
                 )
             lllite.set_cond_hidden_states(h_ref)
         else:
@@ -313,12 +313,16 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--lllite_ref_block",
-        type=int,
+        type=str,
         default=None,
         help=(
-            "[semantic] DiT block index whose output hidden states feed the trunk "
-            "(default: num_blocks // 2). The reference forward only runs blocks up to this index. "
-            "/ semantic trunk が hidden states を取り出すブロック index (既定: num_blocks // 2)"
+            "[semantic] DiT block index(es) whose output hidden states feed the trunk "
+            "(default: num_blocks // 2). Comma-separated indices (e.g. '2,13') enable the dual/multi "
+            "concat trunk: one reference forward runs blocks up to the max index and the hidden states "
+            "of each listed block are concatenated (shallower blocks cost nothing extra). "
+            "/ semantic trunk が hidden states を取り出すブロック index (既定: num_blocks // 2)。"
+            "'2,13' のようにカンマ区切りで複数指定すると dual/multi concat になる "
+            "(参照フォワードは最大 index まで 1 回だけ実行、浅いブロックの追加コストはゼロ)"
         ),
     )
     parser.add_argument(
@@ -564,6 +568,8 @@ def train(args):
     # v3 (semantic trunk) の制約検証
     is_semantic_trunk = args.lllite_trunk == "semantic"
     if is_semantic_trunk:
+        # ref_block 指定のパースエラーはここで早期に落とす (構築時より原因が分かりやすい)
+        lllite_module.parse_ref_blocks(args.lllite_ref_block)
         if not is_latent_cond:
             raise ValueError("--lllite_trunk semantic requires --lllite_cond_input latent")
         if args.lllite_cond_in_channels != 3:
@@ -777,7 +783,7 @@ def train(args):
         )
         sai_metadata["lllite.trunk"] = args.lllite_trunk
         if args.lllite_trunk == "semantic":
-            sai_metadata["lllite.ref_block"] = str(unwrapped.ref_block)
+            sai_metadata["lllite.ref_block"] = unwrapped.ref_blocks_str
             sai_metadata["lllite.ref_timestep"] = str(unwrapped.ref_timestep)
         save_lllite_model(ckpt_file, unwrapped, dtype=save_dtype, metadata=sai_metadata)
 

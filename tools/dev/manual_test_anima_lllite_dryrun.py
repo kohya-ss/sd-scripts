@@ -446,7 +446,7 @@ def check_semantic_trunk():
         ref_block=None,  # -> num_blocks // 2
         ref_timestep=0.0,
     )
-    assert lllite.ref_block == num_blocks // 2
+    assert lllite.ref_blocks == (num_blocks // 2,)
     assert lllite.model_dim == model_channels
     assert lllite._t_hook_handle is not None, "t hook should be registered on the real Anima"
     lllite.apply_to()
@@ -462,10 +462,15 @@ def check_semantic_trunk():
 
     # encode_reference_hidden_states 単体: shape と決定性
     with torch.no_grad():
-        h_ref = encode_reference_hidden_states(dit, cond_latent, lllite.ref_block, 0.0, padding_mask)
-        h_ref2 = encode_reference_hidden_states(dit, cond_latent, lllite.ref_block, 0.0, padding_mask)
-    assert h_ref.shape == (B, 1, tok_H, tok_W, model_channels), h_ref.shape
+        h_ref = encode_reference_hidden_states(dit, cond_latent, lllite.ref_blocks, 0.0, padding_mask)
+        h_ref2 = encode_reference_hidden_states(dit, cond_latent, lllite.ref_blocks, 0.0, padding_mask)
+    assert h_ref.shape == (B, 1, 1, tok_H, tok_W, model_channels), h_ref.shape
     assert torch.allclose(h_ref, h_ref2), "reference forward should be deterministic"
+    # int 指定 (single) では 5-dim が返り、tuple 指定の K=1 と一致する
+    with torch.no_grad():
+        h_ref_int = encode_reference_hidden_states(dit, cond_latent, lllite.ref_blocks[0], 0.0, padding_mask)
+    assert h_ref_int.shape == (B, 1, tok_H, tok_W, model_channels), h_ref_int.shape
+    assert torch.allclose(h_ref[:, 0], h_ref_int)
     print(f"[S1] encode_reference_hidden_states OK ({tuple(h_ref.shape)})")
 
     # zero-init: cond ありでも cond なしと一致 (up=0 が支配)
@@ -530,7 +535,7 @@ def check_semantic_trunk():
             "lllite.version": "3",
             "lllite.trunk": "semantic",
             "lllite.cond_input_space": "latent",
-            "lllite.ref_block": str(lllite.ref_block),
+            "lllite.ref_block": lllite.ref_blocks_str,
             "lllite.ref_timestep": str(lllite.ref_timestep),
         })
         dit_b = Anima(
@@ -543,7 +548,7 @@ def check_semantic_trunk():
         lllite_b = ControlNetLLLiteDiT(
             dit_b, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
             cond_dim=32, cond_resblocks=1,
-            cond_input_space="latent", trunk="semantic", ref_block=lllite.ref_block,
+            cond_input_space="latent", trunk="semantic", ref_block=lllite.ref_blocks,
         )
         load_lllite_weights(lllite_b, ckpt, strict=True)
         assert _state_dicts_equal(lllite.state_dict(), lllite_b.state_dict())
@@ -587,6 +592,88 @@ def check_semantic_trunk():
     dit.disable_gradient_checkpointing()
     dit.eval()
     print("[S8] gradient checkpointing + semantic trunk grads OK")
+
+    # ------------------------------------------------------------------
+    # dual (ref_block 2 個の concat trunk) を同じ実 Anima でエンドツーエンド検査
+    # ------------------------------------------------------------------
+    # 既存 lllite の forward 差し替えを元に戻してから dual を貼り直す
+    for m in lllite.lllite_modules:
+        m.org_module[0].forward = m.org_forward
+    lllite_dual = ControlNetLLLiteDiT(
+        dit,
+        cond_emb_dim=32,
+        mlp_dim=32,
+        target_layers="self_attn_q",
+        cond_dim=32,
+        cond_resblocks=1,
+        cond_input_space="latent",
+        trunk="semantic",
+        ref_block="1,3",
+        ref_timestep=0.0,
+    )
+    assert lllite_dual.ref_blocks == (1, 3)
+    assert lllite_dual.conditioning1.num_ref_blocks == 2
+    lllite_dual.apply_to()
+    wrapper_dual = AnimaControlNetLLLiteWrapper(dit, lllite_dual)
+
+    # 参照フォワード: (B, K=2, 1, tok, tok, D)。K=1 の single 結果と各スライスが一致する
+    with torch.no_grad():
+        h_dual = encode_reference_hidden_states(dit, cond_latent, lllite_dual.ref_blocks, 0.0, padding_mask)
+        h_b1 = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask)
+        h_b3 = encode_reference_hidden_states(dit, cond_latent, 3, 0.0, padding_mask)
+    assert h_dual.shape == (B, 2, 1, tok_H, tok_W, model_channels), h_dual.shape
+    assert torch.allclose(h_dual[:, 0], h_b1) and torch.allclose(h_dual[:, 1], h_b3), (
+        "dual reference forward slices should match the single-block forwards"
+    )
+    print(f"[D1] dual encode_reference_hidden_states OK ({tuple(h_dual.shape)})")
+
+    # zero-init 等価 + 摂動後に両方の ref block が出力に効く
+    with torch.no_grad():
+        out_nc = wrapper_dual(x, t, ctx, padding_mask=padding_mask)
+        out_z = wrapper_dual(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    assert torch.allclose(out_nc, out_z, atol=1e-5), "dual zero-init equivalence failed"
+    # up が zero-init のままだと cond 経路に勾配が流れないので摂動してから backward する
+    with torch.no_grad():
+        for m in lllite_dual.lllite_modules:
+            m.up.weight.normal_(0, 0.01)
+    lllite_dual.train()
+    out = wrapper_dual(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    out.float().pow(2).mean().backward()
+    named = dict(lllite_dual.named_parameters())
+    for key in (
+        "conditioning1.ln_in.0.weight",
+        "conditioning1.ln_in.1.weight",
+        "conditioning1.proj_in.weight",
+        "lllite_modules.0.gate.weight",
+    ):
+        p = named[key]
+        assert p.grad is not None and p.grad.abs().sum().item() > 0, f"[dual] no grad on {key}"
+    assert named["conditioning1.proj_in.weight"].shape == (32, 2 * model_channels)
+    print("[D2] dual zero-init equivalence + grads (per-block ln_in) OK")
+
+    # save/load round-trip + single 重みとの取り違え検出
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_d = os.path.join(tmp, "lllite_v3_dual.safetensors")
+        save_lllite_model(ckpt_d, lllite_dual, dtype=torch.float32, metadata={
+            "lllite.version": "3",
+            "lllite.trunk": "semantic",
+            "lllite.cond_input_space": "latent",
+            "lllite.ref_block": lllite_dual.ref_blocks_str,
+            "lllite.ref_timestep": str(lllite_dual.ref_timestep),
+        })
+        lllite_dual_b = ControlNetLLLiteDiT(
+            dit, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
+            cond_dim=32, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=(1, 3),
+        )
+        load_lllite_weights(lllite_dual_b, ckpt_d, strict=True)
+        assert _state_dicts_equal(lllite_dual.state_dict(), lllite_dual_b.state_dict())
+        try:
+            load_lllite_weights(lllite_b, ckpt_d, strict=False)  # single モデルへ dual 重み
+            raise AssertionError("loading dual weights into a single model should fail")
+        except RuntimeError as e:
+            assert "ref block count mismatch" in str(e), str(e)
+    print("[D3] dual save/load round-trip + single/dual mix-up rejected OK")
 
 
 if __name__ == "__main__":
