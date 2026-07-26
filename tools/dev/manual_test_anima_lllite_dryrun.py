@@ -31,6 +31,7 @@ from networks.control_net_lllite_anima import (
     ControlNetLLLiteDiT,
     AnimaControlNetLLLiteWrapper,
     build_cond_tensors,
+    encode_reference_hidden_states,
     save_lllite_model,
     load_lllite_weights,
 )
@@ -245,6 +246,7 @@ def main():
         print("[9] load round-trip OK (state_dicts match exactly)")
 
     check_latent_cond()
+    check_semantic_trunk()
 
     print("\nAll dry-run checks PASSED.")
 
@@ -391,6 +393,200 @@ def check_latent_cond():
             except RuntimeError as e:
                 assert "cond input space mismatch" in str(e), str(e)
             print(f"[L3] latent cond_in_channels={cond_in_channels}: pixel/latent mix-up rejected")
+
+
+def check_semantic_trunk():
+    """v3: trunk='semantic' を小型の実 Anima でエンドツーエンド検査する.
+
+    encode_reference_hidden_states / t_embedding_norm hook / wrapper.forward /
+    zero-init 等価 / cond・t の効き / 勾配 / save-load round-trip をカバーする。
+    """
+    from library.anima_models import Anima
+
+    torch.manual_seed(2)
+
+    num_blocks = 4
+    model_channels = 64
+    context_dim = 96
+    dit = Anima(
+        max_img_h=64,
+        max_img_w=64,
+        max_frames=1,
+        in_channels=16,
+        out_channels=16,
+        patch_spatial=2,
+        patch_temporal=1,
+        model_channels=model_channels,
+        num_blocks=num_blocks,
+        num_heads=4,
+        crossattn_emb_channels=context_dim,
+        pos_emb_cls="rope3d",
+        use_llm_adapter=False,
+        attn_mode="torch",
+    )
+    # 素の Anima は AdaLN ゲートと final layer が zero-init で、ブロックの寄与が
+    # すべてゼロゲートされる (= q_proj への摂動が出力に届かない)。テストとして
+    # 意味を持たせるため、zero-init のパラメータをランダム化する。
+    with torch.no_grad():
+        for p in dit.parameters():
+            if p.abs().sum().item() == 0:
+                p.normal_(0, 0.02)
+    dit.requires_grad_(False)
+    dit.eval()
+
+    lllite = ControlNetLLLiteDiT(
+        dit,
+        cond_emb_dim=32,
+        mlp_dim=32,
+        target_layers="self_attn_q",
+        cond_dim=32,
+        cond_resblocks=1,
+        cond_input_space="latent",
+        trunk="semantic",
+        ref_block=None,  # -> num_blocks // 2
+        ref_timestep=0.0,
+    )
+    assert lllite.ref_block == num_blocks // 2
+    assert lllite.model_dim == model_channels
+    assert lllite._t_hook_handle is not None, "t hook should be registered on the real Anima"
+    lllite.apply_to()
+    wrapper = AnimaControlNetLLLiteWrapper(dit, lllite)
+
+    B, lat_H, lat_W = 2, 8, 8
+    tok_H, tok_W = lat_H // 2, lat_W // 2
+    x = torch.randn(B, 16, 1, lat_H, lat_W)
+    t = torch.full((B,), 0.5)
+    ctx = torch.randn(B, 7, context_dim)
+    padding_mask = torch.zeros(B, 1, lat_H, lat_W)
+    cond_latent = torch.randn(B, 16, lat_H, lat_W)
+
+    # encode_reference_hidden_states 単体: shape と決定性
+    with torch.no_grad():
+        h_ref = encode_reference_hidden_states(dit, cond_latent, lllite.ref_block, 0.0, padding_mask)
+        h_ref2 = encode_reference_hidden_states(dit, cond_latent, lllite.ref_block, 0.0, padding_mask)
+    assert h_ref.shape == (B, 1, tok_H, tok_W, model_channels), h_ref.shape
+    assert torch.allclose(h_ref, h_ref2), "reference forward should be deterministic"
+    print(f"[S1] encode_reference_hidden_states OK ({tuple(h_ref.shape)})")
+
+    # zero-init: cond ありでも cond なしと一致 (up=0 が支配)
+    with torch.no_grad():
+        out_no_cond = wrapper(x, t, ctx, padding_mask=padding_mask)
+        out_zero = wrapper(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    assert torch.allclose(out_no_cond, out_zero, atol=1e-5), "v3 zero-init equivalence failed"
+    # hook で t_local が配られている
+    assert lllite.lllite_modules[0].t_local is not None
+    assert lllite.lllite_modules[0].t_local.shape == (B, 1, 32)
+    print(f"[S2] zero-init equivalence + t hook OK (out shape={tuple(out_zero.shape)})")
+
+    # up を摂動すると cond が効く / 別の cond で出力が変わる (意味特徴が流れている)
+    with torch.no_grad():
+        for m in lllite.lllite_modules:
+            m.up.weight.normal_(0, 0.01)
+        out_pert = wrapper(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+        out_pert_other = wrapper(
+            x, t, ctx, cond_image=torch.randn_like(cond_latent), padding_mask=padding_mask
+        )
+    assert not torch.allclose(out_no_cond, out_pert, atol=1e-6), "cond path did not move the output"
+    assert not torch.allclose(out_pert, out_pert_other, atol=1e-6), (
+        "different cond latents should give different outputs"
+    )
+    print("[S3] cond latent actually drives the output after perturbation")
+
+    # t-FiLM: t_proj を摂動すると timestep により t_local が変わる
+    with torch.no_grad():
+        lllite.conditioning1.t_proj.weight.normal_(0, 0.05)
+        wrapper(x, torch.full((B,), 0.1), ctx, cond_image=cond_latent, padding_mask=padding_mask)
+        tl1 = lllite.lllite_modules[0].t_local.clone()
+        wrapper(x, torch.full((B,), 0.9), ctx, cond_image=cond_latent, padding_mask=padding_mask)
+        tl2 = lllite.lllite_modules[0].t_local.clone()
+    assert not torch.allclose(tl1, tl2), "t_local should depend on the timestep via t_proj"
+    print("[S4] t-FiLM path (per-forward t_local via hook) OK")
+
+    # 勾配: trunk (ln_in/proj_in/resblocks/proj/t_proj) と gate に流れ、DiT には流れない
+    lllite.train()
+    out = wrapper(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    out.float().pow(2).mean().backward()
+    named = dict(lllite.named_parameters())
+    for key in (
+        "conditioning1.ln_in.weight",
+        "conditioning1.proj_in.weight",
+        "conditioning1.proj.weight",
+        "conditioning1.t_proj.weight",
+        "lllite_modules.0.gate.weight",
+        "lllite_modules.0.down.weight",
+        "depth_embeds",
+    ):
+        p = named[key]
+        assert p.grad is not None and p.grad.abs().sum().item() > 0, f"no grad on {key}"
+    assert not any(
+        p.grad is not None and p.grad.abs().sum().item() > 0 for p in dit.parameters()
+    ), "DiT params should not receive grad"
+    print("[S5] grads flow to trunk / gate / t_proj, DiT frozen")
+
+    # save / load round-trip + gate 可視化 capture
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = os.path.join(tmp, "lllite_v3.safetensors")
+        save_lllite_model(ckpt, lllite, dtype=torch.float32, metadata={
+            "lllite.version": "3",
+            "lllite.trunk": "semantic",
+            "lllite.cond_input_space": "latent",
+            "lllite.ref_block": str(lllite.ref_block),
+            "lllite.ref_timestep": str(lllite.ref_timestep),
+        })
+        dit_b = Anima(
+            max_img_h=64, max_img_w=64, max_frames=1, in_channels=16, out_channels=16,
+            patch_spatial=2, patch_temporal=1, model_channels=model_channels,
+            num_blocks=num_blocks, num_heads=4, crossattn_emb_channels=context_dim,
+            pos_emb_cls="rope3d", use_llm_adapter=False, attn_mode="torch",
+        )
+        dit_b.requires_grad_(False)
+        lllite_b = ControlNetLLLiteDiT(
+            dit_b, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
+            cond_dim=32, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=lllite.ref_block,
+        )
+        load_lllite_weights(lllite_b, ckpt, strict=True)
+        assert _state_dicts_equal(lllite.state_dict(), lllite_b.state_dict())
+        print("[S6] v3 save/load round-trip OK")
+
+    # gate capture: token grid 形状の gate マップが取れる
+    lllite.eval()
+    for m in lllite.lllite_modules:
+        m.capture_gate = True
+    with torch.no_grad():
+        wrapper(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    g = lllite.lllite_modules[0].last_gate
+    assert g is not None and g.shape == (B, tok_H * tok_W, 1), g.shape
+    assert lllite.last_cond_hw == (tok_H, tok_W)
+    assert (g >= 0).all() and (g <= 1).all()
+    for m in lllite.lllite_modules:
+        m.capture_gate = False
+    print(f"[S7] gate capture OK (shape={tuple(g.shape)}, grid={lllite.last_cond_hw})")
+
+    # gradient checkpointing との相互作用: 参照フォワード (no_grad) + checkpoint 再計算の中で
+    # cond_emb / t_local を参照しても勾配が正しく流れる
+    lllite.zero_grad(set_to_none=True)
+    dit.enable_gradient_checkpointing()
+    dit.train()  # Block.forward の checkpoint 分岐は self.training が条件
+    lllite.train()
+    out_gc = wrapper(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    out_gc.float().pow(2).mean().backward()
+    named = dict(lllite.named_parameters())
+    for key in (
+        "conditioning1.proj_in.weight",
+        "conditioning1.t_proj.weight",
+        "lllite_modules.0.gate.weight",
+        "lllite_modules.0.down.weight",
+        "depth_embeds",
+    ):
+        p = named[key]
+        assert p.grad is not None and p.grad.abs().sum().item() > 0, f"[gc] no grad on {key}"
+    assert not any(
+        p.grad is not None and p.grad.abs().sum().item() > 0 for p in dit.parameters()
+    ), "[gc] DiT params should not receive grad"
+    dit.disable_gradient_checkpointing()
+    dit.eval()
+    print("[S8] gradient checkpointing + semantic trunk grads OK")
 
 
 if __name__ == "__main__":

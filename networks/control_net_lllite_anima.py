@@ -22,12 +22,23 @@ LLM_ADAPTER_NAME = "llm_adapter"
 
 # state_dict メタデータに記録するアーキテクチャ世代
 LLLITE_ARCH_VERSION = "2"
+# v3 (semantic trunk) のアーキテクチャ世代
+LLLITE_ARCH_VERSION_SEMANTIC = "3"
 
 # cond 画像の入力空間 (v2.1 で追加。メタデータ欠落時は "pixel" = 旧重み互換)
 COND_INPUT_SPACES: Tuple[str, ...] = ("pixel", "latent")
 
+# conditioning trunk の種類 (v3 で追加。メタデータ欠落時は "stem" = 旧重み互換)
+#   stem    : cond 入力をスクラッチ conv stem に通す (v2 / v2.1)
+#   semantic: cond latent を凍結 DiT に通した中間 hidden states を条件源にする (v3)
+TRUNK_TYPES: Tuple[str, ...] = ("stem", "semantic")
+
 # latent モードで conditioning1 が受け取る VAE latent のチャネル数 (Qwen-Image VAE z_dim)
 LATENT_COND_CHANNELS = 16
+
+# v3 gate の bias 初期値。ゲートは「開いた状態」で初期化する (閉じて初期化すると値パスへの
+# 勾配が 0 倍されて学習が立ち上がらない)。σ(2.0) ≈ 0.88
+GATE_INIT_BIAS = 2.0
 
 
 # ----------------------------------------------------------------------------
@@ -275,10 +286,68 @@ class _Conditioning1(nn.Module):
         return h
 
 
+class _ConditioningSemanticTrunk(nn.Module):
+    """v3 semantic trunk: 凍結 DiT の中間 hidden states を条件源にする.
+
+      in  h_ref (B, T=1, H, W, D_model)   # encode_reference_hidden_states の出力 (token 解像度)
+      -> LayerNorm(D_model)               # 層ごとのスケール差を吸収
+      -> Linear D_model -> cond_dim       # 共有 down 射影 (「選択と整列」なので低ランクで足りる)
+      -> (B, cond_dim, H, W)
+      -> ResBlock x N / (ASPP)            # 中域文脈の拡張 (stem trunk と同じ部品)
+      -> Conv 1x1 -> cond_emb_dim
+      -> flatten (B, S, cond_emb_dim) -> LayerNorm
+
+    t_proj は本体の timestep embedding (t_embedding_norm 出力 (B, T, D_model)) を
+    cond_emb_dim へ落とす zero-init 射影。cond_local に加算され、既存の FiLM / mid / gate が
+    cond_local 経由で t 条件を受け取る (t-FiLM)。
+    """
+
+    def __init__(
+        self,
+        model_dim: int,
+        cond_dim: int,
+        cond_emb_dim: int,
+        n_resblocks: int,
+        use_aspp: bool = False,
+        aspp_dilations: Tuple[int, ...] = ASPP_DEFAULT_DILATIONS,
+    ):
+        super().__init__()
+        self.ln_in = nn.LayerNorm(model_dim)
+        self.proj_in = nn.Linear(model_dim, cond_dim)
+
+        self.resblocks = nn.ModuleList([_ResBlock(cond_dim) for _ in range(n_resblocks)])
+        self.aspp = _ASPP(cond_dim, aspp_dilations) if use_aspp else None
+
+        self.proj = nn.Conv2d(cond_dim, cond_emb_dim, kernel_size=1)
+        self.out_norm = nn.LayerNorm(cond_emb_dim)
+
+        # t は zero-init で「t 非依存」から学習を開始する
+        self.t_proj = nn.Linear(model_dim, cond_emb_dim)
+        nn.init.zeros_(self.t_proj.weight)
+        nn.init.zeros_(self.t_proj.bias)
+
+    def forward(self, h_ref: torch.Tensor) -> torch.Tensor:
+        assert h_ref.dim() == 5, f"semantic trunk expects (B, T, H, W, D), got {tuple(h_ref.shape)}"
+        b, t, hh, ww, _ = h_ref.shape
+        assert t == 1, f"semantic trunk supports T=1 only, got T={t}"
+        h = self.proj_in(self.ln_in(h_ref))  # (B, 1, H, W, cond_dim)
+        h = h.squeeze(1).permute(0, 3, 1, 2).contiguous()  # (B, cond_dim, H, W)
+        for rb in self.resblocks:
+            h = rb(h)
+        if self.aspp is not None:
+            h = self.aspp(h)
+        h = self.proj(h)  # (B, cond_emb_dim, H, W)
+        c = h.shape[1]
+        h = h.view(b, c, hh * ww).permute(0, 2, 1).contiguous()  # (B, S, cond_emb_dim)
+        return self.out_norm(h)
+
+
 class LLLiteModuleDiT(nn.Module):
     """単一の Attention Linear (q_proj/k_proj/v_proj) に対し LLLite の補正 x + cx を注入する.
 
     v2: concat-then-mid をベースに FiLM (γ, β) を mid 出力に適用、SiLU 化、depth embedding 対応.
+    v3 (use_gate=True): さらに per-token スカラーゲート g = σ(gate([cond_local, h])) を持ち、
+    出力を Δx = g ⊙ up(m) にする (値パス=何を注入するか / ゲート=どこで注入するか の分解)。
     """
 
     def __init__(
@@ -289,6 +358,7 @@ class LLLiteModuleDiT(nn.Module):
         mlp_dim: int,
         dropout: Optional[float] = None,
         multiplier: float = 1.0,
+        use_gate: bool = False,
     ):
         super().__init__()
         self.lllite_name = name
@@ -298,6 +368,7 @@ class LLLiteModuleDiT(nn.Module):
         self.mlp_dim = mlp_dim
         self.dropout = dropout
         self.multiplier = multiplier
+        self.use_gate = use_gate
 
         in_dim = org_module.in_features
 
@@ -313,12 +384,29 @@ class LLLiteModuleDiT(nn.Module):
         nn.init.zeros_(self.up.weight)
         nn.init.zeros_(self.up.bias)
 
+        if use_gate:
+            # per-token スカラーゲート。weight は zero-init (空間一様スタート)、bias は
+            # 開いた状態 (GATE_INIT_BIAS)。値パス up が zero-init なので恒等スタートは維持され、
+            # 開いたゲート越しに値パスへ勾配が流れ、ゲートは後から「閉じるべき場所」を学ぶ。
+            self.gate = nn.Linear(cond_emb_dim + mlp_dim, 1)
+            nn.init.zeros_(self.gate.weight)
+            nn.init.constant_(self.gate.bias, GATE_INIT_BIAS)
+
         # 親 ControlNetLLLiteDiT が set_cond_image で注入する。
         # cond_emb は全モジュールで共有される cx (B, S, cond_emb_dim)、
         # depth_emb はこのモジュール用の depth embedding (cond_emb_dim,)。
         # cx を共有参照することで N コピーを避け、加算は forward 内で行う。
         self.cond_emb: Optional[torch.Tensor] = None
         self.depth_emb: Optional[torch.Tensor] = None
+
+        # v3 (semantic trunk): dit.t_embedding_norm の forward hook が毎 forward 更新する
+        # 共有 t 埋め込み (B, T, cond_emb_dim)。stem trunk では常に None。
+        self.t_local: Optional[torch.Tensor] = None
+
+        # gate 可視化用 (推論時のみ有効化する想定。capture_gate=True のとき forward 毎に
+        # last_gate へ detach 済みゲートマップ (B, S, 1) を保存する)
+        self.capture_gate: bool = False
+        self.last_gate: Optional[torch.Tensor] = None
 
         # 親 ControlNetLLLiteDiT が __init__ 末尾で layer_idx を設定する。
         # depth embedding の index 参照は set_cond_image 側で行う (torch.compile 対策)。
@@ -348,9 +436,30 @@ class LLLiteModuleDiT(nn.Module):
         # (gradient checkpointing 下では cond_local は領域内で再計算され retain されない)。
         cond_local = self.cond_emb + self.depth_emb  # (B, H*W, cond_emb_dim)
 
+        # v3 (semantic trunk): per-step の timestep 埋め込みを cond 空間で加算する (t-FiLM)。
+        # t_local は dit.t_embedding_norm の forward hook が blocks 実行前に毎 forward 更新する。
+        t_local = self.t_local
+        if self.use_gate:
+            assert t_local is not None, (
+                f"t_local is not set ({self.lllite_name}); the semantic trunk requires the "
+                "timestep hook on dit.t_embedding_norm (registered by ControlNetLLLiteDiT) "
+                "to fire before the blocks run"
+            )
+        if t_local is not None and t_local.shape[0] == cond_local.shape[0]:
+            cond_local = cond_local + t_local  # (B, T, D) broadcast over S
+            t_local = None
+
         # CFG 推論用 (学習時は通らない想定)
         if x.shape[0] // 2 == cond_local.shape[0]:
             cond_local = cond_local.repeat(2, 1, 1)
+
+        # CFG をバッチ化した推論 (x が 2B, t_local が 2B) では repeat 後に加算する
+        if t_local is not None:
+            assert t_local.shape[0] == cond_local.shape[0], (
+                f"LLLite t_local batch mismatch ({self.lllite_name}): "
+                f"t_local={t_local.shape[0]} vs cond={cond_local.shape[0]}"
+            )
+            cond_local = cond_local + t_local
 
         # T=1 固定前提なので S == H*W のはず
         assert x.shape[1] == cond_local.shape[1], (
@@ -371,7 +480,17 @@ class LLLiteModuleDiT(nn.Module):
         if self.dropout is not None and self.training:
             m = F.dropout(m, p=self.dropout)
 
-        out = self.up(m) * self.multiplier
+        out = self.up(m)
+
+        if self.use_gate:
+            # per-token スカラーゲート: cond の意味特徴と生成側の現在特徴 h の両方を見て
+            # 「この位置に条件を注入するか」を内容依存に決める
+            g = torch.sigmoid(self.gate(torch.cat([cond_local, h], dim=-1)))  # (B, S, 1)
+            if self.capture_gate:
+                self.last_gate = g.detach()
+            out = out * g
+
+        out = out * self.multiplier
         y = self.org_forward(x + out)  # (B, S, D_out)
 
         if is_5d:
@@ -401,6 +520,9 @@ class ControlNetLLLiteDiT(nn.Module):
         cond_in_channels: int = 3,
         inpaint_masked_input: bool = False,
         cond_input_space: str = "pixel",
+        trunk: str = "stem",
+        ref_block: Optional[int] = None,
+        ref_timestep: float = 0.0,
     ):
         super().__init__()
 
@@ -408,6 +530,7 @@ class ControlNetLLLiteDiT(nn.Module):
         assert cond_input_space in COND_INPUT_SPACES, (
             f"cond_input_space must be one of {list(COND_INPUT_SPACES)}, got {cond_input_space!r}"
         )
+        assert trunk in TRUNK_TYPES, f"trunk must be one of {list(TRUNK_TYPES)}, got {trunk!r}"
 
         self.cond_emb_dim = cond_emb_dim
         self.mlp_dim = mlp_dim
@@ -426,17 +549,58 @@ class ControlNetLLLiteDiT(nn.Module):
         # "pixel": cond image をそのまま stem に通す (v2)
         # "latent": VAE encode 済み latent を stem に通す (v2.1)。inpaint の mask は別テンソル
         self.cond_input_space = cond_input_space
+        # "stem": conditioning1 = conv stem (v2/v2.1) / "semantic": 凍結 DiT hidden states (v3)
+        self.trunk = trunk
 
-        # pixel : cond image  (B, cond_in_channels, H*16, W*16) -> (B, S, cond_emb_dim)
-        # latent: cond latent (B, 16, H*2, W*2) (+ mask (B,1,H*16,W*16)) -> (B, S, cond_emb_dim)
-        self.conditioning1 = _Conditioning1(
-            cond_dim, cond_emb_dim, cond_resblocks,
-            use_aspp=use_aspp, aspp_dilations=aspp_dilations,
-            cond_in_channels=cond_in_channels,
-            input_space=cond_input_space,
+        if trunk == "semantic":
+            # cond latent を凍結 DiT に通すため latent 入力が前提。mask (inpaint) は MVP 未対応
+            assert cond_input_space == "latent", (
+                "trunk='semantic' requires cond_input_space='latent' "
+                "(the cond latent is fed through the frozen DiT)"
+            )
+            assert cond_in_channels == 3, (
+                f"trunk='semantic' does not support inpainting (cond_in_channels=4) yet, "
+                f"got cond_in_channels={cond_in_channels}"
+            )
+
+            model_dim = getattr(dit, "model_channels", None)
+            if model_dim is None:
+                model_dim = getattr(dit.blocks[0], "x_dim", None)
+            assert model_dim is not None, (
+                "cannot infer the DiT hidden dim (model_channels / blocks[0].x_dim) for the semantic trunk"
+            )
+            num_dit_blocks = len(dit.blocks)
+            if ref_block is None:
+                ref_block = num_dit_blocks // 2
+            assert 0 <= ref_block < num_dit_blocks, (
+                f"ref_block {ref_block} out of range (num_blocks={num_dit_blocks})"
+            )
+            self.model_dim = int(model_dim)
+            self.ref_block = ref_block
+            self.ref_timestep = float(ref_timestep)
+
+            # semantic trunk: hidden states (B, T, H, W, D_model) -> (B, S, cond_emb_dim)
+            self.conditioning1 = _ConditioningSemanticTrunk(
+                self.model_dim, cond_dim, cond_emb_dim, cond_resblocks,
+                use_aspp=use_aspp, aspp_dilations=aspp_dilations,
+            )
+        else:
+            self.model_dim = None
+            self.ref_block = None
+            self.ref_timestep = 0.0
+
+            # pixel : cond image  (B, cond_in_channels, H*16, W*16) -> (B, S, cond_emb_dim)
+            # latent: cond latent (B, 16, H*2, W*2) (+ mask (B,1,H*16,W*16)) -> (B, S, cond_emb_dim)
+            self.conditioning1 = _Conditioning1(
+                cond_dim, cond_emb_dim, cond_resblocks,
+                use_aspp=use_aspp, aspp_dilations=aspp_dilations,
+                cond_in_channels=cond_in_channels,
+                input_space=cond_input_space,
+            )
+
+        modules = self._create_modules(
+            dit, cond_emb_dim, mlp_dim, atomics, dropout, multiplier, use_gate=trunk == "semantic"
         )
-
-        modules = self._create_modules(dit, cond_emb_dim, mlp_dim, atomics, dropout, multiplier)
         self.lllite_modules = nn.ModuleList(modules)
 
         # depth embedding: 各モジュール用の zero-init bias (N, cond_emb_dim)
@@ -445,14 +609,41 @@ class ControlNetLLLiteDiT(nn.Module):
         for i, m in enumerate(self.lllite_modules):
             m.layer_idx = i
 
+        # gate 可視化用: 直近の set_cond の token grid (H, W)
+        self.last_cond_hw: Optional[Tuple[int, int]] = None
+
+        # v3: 本体の timestep embedding を per-step で受け取る hook。t_embedding_norm は
+        # blocks の実行前に呼ばれるため、学習・推論どちらのループでも無改造で t が届く。
+        self._t_hook_handle = None
+        if trunk == "semantic":
+            t_norm = getattr(dit, "t_embedding_norm", None)
+            if t_norm is not None:
+                def _t_hook(_module, _inputs, output, _self=self):
+                    _self._update_t_local(output)
+                    return None
+
+                self._t_hook_handle = t_norm.register_forward_hook(_t_hook)
+            else:
+                logger.warning(
+                    "dit has no t_embedding_norm; semantic trunk t-FiLM hook is not registered "
+                    "(call _update_t_local manually before each forward)"
+                )
+
         aspp_info = f"aspp={'on' + str(list(self.aspp_dilations)) if use_aspp else 'off'}"
         inpaint_info = (
             f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
         )
+        trunk_info = (
+            f"trunk=semantic(ref_block={self.ref_block}, ref_timestep={self.ref_timestep}, "
+            f"model_dim={self.model_dim})"
+            if trunk == "semantic"
+            else "trunk=stem"
+        )
+        version = LLLITE_ARCH_VERSION_SEMANTIC if trunk == "semantic" else LLLITE_ARCH_VERSION
         logger.info(
-            f"ControlNet-LLLite (Anima v{LLLITE_ARCH_VERSION}): created {n} modules for "
+            f"ControlNet-LLLite (Anima v{version}): created {n} modules for "
             f"target={target_layers!r} (atomics={list(atomics)}), "
-            f"cond_input={cond_input_space}, "
+            f"{trunk_info}, cond_input={cond_input_space}, "
             f"cond_in_channels={cond_in_channels}, cond_dim={cond_dim}, cond_resblocks={cond_resblocks}, {aspp_info}, "
             f"cond_emb_dim={cond_emb_dim}, mlp_dim={mlp_dim}{inpaint_info}"
         )
@@ -487,6 +678,7 @@ class ControlNetLLLiteDiT(nn.Module):
         atomics: Tuple[str, ...],
         dropout: Optional[float],
         multiplier: float,
+        use_gate: bool = False,
     ) -> List[LLLiteModuleDiT]:
         modules: List[LLLiteModuleDiT] = []
         want_mlp_fc1 = "mlp_fc1_pre" in atomics
@@ -509,7 +701,7 @@ class ControlNetLLLiteDiT(nn.Module):
                         continue
                     full_name = f"lllite_dit.{name}.{child_name}".replace(".", "_")
                     modules.append(
-                        LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier)
+                        LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier, use_gate)
                     )
 
             elif want_mlp_fc1 and cls == TARGET_MLP_CLASS:
@@ -519,7 +711,7 @@ class ControlNetLLLiteDiT(nn.Module):
                     continue
                 full_name = f"lllite_dit.{name}.layer1".replace(".", "_")
                 modules.append(
-                    LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier)
+                    LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier, use_gate)
                 )
 
         return modules
@@ -530,13 +722,31 @@ class ControlNetLLLiteDiT(nn.Module):
         pixel モード : cond_image = (B, cond_in_channels, H*16, W*16)、cond_mask は不可
         latent モード: cond_image = (B, 16, H*2, W*2) の正規化済み VAE latent、
                        inpaint (cond_in_channels=4) のとき cond_mask = (B, 1, H*16, W*16) in [-1, 1]
+
+        semantic trunk (v3) では代わりに set_cond_hidden_states を使う (None での解除は共通)。
         """
         if cond_image is None:
             for m in self.lllite_modules:
                 m.cond_emb = None
                 m.depth_emb = None
+                m.t_local = None
             return
+        assert self.trunk == "stem", (
+            "set_cond_image with a tensor is only for the stem trunk; "
+            "use set_cond_hidden_states (with encode_reference_hidden_states) for trunk='semantic'"
+        )
         cx = self.conditioning1(cond_image, cond_mask)  # (B, S, cond_emb_dim)
+        self._distribute_cond_emb(cx)
+
+    def set_cond_hidden_states(self, hidden_states: torch.Tensor):
+        """v3 (semantic trunk): encode_reference_hidden_states の出力 (B, T=1, H, W, D_model) を
+        semantic trunk に通し、全 LLLite モジュールに cond_emb を配る。"""
+        assert self.trunk == "semantic", "set_cond_hidden_states is only for trunk='semantic'"
+        cx = self.conditioning1(hidden_states)  # (B, S, cond_emb_dim)
+        self.last_cond_hw = (hidden_states.shape[2], hidden_states.shape[3])
+        self._distribute_cond_emb(cx)
+
+    def _distribute_cond_emb(self, cx: torch.Tensor):
         for m in self.lllite_modules:
             # 共有の cx を全モジュールに同一テンソルとして持たせ (N コピーを避ける)、
             # depth embedding はこのモジュール用の (cond_emb_dim,) スライスだけを渡す。
@@ -550,6 +760,15 @@ class ControlNetLLLiteDiT(nn.Module):
             m.cond_emb = cx  # 全モジュールで共有 (同一テンソル)
             m.depth_emb = self.depth_embeds[m.layer_idx]  # (cond_emb_dim,), broadcast over (B, S)
 
+    def _update_t_local(self, t_emb: torch.Tensor):
+        """v3: dit.t_embedding_norm の出力 (B, T, D_model) を t_proj で cond 空間に落とし、
+        全モジュールへ配る。dit.t_embedding_norm の forward hook から毎 forward 呼ばれる。"""
+        t_proj = self.conditioning1.t_proj
+        # t_embedder は凍結だが、detach で graph を確実に切る (t_proj 側には勾配が流れる)
+        t_local = t_proj(t_emb.detach().to(t_proj.weight.dtype))  # (B, T, cond_emb_dim)
+        for m in self.lllite_modules:
+            m.t_local = t_local
+
     def clear_cond_image(self):
         self.set_cond_image(None)
 
@@ -561,6 +780,80 @@ class ControlNetLLLiteDiT(nn.Module):
     def apply_to(self):
         for m in self.lllite_modules:
             m.apply_to()
+
+
+def encode_reference_hidden_states(
+    dit: nn.Module,
+    cond_latent: torch.Tensor,
+    ref_block: int,
+    ref_timestep: float = 0.0,
+    padding_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """v3 (semantic trunk): 凍結 Anima DiT に cond latent を通し、blocks[ref_block] 出力の
+    hidden states を返す。ref_block 以降のブロックは実行しない。
+
+    cross-attn の context にはゼロテンソルを渡す。Anima は padding トークンをゼロ潰しして
+    そのまま attend させる規約で、かつ k_proj/v_proj は bias なしなので、ゼロ context では
+    cross-attn の出力が厳密に 0 になる (= テキスト完全非依存の「画像のみの特徴」)。
+    テキストに依存しないため、将来のディスクキャッシュ対象にできる。
+
+    呼び出し側の責務:
+      - 事前に LLLite の cond を clear しておく (モジュールは cond_emb None で素通りする)
+      - 勾配は不要なので torch.no_grad() 下で呼ぶ
+
+    Args:
+        dit: 凍結 Anima モデル
+        cond_latent: (B, 16, h, w) or (B, 16, 1, h, w) の正規化済み VAE latent
+        ref_block: hidden states を取り出すブロック index
+        ref_timestep: 参照フォワードの timestep。学習ループと同じ [0, 1] スケール (0 = clean)
+        padding_mask: (B, 1, h, w)。None ならゼロ
+
+    Returns:
+        (B, 1, H, W, D_model) hidden states (token 解像度 = latent の 1/2)
+    """
+    from library import attention as attention_lib
+
+    if cond_latent.dim() == 4:
+        cond_latent = cond_latent.unsqueeze(2)  # (B, 16, 1, h, w)
+    assert cond_latent.dim() == 5 and cond_latent.shape[2] == 1, (
+        f"cond_latent must be (B, C, 1, h, w), got {tuple(cond_latent.shape)}"
+    )
+    bsz = cond_latent.shape[0]
+    h_lat, w_lat = cond_latent.shape[-2], cond_latent.shape[-1]
+    if padding_mask is None:
+        padding_mask = torch.zeros(bsz, 1, h_lat, w_lat, device=cond_latent.device, dtype=cond_latent.dtype)
+
+    x, rope_emb_L_1_1_D, extra_pos_emb = dit.prepare_embedded_sequence(
+        cond_latent, fps=None, padding_mask=padding_mask
+    )
+
+    t = torch.full((bsz, 1), float(ref_timestep), device=cond_latent.device, dtype=cond_latent.dtype)
+    t_embedding_B_T_D, adaln_lora_B_T_3D = dit.t_embedder(t)
+    t_embedding_B_T_D = dit.t_embedding_norm(t_embedding_B_T_D)
+
+    ctx_dim = dit.blocks[0].cross_attn.context_dim
+    context = torch.zeros(bsz, 1, ctx_dim, device=cond_latent.device, dtype=cond_latent.dtype)
+
+    attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
+    use_fp32 = x.dtype == torch.float16
+
+    assert 0 <= ref_block < len(dit.blocks), (
+        f"ref_block {ref_block} out of range (num_blocks={len(dit.blocks)})"
+    )
+    for block_idx, block in enumerate(dit.blocks):
+        x = block(
+            x,
+            t_embedding_B_T_D,
+            context,
+            attn_params,
+            use_fp32,
+            rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+            adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+            extra_per_block_pos_emb=extra_pos_emb,
+        )
+        if block_idx == ref_block:
+            return x
+    raise AssertionError("unreachable")  # ref_block は range 内なのでここには来ない
 
 
 class AnimaControlNetLLLiteWrapper(nn.Module):
@@ -585,6 +878,31 @@ class AnimaControlNetLLLiteWrapper(nn.Module):
         assert x.shape[2] == 1, f"Anima LLLite supports T=1 only, got T={x.shape[2]}"
         if cond_image is not None:
             latent_h, latent_w = x.shape[-2], x.shape[-1]
+            if self.lllite.trunk == "semantic":
+                # v3: cond latent を凍結 DiT に通し、hidden states を semantic trunk へ渡す
+                assert cond_mask is None, (
+                    "cond_mask is not supported with trunk='semantic' (v3 MVP)"
+                )
+                assert cond_image.shape[-2] == latent_h and cond_image.shape[-1] == latent_w, (
+                    f"cond latent HW mismatch: expected {latent_h}x{latent_w} (same as x), "
+                    f"got {cond_image.shape[-2]}x{cond_image.shape[-1]}"
+                )
+                assert cond_image.shape[1] == LATENT_COND_CHANNELS, (
+                    f"cond latent channel mismatch: expected {LATENT_COND_CHANNELS}, "
+                    f"got {cond_image.shape[1]}"
+                )
+                # 参照フォワード中は LLLite モジュールを素通りさせる
+                self.lllite.clear_cond_image()
+                with torch.no_grad():
+                    h_ref = encode_reference_hidden_states(
+                        self.dit,
+                        cond_image,
+                        self.lllite.ref_block,
+                        self.lllite.ref_timestep,
+                        padding_mask=kwargs.get("padding_mask"),
+                    )
+                self.lllite.set_cond_hidden_states(h_ref)
+                return self.dit(x, timesteps, context, **kwargs)
             if self.lllite.cond_input_space == "pixel":
                 # 解像度整合チェック: x は VAE latent (/8)、cond_image は元画像 (/1)。
                 # patchify (/2) は DiT 内部 (prepare_embedded_sequence) で実施されるため、
@@ -828,8 +1146,24 @@ def load_lllite_weights(lllite: ControlNetLLLiteDiT, file: str, strict: bool = F
             f"'lllite_dit_blocks_0_self_attn_q_proj.down.weight'). Re-train with the current codebase."
         )
 
-    # pixel / latent の取り違え検出。stem のキー名が分離しているため、strict=False で
-    # 黙って初期値のまま学習/推論が進むのを防ぐ (missing/unexpected は無視されてしまうため)。
+    # trunk (stem/semantic) の取り違え検出。conditioning のキー名が分離しているため、
+    # strict=False で黙って初期値のまま学習/推論が進むのを防ぐ。
+    file_trunk = None
+    if any(k.startswith(_SAVED_COND_PREFIX + "proj_in.") for k in weights_sd):
+        file_trunk = "semantic"
+    elif any(
+        k.startswith(_SAVED_COND_PREFIX + "lat_conv1.") or k.startswith(_SAVED_COND_PREFIX + "conv1.")
+        for k in weights_sd
+    ):
+        file_trunk = "stem"
+    if file_trunk is not None and file_trunk != lllite.trunk:
+        raise RuntimeError(
+            f"trunk mismatch: weights at {file} were trained with trunk='{file_trunk}', "
+            f"but this LLLite was built with trunk='{lllite.trunk}'. "
+            f"Check --lllite_trunk / the 'lllite.trunk' metadata."
+        )
+
+    # pixel / latent の取り違え検出 (stem trunk のみ。semantic は latent 固定)。
     file_space = None
     if any(k.startswith(_SAVED_COND_PREFIX + "lat_conv1.") for k in weights_sd):
         file_space = "latent"
@@ -1327,4 +1661,143 @@ if __name__ == "__main__":
     finally:
         os.unlink(tmp)
 
-    logger.info("Phase A (v2) dummy check PASSED")
+    # ------------------------------------------------------------------
+    # v3: semantic trunk (dummy 版。実 Anima での end-to-end は
+    # tools/dev/manual_test_anima_lllite_dryrun.py の check_semantic_trunk で検査する)
+    # ------------------------------------------------------------------
+    MODEL_DIM = 64
+
+    class _DummyDiTV3(_DummyDiT):
+        def __init__(self, num_blocks: int = 4, dim: int = MODEL_DIM, ctx_dim: int = 128):
+            super().__init__(num_blocks=num_blocks, dim=dim, ctx_dim=ctx_dim)
+            self.model_channels = dim
+            # 実 Anima では t_embedding_norm の forward hook が t_local を配る。
+            # dummy では _update_t_local を手動で呼ぶ (hook 登録の warning 経路も同時に検査)。
+
+    dit_v3 = _DummyDiTV3(num_blocks=4)
+    lllite_v3 = ControlNetLLLiteDiT(
+        dit_v3, cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_qkv_cross_q",
+        cond_dim=64, cond_resblocks=1,
+        cond_input_space="latent", trunk="semantic", ref_block=2, ref_timestep=0.0,
+    )
+    assert lllite_v3.trunk == "semantic"
+    assert lllite_v3.ref_block == 2
+    assert lllite_v3.model_dim == MODEL_DIM
+    keys_v3 = list(lllite_v3.state_dict().keys())
+    assert any(k.startswith("conditioning1.proj_in.") for k in keys_v3), keys_v3[:8]
+    assert any(k.startswith("conditioning1.t_proj.") for k in keys_v3), keys_v3[:8]
+    assert any(k.endswith(".gate.weight") for k in keys_v3), keys_v3[:8]
+    assert not any("lat_conv" in k or "conditioning1.conv1." in k for k in keys_v3), keys_v3[:8]
+    # gate 初期化: weight=0, bias=GATE_INIT_BIAS (開いた状態)
+    g0 = lllite_v3.lllite_modules[0].gate
+    assert g0.weight.abs().sum().item() == 0.0
+    assert torch.allclose(g0.bias, torch.full_like(g0.bias, GATE_INIT_BIAS))
+    logger.info("  v3 semantic trunk build / keys / gate init OK")
+
+    # ref_block デフォルト = num_blocks // 2
+    lllite_v3_d = ControlNetLLLiteDiT(
+        _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+        cond_input_space="latent", trunk="semantic",
+    )
+    assert lllite_v3_d.ref_block == 2, lllite_v3_d.ref_block
+    logger.info("  v3 ref_block default (num_blocks // 2) OK")
+
+    # semantic は latent 入力必須 / inpaint (4ch) 非対応
+    try:
+        ControlNetLLLiteDiT(_DummyDiTV3(), trunk="semantic", cond_input_space="pixel")
+        raise AssertionError("expected latent-required assert")
+    except AssertionError as e:
+        assert "requires cond_input_space='latent'" in str(e), str(e)
+    try:
+        ControlNetLLLiteDiT(_DummyDiTV3(), trunk="semantic", cond_input_space="latent", cond_in_channels=4)
+        raise AssertionError("expected inpaint-unsupported assert")
+    except AssertionError as e:
+        assert "does not support inpainting" in str(e), str(e)
+    logger.info("  v3 constraint asserts OK")
+
+    # set_cond_hidden_states + _update_t_local + zero-init forward
+    lllite_v3.apply_to()
+    H_v3, W_v3 = 8, 8
+    h_ref = torch.randn(1, 1, H_v3, W_v3, MODEL_DIM)
+    t_emb = torch.randn(1, 1, MODEL_DIM)
+    lllite_v3.set_cond_hidden_states(h_ref)
+    lllite_v3._update_t_local(t_emb)
+    assert lllite_v3.last_cond_hw == (H_v3, W_v3)
+    mod_v3 = lllite_v3.lllite_modules[0]
+    assert mod_v3.cond_emb is not None and mod_v3.cond_emb.shape == (1, H_v3 * W_v3, 32)
+    assert mod_v3.t_local is not None and mod_v3.t_local.shape == (1, 1, 32)
+    x_v3 = torch.randn(1, H_v3 * W_v3, mod_v3.org_module[0].in_features)
+    y_v3 = mod_v3(x_v3)
+    assert torch.allclose(y_v3, mod_v3.org_forward(x_v3)), "v3 zero-init forward mismatch"
+    # gate capture
+    mod_v3.capture_gate = True
+    mod_v3(x_v3)
+    assert mod_v3.last_gate is not None and mod_v3.last_gate.shape == (1, H_v3 * W_v3, 1)
+    # zero-init では gate は空間一様に σ(GATE_INIT_BIAS)
+    expected_g = torch.sigmoid(torch.tensor(GATE_INIT_BIAS))
+    assert torch.allclose(mod_v3.last_gate, expected_g.expand_as(mod_v3.last_gate), atol=1e-6)
+    mod_v3.capture_gate = False
+    # clear で t_local も落ちる
+    lllite_v3.clear_cond_image()
+    assert mod_v3.cond_emb is None and mod_v3.t_local is None
+    logger.info("  v3 set_cond_hidden_states / t_local / zero-init forward / gate capture OK")
+
+    # CFG 系バッチ整合: cond B=1, x 2B (t_local B=1 は repeat 前に加算される)
+    lllite_v3.set_cond_hidden_states(h_ref)
+    lllite_v3._update_t_local(t_emb)
+    x_cfg = torch.randn(2, H_v3 * W_v3, mod_v3.org_module[0].in_features)
+    y_cfg = mod_v3(x_cfg)
+    assert torch.allclose(y_cfg, mod_v3.org_forward(x_cfg)), "v3 CFG-batch zero-init mismatch"
+    lllite_v3.clear_cond_image()
+    logger.info("  v3 CFG batch (cond B=1, x 2B) OK")
+
+    # save / load round-trip + trunk 取り違え検出
+    tmp_v3 = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False).name
+    try:
+        save_lllite_model(tmp_v3, lllite_v3, dtype=torch.float32, metadata={
+            "lllite.version": LLLITE_ARCH_VERSION_SEMANTIC,
+            "lllite.trunk": "semantic",
+            "lllite.cond_input_space": "latent",
+        })
+        lllite_v3_b = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64,
+            target_layers="self_attn_qkv_cross_q", cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=2,
+        )
+        load_lllite_weights(lllite_v3_b, tmp_v3, strict=True)
+        sd_v3a = lllite_v3.state_dict()
+        sd_v3b = lllite_v3_b.state_dict()
+        assert set(sd_v3a.keys()) == set(sd_v3b.keys())
+        for k in sd_v3a:
+            assert torch.allclose(sd_v3a[k].float(), sd_v3b[k].float()), f"v3 round-trip mismatch at {k}"
+        logger.info("  v3 save / load round-trip OK")
+
+        # semantic 重みを stem (latent) モデルに読ませると明示エラー
+        lllite_stem = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64,
+            target_layers="self_attn_qkv_cross_q", cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="stem",
+        )
+        try:
+            load_lllite_weights(lllite_stem, tmp_v3, strict=False)
+            raise AssertionError("expected trunk mismatch error")
+        except RuntimeError as e:
+            assert "trunk mismatch" in str(e), str(e)
+        # 逆方向: stem 重みを semantic モデルに読ませても明示エラー
+        tmp_stem = tmp_v3 + ".stem.safetensors"
+        try:
+            save_lllite_model(tmp_stem, lllite_stem, dtype=torch.float32)
+            try:
+                load_lllite_weights(lllite_v3_b, tmp_stem, strict=False)
+                raise AssertionError("expected trunk mismatch error (stem -> semantic)")
+            except RuntimeError as e:
+                assert "trunk mismatch" in str(e), str(e)
+        finally:
+            if os.path.exists(tmp_stem):
+                os.unlink(tmp_stem)
+        logger.info("  v3 trunk mix-up detection OK")
+    finally:
+        if os.path.exists(tmp_v3):
+            os.unlink(tmp_v3)
+
+    logger.info("Phase A (v2 + v3) dummy check PASSED")

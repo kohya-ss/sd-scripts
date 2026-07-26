@@ -35,6 +35,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -48,6 +49,7 @@ from networks.control_net_lllite_anima import (
     COND_INPUT_SPACES,
     ControlNetLLLiteDiT,
     build_cond_tensors,
+    encode_reference_hidden_states,
     load_lllite_weights,
 )
 from library.utils import setup_logging
@@ -218,6 +220,21 @@ def parse_args() -> argparse.Namespace:
         "--lllite_cond_input", type=str, default=None, choices=list(COND_INPUT_SPACES),
         help="override cond_input_space from weights metadata (pixel/latent)",
     )
+    parser.add_argument(
+        "--lllite_ref_block", type=int, default=None,
+        help="[semantic trunk] override ref_block from weights metadata",
+    )
+    parser.add_argument(
+        "--lllite_ref_timestep", type=float, default=None,
+        help="[semantic trunk] override ref_timestep from weights metadata",
+    )
+    parser.add_argument(
+        "--save_gate_maps", type=str, default=None,
+        help=(
+            "[semantic trunk] directory to dump per-module gate maps (predicted change-region masks) "
+            "as grayscale PNGs after each generation"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -350,15 +367,32 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         if args.lllite_cond_input is not None
         else meta.get("lllite.cond_input_space", "pixel")
     )
+    # trunk (v3). メタデータ欠落時は stem (旧重み互換)
+    trunk = meta.get("lllite.trunk", "stem")
+    ref_block = (
+        args.lllite_ref_block
+        if args.lllite_ref_block is not None
+        else (int(meta["lllite.ref_block"]) if "lllite.ref_block" in meta else None)
+    )
+    ref_timestep = (
+        args.lllite_ref_timestep
+        if args.lllite_ref_timestep is not None
+        else float(meta.get("lllite.ref_timestep", 0.0))
+    )
     version = meta.get("lllite.version", "?")
     inpaint_log = (
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
+    )
+    trunk_log = (
+        f", trunk=semantic(ref_block={ref_block}, ref_timestep={ref_timestep})"
+        if trunk == "semantic"
+        else ""
     )
     logger.info(
         f"LLLite config (v{version}): cond_emb_dim={cond_emb_dim}, mlp_dim={mlp_dim}, "
         f"target_layers={target_layers}, cond_dim={cond_dim}, cond_resblocks={cond_resblocks}, "
         f"use_aspp={use_aspp}{(' dilations=' + str(list(aspp_dilations))) if use_aspp else ''}, "
-        f"cond_input={cond_input_space}, "
+        f"cond_input={cond_input_space}{trunk_log}, "
         f"cond_in_channels={cond_in_channels}{inpaint_log}, multiplier={args.lllite_multiplier}"
     )
 
@@ -375,6 +409,9 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         cond_in_channels=cond_in_channels,
         inpaint_masked_input=inpaint_masked_input,
         cond_input_space=cond_input_space,
+        trunk=trunk,
+        ref_block=ref_block,
+        ref_timestep=ref_timestep,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -453,12 +490,69 @@ def generate_body(
 
     # honor per-prompt override of multiplier
     anima.lllite.set_multiplier(args.lllite_multiplier)
-    anima.lllite.set_cond_image(cond_image, cond_mask)
+
+    if anima.lllite.trunk == "semantic":
+        # v3: cond latent を凍結 DiT に通し hidden states を条件源にする (デノイズループ前に 1 回)。
+        # per-step の t は dit.t_embedding_norm の forward hook が毎ステップ配る。
+        anima.lllite.clear_cond_image()
+        with torch.no_grad(), torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=args.fp8
+        ):
+            h_ref = encode_reference_hidden_states(
+                anima, cond_image, anima.lllite.ref_block, anima.lllite.ref_timestep
+            )
+        anima.lllite.set_cond_hidden_states(h_ref)
+        logger.info(
+            f"LLLite reference forward: h_ref={tuple(h_ref.shape)} "
+            f"(ref_block={anima.lllite.ref_block}, ref_timestep={anima.lllite.ref_timestep})"
+        )
+    else:
+        anima.lllite.set_cond_image(cond_image, cond_mask)
+
+    capture_gates = args.save_gate_maps is not None and anima.lllite.trunk == "semantic"
+    if args.save_gate_maps is not None and anima.lllite.trunk != "semantic":
+        logger.warning("--save_gate_maps is only supported with the semantic trunk (v3); ignored")
+    if capture_gates:
+        for m in anima.lllite.lllite_modules:
+            m.capture_gate = True
 
     try:
         return _original_generate_body(args, anima, context, context_null, device, seed)
     finally:
+        if capture_gates:
+            _dump_gate_maps(anima.lllite, args.save_gate_maps, f"seed{seed}")
+            for m in anima.lllite.lllite_modules:
+                m.capture_gate = False
+                m.last_gate = None
         anima.lllite.clear_cond_image()
+
+
+def _dump_gate_maps(lllite, out_dir: str, prefix: str) -> None:
+    """各 LLLite モジュールの最終ステップの gate マップ (= モデルが予測した変更領域マスクの逆:
+    1=コピー / 0=書き換え) を token grid 解像度のグレースケール PNG として保存する。"""
+    hw = lllite.last_cond_hw
+    if hw is None:
+        logger.warning("no cond token grid recorded; skipping gate map dump")
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    gates = []
+    for m in lllite.lllite_modules:
+        if m.last_gate is None:
+            continue
+        g = m.last_gate[0, :, 0].float().reshape(hw)  # (H, W)
+        gates.append(g)
+        arr = (g.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        Image.fromarray(arr, mode="L").save(
+            os.path.join(out_dir, f"{prefix}_{m.lllite_name}.png")
+        )
+    if gates:
+        mean_g = torch.stack(gates).mean(0)
+        arr = (mean_g.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        Image.fromarray(arr, mode="L").save(os.path.join(out_dir, f"{prefix}_mean.png"))
+        logger.info(
+            f"saved {len(gates)} gate maps (+mean) to {out_dir} "
+            f"(grid={hw}, mean gate={mean_g.mean().item():.3f})"
+        )
 
 
 # ---------------------------------------------------------------------------

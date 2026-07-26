@@ -54,11 +54,14 @@ import networks.control_net_lllite_anima as lllite_module
 from networks.control_net_lllite_anima import (
     ControlNetLLLiteDiT,
     AnimaControlNetLLLiteWrapper,
+    encode_reference_hidden_states,
     save_lllite_model,
     load_lllite_weights,
     build_cond_tensors,
     LLLITE_ARCH_VERSION,
+    LLLITE_ARCH_VERSION_SEMANTIC,
     COND_INPUT_SPACES as LLLITE_COND_INPUT_SPACES,
+    TRUNK_TYPES as LLLITE_TRUNK_TYPES,
     PRESETS as LLLITE_PRESETS,
     ATOMIC_SPECIFIERS as LLLITE_ATOMIC_SPECIFIERS,
 )
@@ -103,7 +106,7 @@ def _generate_random_masks_for_batch(
     return torch.from_numpy(masks_np).to(device=device, dtype=dtype)
 
 
-def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None):
+def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None, dit=None):
     """Build (on_prompt_start, on_prompt_end) callbacks that wire control image / multiplier
     into the LLLite module before each sample prompt is rendered. The pre-sample multiplier is
     saved and restored so that, e.g., `--am 0` for inspection does not leak into training (which
@@ -120,7 +123,9 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None):
 
     is_inpaint = lllite.cond_in_channels == 4
     is_latent = lllite.cond_input_space == "latent"
+    is_semantic = lllite.trunk == "semantic"
     assert not is_latent or vae is not None, "vae is required for latent cond input space"
+    assert not is_semantic or dit is not None, "dit is required for the semantic trunk (reference forward)"
 
     saved = {"multiplier": None}
 
@@ -183,7 +188,16 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None):
             inpaint_masked_input=args.lllite_inpaint_masked_input,
             vae=vae,
         )
-        lllite.set_cond_image(cond_image, cond_mask)
+        if is_semantic:
+            # v3: cond latent を凍結 DiT に通し hidden states を条件源にする
+            lllite.clear_cond_image()
+            with torch.no_grad():
+                h_ref = encode_reference_hidden_states(
+                    dit, cond_image, lllite.ref_block, lllite.ref_timestep
+                )
+            lllite.set_cond_hidden_states(h_ref)
+        else:
+            lllite.set_cond_image(cond_image, cond_mask)
 
     def on_prompt_end(prompt_dict: dict):
         lllite.clear_cond_image()
@@ -282,6 +296,38 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
             "[inpaint] additionally zero out RGB inside the mask region before concatenating with mask. "
             "Only effective when --lllite_cond_in_channels=4. "
             "/ inpainting 時、RGB の mask 域を 0 で穴埋めしてから concat する (cond_in_channels=4 のときのみ有効)"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_trunk",
+        type=str,
+        default="stem",
+        choices=list(LLLITE_TRUNK_TYPES),
+        help=(
+            "conditioning trunk: 'stem' feeds the cond input to a scratch conv stem (v2/v2.1, default), "
+            "'semantic' feeds the frozen DiT's hidden states of the cond latent to the trunk (v3). "
+            "'semantic' requires --lllite_cond_input latent and does not support inpainting. "
+            "/ 条件付けトランク。stem は conv stem (v2/v2.1)、semantic は凍結 DiT の中間 hidden states を"
+            "条件源にする (v3、--lllite_cond_input latent 必須・inpaint 非対応)"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_ref_block",
+        type=int,
+        default=None,
+        help=(
+            "[semantic] DiT block index whose output hidden states feed the trunk "
+            "(default: num_blocks // 2). The reference forward only runs blocks up to this index. "
+            "/ semantic trunk が hidden states を取り出すブロック index (既定: num_blocks // 2)"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_ref_timestep",
+        type=float,
+        default=0.0,
+        help=(
+            "[semantic] timestep for the reference forward over the cond latent, in the [0, 1] scale "
+            "(0 = clean, default). / 参照フォワードの timestep ([0,1] スケール、0 = clean)"
         ),
     )
     # --conditioning_data_dir は args_util.add_dataset_arguments 側で既に定義済み
@@ -515,6 +561,21 @@ def train(args):
         )
     is_inpaint = args.lllite_cond_in_channels == 4
 
+    # v3 (semantic trunk) の制約検証
+    is_semantic_trunk = args.lllite_trunk == "semantic"
+    if is_semantic_trunk:
+        if not is_latent_cond:
+            raise ValueError("--lllite_trunk semantic requires --lllite_cond_input latent")
+        if args.lllite_cond_in_channels != 3:
+            raise ValueError(
+                "--lllite_trunk semantic does not support inpainting (--lllite_cond_in_channels 4) yet"
+            )
+        if args.cond_emb_dim < 64:
+            logger.warning(
+                f"--cond_emb_dim {args.cond_emb_dim} is small for the semantic trunk; the DiT hidden "
+                f"states carry semantic features, so 128 or so is recommended to avoid a bottleneck"
+            )
+
     # Build LLLite (DiT を走査して各 Attention Linear に貼る)
     logger.info("Building ControlNet-LLLite (Anima)...")
     lllite = ControlNetLLLiteDiT(
@@ -530,6 +591,9 @@ def train(args):
         cond_in_channels=args.lllite_cond_in_channels,
         inpaint_masked_input=args.lllite_inpaint_masked_input,
         cond_input_space=args.lllite_cond_input,
+        trunk=args.lllite_trunk,
+        ref_block=args.lllite_ref_block,
+        ref_timestep=args.lllite_ref_timestep,
     )
 
     if args.network_weights is not None:
@@ -658,7 +722,11 @@ def train(args):
 
     # sample image hooks: inject control image / multiplier into LLLite around each prompt
     on_prompt_start, on_prompt_end = _make_lllite_sample_hooks(
-        args, accelerator.unwrap_model(wrapper).lllite, dit_weight_dtype, vae
+        args,
+        accelerator.unwrap_model(wrapper).lllite,
+        dit_weight_dtype,
+        vae,
+        dit=accelerator.unwrap_model(wrapper).dit,
     )
 
     def _sample_images(epoch_arg, step_arg):
@@ -688,7 +756,9 @@ def train(args):
             None, args, False, False, False, is_stable_diffusion_ckpt=True, anima="preview"
         ).to_metadata_dict()
         sai_metadata["modelspec.architecture"] = "anima-preview/control-net-lllite"
-        sai_metadata["lllite.version"] = LLLITE_ARCH_VERSION
+        sai_metadata["lllite.version"] = (
+            LLLITE_ARCH_VERSION_SEMANTIC if args.lllite_trunk == "semantic" else LLLITE_ARCH_VERSION
+        )
         sai_metadata["lllite.cond_emb_dim"] = str(args.cond_emb_dim)
         sai_metadata["lllite.mlp_dim"] = str(args.lllite_mlp_dim)
         sai_metadata["lllite.target_layers"] = args.lllite_target_layers
@@ -705,6 +775,10 @@ def train(args):
         sai_metadata["lllite.inpaint_masked_input"] = (
             "true" if args.lllite_inpaint_masked_input else "false"
         )
+        sai_metadata["lllite.trunk"] = args.lllite_trunk
+        if args.lllite_trunk == "semantic":
+            sai_metadata["lllite.ref_block"] = str(unwrapped.ref_block)
+            sai_metadata["lllite.ref_timestep"] = str(unwrapped.ref_timestep)
         save_lllite_model(ckpt_file, unwrapped, dtype=save_dtype, metadata=sai_metadata)
 
     def _save_step(global_step_: int, epoch_: int):

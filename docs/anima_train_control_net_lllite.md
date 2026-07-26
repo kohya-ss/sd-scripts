@@ -755,7 +755,88 @@ cond latent と concat -> (B,32,H/8,W/8) -> latent stem
 
 </details>
 
-## 9. Tips & Limitations / 補足と制限
+## 9. Semantic Trunk (v3) / semantic trunk (v3)
+
+> **Status:** experimental. Aimed at **semantic editing tasks** (mask-free clothing change, background swap, occlusion removal) where the model must decide *which region of the control image to reject* — a decision that is semantic and global. The default remains the stem trunk (v2/v2.1) and existing weights are unaffected.
+
+With `--lllite_trunk semantic`, `conditioning1`'s input is no longer the cond image/latent itself but the **frozen DiT's own hidden states** of the cond latent: before the denoising forward, the cond latent is run through DiT blocks `0..ref_block` (with a zero text context, so the features depend on the image only), and the output hidden states `(B, 1, H, W, D_model)` feed a lightweight trunk:
+
+```
+cond image -> VAE encode -> frozen DiT blocks 0..ref_block (reference forward, no_grad)
+  -> LayerNorm(D_model) -> Linear D_model -> cond_dim      (shared low-rank down projection)
+  -> ResBlock x N / (ASPP)                                  (mid-range context)
+  -> Conv1x1 -> cond_emb_dim -> LayerNorm                   -> shared cond_emb (B, S, cond_emb_dim)
+```
+
+The rationale: the v2/v2.1 stem is trained from scratch, so it cannot learn *semantics* (e.g. "this token is clothing") from a few hundred pairs. The frozen DiT already computes semantic features — the semantic trunk parasitizes the base model for the *understanding* side the same way LLLite always parasitized it for the *generation* side.
+
+Two per-module mechanisms are added on top of the v2 module (`down`/`mid`/`cond_to_film`/`up`):
+
+* **Multiplicative gate** — `Δx = σ(gate([cond_local, h])) ⊙ up(m)`: a per-token scalar gate that decides *where* to inject the condition, separately from the value path that decides *what* to inject. The gate weight is zero-init and the bias starts **open** (σ≈0.88) so gradients reach the value path from step 0; the gate then learns where to close (e.g. the clothing region). The gate map is directly visualizable as the model's predicted change-region mask (`--save_gate_maps` at inference).
+* **t-FiLM** — the DiT's own timestep embedding (captured per forward via a hook on `t_embedding_norm`) is projected by a shared zero-init `t_proj` into the cond space and added to `cond_local`, so the fixed reference features are re-interpreted per denoising step.
+
+The reference forward is text-independent and runs under `no_grad`; only blocks up to `ref_block` execute (default `num_blocks // 2`), so the training-step overhead is roughly half a DiT forward. At inference it runs **once per image** before the denoising loop.
+
+Arguments (training):
+
+| Argument | Default | Description |
+|---|---|---|
+| `--lllite_trunk` | `stem` | `semantic` enables the v3 trunk. Requires `--lllite_cond_input latent`; inpainting (`cond_in_channels=4`) is not supported yet |
+| `--lllite_ref_block` | `num_blocks // 2` | DiT block index whose output hidden states feed the trunk |
+| `--lllite_ref_timestep` | `0.0` | timestep of the reference forward, `[0, 1]` scale (0 = clean) |
+
+With the semantic trunk, `--cond_emb_dim` should be raised (128 recommended; a warning is logged below 64): the 32-dim default was sized for the scratch stem and would bottleneck the semantic features. `--lllite_cond_dim` is the trunk width (also 128 recommended). Example:
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 anima_train_control_net_lllite.py \
+  --pretrained_model_name_or_path="<path to Anima DiT model>" \
+  --qwen3="<path>" --vae="<path>" \
+  --dataset_config="my_anima_lllite.toml" \
+  --output_dir="<out>" --output_name="my_anima_lllite_v3" --save_model_as=safetensors \
+  --lllite_cond_input=latent --lllite_trunk=semantic \
+  --cond_emb_dim=128 --lllite_cond_dim=128 --lllite_mlp_dim=64 \
+  --lllite_cond_resblocks=1 --lllite_target_layers=self_attn_qkv_cross_q \
+  --learning_rate=1e-4 --optimizer_type="AdamW8bit" --lr_scheduler="constant" \
+  --timestep_sampling="shift" --discrete_flow_shift=3.0 \
+  --max_train_epochs=10 --save_every_n_epochs=1 \
+  --mixed_precision="bf16" --gradient_checkpointing \
+  --cache_latents --cache_text_encoder_outputs
+```
+
+Saved weight keys (replacing the stem keys of Section 5): `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}` plus a per-module `{lllite_name}.gate.{weight,bias}`. Metadata gains `lllite.trunk`, `lllite.ref_block`, `lllite.ref_timestep`, and `lllite.version` is `"3"`. Stem and semantic weights are not interchangeable; the loader rejects a mix-up explicitly.
+
+Inference: the metadata is used automatically; `--lllite_ref_block` / `--lllite_ref_timestep` can override it. `--save_gate_maps <dir>` dumps each module's last-step gate map (token-grid grayscale PNG, 1 = copy, 0 = rewrite) plus their mean — the single most useful diagnostic for whether the model has learned to localize the change region.
+
+Limitations:
+
+* Inpainting (mask) is not supported with the semantic trunk yet.
+* Reference hidden states are recomputed every training step (no disk cache yet); the step-time overhead is roughly `(ref_block + 1) / num_blocks` of a DiT forward.
+* With `--compile`, the blocks see two graph variants (cond cleared during the reference forward vs. set during the main forward), so expect one extra recompile per bucket resolution.
+* The gate acts pointwise per token: position *i* can only read the reference at position *i* (widened to mid-range by ResBlocks/ASPP). Edits that require reading the reference at a *different* location (composition changes) are out of scope for this trunk.
+
+<details>
+<summary>日本語</summary>
+
+`--lllite_trunk semantic` を指定すると、`conditioning1` の入力が cond 画像/latent そのものではなく、**凍結 DiT 自身が計算した cond latent の中間 hidden states** になります。デノイズ forward の前に cond latent を DiT の block `0..ref_block` に通し（text context はゼロ = 画像のみに依存する特徴）、その出力 `(B, 1, H, W, D_model)` を軽量トランク（LayerNorm → 低ランク Linear → ResBlock/ASPP → 1x1 Conv → LayerNorm）で共有 cond_emb に写します。
+
+狙い: v2/v2.1 の stem はスクラッチ学習なので、数百ペアから「このトークンは衣装」といった**意味**を学ぶことは原理的にできません。凍結 DiT は意味特徴を既に計算しているので、LLLite が生成側でベースモデルに寄生してきたのと同じやり方で、**理解側でも寄生**します。マスクなしの衣装変更・背景交換・オクルージョン除去のような「条件画像のどの領域を棄却するかを意味的・大域的に判断するタスク」向けです。
+
+v2 モジュール構成に加わる 2 つの機構:
+
+* **乗算ゲート** — `Δx = σ(gate([cond_local, h])) ⊙ up(m)`。「何を注入するか（値パス）」と「どこで注入するか（ゲート）」を分解する per-token スカラーゲート。weight は zero-init、bias は**開いた状態**（σ≈0.88）で初期化されるため、学習初期から値パスに勾配が流れ、ゲートは後から「閉じるべき場所」（=衣装領域など）を学びます。ゲートマップは「モデルが予測した変更領域マスク」としてそのまま可視化できます（推論時 `--save_gate_maps`）。
+* **t-FiLM** — 本体の timestep embedding を（`t_embedding_norm` への forward hook で毎 forward 取得し）共有の zero-init `t_proj` で cond 空間に射影して cond_local に加算します。固定の参照特徴を「今のステップ向けにどう使うか」をアダプタ側が学べます。
+
+参照フォワードはテキスト非依存で `no_grad` 下で走り、`ref_block`（既定 `num_blocks // 2`）までしか実行しないため、学習ステップの増分はおおよそ DiT forward の半分です。推論ではデノイズループ前に**画像あたり 1 回**だけ実行されます。
+
+semantic trunk では `--cond_emb_dim` を引き上げてください（**128 推奨**、64 未満は警告が出ます）。既定の 32 はスクラッチ stem 向けのサイズで、意味特徴のボトルネックになります。`--lllite_cond_dim`（トランク幅）も 128 推奨です。
+
+保存キーは第 5 節の stem キーの代わりに `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}`、各モジュールに `{lllite_name}.gate.{weight,bias}` が加わります。メタデータには `lllite.trunk` / `lllite.ref_block` / `lllite.ref_timestep` が入り、`lllite.version` は `"3"` になります。stem 重みと semantic 重みは非互換で、取り違えはロード時に明示的に reject されます。
+
+制限: inpainting（mask）は未対応。参照 hidden states は毎ステップ再計算（ディスクキャッシュ未実装）。`--compile` 使用時は参照フォワード（cond 解除状態）と本 forward（cond セット状態)で 2 種類のグラフが焼かれるため、バケット解像度あたり recompile が 1 回増えます。ゲートは per-token（位置 i は参照の位置 i しか読めない。ResBlock/ASPP で中域までは拡張）なので、参照の別の場所を読む必要がある構図変更を伴う編集はこのトランクのスコープ外です。
+
+</details>
+
+## 10. Tips & Limitations / 補足と制限
 
 * **Resolution alignment.** The conditioning encoder uses fixed stride 16, so `cond_image` HW must equal `latent HW × 8` (i.e. the original training image size) (the latent is patchified with patch size=2, so stride is 8*2=16). In latent mode (Section 8) the control image is still supplied at the original image size; the VAE /8 plus the stem's stride-2 conv give the same total stride of 16. The DataLoader for the ControlNet dataset already resizes the conditioning image to match the training image, so in practice you only need to make sure the control image you pass at inference time matches the requested `--image_size`.
 * **`T=1` only.** Video-style multi-frame inputs are not supported — the wrapper asserts `T==1` at forward time.
