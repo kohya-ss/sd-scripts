@@ -165,7 +165,7 @@ bits モードでは概ね
 
 `clip_rate` を目標レンジに保つように `range_mul` を自動調整する。
 
-`--dq_delta_auto_preset clip_rate_low_auto` では、最初は `clip_rate_low` と同じ低clip帯を狙う。学習中に `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130` が連続し、lowを維持するコストが高いと判断した場合は、目標clip帯を `clip_rate_mid` へ一方向に切り替える。これは低clipが合うデータではlowを維持し、低clipが合わないデータでは誤差が深くなる前に中間帯へ逃がすための保険である。
+`--dq_delta_auto_preset clip_rate_low_auto` では、最初は `clip_rate_low` と同じ低clip帯を狙う。学習中に `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130` が連続し、lowを維持するコストが高いと判断した場合は、目標clip帯を `clip_rate_mid` へ一方向に切り替える。これは低clipが合うデータではlowを維持し、低clipが合わないデータでは誤差が深くなる前に中間帯へ逃がすための保険である。既定では学習進捗 0.90 まで切替を許可し、最後の10%では新規切替を凍結する。
 
 ### 基本ロジック（AutoStep ごと）
 

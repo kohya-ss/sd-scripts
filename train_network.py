@@ -1132,7 +1132,7 @@ class NetworkTrainer:
         dq_log_error_parts = False
         dq_low_auto_min_progress = max(0.0, min(1.0, float(getattr(args, "dq_delta_clip_rate_low_auto_min_progress", 0.25))))
         dq_low_auto_bad_streak_threshold = max(1, int(getattr(args, "dq_delta_clip_rate_low_auto_bad_streak", 3)))
-        dq_low_auto_freeze_progress = float(getattr(args, "dq_delta_clip_rate_low_auto_freeze_progress", 0.55))
+        dq_low_auto_freeze_progress = float(getattr(args, "dq_delta_clip_rate_low_auto_freeze_progress", 0.90))
         dq_low_auto_qerr_ratio_threshold = float(getattr(args, "dq_delta_clip_rate_low_auto_qerr_ratio", 0.25))
         dq_low_auto_qerr_per_clip_threshold = float(getattr(args, "dq_delta_clip_rate_low_auto_qerr_per_clip", 130.0))
         dq_auto_warmup_enabled = dq_auto_enabled and bool(getattr(args, "dq_delta_auto_warmup", True))
@@ -5004,7 +5004,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dq_delta_clip_rate_low_auto_freeze_progress",
         type=float,
-        default=0.55,
+        default=0.90,
         help="Training progress after which clip_rate_low_auto band switching is frozen / clip_rate_low_auto のband切替を凍結する学習進捗",
     )
     parser.add_argument(

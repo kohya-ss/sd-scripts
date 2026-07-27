@@ -134,7 +134,7 @@ Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,
 
 ```
 Epoch,TrainStep,Scope,Target,Bits,DQStepSize,RangeMul,Stat,Granularity,Mode,RMS,AbsMax,Range,ScaleMin,ScaleMean,ScaleMax,Qmax,ClipRateRaw,ClipRateEMA,ZeroRate,QuantErrRMSRaw,QuantErrRMSEMA,QuantErrRatioRaw,QuantErrRatioEMA,ActiveClipBand,ActiveClipLow,ActiveClipHigh,ClipRateLowAutoState,ClipRateLowAutoBad,ClipRateLowAutoBadStreak,TrainProgress,ClipRateLowAutoMinProgress,ClipRateLowAutoFreezeProgress,ClipRateLowAutoThresholdQErrRatio,ClipRateLowAutoThresholdQErrPerClip,ClipRateLowAutoPhase,Numel,AutoApplied,RangeMulBefore,RangeMulAfter,WarmupActive,WarmupRemain,AutoReason,AutoInitMulApplied,AutoInitMulValue,AutoInitClipTarget
-2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,low,0.0005,0.0022,keep_low,0,0,0.4048,0.25,0.55,0.25,130,active,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
+2,3400,unet,delta,8,,3.0,rms,channel,stoch,0.0123,0.0912,0.0369,0.00020,0.00029,0.00041,127,0.0008,0.0007,0.034,0.0015,0.0014,0.12,0.11,low,0.0005,0.0022,keep_low,0,0,0.4048,0.25,0.90,0.25,130,active,12345678,1,3.0,3.21,0,0,clip_high,1,3.0,0.004
 ```
 
 ## ログの見方（初心者向け）
@@ -265,7 +265,7 @@ LogStep 以外の列は空欄（NA）で、追加統計は計算しません。
 - `--dq_delta_auto_log_format {minimal,full_schema}` : auto ログの列形式（デフォルト minimal）
 - `--dq_delta_clip_rate_low_auto_min_progress <float>` : `clip_rate_low_auto` の判定開始進捗（デフォルト 0.25）
 - `--dq_delta_clip_rate_low_auto_bad_streak <int>` : `clip_rate_low_auto` が `mid` へ逃がすまでのbad連続回数（デフォルト 3）
-- `--dq_delta_clip_rate_low_auto_freeze_progress <float>` : この学習進捗以降は `clip_rate_low_auto` のband切替を凍結（デフォルト 0.55）
+- `--dq_delta_clip_rate_low_auto_freeze_progress <float>` : この学習進捗以降は `clip_rate_low_auto` のband切替を凍結（デフォルト 0.90）
 - `--dq_delta_clip_rate_low_auto_qerr_ratio <float>` : `clip_rate_low_auto` bad判定の `QuantErrRatioEMA` 閾値（デフォルト 0.25）
 - `--dq_delta_clip_rate_low_auto_qerr_per_clip <float>` : `clip_rate_low_auto` bad判定の `QErrPerClip` 閾値（デフォルト 130）
 - `--dq_delta_qerr_per_clip_floor <float>` : `QErrPerClip` 計算時の `ClipRateEMA` 下限（デフォルト 0.001）
@@ -300,7 +300,7 @@ low_bad =
   and QErrPerClip >= dq_delta_clip_rate_low_auto_qerr_per_clip
 ```
 
-既定値は `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130`。`dq_delta_clip_rate_low_auto_min_progress` 経過後に `low_bad` が `dq_delta_clip_rate_low_auto_bad_streak` 回連続したら、目標bandを `clip_rate_mid`（0.002〜0.004）へ切り替える。一度 `mid` に逃げた後は `low` へ戻さない。`dq_delta_clip_rate_low_auto_freeze_progress` 以降は新規のband切替を行わない。
+既定値は `QuantErrRatioEMA >= 0.25` かつ `QErrPerClip >= 130`。`dq_delta_clip_rate_low_auto_min_progress` 経過後に `low_bad` が `dq_delta_clip_rate_low_auto_bad_streak` 回連続したら、目標bandを `clip_rate_mid`（0.002〜0.004）へ切り替える。一度 `mid` に逃げた後は `low` へ戻さない。`dq_delta_clip_rate_low_auto_freeze_progress` 以降は新規のband切替を行わない。既定では学習進捗 0.90 まで切替を許可し、最後の10%では新規切替を凍結する。
 
 #### 既定閾値の前提
 
