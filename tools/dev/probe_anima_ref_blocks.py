@@ -22,6 +22,12 @@
 ref_block の sweet spot。2 ブロック concat なら「保存性最良の浅めブロック +
 意味分離性最良の深めブロック」が候補になる。
 
+表の block -1 行は x_embedder 出力 (patchify 直後、DiT ブロック通過前) = latent の
+線形埋め込みそのもの。コピー信号の理論上の最良点で、context / t に依存しない。
+ただし preservation 指標はトークン未分化のせいで block 0 と同様に過小評価される
+(matched も shuffled も高く差分が出ない。情報喪失ではない)。-1 の外観供給係としての
+価値は probe の数字でなく v2.1 (latent cond) の実績で判断すること。
+
 参照フォワードは学習時と同じ規約 (固定 ref_timestep / no_grad)。context は --context で選択:
 
   - zero             : ゼロ context (v3 MVP の既定。cross-attn 出力が厳密に 0 = テキスト非依存)
@@ -163,7 +169,8 @@ def load_image(path: str, height: int, width: int, device, dtype) -> torch.Tenso
 @torch.no_grad()
 def all_block_hidden_states(dit, latent: torch.Tensor, ref_timestep: float, context: torch.Tensor = None) -> list:
     """encode_reference_hidden_states と同じ規約 (固定 t) で全ブロックの
-    hidden states を取り、[(S, D)] * num_blocks (fp32, LayerNorm 正規化済み) を返す。
+    hidden states を取り、[(S, D)] * (num_blocks + 1) (fp32, LayerNorm 正規化済み) を返す。
+    先頭要素は "block -1" = x_embedder 出力 (ブロック通過前)、以降が block 0..N-1。
 
     context=None ならゼロ context (v3 MVP の既定)。それ以外は LLM Adapter 通過済みの
     (1, L, ctx_dim) を渡す (padding 位置はゼロ潰し済みであること)。
@@ -175,6 +182,14 @@ def all_block_hidden_states(dit, latent: torch.Tensor, ref_timestep: float, cont
     padding_mask = torch.zeros(bsz, 1, h_lat, w_lat, device=latent.device, dtype=latent.dtype)
 
     x, rope_emb, extra_pos_emb = dit.prepare_embedded_sequence(x5, fps=None, padding_mask=padding_mask)
+
+    feats = []
+    # "block -1" = x_embedder 出力 (patchify 直後、DiT ブロック通過前)。latent の線形埋め込み
+    # そのもので、コピー信号の理論上の最良点。context / t に依存しない。
+    # 注意: preservation 指標はトークン未分化 (matched も shuffled も高い) のため
+    # block 0 と同様に差分が出にくく、過小評価される (情報喪失ではない)。
+    f = x.reshape(-1, x.shape[-1]).float()
+    feats.append(F.layer_norm(f, (f.shape[-1],)))
 
     t = torch.full((bsz, 1), float(ref_timestep), device=latent.device, dtype=latent.dtype)
     t_emb, adaln_lora = dit.t_embedder(t)
@@ -188,7 +203,6 @@ def all_block_hidden_states(dit, latent: torch.Tensor, ref_timestep: float, cont
     attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
     use_fp32 = x.dtype == torch.float16
 
-    feats = []
     for block in dit.blocks:
         x = block(
             x, t_emb, context, attn_params, use_fp32,
@@ -312,6 +326,9 @@ def main():
     num_blocks = len(dit.blocks)
     d_model = dit.model_channels
     logger.info(f"num_blocks={num_blocks}, model_channels={d_model}")
+    # 行 0 = "block -1" (x_embedder 出力、ブロック通過前)、行 1.. = block 0..
+    block_ids = [-1] + list(range(num_blocks))
+    n_rows = len(block_ids)
 
     height, width = args.image_size
     tok_h, tok_w = height // 16, width // 16
@@ -335,15 +352,15 @@ def main():
             )
         return build_llm_adapter_context(dit, prompt_embeds_map[captions[pair_idx]], device, dtype)
 
-    # probe 用のストリーミング積算 (train split): モード x ブロックごとに Gram (D+1)^2 と X^T y
-    gram = {m: torch.zeros(num_blocks, d_model + 1, d_model + 1, device=device, dtype=torch.float64) for m in modes}
-    xty = {m: torch.zeros(num_blocks, d_model + 1, device=device, dtype=torch.float64) for m in modes}
+    # probe 用のストリーミング積算 (train split): モード x 行 (block -1 含む) ごとに Gram (D+1)^2 と X^T y
+    gram = {m: torch.zeros(n_rows, d_model + 1, d_model + 1, device=device, dtype=torch.float64) for m in modes}
+    xty = {m: torch.zeros(n_rows, d_model + 1, device=device, dtype=torch.float64) for m in modes}
     # eval split のトークンは CPU に保持
-    eval_store = {m: [[] for _ in range(num_blocks)] for m in modes}  # per block: list of (feats fp16 cpu, labels cpu)
+    eval_store = {m: [[] for _ in range(n_rows)] for m in modes}  # per row: list of (feats fp16 cpu, labels cpu)
 
     # 保存性/応答性のストリーミング平均 (全ペア)
-    pres_sum = {m: torch.zeros(num_blocks, dtype=torch.float64) for m in modes}  # unchanged: matched - shuffled
-    resp_sum = {m: torch.zeros(num_blocks, dtype=torch.float64) for m in modes}  # changed:   matched - shuffled
+    pres_sum = {m: torch.zeros(n_rows, dtype=torch.float64) for m in modes}  # unchanged: matched - shuffled
+    resp_sum = {m: torch.zeros(n_rows, dtype=torch.float64) for m in modes}  # changed:   matched - shuffled
     pres_cnt = 0
 
     changed_frac_sum = 0.0
@@ -387,7 +404,7 @@ def main():
             feats_c = all_block_hidden_states(dit, lat_c, args.ref_timestep, context=ctx)
             feats_t = all_block_hidden_states(dit, lat_t, args.ref_timestep, context=ctx)
 
-            for k in range(num_blocks):
+            for k in range(n_rows):
                 fc, ft = feats_c[k], feats_t[k]  # (S, D) fp32, layer-normed
 
                 # --- probe (条件画像の特徴のみ使用) ---
@@ -425,7 +442,7 @@ def main():
     aurocs, pres, resp = {}, {}, {}
     for mode in modes:
         vals = []
-        for k in range(num_blocks):
+        for k in range(n_rows):
             if not eval_store[mode][k]:
                 vals.append(float("nan"))
                 continue
@@ -455,14 +472,15 @@ def main():
         print("block | probe AUROC | preservation | response | contrast")
         print("      | (semantic)  | (unchanged)  | (changed)| (pres - resp)")
         print("------+-------------+--------------+----------+---------")
-        for k in range(num_blocks):
-            contrast = p_m[k] - r_m[k]
-            print(f"  {k:3d} |    {a_m[k]:.4f}   |    {p_m[k]:+.4f}   | {r_m[k]:+.4f}  | {contrast:+.4f}")
+        for r in range(n_rows):
+            contrast = p_m[r] - r_m[r]
+            print(f"  {block_ids[r]:3d} |    {a_m[r]:.4f}   |    {p_m[r]:+.4f}   | {r_m[r]:+.4f}  | {contrast:+.4f}")
 
         # --- 推奨 ---
-        valid = [k for k in range(num_blocks) if not np.isnan(a_m[k])]
-        a = np.array([a_m[k] for k in valid])
-        p = np.array([p_m[k] for k in valid])
+        valid_rows = [r for r in range(n_rows) if not np.isnan(a_m[r])]
+        valid = [block_ids[r] for r in valid_rows]
+        a = np.array([a_m[r] for r in valid_rows])
+        p = np.array([p_m[r] for r in valid_rows])
         combined = _norm(a) + _norm(p)
         top_single = [valid[i] for i in np.argsort(-combined)[:3]]
         best_sem = valid[int(np.argmax(a))]
@@ -484,11 +502,11 @@ def main():
         pres_cols = " | ".join(f"pres[{m}]" for m in modes)
         print(f"block | {auroc_cols} | {delta_cols} | {pres_cols}")
         print("------+" + "-" * (len(auroc_cols) + len(delta_cols) + len(pres_cols) + 9))
-        for k in range(num_blocks):
-            a_str = " | ".join(f"{aurocs[m][k]:^{len(f'AUROC[{m}]')}.4f}" for m in modes)
-            d_str = " | ".join(f"{aurocs[m][k] - aurocs[base][k]:^+{len(f'dAUROC[{m}]')}.4f}" for m in others)
-            p_str = " | ".join(f"{pres[m][k]:^+{len(f'pres[{m}]')}.4f}" for m in modes)
-            print(f"  {k:3d} | {a_str} | {d_str} | {p_str}")
+        for r in range(n_rows):
+            a_str = " | ".join(f"{aurocs[m][r]:^{len(f'AUROC[{m}]')}.4f}" for m in modes)
+            d_str = " | ".join(f"{aurocs[m][r] - aurocs[base][r]:^+{len(f'dAUROC[{m}]')}.4f}" for m in others)
+            p_str = " | ".join(f"{pres[m][r]:^+{len(f'pres[{m}]')}.4f}" for m in modes)
+            print(f"  {block_ids[r]:3d} | {a_str} | {d_str} | {p_str}")
         print()
         if "uncond" in modes and "zero" in modes:
             print("Split: 'uncond' - 'zero' = in-distribution effect (a real but empty context).")
