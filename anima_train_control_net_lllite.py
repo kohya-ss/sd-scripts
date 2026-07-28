@@ -55,6 +55,8 @@ from networks.control_net_lllite_anima import (
     ControlNetLLLiteDiT,
     AnimaControlNetLLLiteWrapper,
     encode_reference_hidden_states,
+    build_uncond_ref_context,
+    install_ref_context_dispatch,
     save_lllite_model,
     load_lllite_weights,
     build_cond_tensors,
@@ -62,6 +64,7 @@ from networks.control_net_lllite_anima import (
     LLLITE_ARCH_VERSION_SEMANTIC,
     COND_INPUT_SPACES as LLLITE_COND_INPUT_SPACES,
     TRUNK_TYPES as LLLITE_TRUNK_TYPES,
+    REF_CONTEXT_MODES as LLLITE_REF_CONTEXT_MODES,
     PRESETS as LLLITE_PRESETS,
     ATOMIC_SPECIFIERS as LLLITE_ATOMIC_SPECIFIERS,
 )
@@ -106,7 +109,17 @@ def _generate_random_masks_for_batch(
     return torch.from_numpy(masks_np).to(device=device, dtype=dtype)
 
 
-def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None, dit=None):
+def _make_lllite_sample_hooks(
+    args,
+    lllite,
+    dit_dtype,
+    vae=None,
+    dit=None,
+    tokenize_strategy=None,
+    text_encoding_strategy=None,
+    text_encoder=None,
+    sample_prompts_te_outputs=None,
+):
     """Build (on_prompt_start, on_prompt_end) callbacks that wire control image / multiplier
     into the LLLite module before each sample prompt is rendered. The pre-sample multiplier is
     saved and restored so that, e.g., `--am 0` for inspection does not leak into training (which
@@ -119,15 +132,53 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None, dit=None):
 
     `vae` is required when the LLLite runs in latent cond input space (the control image is VAE
     encoded before being fed to conditioning1).
+
+    ref_context='caption' では正負プロンプトの context をここでエンコードし、CFG の各ブランチに
+    対応する h_ref を install_ref_context_dispatch で切り替える (学習の dropout 整合と一致)。
+    text_encoder 系の引数はそのために使う (zero/uncond では不要)。
     """
 
     is_inpaint = lllite.cond_in_channels == 4
     is_latent = lllite.cond_input_space == "latent"
     is_semantic = lllite.trunk == "semantic"
+    ref_context = lllite.ref_context if is_semantic else "zero"
     assert not is_latent or vae is not None, "vae is required for latent cond input space"
     assert not is_semantic or dit is not None, "dit is required for the semantic trunk (reference forward)"
 
-    saved = {"multiplier": None}
+    saved = {"multiplier": None, "dispatch_handle": None}
+
+    def _encode_prompt_context(prpt: str, device):
+        """sample prompt の post-LLM Adapter context を返す (_sample_image_inference と同一の計算)。
+        エンコード不能 (cache になく text_encoder もない) なら None。"""
+        encoded = None
+        if sample_prompts_te_outputs and prpt in sample_prompts_te_outputs:
+            encoded = sample_prompts_te_outputs[prpt]
+        elif text_encoder is not None and tokenize_strategy is not None:
+            tokens = tokenize_strategy.tokenize(prpt)
+            encoded = text_encoding_strategy.encode_tokens(tokenize_strategy, [text_encoder], tokens)
+        if encoded is None:
+            return None
+        prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = encoded
+        if isinstance(prompt_embeds, np.ndarray):
+            prompt_embeds = torch.from_numpy(prompt_embeds).unsqueeze(0)
+            attn_mask = torch.from_numpy(attn_mask).unsqueeze(0)
+            t5_input_ids = torch.from_numpy(t5_input_ids).unsqueeze(0)
+            t5_attn_mask = torch.from_numpy(t5_attn_mask).unsqueeze(0)
+        prompt_embeds = prompt_embeds.to(device, dtype=dit.dtype)
+        attn_mask = attn_mask.to(device)
+        t5_input_ids = t5_input_ids.to(device, dtype=torch.long)
+        t5_attn_mask = t5_attn_mask.to(device)
+        if getattr(dit, "use_llm_adapter", False):
+            ctx = dit.llm_adapter(
+                source_hidden_states=prompt_embeds,
+                target_input_ids=t5_input_ids,
+                target_attention_mask=t5_attn_mask,
+                source_attention_mask=attn_mask,
+            )
+            ctx[~t5_attn_mask.bool()] = 0
+        else:
+            ctx = prompt_embeds
+        return ctx
 
     def on_prompt_start(prompt_dict: dict, accelerator):
         # remember the multiplier in effect prior to this prompt so we can restore it
@@ -189,17 +240,59 @@ def _make_lllite_sample_hooks(args, lllite, dit_dtype, vae=None, dit=None):
             vae=vae,
         )
         if is_semantic:
-            # v3: cond latent を凍結 DiT に通し hidden states を条件源にする
+            # v3: cond latent を凍結 DiT に通し hidden states を条件源にする。
+            # h_ref は t 不変なので prompt 単位で 1 回だけ前計算すればよい
             lllite.clear_cond_image()
+            device = cond_image.device
             with torch.no_grad():
-                h_ref = encode_reference_hidden_states(
-                    dit, cond_image, lllite.ref_blocks, lllite.ref_timestep
-                )
-            lllite.set_cond_hidden_states(h_ref)
+                if ref_context == "caption":
+                    prompt = prompt_dict.get("prompt", "")
+                    ctx_pos = _encode_prompt_context(prompt, device)
+                    if ctx_pos is None:
+                        logger.warning(
+                            "ref_context='caption': cannot encode the sample prompt "
+                            "(not cached and no text encoder); falling back to the uncond ref context"
+                        )
+                        ctx_pos = build_uncond_ref_context(dit, device, cond_image.dtype)
+                    # CFG の uncond ブランチ用 (negative prompt の context)。学習の caption dropout
+                    # (drop されたサンプルは参照も uncond) と整合する per-branch 切替
+                    entries = [(ctx_pos, None)]
+                    scale = prompt_dict.get("scale", 7.5)
+                    negative_prompt = prompt_dict.get("negative_prompt", "")
+                    if scale > 1.0 and negative_prompt is not None:
+                        ctx_neg = _encode_prompt_context(negative_prompt, device)
+                        if ctx_neg is not None and not torch.equal(ctx_neg, ctx_pos):
+                            entries.append((ctx_neg, None))
+                    entries = [
+                        (
+                            ctx,
+                            encode_reference_hidden_states(
+                                dit, cond_image, lllite.ref_blocks, lllite.ref_timestep, context=ctx
+                            ),
+                        )
+                        for ctx, _ in entries
+                    ]
+                    if len(entries) == 1:
+                        lllite.set_cond_hidden_states(entries[0][1])
+                    else:
+                        saved["dispatch_handle"] = install_ref_context_dispatch(dit, lllite, entries)
+                else:
+                    ref_ctx = (
+                        build_uncond_ref_context(dit, device, cond_image.dtype)
+                        if ref_context == "uncond"
+                        else None
+                    )
+                    h_ref = encode_reference_hidden_states(
+                        dit, cond_image, lllite.ref_blocks, lllite.ref_timestep, context=ref_ctx
+                    )
+                    lllite.set_cond_hidden_states(h_ref)
         else:
             lllite.set_cond_image(cond_image, cond_mask)
 
     def on_prompt_end(prompt_dict: dict):
+        if saved["dispatch_handle"] is not None:
+            saved["dispatch_handle"].remove()
+            saved["dispatch_handle"] = None
         lllite.clear_cond_image()
         if saved["multiplier"] is not None:
             lllite.set_multiplier(saved["multiplier"])
@@ -320,9 +413,14 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
             "(default: num_blocks // 2). Comma-separated indices (e.g. '2,13') enable the dual/multi "
             "concat trunk: one reference forward runs blocks up to the max index and the hidden states "
             "of each listed block are concatenated (shallower blocks cost nothing extra). "
+            "Index -1 selects the x_embedder output (the embedded cond latent itself, before any "
+            "block) as a pure-appearance source; note argparse needs the '=' form for a leading "
+            "minus (--lllite_ref_block=-1,14). "
             "/ semantic trunk が hidden states を取り出すブロック index (既定: num_blocks // 2)。"
             "'2,13' のようにカンマ区切りで複数指定すると dual/multi concat になる "
-            "(参照フォワードは最大 index まで 1 回だけ実行、浅いブロックの追加コストはゼロ)"
+            "(参照フォワードは最大 index まで 1 回だけ実行、浅いブロックの追加コストはゼロ)。"
+            "-1 は x_embedder 出力 (latent の埋め込みそのもの) を純外観の条件源として使う "
+            "(先頭がマイナスの値は --lllite_ref_block=-1,14 の = 形式で指定)"
         ),
     )
     parser.add_argument(
@@ -332,6 +430,21 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
         help=(
             "[semantic] timestep for the reference forward over the cond latent, in the [0, 1] scale "
             "(0 = clean, default). / 参照フォワードの timestep ([0,1] スケール、0 = clean)"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_ref_context",
+        type=str,
+        default="zero",
+        choices=list(LLLITE_REF_CONTEXT_MODES),
+        help=(
+            "[semantic] text context for the reference forward. 'zero' (default): zero context, "
+            "fully text-independent. 'uncond': a constant empty-prompt context (in-distribution, "
+            "still text-independent and cacheable; recommended). 'caption': the same context as the "
+            "main forward (instruct-pix2pix style; the frozen DiT computes the prompt-vs-image "
+            "mismatch into the reference features; caption dropout stays consistent automatically). "
+            "/ 参照フォワードの context。zero=ゼロ context (既定)、uncond=空プロンプト定数 (分布内・"
+            "テキスト非依存のまま、推奨)、caption=本体と同じ context (instruct-pix2pix 型)"
         ),
     )
     # --conditioning_data_dir は args_util.add_dataset_arguments 側で既に定義済み
@@ -581,6 +694,8 @@ def train(args):
                 f"--cond_emb_dim {args.cond_emb_dim} is small for the semantic trunk; the DiT hidden "
                 f"states carry semantic features, so 128 or so is recommended to avoid a bottleneck"
             )
+    elif args.lllite_ref_context != "zero":
+        raise ValueError("--lllite_ref_context is only supported with --lllite_trunk semantic")
 
     # Build LLLite (DiT を走査して各 Attention Linear に貼る)
     logger.info("Building ControlNet-LLLite (Anima)...")
@@ -600,6 +715,7 @@ def train(args):
         trunk=args.lllite_trunk,
         ref_block=args.lllite_ref_block,
         ref_timestep=args.lllite_ref_timestep,
+        ref_context=args.lllite_ref_context,
     )
 
     if args.network_weights is not None:
@@ -733,6 +849,10 @@ def train(args):
         dit_weight_dtype,
         vae,
         dit=accelerator.unwrap_model(wrapper).dit,
+        tokenize_strategy=tokenize_strategy,
+        text_encoding_strategy=text_encoding_strategy,
+        text_encoder=qwen3_text_encoder,
+        sample_prompts_te_outputs=sample_prompts_te_outputs,
     )
 
     def _sample_images(epoch_arg, step_arg):
@@ -785,6 +905,7 @@ def train(args):
         if args.lllite_trunk == "semantic":
             sai_metadata["lllite.ref_block"] = unwrapped.ref_blocks_str
             sai_metadata["lllite.ref_timestep"] = str(unwrapped.ref_timestep)
+            sai_metadata["lllite.ref_context"] = unwrapped.ref_context
         save_lllite_model(ckpt_file, unwrapped, dtype=save_dtype, metadata=sai_metadata)
 
     def _save_step(global_step_: int, epoch_: int):

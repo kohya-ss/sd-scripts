@@ -31,7 +31,10 @@ from networks.control_net_lllite_anima import (
     ControlNetLLLiteDiT,
     AnimaControlNetLLLiteWrapper,
     build_cond_tensors,
+    build_uncond_ref_context,
     encode_reference_hidden_states,
+    install_ref_context_dispatch,
+    parse_ref_blocks,
     save_lllite_model,
     load_lllite_weights,
 )
@@ -674,6 +677,176 @@ def check_semantic_trunk():
         except RuntimeError as e:
             assert "ref block count mismatch" in str(e), str(e)
     print("[D3] dual save/load round-trip + single/dual mix-up rejected OK")
+
+    # ------------------------------------------------------------------
+    # ref_block=-1 (x_embedder 出力) を検査
+    # ------------------------------------------------------------------
+    assert parse_ref_blocks("-1,3") == (-1, 3)
+    assert parse_ref_blocks(-1) == (-1,)
+    # D2 の wrapper 呼び出しで cond_emb が残っている (摂動済み up が生きている) ので、
+    # 素の参照フォワードにするため明示的に clear する
+    lllite_dual.clear_cond_image()
+    with torch.no_grad():
+        h_m1 = encode_reference_hidden_states(dit, cond_latent, -1, 0.0, padding_mask)
+        x_emb, _, _ = dit.prepare_embedded_sequence(
+            cond_latent.unsqueeze(2), fps=None, padding_mask=padding_mask
+        )
+    assert h_m1.shape == (B, 1, tok_H, tok_W, model_channels), h_m1.shape
+    assert torch.allclose(h_m1, x_emb), "-1 must return the x_embedder output (pre-block)"
+    # -1 は context / ref_timestep に依存しない
+    with torch.no_grad():
+        h_m1_ctx = encode_reference_hidden_states(
+            dit, cond_latent, -1, 0.7, padding_mask, context=torch.randn(B, 5, context_dim)
+        )
+    assert torch.allclose(h_m1, h_m1_ctx), "-1 must be independent of context and ref_timestep"
+    # dual (-1, 1): 先頭が x_embedder 出力、2 番目が block 1 出力
+    with torch.no_grad():
+        h_dm = encode_reference_hidden_states(dit, cond_latent, "-1,1", 0.0, padding_mask)
+    assert h_dm.shape == (B, 2, 1, tok_H, tok_W, model_channels), h_dm.shape
+    assert torch.allclose(h_dm[:, 0], x_emb) and torch.allclose(h_dm[:, 1], h_b1)
+    # trunk 構築 (K=2) + メタデータ round-trip
+    lllite_m = ControlNetLLLiteDiT(
+        dit, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
+        cond_dim=32, cond_resblocks=1,
+        cond_input_space="latent", trunk="semantic", ref_block="-1,1",
+    )
+    assert lllite_m.ref_blocks == (-1, 1)
+    assert lllite_m.ref_blocks_str == "-1,1"
+    assert parse_ref_blocks(lllite_m.ref_blocks_str) == (-1, 1)
+    with torch.no_grad():
+        cx_m = lllite_m.conditioning1(h_dm)
+    assert cx_m.shape == (B, tok_H * tok_W, 32)
+    print("[M1] ref_block=-1 (x_embedder output) OK")
+
+    # ------------------------------------------------------------------
+    # ref_context (zero / uncond / caption) + CFG dispatch を検査
+    # ------------------------------------------------------------------
+    # 小型 LLM Adapter を後付けして uncond / caption 経路を通す
+    from library.anima_models import LLMAdapter
+
+    torch.manual_seed(3)
+    dit.llm_adapter = LLMAdapter(
+        source_dim=48, target_dim=context_dim, model_dim=context_dim, num_layers=1, self_attn=False
+    )
+    dit.use_llm_adapter = True
+    dit.llm_adapter.requires_grad_(False)
+    dit.llm_adapter.eval()
+
+    # ctor 検証: stem + ref_context != zero は reject
+    try:
+        ControlNetLLLiteDiT(
+            dit, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
+            cond_dim=32, cond_input_space="latent", trunk="stem", ref_context="uncond",
+        )
+        raise AssertionError("stem + ref_context='uncond' should be rejected")
+    except ValueError as e:
+        assert "ref_context" in str(e), str(e)
+
+    # uncond context: shape / 決定性 / zero-context との差
+    with torch.no_grad():
+        u1 = build_uncond_ref_context(dit, cond_latent.device, cond_latent.dtype)
+        u2 = build_uncond_ref_context(dit, cond_latent.device, cond_latent.dtype)
+    assert u1.shape == (1, 1, context_dim), u1.shape
+    assert torch.allclose(u1, u2), "uncond ref context should be deterministic"
+    with torch.no_grad():
+        h_zero = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask)
+        h_unc = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=u1)
+    assert not torch.allclose(h_zero, h_unc, atol=1e-6), (
+        "a non-zero context should change the reference hidden states (cross-attn active)"
+    )
+    print(f"[R1] build_uncond_ref_context OK (shape={tuple(u1.shape)})")
+
+    # wrapper._build_ref_context: 各モードの返り値
+    for m in lllite_dual.lllite_modules:
+        m.org_module[0].forward = m.org_forward
+    lllite_r = ControlNetLLLiteDiT(
+        dit, cond_emb_dim=32, mlp_dim=32, target_layers="self_attn_q",
+        cond_dim=32, cond_resblocks=1,
+        cond_input_space="latent", trunk="semantic", ref_block=1, ref_context="caption",
+    )
+    lllite_r.apply_to()
+    wrapper_r = AnimaControlNetLLLiteWrapper(dit, lllite_r)
+
+    with torch.no_grad():
+        # caption + 推論経路 (t5 なし): context をそのまま返す
+        assert wrapper_r._build_ref_context(ctx, {}) is ctx
+        # caption + 学習経路 (t5 あり): adapter を通し padding をゼロ潰し
+        src = torch.randn(B, 6, 48)
+        t5_ids = torch.ones(B, 3, dtype=torch.long)
+        t5_mask = torch.tensor([[1, 1, 0], [1, 0, 0]], dtype=torch.long)
+        rc = wrapper_r._build_ref_context(
+            src,
+            {
+                "t5_input_ids": t5_ids,
+                "t5_attn_mask": t5_mask,
+                "source_attention_mask": torch.ones(B, 6, dtype=torch.long),
+            },
+        )
+        assert rc.shape == (B, 3, context_dim), rc.shape
+        assert (rc[~t5_mask.bool()] == 0).all(), "padding tokens must be zeroed"
+        # uncond: 定数キャッシュ (2 回目は同一オブジェクト)
+        lllite_r.ref_context = "uncond"
+        rc_u1 = wrapper_r._build_ref_context(ctx, {})
+        rc_u2 = wrapper_r._build_ref_context(ctx, {})
+        assert rc_u1 is rc_u2 and torch.allclose(rc_u1, u1)
+        # zero: None
+        lllite_r.ref_context = "zero"
+        assert wrapper_r._build_ref_context(ctx, {}) is None
+        lllite_r.ref_context = "caption"
+    print("[R2] wrapper._build_ref_context (zero/uncond/caption, train/infer paths) OK")
+
+    # caption の zero-init 等価 (wrapper end-to-end) + ref context が h_ref に効く
+    with torch.no_grad():
+        out_nc_r = wrapper_r(x, t, ctx, padding_mask=padding_mask)
+        out_z_r = wrapper_r(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+    assert torch.allclose(out_nc_r, out_z_r, atol=1e-5), "caption zero-init equivalence failed"
+    with torch.no_grad():
+        for m in lllite_r.lllite_modules:
+            m.up.weight.normal_(0, 0.01)
+        out_c1 = wrapper_r(x, t, ctx, cond_image=cond_latent, padding_mask=padding_mask)
+        ctx2 = torch.randn_like(ctx)
+        out_c2 = wrapper_r(x, t, ctx2, cond_image=cond_latent, padding_mask=padding_mask)
+        # 同じ ctx2 でも ref_context='zero' なら h_ref が変わる = context が参照に効いている
+        lllite_r.ref_context = "zero"
+        out_c2_zero = wrapper_r(x, t, ctx2, cond_image=cond_latent, padding_mask=padding_mask)
+        lllite_r.ref_context = "caption"
+    assert not torch.allclose(out_c1, out_c2, atol=1e-6)
+    assert not torch.allclose(out_c2, out_c2_zero, atol=1e-6), (
+        "caption vs zero ref context should change the output via h_ref"
+    )
+    print("[R3] caption ref context drives h_ref (wrapper end-to-end) OK")
+
+    # install_ref_context_dispatch: context 照合で cond_emb が切り替わる
+    ctx_a = torch.randn(B, 7, context_dim)
+    ctx_b = torch.randn(B, 7, context_dim)
+    with torch.no_grad():
+        h_a = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=ctx_a)
+        h_b = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=ctx_b)
+        cx_a = lllite_r.conditioning1(h_a)
+        cx_b = lllite_r.conditioning1(h_b)
+    handle = install_ref_context_dispatch(dit, lllite_r, [(ctx_a, h_a), (ctx_b, h_b)])
+    try:
+        with torch.no_grad():
+            dit(x, t, ctx_a, padding_mask=padding_mask)
+            got_a = lllite_r.lllite_modules[0].cond_emb
+            assert got_a is not None and torch.allclose(got_a, cx_a)
+            dit(x, t, ctx_b, padding_mask=padding_mask)
+            got_b = lllite_r.lllite_modules[0].cond_emb
+            assert torch.allclose(got_b, cx_b) and not torch.allclose(got_b, cx_a)
+            # 値一致 (同値の別テンソル) でも切り替わる
+            dit(x, t, ctx_a.clone(), padding_mask=padding_mask)
+            assert torch.allclose(lllite_r.lllite_modules[0].cond_emb, cx_a)
+            # 不一致はフォールバック (先頭 = positive)
+            dit(x, t, torch.randn_like(ctx_a), padding_mask=padding_mask)
+            assert torch.allclose(lllite_r.lllite_modules[0].cond_emb, cx_a)
+    finally:
+        handle.remove()
+    # remove 後は切り替わらない
+    lllite_r.clear_cond_image()
+    with torch.no_grad():
+        dit(x, t, ctx_b, padding_mask=padding_mask)
+    assert lllite_r.lllite_modules[0].cond_emb is None
+    print("[R4] install_ref_context_dispatch (per-CFG-branch h_ref switch) OK")
 
 
 if __name__ == "__main__":

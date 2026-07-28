@@ -47,9 +47,12 @@ import anima_minimal_inference as ami
 from library import anima_train_utils
 from networks.control_net_lllite_anima import (
     COND_INPUT_SPACES,
+    REF_CONTEXT_MODES,
     ControlNetLLLiteDiT,
     build_cond_tensors,
+    build_uncond_ref_context,
     encode_reference_hidden_states,
+    install_ref_context_dispatch,
     load_lllite_weights,
     parse_ref_blocks,
 )
@@ -233,6 +236,14 @@ def parse_args() -> argparse.Namespace:
         help="[semantic trunk] override ref_timestep from weights metadata",
     )
     parser.add_argument(
+        "--lllite_ref_context", type=str, default=None, choices=list(REF_CONTEXT_MODES),
+        help=(
+            "[semantic trunk] override ref_context from weights metadata (zero/uncond/caption). "
+            "Use the mode the weights were trained with; overriding is for ablation only. "
+            "'caption' precomputes one reference forward per CFG branch before the denoising loop"
+        ),
+    )
+    parser.add_argument(
         "--save_gate_maps", type=str, default=None,
         help=(
             "[semantic trunk] directory to dump per-module gate maps (predicted change-region masks) "
@@ -384,13 +395,23 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         if args.lllite_ref_timestep is not None
         else float(meta.get("lllite.ref_timestep", 0.0))
     )
+    # ref_context (v3). メタデータ欠落時は zero (旧重み互換)
+    meta_ref_context = meta.get("lllite.ref_context", "zero")
+    ref_context = (
+        args.lllite_ref_context if args.lllite_ref_context is not None else meta_ref_context
+    )
+    if trunk == "semantic" and ref_context != meta_ref_context:
+        logger.warning(
+            f"ref_context override: weights were trained with '{meta_ref_context}' but running "
+            f"with '{ref_context}' (train/inference mismatch; for ablation only)"
+        )
     version = meta.get("lllite.version", "?")
     inpaint_log = (
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
     )
     trunk_log = (
         f", trunk=semantic(ref_blocks={list(ref_blocks) if ref_blocks else None}, "
-        f"ref_timestep={ref_timestep})"
+        f"ref_timestep={ref_timestep}, ref_context={ref_context})"
         if trunk == "semantic"
         else ""
     )
@@ -418,6 +439,7 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         trunk=trunk,
         ref_block=ref_blocks,
         ref_timestep=ref_timestep,
+        ref_context=ref_context if trunk == "semantic" else "zero",
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -497,20 +519,66 @@ def generate_body(
     # honor per-prompt override of multiplier
     anima.lllite.set_multiplier(args.lllite_multiplier)
 
+    dispatch_handle = None
     if anima.lllite.trunk == "semantic":
         # v3: cond latent を凍結 DiT に通し hidden states を条件源にする (デノイズループ前に 1 回)。
         # per-step の t は dit.t_embedding_norm の forward hook が毎ステップ配る。
+        # h_ref は t 不変なので、ref_context='caption' でも (画像, context) 毎の前計算で足りる
         anima.lllite.clear_cond_image()
+        ref_context = anima.lllite.ref_context
         with torch.no_grad(), torch.autocast(
             device_type=device.type, dtype=torch.bfloat16, enabled=args.fp8
         ):
-            h_ref = encode_reference_hidden_states(
-                anima, cond_image, anima.lllite.ref_blocks, anima.lllite.ref_timestep
-            )
-        anima.lllite.set_cond_hidden_states(h_ref)
+            if ref_context == "caption":
+                # 正プロンプトの context で h_ref を作り、CFG 有効時は negative 側も前計算して
+                # forward pre-hook (install_ref_context_dispatch) でブランチごとに切り替える。
+                # 学習の「本体と同じ context を参照にも渡す」配線 (caption dropout ↔ uncond) と整合
+                ctx_pos = context["embed"][0].to(device, dtype=torch.bfloat16)
+                entries = [
+                    (
+                        ctx_pos,
+                        encode_reference_hidden_states(
+                            anima, cond_image, anima.lllite.ref_blocks,
+                            anima.lllite.ref_timestep, context=ctx_pos,
+                        ),
+                    )
+                ]
+                if args.guidance_scale != 1.0:
+                    ctx_neg = (context_null if context_null is not None else context)["embed"][0].to(
+                        device, dtype=torch.bfloat16
+                    )
+                    if not torch.equal(ctx_neg, ctx_pos):
+                        entries.append(
+                            (
+                                ctx_neg,
+                                encode_reference_hidden_states(
+                                    anima, cond_image, anima.lllite.ref_blocks,
+                                    anima.lllite.ref_timestep, context=ctx_neg,
+                                ),
+                            )
+                        )
+                if len(entries) == 1:
+                    anima.lllite.set_cond_hidden_states(entries[0][1])
+                else:
+                    dispatch_handle = install_ref_context_dispatch(anima, anima.lllite, entries)
+                h_ref = entries[0][1]
+                branch_log = f"{len(entries)} CFG branch(es)"
+            else:
+                ref_ctx = (
+                    build_uncond_ref_context(anima, device, torch.bfloat16)
+                    if ref_context == "uncond"
+                    else None
+                )
+                h_ref = encode_reference_hidden_states(
+                    anima, cond_image, anima.lllite.ref_blocks, anima.lllite.ref_timestep,
+                    context=ref_ctx,
+                )
+                anima.lllite.set_cond_hidden_states(h_ref)
+                branch_log = "shared"
         logger.info(
             f"LLLite reference forward: h_ref={tuple(h_ref.shape)} "
-            f"(ref_blocks={list(anima.lllite.ref_blocks)}, ref_timestep={anima.lllite.ref_timestep})"
+            f"(ref_blocks={list(anima.lllite.ref_blocks)}, ref_timestep={anima.lllite.ref_timestep}, "
+            f"ref_context={ref_context}, {branch_log})"
         )
     else:
         anima.lllite.set_cond_image(cond_image, cond_mask)
@@ -530,6 +598,8 @@ def generate_body(
             for m in anima.lllite.lllite_modules:
                 m.capture_gate = False
                 m.last_gate = None
+        if dispatch_handle is not None:
+            dispatch_handle.remove()
         anima.lllite.clear_cond_image()
 
 

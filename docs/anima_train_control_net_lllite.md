@@ -759,7 +759,7 @@ cond latent と concat -> (B,32,H/8,W/8) -> latent stem
 
 > **Status:** experimental. Aimed at **semantic editing tasks** (mask-free clothing change, background swap, occlusion removal) where the model must decide *which region of the control image to reject* — a decision that is semantic and global. The default remains the stem trunk (v2/v2.1) and existing weights are unaffected.
 
-With `--lllite_trunk semantic`, `conditioning1`'s input is no longer the cond image/latent itself but the **frozen DiT's own hidden states** of the cond latent: before the denoising forward, the cond latent is run through DiT blocks `0..max(ref_block)` (with a zero text context, so the features depend on the image only), and the output hidden states `(B, 1, H, W, D_model)` feed a lightweight trunk:
+With `--lllite_trunk semantic`, `conditioning1`'s input is no longer the cond image/latent itself but the **frozen DiT's own hidden states** of the cond latent: before the denoising forward, the cond latent is run through DiT blocks `0..max(ref_block)` (with a zero text context by default — see `--lllite_ref_context` below), and the output hidden states `(B, 1, H, W, D_model)` feed a lightweight trunk:
 
 ```
 cond image -> VAE encode -> frozen DiT blocks 0..max(ref_block) (reference forward, no_grad)
@@ -771,6 +771,14 @@ cond image -> VAE encode -> frozen DiT blocks 0..max(ref_block) (reference forwa
 
 `--lllite_ref_block` accepts either a single block index or a comma-separated list (e.g. `2,13`) for the **dual/multi concat trunk**: one reference forward runs blocks up to the *maximum* listed index and the hidden states of every listed block are collected along the way, LayerNorm'd per block, and concatenated before the shared down projection. Adding a shallower block to a deeper one therefore costs nothing extra at reference time — the motivation is to combine a *preservation-strong* shallow block (probe: block 2 or 7) with a *semantically separable* deeper block (probe: 13–14).
 
+The special index `-1` selects the **x_embedder output** (the embedded cond latent right after patchify, before any DiT block) — the purest position-matched appearance signal, equivalent in spirit to the v2.1 latent cond source. It carries almost no *semantic* gate material on its own (probe AUROC ≈ 0.63 vs ≈ 0.95 at mid blocks), so it is meant as the shallow member of a concat, e.g. `--lllite_ref_block=-1,14` (note the `=` form, which argparse needs for a leading minus). It is independent of the text context and `ref_timestep`, and with `-1` alone no DiT block runs at all.
+
+`--lllite_ref_context` selects the **text context of the reference forward** (see `references/anima_lllite_v3_semantic_trunk.md` §6.4 for the measurements behind this):
+
+* `zero` (default) — the zero context described above; fully text-independent.
+* `uncond` — a constant empty-prompt context (a length-1 zero embed through the LLM Adapter). This is the input the base model actually saw during its own caption-dropout training, i.e. *in-distribution*, whereas a zero context (cross-attn output exactly 0) never occurs in training. Probe: most of the caption-mode AUROC gain at the sweet-spot blocks comes from this in-distribution effect alone. Still a constant → text independence and future cacheability are preserved. **Recommended over `zero`.**
+* `caption` — the reference forward receives the *same* context as the main forward (instruct-pix2pix style): the frozen DiT computes the prompt-vs-image mismatch ("this region is a dress but the text says swimsuit") into the reference features, and the gate only has to read it. In training this is wired as a pass-through of the batch context, so **caption dropout stays consistent automatically** (dropped samples get an uncond reference too). At inference, `h_ref` is time-invariant, so one reference forward per CFG branch is precomputed before the denoising loop and switched per branch — per-step cost is unchanged.
+
 The rationale: the v2/v2.1 stem is trained from scratch, so it cannot learn *semantics* (e.g. "this token is clothing") from a few hundred pairs. The frozen DiT already computes semantic features — the semantic trunk parasitizes the base model for the *understanding* side the same way LLLite always parasitized it for the *generation* side.
 
 Two per-module mechanisms are added on top of the v2 module (`down`/`mid`/`cond_to_film`/`up`):
@@ -778,15 +786,16 @@ Two per-module mechanisms are added on top of the v2 module (`down`/`mid`/`cond_
 * **Multiplicative gate** — `Δx = σ(gate([cond_local, h])) ⊙ up(m)`: a per-token scalar gate that decides *where* to inject the condition, separately from the value path that decides *what* to inject. The gate weight is zero-init and the bias starts **open** (σ≈0.88) so gradients reach the value path from step 0; the gate then learns where to close (e.g. the clothing region). The gate map is directly visualizable as the model's predicted change-region mask (`--save_gate_maps` at inference).
 * **t-FiLM** — the DiT's own timestep embedding (captured per forward via a hook on `t_embedding_norm`) is projected by a shared zero-init `t_proj` into the cond space and added to `cond_local`, so the fixed reference features are re-interpreted per denoising step.
 
-The reference forward is text-independent and runs under `no_grad`; only blocks up to `ref_block` execute (default `num_blocks // 2`), so the training-step overhead is roughly half a DiT forward. At inference it runs **once per image** before the denoising loop.
+The reference forward runs under `no_grad` and is text-independent with `ref_context=zero/uncond`; only blocks up to `ref_block` execute (default `num_blocks // 2`), so the training-step overhead is roughly half a DiT forward. At inference it runs **once per image** (once per CFG branch with `ref_context=caption`) before the denoising loop.
 
 Arguments (training):
 
 | Argument | Default | Description |
 |---|---|---|
 | `--lllite_trunk` | `stem` | `semantic` enables the v3 trunk. Requires `--lllite_cond_input latent`; inpainting (`cond_in_channels=4`) is not supported yet |
-| `--lllite_ref_block` | `num_blocks // 2` | DiT block index(es) whose output hidden states feed the trunk. Comma-separated (e.g. `2,13`) enables the dual/multi concat trunk |
+| `--lllite_ref_block` | `num_blocks // 2` | DiT block index(es) whose output hidden states feed the trunk. Comma-separated (e.g. `2,13`) enables the dual/multi concat trunk. `-1` = x_embedder output (pure appearance; use the `=` form for a leading minus) |
 | `--lllite_ref_timestep` | `0.0` | timestep of the reference forward, `[0, 1]` scale (0 = clean) |
+| `--lllite_ref_context` | `zero` | text context of the reference forward: `zero` / `uncond` (in-distribution constant, recommended) / `caption` (prompt-conditioned reference) |
 
 With the semantic trunk, `--cond_emb_dim` should be raised (128 recommended; a warning is logged below 64): the 32-dim default was sized for the scratch stem and would bottleneck the semantic features. `--lllite_cond_dim` is the trunk width (also 128 recommended). Example:
 
@@ -806,9 +815,9 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_control_net_lllite
   --cache_latents --cache_text_encoder_outputs
 ```
 
-Saved weight keys (replacing the stem keys of Section 5): `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}` plus a per-module `{lllite_name}.gate.{weight,bias}`. With the dual/multi trunk, `ln_in` becomes a per-block list (`lllite_conditioning1.ln_in.{k}.*`) and `proj_in` widens to `K*D_model`. Metadata gains `lllite.trunk`, `lllite.ref_block` (comma-separated when dual, e.g. `"2,13"`), `lllite.ref_timestep`, and `lllite.version` is `"3"`. Stem and semantic weights are not interchangeable, and neither are single and dual semantic weights; the loader rejects both mix-ups explicitly.
+Saved weight keys (replacing the stem keys of Section 5): `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}` plus a per-module `{lllite_name}.gate.{weight,bias}`. With the dual/multi trunk, `ln_in` becomes a per-block list (`lllite_conditioning1.ln_in.{k}.*`) and `proj_in` widens to `K*D_model`. Metadata gains `lllite.trunk`, `lllite.ref_block` (comma-separated when dual, e.g. `"2,13"`), `lllite.ref_timestep`, `lllite.ref_context`, and `lllite.version` is `"3"`. Stem and semantic weights are not interchangeable, and neither are single and dual semantic weights; the loader rejects both mix-ups explicitly. `ref_context` adds no weight keys — but the trunk *learns against* the reference features that context produces, so run inference with the mode the weights were trained with (the inference script warns on an override mismatch).
 
-Inference: the metadata is used automatically; `--lllite_ref_block` / `--lllite_ref_timestep` can override it. `--save_gate_maps <dir>` dumps each module's last-step gate map (token-grid grayscale PNG, 1 = copy, 0 = rewrite) plus their mean — the single most useful diagnostic for whether the model has learned to localize the change region.
+Inference: the metadata is used automatically; `--lllite_ref_block` / `--lllite_ref_timestep` / `--lllite_ref_context` can override it (the last for ablation only). With `ref_context=caption` and CFG enabled, one reference forward per CFG branch (positive / negative prompt) is precomputed before the loop and switched per branch — matching the training-time caption-dropout wiring. `--save_gate_maps <dir>` dumps each module's last-step gate map (token-grid grayscale PNG, 1 = copy, 0 = rewrite) plus their mean — the single most useful diagnostic for whether the model has learned to localize the change region.
 
 Limitations:
 
@@ -820,9 +829,17 @@ Limitations:
 <details>
 <summary>日本語</summary>
 
-`--lllite_trunk semantic` を指定すると、`conditioning1` の入力が cond 画像/latent そのものではなく、**凍結 DiT 自身が計算した cond latent の中間 hidden states** になります。デノイズ forward の前に cond latent を DiT の block `0..max(ref_block)` に通し（text context はゼロ = 画像のみに依存する特徴）、その出力 `(B, 1, H, W, D_model)` を軽量トランク（LayerNorm → 低ランク Linear → ResBlock/ASPP → 1x1 Conv → LayerNorm）で共有 cond_emb に写します。
+`--lllite_trunk semantic` を指定すると、`conditioning1` の入力が cond 画像/latent そのものではなく、**凍結 DiT 自身が計算した cond latent の中間 hidden states** になります。デノイズ forward の前に cond latent を DiT の block `0..max(ref_block)` に通し（text context は既定でゼロ。後述の `--lllite_ref_context` で変更可）、その出力 `(B, 1, H, W, D_model)` を軽量トランク（LayerNorm → 低ランク Linear → ResBlock/ASPP → 1x1 Conv → LayerNorm）で共有 cond_emb に写します。
 
 `--lllite_ref_block` は単一 index のほか、カンマ区切り（例 `2,13`）で **dual/multi concat トランク**になります。参照フォワードは指定の最大 index まで 1 回だけ実行し、途中の各指定ブロックの hidden states を収集して per-block LayerNorm → 特徴次元 concat → 共有 down 射影（`K*D_model → cond_dim`）に通します。深いブロックに浅いブロックを足す追加コストは参照フォワード側ではゼロです。狙いは、保存性の強い浅層（probe 実測: block 2 / 7）と意味分離性の高い中深層（block 13–14）の組み合わせです。
+
+特別値 `-1` は **x_embedder 出力**（patchify 直後・ブロック通過前の埋め込み済み cond latent）を選択します。位置対応の外観信号としては最純粋で、v2.1 の latent cond 条件源に相当します。単体では意味的なゲート材料をほぼ持たない（probe AUROC ≈ 0.63、中層 ≈ 0.95）ため、concat の浅い側として使うのが想定です（例 `--lllite_ref_block=-1,14`。先頭がマイナスの値は `=` 形式で指定）。text context / `ref_timestep` に依存せず、`-1` 単独なら DiT ブロックは 1 つも実行されません。
+
+`--lllite_ref_context` は**参照フォワードの text context** を選びます（実測の背景は `references/anima_lllite_v3_semantic_trunk.md` §6.4）:
+
+* `zero`（既定）— 上記のゼロ context。テキスト完全非依存。
+* `uncond` — 空プロンプト相当の定数 context（長さ 1 の zero embed を LLM Adapter に通したもの）。ベースモデルが caption dropout で学習中に実際に見ている**分布内**の入力で、ゼロ context（cross-attn 出力が厳密に 0 = 学習中に一度も起きない状態）より条件源の質が上がります。probe 実測では sweet spot ブロックの caption ゲインの大半がこの分布内化だけで得られました。定数なのでテキスト非依存性・将来のキャッシュ可能性は zero と同じです。**zero より推奨**。
+* `caption` — 参照フォワードに**本体と同じ context** を渡します（instruct-pix2pix 型）。「この領域はドレスだがテキストは水着」という矛盾検出を凍結 DiT が特徴量内に計算し、ゲートはそれを読むだけになります。学習ではバッチの context をそのまま渡す配線なので **caption dropout と自動的に整合**します（drop されたサンプルは参照も uncond）。推論では h_ref が t 不変であることを利用し、CFG ブランチごとの参照フォワードをループ前に前計算してブランチ毎に切り替えます（ステップ毎のコストは不変）。
 
 狙い: v2/v2.1 の stem はスクラッチ学習なので、数百ペアから「このトークンは衣装」といった**意味**を学ぶことは原理的にできません。凍結 DiT は意味特徴を既に計算しているので、LLLite が生成側でベースモデルに寄生してきたのと同じやり方で、**理解側でも寄生**します。マスクなしの衣装変更・背景交換・オクルージョン除去のような「条件画像のどの領域を棄却するかを意味的・大域的に判断するタスク」向けです。
 
@@ -831,11 +848,11 @@ v2 モジュール構成に加わる 2 つの機構:
 * **乗算ゲート** — `Δx = σ(gate([cond_local, h])) ⊙ up(m)`。「何を注入するか（値パス）」と「どこで注入するか（ゲート）」を分解する per-token スカラーゲート。weight は zero-init、bias は**開いた状態**（σ≈0.88）で初期化されるため、学習初期から値パスに勾配が流れ、ゲートは後から「閉じるべき場所」（=衣装領域など）を学びます。ゲートマップは「モデルが予測した変更領域マスク」としてそのまま可視化できます（推論時 `--save_gate_maps`）。
 * **t-FiLM** — 本体の timestep embedding を（`t_embedding_norm` への forward hook で毎 forward 取得し）共有の zero-init `t_proj` で cond 空間に射影して cond_local に加算します。固定の参照特徴を「今のステップ向けにどう使うか」をアダプタ側が学べます。
 
-参照フォワードはテキスト非依存で `no_grad` 下で走り、`max(ref_block)`（既定 `num_blocks // 2`）までしか実行しないため、学習ステップの増分はおおよそ DiT forward の半分です。推論ではデノイズループ前に**画像あたり 1 回**だけ実行されます。
+参照フォワードは `no_grad` 下で走り（`ref_context=zero/uncond` ではテキスト非依存）、`max(ref_block)`（既定 `num_blocks // 2`）までしか実行しないため、学習ステップの増分はおおよそ DiT forward の半分です。推論ではデノイズループ前に**画像あたり 1 回**（`ref_context=caption` では CFG ブランチあたり 1 回）だけ実行されます。
 
 semantic trunk では `--cond_emb_dim` を引き上げてください（**128 推奨**、64 未満は警告が出ます）。既定の 32 はスクラッチ stem 向けのサイズで、意味特徴のボトルネックになります。`--lllite_cond_dim`（トランク幅）も 128 推奨です。
 
-保存キーは第 5 節の stem キーの代わりに `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}`、各モジュールに `{lllite_name}.gate.{weight,bias}` が加わります。dual/multi では `ln_in` が per-block のリスト（`lllite_conditioning1.ln_in.{k}.*`）になり、`proj_in` は `K*D_model` 幅になります。メタデータには `lllite.trunk` / `lllite.ref_block`（dual ではカンマ区切り、例 `"2,13"`）/ `lllite.ref_timestep` が入り、`lllite.version` は `"3"` になります。stem 重みと semantic 重みは非互換、semantic の single と dual も非互換で、いずれの取り違えもロード時に明示的に reject されます。
+保存キーは第 5 節の stem キーの代わりに `lllite_conditioning1.{ln_in,proj_in,resblocks.*,aspp.*,proj,out_norm,t_proj}`、各モジュールに `{lllite_name}.gate.{weight,bias}` が加わります。dual/multi では `ln_in` が per-block のリスト（`lllite_conditioning1.ln_in.{k}.*`）になり、`proj_in` は `K*D_model` 幅になります。メタデータには `lllite.trunk` / `lllite.ref_block`（dual ではカンマ区切り、例 `"2,13"`）/ `lllite.ref_timestep` / `lllite.ref_context` が入り、`lllite.version` は `"3"` になります。stem 重みと semantic 重みは非互換、semantic の single と dual も非互換で、いずれの取り違えもロード時に明示的に reject されます。`ref_context` 自体は重みキーを増やしませんが、トランクはその context が作る参照特徴に対して学習されるため、**推論は学習時と同じモードで**行ってください（推論スクリプトは override 時の不一致を警告します）。
 
 制限: inpainting（mask）は未対応。参照 hidden states は毎ステップ再計算（ディスクキャッシュ未実装）。`--compile` 使用時は参照フォワード（cond 解除状態）と本 forward（cond セット状態)で 2 種類のグラフが焼かれるため、バケット解像度あたり recompile が 1 回増えます。ゲートは per-token（位置 i は参照の位置 i しか読めない。ResBlock/ASPP で中域までは拡張）なので、参照の別の場所を読む必要がある構図変更を伴う編集はこのトランクのスコープ外です。
 

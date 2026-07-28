@@ -33,6 +33,15 @@ COND_INPUT_SPACES: Tuple[str, ...] = ("pixel", "latent")
 #   semantic: cond latent を凍結 DiT に通した中間 hidden states を条件源にする (v3)
 TRUNK_TYPES: Tuple[str, ...] = ("stem", "semantic")
 
+# v3 参照フォワードの context モード (メタデータ欠落時は "zero" = 旧重み互換)
+#   zero   : ゼロ context (cross-attn 出力が厳密に 0。テキスト完全非依存)
+#   uncond : 空プロンプト相当の定数 context (長さ 1 の zero embed を LLM Adapter に通す。
+#            ベースが caption dropout で学習中に見ている「分布内の無情報 context」。
+#            テキスト非依存性・キャッシュ可能性は zero と同じまま分布内化の利得を得る)
+#   caption: 生成プロンプトの context を参照フォワードにも渡す (instruct-pix2pix 型。
+#            学習では本体 forward と同じ context = caption dropout と自動整合)
+REF_CONTEXT_MODES: Tuple[str, ...] = ("zero", "uncond", "caption")
+
 # latent モードで conditioning1 が受け取る VAE latent のチャネル数 (Qwen-Image VAE z_dim)
 LATENT_COND_CHANNELS = 16
 
@@ -582,6 +591,7 @@ class ControlNetLLLiteDiT(nn.Module):
         trunk: str = "stem",
         ref_block=None,  # int / "2,13" 形式の str / int sequence (parse_ref_blocks 参照)
         ref_timestep: float = 0.0,
+        ref_context: str = "zero",
     ):
         super().__init__()
 
@@ -590,6 +600,11 @@ class ControlNetLLLiteDiT(nn.Module):
             f"cond_input_space must be one of {list(COND_INPUT_SPACES)}, got {cond_input_space!r}"
         )
         assert trunk in TRUNK_TYPES, f"trunk must be one of {list(TRUNK_TYPES)}, got {trunk!r}"
+        assert ref_context in REF_CONTEXT_MODES, (
+            f"ref_context must be one of {list(REF_CONTEXT_MODES)}, got {ref_context!r}"
+        )
+        if trunk != "semantic" and ref_context != "zero":
+            raise ValueError(f"ref_context={ref_context!r} is only supported with trunk='semantic'")
 
         self.cond_emb_dim = cond_emb_dim
         self.mlp_dim = mlp_dim
@@ -639,6 +654,7 @@ class ControlNetLLLiteDiT(nn.Module):
             self.model_dim = int(model_dim)
             self.ref_blocks = ref_blocks
             self.ref_timestep = float(ref_timestep)
+            self.ref_context = ref_context
 
             # semantic trunk: hidden states (B, [K,] T, H, W, D_model) -> (B, S, cond_emb_dim)
             self.conditioning1 = _ConditioningSemanticTrunk(
@@ -650,6 +666,7 @@ class ControlNetLLLiteDiT(nn.Module):
             self.model_dim = None
             self.ref_blocks = None
             self.ref_timestep = 0.0
+            self.ref_context = "zero"
 
             # pixel : cond image  (B, cond_in_channels, H*16, W*16) -> (B, S, cond_emb_dim)
             # latent: cond latent (B, 16, H*2, W*2) (+ mask (B,1,H*16,W*16)) -> (B, S, cond_emb_dim)
@@ -697,7 +714,7 @@ class ControlNetLLLiteDiT(nn.Module):
         )
         trunk_info = (
             f"trunk=semantic(ref_blocks={list(self.ref_blocks)}, ref_timestep={self.ref_timestep}, "
-            f"model_dim={self.model_dim})"
+            f"ref_context={self.ref_context}, model_dim={self.model_dim})"
             if trunk == "semantic"
             else "trunk=stem"
         )
@@ -859,6 +876,7 @@ def encode_reference_hidden_states(
     ref_block,
     ref_timestep: float = 0.0,
     padding_mask: Optional[torch.Tensor] = None,
+    context: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """v3 (semantic trunk): 凍結 Anima DiT に cond latent を通し、blocks[ref_block] 出力の
     hidden states を返す。max(ref_block) 以降のブロックは実行しない。
@@ -869,10 +887,14 @@ def encode_reference_hidden_states(
     index -1 は x_embedder 出力 (patchify 直後・ブロック通過前) を返す特別値。
     -1 のみの指定ではブロックを一切実行しない (t 埋め込み・context も不要)。
 
-    cross-attn の context にはゼロテンソルを渡す。Anima は padding トークンをゼロ潰しして
-    そのまま attend させる規約で、かつ k_proj/v_proj は bias なしなので、ゼロ context では
-    cross-attn の出力が厳密に 0 になる (= テキスト完全非依存の「画像のみの特徴」)。
-    テキストに依存しないため、将来のディスクキャッシュ対象にできる。
+    context=None (既定) では cross-attn にゼロテンソルを渡す。Anima は padding トークンを
+    ゼロ潰ししてそのまま attend させる規約で、かつ k_proj/v_proj は bias なしなので、
+    ゼロ context では cross-attn の出力が厳密に 0 になる (= テキスト完全非依存の
+    「画像のみの特徴」)。テキストに依存しないため、将来のディスクキャッシュ対象にできる。
+
+    context に LLM Adapter 通過済みの (B or 1, L, ctx_dim) を渡すと、参照フォワードが
+    その context で条件付けされる (ref_context='uncond'/'caption'、references §6.4)。
+    padding 位置はゼロ潰し済みであること。B=1 はバッチへ expand される。
 
     呼び出し側の責務:
       - 事前に LLLite の cond を clear しておく (モジュールは cond_emb None で素通りする)
@@ -925,8 +947,17 @@ def encode_reference_hidden_states(
         t_embedding_B_T_D, adaln_lora_B_T_3D = dit.t_embedder(t)
         t_embedding_B_T_D = dit.t_embedding_norm(t_embedding_B_T_D)
 
-        ctx_dim = dit.blocks[0].cross_attn.context_dim
-        context = torch.zeros(bsz, 1, ctx_dim, device=cond_latent.device, dtype=cond_latent.dtype)
+        if context is None:
+            ctx_dim = dit.blocks[0].cross_attn.context_dim
+            context = torch.zeros(bsz, 1, ctx_dim, device=cond_latent.device, dtype=cond_latent.dtype)
+        else:
+            assert context.dim() == 3, f"context must be (B, L, ctx_dim), got {tuple(context.shape)}"
+            context = context.to(device=cond_latent.device, dtype=cond_latent.dtype)
+            if context.shape[0] == 1 and bsz > 1:
+                context = context.expand(bsz, -1, -1)
+            assert context.shape[0] == bsz, (
+                f"context batch mismatch: {context.shape[0]} vs cond latent {bsz}"
+            )
 
         attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
         use_fp32 = x.dtype == torch.float16
@@ -952,6 +983,78 @@ def encode_reference_hidden_states(
     return torch.stack(collected, dim=1)  # (B, K, T, H, W, D)
 
 
+@torch.no_grad()
+def build_uncond_ref_context(dit: nn.Module, device, dtype) -> torch.Tensor:
+    """ref_context='uncond' 用の定数 context (1, 1, ctx_dim) を作る。
+
+    長さ 1 の zero embed を source に、</s> 1 トークンを target に LLM Adapter へ通すと
+    空文字列プロンプト相当の uncond context になる (kohya-ss 検証済みのレシピ)。
+    ベースモデルが caption dropout で学習中に見ている「分布内の無情報 context」であり、
+    ゼロ context (学習中に一度も起きない cross-attn 出力 0) より分布内。定数なので
+    テキスト非依存性・キャッシュ可能性は zero と同じまま。
+    """
+    adapter = getattr(dit, "llm_adapter", None)
+    assert adapter is not None, "dit has no llm_adapter; ref_context='uncond' requires it"
+    src_dim = adapter.blocks[0].cross_attn.context_dim
+    source = torch.zeros(1, 1, src_dim, device=device, dtype=dtype)
+    ones = torch.ones(1, 1, device=device, dtype=torch.long)
+    t5_input_ids = ones.clone()  # T5 </s> = token id 1
+    ctx = adapter(source, t5_input_ids, target_attention_mask=ones, source_attention_mask=ones)
+    return ctx.to(dtype)  # (1, 1, ctx_dim)
+
+
+def install_ref_context_dispatch(dit: nn.Module, lllite: "ControlNetLLLiteDiT", entries):
+    """CFG の cond/uncond ブランチごとに異なる参照 h_ref を配るための forward pre-hook を
+    dit に登録する (推論・サンプル生成用。学習ループはバッチ単位で context が 1 つなので不要)。
+
+    h_ref は t 不変 (fixed t_ref) なので、(cond 画像, context) の組ごとにループ前へ 1 回だけ
+    前計算できる。本 hook は dit.forward の context 引数を entries の context と照合し、
+    一致した組の cond_emb (semantic trunk 通過済み) を全 LLLite モジュールへ配る。
+    これにより denoising ループ本体を書き換えずに per-branch の h_ref 切替ができ、
+    学習時の「本体と同じ context を参照にも渡す」配線 (caption dropout ↔ uncond) と整合する。
+
+    Args:
+        dit: Anima モデル (forward の第 3 位置引数 or kwarg 'context' を照合する)
+        lllite: 対応する ControlNetLLLiteDiT (trunk='semantic')
+        entries: [(context, h_ref)] のリスト。context は dit.forward に渡される context と
+                 値一致するテンソル (post-LLM Adapter)。h_ref は encode_reference_hidden_states
+                 をその context で呼んだ出力。先頭の組が不一致時のフォールバック
+    Returns:
+        hook handle。呼び出し側が handle.remove() で解除する (finally 推奨)
+    """
+    assert lllite.trunk == "semantic", "install_ref_context_dispatch is only for trunk='semantic'"
+    assert len(entries) >= 1
+    # semantic trunk は h_ref ごとに 1 回だけ通し、配布用 cond_emb (cx) をキャッシュしておく
+    prepared = []
+    with torch.no_grad():
+        for ctx, h_ref in entries:
+            cx = lllite.conditioning1(h_ref)  # (B, S, cond_emb_dim)
+            prepared.append((ctx, cx))
+            lllite.last_cond_hw = (h_ref.shape[-3], h_ref.shape[-2])
+    warned = [False]
+
+    def _pre_hook(_module, hook_args, hook_kwargs):
+        ctx = hook_kwargs.get("context")
+        if ctx is None and len(hook_args) > 2:
+            ctx = hook_args[2]
+        for ref_ctx, cx in prepared:
+            if ctx is ref_ctx or (
+                ctx is not None and ctx.shape == ref_ctx.shape and torch.equal(ctx, ref_ctx)
+            ):
+                lllite._distribute_cond_emb(cx)
+                return None
+        if not warned[0]:
+            warned[0] = True
+            logger.warning(
+                "ref context dispatch: forward context matched no precomputed entry; "
+                "falling back to the first (positive) h_ref"
+            )
+        lllite._distribute_cond_emb(prepared[0][1])
+        return None
+
+    return dit.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+
+
 class AnimaControlNetLLLiteWrapper(nn.Module):
     """accelerator.prepare に渡す最上位 nn.Module.
     forward 内で lllite.set_cond_image を呼んで cond の計算を accumulate/autocast/DDP スコープに入れる."""
@@ -960,6 +1063,43 @@ class AnimaControlNetLLLiteWrapper(nn.Module):
         super().__init__()
         self.dit = dit
         self.lllite = lllite
+        # ref_context='uncond' 用の定数 context キャッシュ (plain 属性なので state_dict には入らない)
+        self._uncond_ref_ctx: Optional[torch.Tensor] = None
+
+    def _build_ref_context(self, context: torch.Tensor, kwargs: dict) -> Optional[torch.Tensor]:
+        """参照フォワードに渡す context を ref_context モードに応じて構築する (no_grad 下で呼ぶ)。
+
+        - zero   : None (現行のゼロ context)
+        - uncond : 定数 context (build_uncond_ref_context、初回のみ計算しキャッシュ)
+        - caption: 本体 forward と同じ context。学習経路 (kwargs に t5_input_ids がある =
+                   context は pre-adapter の prompt_embeds) では LLM Adapter を no_grad で通す。
+                   caption dropout で置換されたサンプルは参照側も自動で uncond になる。
+                   推論経路 (t5_input_ids なし = context は post-adapter) ではそのまま返す
+        """
+        mode = self.lllite.ref_context
+        if mode == "zero":
+            return None
+        if mode == "uncond":
+            cached = self._uncond_ref_ctx
+            if cached is None or cached.device != context.device or cached.dtype != context.dtype:
+                cached = build_uncond_ref_context(self.dit, context.device, context.dtype)
+                self._uncond_ref_ctx = cached
+            return cached
+        # caption
+        t5_input_ids = kwargs.get("t5_input_ids")
+        adapter = getattr(self.dit, "llm_adapter", None)
+        if t5_input_ids is None or adapter is None:
+            return context  # 既に最終 context (本体もこのまま使う)
+        t5_attn_mask = kwargs.get("t5_attn_mask")
+        ref_ctx = adapter(
+            source_hidden_states=context,
+            target_input_ids=t5_input_ids,
+            target_attention_mask=t5_attn_mask,
+            source_attention_mask=kwargs.get("source_attention_mask"),
+        )
+        if t5_attn_mask is not None:
+            ref_ctx[~t5_attn_mask.bool()] = 0  # 本体 forward と同じ padding ゼロ潰し
+        return ref_ctx
 
     def forward(
         self,
@@ -990,12 +1130,14 @@ class AnimaControlNetLLLiteWrapper(nn.Module):
                 # 参照フォワード中は LLLite モジュールを素通りさせる
                 self.lllite.clear_cond_image()
                 with torch.no_grad():
+                    ref_ctx = self._build_ref_context(context, kwargs)
                     h_ref = encode_reference_hidden_states(
                         self.dit,
                         cond_image,
                         self.lllite.ref_blocks,
                         self.lllite.ref_timestep,
                         padding_mask=kwargs.get("padding_mask"),
+                        context=ref_ctx,
                     )
                 self.lllite.set_cond_hidden_states(h_ref)
                 return self.dit(x, timesteps, context, **kwargs)
