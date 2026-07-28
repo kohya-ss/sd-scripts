@@ -24,15 +24,21 @@ ref_block の sweet spot。2 ブロック concat なら「保存性最良の浅�
 
 参照フォワードは学習時と同じ規約 (固定 ref_timestep / no_grad)。context は --context で選択:
 
-  - zero    : ゼロ context (v3 MVP の既定。cross-attn 出力が厳密に 0 = テキスト非依存)
-  - uncond  : 空文字列プロンプトを text encoder + LLM Adapter に通した context (分布内の無情報 context)
-  - caption : ターゲット画像のキャプション (生成プロンプト) を通した context
-              = プロンプト条件付き参照 (references §6.4) の事前見積もり
+  - zero             : ゼロ context (v3 MVP の既定。cross-attn 出力が厳密に 0 = テキスト非依存)
+  - uncond           : 空文字列プロンプトを text encoder + LLM Adapter に通した context
+                       (分布内の無情報 context。caption dropout でモデルが学習中に見ている条件)
+  - caption          : ターゲット画像のキャプション (生成プロンプト) を通した context
+                       = プロンプト条件付き参照 (references §6.4) の事前見積もり
+  - caption_shuffled : 別ペアのキャプションを割り当てた対照条件 (1 ローテーション。
+                       ペア順は seed 付きシャッフル済みなのでランダム対応と等価)
 
 カンマ区切りで複数指定すると同一ペア・同一トークンサブサンプルで並走し、モード間の
-AUROC / preservation を対比較する (「テキスト情報の効果」= caption - uncond、
-「分布内化の効果」= uncond - zero の切り分け)。zero との比較で caption の AUROC が
-深めブロックで伸びるなら、凍結 DiT がプロンプト矛盾検出を特徴量に書き込めている証拠。
+AUROC / preservation を対比較する。分解の読み方:
+
+  uncond - zero               = 分布内化の効果 (テキスト情報ゼロのまま)
+  caption_shuffled - uncond   = 「もっともらしい自然文なら何でも良い」効果
+  caption - caption_shuffled  = 画像とプロンプトの対応関係の効果 (矛盾検出そのもの)。
+                                ここが正なら instruct-pix2pix 型配線の直接的な根拠になる。
 
 注意: モード数に比例して DiT フォワード回数と ridge 積算メモリ (~1GB/モード @ D=2048) が
 増える。VRAM が苦しければモードを分けて実行してよい (同一 seed ならペア選択は一致する)。
@@ -42,7 +48,7 @@ Run (example):
       --dit <anima.safetensors> --vae <qwen_image_vae.safetensors> \
       --image_dir <target images> --cond_dir <condition images> \
       --image_size 1024 1024 --num_pairs 32 --device cuda \
-      --context zero,uncond,caption --text_encoder <qwen3 dir or safetensors>
+      --context zero,uncond,caption,caption_shuffled --text_encoder <qwen3 dir or safetensors>
 """
 
 import argparse
@@ -86,7 +92,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ref_timestep", type=float, default=0.0, help="reference forward timestep ([0,1] scale)")
     parser.add_argument(
         "--context", type=str, default="zero",
-        help="comma-separated reference-forward context modes: zero | uncond | caption (see module docstring)",
+        help="comma-separated reference-forward context modes: zero | uncond | caption | caption_shuffled "
+             "(see module docstring)",
     )
     parser.add_argument(
         "--text_encoder", type=str, default=None,
@@ -118,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     assert 0.0 < args.unchanged_quantile < args.changed_quantile < 1.0
 
     args.context_modes = [m.strip() for m in args.context.split(",") if m.strip()]
-    valid_modes = ("zero", "uncond", "caption")
+    valid_modes = ("zero", "uncond", "caption", "caption_shuffled")
     assert args.context_modes, "--context must specify at least one mode"
     assert all(m in valid_modes for m in args.context_modes), (
         f"--context modes must be in {valid_modes}, got {args.context_modes}"
@@ -269,7 +276,9 @@ def main():
 
     # --- captions (target 画像の生成プロンプト) ---
     captions = None
-    if "caption" in modes:
+    if "caption" in modes or "caption_shuffled" in modes:
+        if "caption_shuffled" in modes:
+            assert len(pairs) >= 2, "--context caption_shuffled requires at least 2 pairs"
         captions, missing = [], []
         for _, tgt_path in pairs:
             cap_path = os.path.splitext(tgt_path)[0] + args.caption_extension
@@ -318,6 +327,12 @@ def main():
             return None
         if mode == "uncond":
             return uncond_context
+        if mode == "caption_shuffled":
+            # 1 ローテーションで別ペアのキャプションを割り当てる (ペア順は seed 付き
+            # シャッフル済みなのでランダム対応と等価。自分のキャプションには当たらない)
+            return build_llm_adapter_context(
+                dit, prompt_embeds_map[captions[(pair_idx + 1) % len(captions)]], device, dtype
+            )
         return build_llm_adapter_context(dit, prompt_embeds_map[captions[pair_idx]], device, dtype)
 
     # probe 用のストリーミング積算 (train split): モード x ブロックごとに Gram (D+1)^2 と X^T y
@@ -475,8 +490,13 @@ def main():
             p_str = " | ".join(f"{pres[m][k]:^+{len(f'pres[{m}]')}.4f}" for m in modes)
             print(f"  {k:3d} | {a_str} | {d_str} | {p_str}")
         print()
-        if "caption" in modes and "uncond" in modes:
-            print("Split: 'uncond' - 'zero' = in-distribution effect (a real but empty context),")
+        if "uncond" in modes and "zero" in modes:
+            print("Split: 'uncond' - 'zero' = in-distribution effect (a real but empty context).")
+        if "caption" in modes and "caption_shuffled" in modes:
+            print("       'caption_shuffled' - 'uncond' = any-plausible-text effect,")
+            print("       'caption' - 'caption_shuffled' = image-prompt correspondence effect (mismatch")
+            print("       detection itself; if positive, direct evidence for prompt-conditioned reference).")
+        elif "caption" in modes and "uncond" in modes:
             print("       'caption' - 'uncond' = text-information effect (prompt-conditioned reference, refs #6.4).")
 
     print()
