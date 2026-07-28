@@ -742,19 +742,29 @@ def check_semantic_trunk():
     except ValueError as e:
         assert "ref_context" in str(e), str(e)
 
-    # uncond context: shape / 決定性 / zero-context との差
+    # uncond context: shape / 決定性 / ゼロパッド (dropout 構成の薄め) / zero-context との差
     with torch.no_grad():
         u1 = build_uncond_ref_context(dit, cond_latent.device, cond_latent.dtype)
         u2 = build_uncond_ref_context(dit, cond_latent.device, cond_latent.dtype)
+        u_pad = build_uncond_ref_context(dit, cond_latent.device, cond_latent.dtype, pad_to_length=9)
     assert u1.shape == (1, 1, context_dim), u1.shape
     assert torch.allclose(u1, u2), "uncond ref context should be deterministic"
+    assert u_pad.shape == (1, 9, context_dim), u_pad.shape
+    assert torch.allclose(u_pad[:, :1], u1) and (u_pad[:, 1:] == 0).all(), (
+        "padded uncond context must be [uncond token, zeros...] (caption-dropout construct)"
+    )
     with torch.no_grad():
         h_zero = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask)
-        h_unc = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=u1)
+        h_unc = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=u_pad)
+        h_unc_len1 = encode_reference_hidden_states(dit, cond_latent, 1, 0.0, padding_mask, context=u1)
     assert not torch.allclose(h_zero, h_unc, atol=1e-6), (
         "a non-zero context should change the reference hidden states (cross-attn active)"
     )
-    print(f"[R1] build_uncond_ref_context OK (shape={tuple(u1.shape)})")
+    # 長さ 1 とパッド済みで cross-attn の薄まり方が変わる (softmax=1 の定数注入の検出)
+    assert not torch.allclose(h_unc, h_unc_len1, atol=1e-6), (
+        "zero-padding must dilute the uncond token (length-1 context would inject it at weight 1)"
+    )
+    print(f"[R1] build_uncond_ref_context OK (token={tuple(u1.shape)}, padded={tuple(u_pad.shape)})")
 
     # wrapper._build_ref_context: 各モードの返り値
     for m in lllite_dual.lllite_modules:
@@ -784,11 +794,16 @@ def check_semantic_trunk():
         )
         assert rc.shape == (B, 3, context_dim), rc.shape
         assert (rc[~t5_mask.bool()] == 0).all(), "padding tokens must be zeroed"
-        # uncond: 定数キャッシュ (2 回目は同一オブジェクト)
+        # uncond: 本体 context 長へゼロパッド + 定数キャッシュ (2 回目は同一オブジェクト)
         lllite_r.ref_context = "uncond"
-        rc_u1 = wrapper_r._build_ref_context(ctx, {})
+        rc_u1 = wrapper_r._build_ref_context(ctx, {})  # 推論経路: context 長 = ctx.shape[1]
         rc_u2 = wrapper_r._build_ref_context(ctx, {})
-        assert rc_u1 is rc_u2 and torch.allclose(rc_u1, u1)
+        assert rc_u1 is rc_u2
+        assert rc_u1.shape == (1, ctx.shape[1], context_dim), rc_u1.shape
+        assert torch.allclose(rc_u1[:, :1], u1) and (rc_u1[:, 1:] == 0).all()
+        # 学習経路: t5 長でキャッシュが張り直される
+        rc_u3 = wrapper_r._build_ref_context(ctx, {"t5_input_ids": torch.ones(B, 3, dtype=torch.long)})
+        assert rc_u3.shape == (1, 3, context_dim), rc_u3.shape
         # zero: None
         lllite_r.ref_context = "zero"
         assert wrapper_r._build_ref_context(ctx, {}) is None

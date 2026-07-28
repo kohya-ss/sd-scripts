@@ -244,6 +244,10 @@ def _make_lllite_sample_hooks(
             # h_ref は t 不変なので prompt 単位で 1 回だけ前計算すればよい
             lllite.clear_cond_image()
             device = cond_image.device
+            # uncond context は本体 context 長 (T5 長) へゼロパッドする (長さ 1 のままだと
+            # softmax=1 の定数注入で参照特徴が壊れる。build_uncond_ref_context 参照)
+            t5_len = tokenize_strategy.t5_max_length if tokenize_strategy is not None else 512
+
             with torch.no_grad():
                 if ref_context == "caption":
                     prompt = prompt_dict.get("prompt", "")
@@ -253,7 +257,9 @@ def _make_lllite_sample_hooks(
                             "ref_context='caption': cannot encode the sample prompt "
                             "(not cached and no text encoder); falling back to the uncond ref context"
                         )
-                        ctx_pos = build_uncond_ref_context(dit, device, cond_image.dtype)
+                        ctx_pos = build_uncond_ref_context(
+                            dit, device, cond_image.dtype, pad_to_length=t5_len
+                        )
                     # CFG の uncond ブランチ用 (negative prompt の context)。学習の caption dropout
                     # (drop されたサンプルは参照も uncond) と整合する per-branch 切替
                     entries = [(ctx_pos, None)]
@@ -278,7 +284,7 @@ def _make_lllite_sample_hooks(
                         saved["dispatch_handle"] = install_ref_context_dispatch(dit, lllite, entries)
                 else:
                     ref_ctx = (
-                        build_uncond_ref_context(dit, device, cond_image.dtype)
+                        build_uncond_ref_context(dit, device, cond_image.dtype, pad_to_length=t5_len)
                         if ref_context == "uncond"
                         else None
                     )

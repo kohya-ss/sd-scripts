@@ -984,14 +984,23 @@ def encode_reference_hidden_states(
 
 
 @torch.no_grad()
-def build_uncond_ref_context(dit: nn.Module, device, dtype) -> torch.Tensor:
-    """ref_context='uncond' 用の定数 context (1, 1, ctx_dim) を作る。
+def build_uncond_ref_context(
+    dit: nn.Module, device, dtype, pad_to_length: Optional[int] = None
+) -> torch.Tensor:
+    """ref_context='uncond' 用の定数 context (1, pad_to_length or 1, ctx_dim) を作る。
 
     長さ 1 の zero embed を source に、</s> 1 トークンを target に LLM Adapter へ通すと
-    空文字列プロンプト相当の uncond context になる (kohya-ss 検証済みのレシピ)。
+    空文字列プロンプト相当の uncond トークンになる (kohya-ss 検証済みのレシピ)。
     ベースモデルが caption dropout で学習中に見ている「分布内の無情報 context」であり、
     ゼロ context (学習中に一度も起きない cross-attn 出力 0) より分布内。定数なので
     テキスト非依存性・キャッシュ可能性は zero と同じまま。
+
+    pad_to_length は必ず本体 forward の context 長 (T5 長, 通常 512) を渡すこと。
+    caption dropout の uncond は「実トークン 1 個 + ゼロ (L-1) 個を全部 attend」であり、
+    cross-attn の softmax がゼロ key に薄められて実トークンの重みは e^s/(e^s+L-1) に
+    留まる。長さ 1 のまま渡すと key が 1 個しかないため softmax 重みが query に依らず
+    厳密に 1 となり、全ブロック・全位置に定数ベクトルがフルパワーで注入されて
+    参照特徴が分布外ドリフトを起こす (実機で loss が横ばいになる故障モードを確認済み)。
     """
     adapter = getattr(dit, "llm_adapter", None)
     assert adapter is not None, "dit has no llm_adapter; ref_context='uncond' requires it"
@@ -1000,7 +1009,11 @@ def build_uncond_ref_context(dit: nn.Module, device, dtype) -> torch.Tensor:
     ones = torch.ones(1, 1, device=device, dtype=torch.long)
     t5_input_ids = ones.clone()  # T5 </s> = token id 1
     ctx = adapter(source, t5_input_ids, target_attention_mask=ones, source_attention_mask=ones)
-    return ctx.to(dtype)  # (1, 1, ctx_dim)
+    ctx = ctx.to(dtype)  # (1, 1, ctx_dim)
+    if pad_to_length is not None and pad_to_length > 1:
+        pad = torch.zeros(1, pad_to_length - 1, ctx.shape[-1], device=ctx.device, dtype=ctx.dtype)
+        ctx = torch.cat([ctx, pad], dim=1)  # (1, L, ctx_dim) — dropout 構成と同じゼロ薄め
+    return ctx
 
 
 def install_ref_context_dispatch(dit: nn.Module, lllite: "ControlNetLLLiteDiT", entries):
@@ -1080,9 +1093,21 @@ class AnimaControlNetLLLiteWrapper(nn.Module):
         if mode == "zero":
             return None
         if mode == "uncond":
+            # 本体 context と同じ長さへゼロパッドする (長さは学習経路なら t5 長、推論経路なら
+            # post-adapter context 長)。長さ 1 のままだと softmax=1 の定数注入になる
+            # (build_uncond_ref_context の docstring 参照)
+            t5_input_ids = kwargs.get("t5_input_ids")
+            ctx_len = t5_input_ids.shape[1] if t5_input_ids is not None else context.shape[1]
             cached = self._uncond_ref_ctx
-            if cached is None or cached.device != context.device or cached.dtype != context.dtype:
-                cached = build_uncond_ref_context(self.dit, context.device, context.dtype)
+            if (
+                cached is None
+                or cached.device != context.device
+                or cached.dtype != context.dtype
+                or cached.shape[1] != ctx_len
+            ):
+                cached = build_uncond_ref_context(
+                    self.dit, context.device, context.dtype, pad_to_length=ctx_len
+                )
                 self._uncond_ref_ctx = cached
             return cached
         # caption

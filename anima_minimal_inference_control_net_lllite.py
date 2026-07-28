@@ -565,7 +565,10 @@ def generate_body(
                 branch_log = f"{len(entries)} CFG branch(es)"
             else:
                 ref_ctx = (
-                    build_uncond_ref_context(anima, device, torch.bfloat16)
+                    build_uncond_ref_context(
+                        anima, device, torch.bfloat16,
+                        pad_to_length=context["embed"][0].shape[1],
+                    )
                     if ref_context == "uncond"
                     else None
                 )
