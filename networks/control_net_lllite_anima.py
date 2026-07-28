@@ -99,8 +99,12 @@ def parse_ref_blocks(spec) -> Optional[Tuple[int, ...]]:
       - int 単体 (v3 single)
       - int の sequence / カンマ区切り文字列 "2,13" (v3 dual/multi concat)
 
+    index -1 は特別値で、x_embedder 出力 (patchify 直後・DiT ブロック通過前) =
+    cond latent の線形埋め込みそのものを条件源にする (「block -1 の出力 = block 0 の入力」)。
+    純外観のコピー信号で、テキスト context / ref_timestep に依存しない。
+
     返り値は昇順・重複なしの tuple。concat の並び順はこの昇順で固定される
-    (保存重み proj_in の列レイアウトと一致させるため)。
+    (保存重み proj_in の列レイアウトと一致させるため)。-1 は昇順で常に先頭になる。
     """
     if spec is None:
         return None
@@ -629,8 +633,8 @@ class ControlNetLLLiteDiT(nn.Module):
             if ref_blocks is None:
                 ref_blocks = (num_dit_blocks // 2,)
             for rb in ref_blocks:
-                assert 0 <= rb < num_dit_blocks, (
-                    f"ref_block {rb} out of range (num_blocks={num_dit_blocks})"
+                assert -1 <= rb < num_dit_blocks, (
+                    f"ref_block {rb} out of range (-1 = x_embedder output, 0..{num_dit_blocks - 1} = block output)"
                 )
             self.model_dim = int(model_dim)
             self.ref_blocks = ref_blocks
@@ -862,6 +866,9 @@ def encode_reference_hidden_states(
     dual/multi (sequence 指定) では 1 回の参照フォワードで各 index の出力を収集する。
     実行コストは max(ref_block) で決まるため、浅いブロックの追加コストはゼロ。
 
+    index -1 は x_embedder 出力 (patchify 直後・ブロック通過前) を返す特別値。
+    -1 のみの指定ではブロックを一切実行しない (t 埋め込み・context も不要)。
+
     cross-attn の context にはゼロテンソルを渡す。Anima は padding トークンをゼロ潰しして
     そのまま attend させる規約で、かつ k_proj/v_proj は bias なしなので、ゼロ context では
     cross-attn の出力が厳密に 0 になる (= テキスト完全非依存の「画像のみの特徴」)。
@@ -903,37 +910,42 @@ def encode_reference_hidden_states(
         cond_latent, fps=None, padding_mask=padding_mask
     )
 
-    t = torch.full((bsz, 1), float(ref_timestep), device=cond_latent.device, dtype=cond_latent.dtype)
-    t_embedding_B_T_D, adaln_lora_B_T_3D = dit.t_embedder(t)
-    t_embedding_B_T_D = dit.t_embedding_norm(t_embedding_B_T_D)
-
-    ctx_dim = dit.blocks[0].cross_attn.context_dim
-    context = torch.zeros(bsz, 1, ctx_dim, device=cond_latent.device, dtype=cond_latent.dtype)
-
-    attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
-    use_fp32 = x.dtype == torch.float16
-
-    assert 0 <= ref_blocks[0] and ref_blocks[-1] < len(dit.blocks), (
-        f"ref_block {list(ref_blocks)} out of range (num_blocks={len(dit.blocks)})"
+    assert -1 <= ref_blocks[0] and ref_blocks[-1] < len(dit.blocks), (
+        f"ref_block {list(ref_blocks)} out of range (num_blocks={len(dit.blocks)}, -1 = x_embedder output)"
     )
     ref_set = set(ref_blocks)
     max_block = ref_blocks[-1]
     collected: List[torch.Tensor] = []
-    for block_idx, block in enumerate(dit.blocks):
-        x = block(
-            x,
-            t_embedding_B_T_D,
-            context,
-            attn_params,
-            use_fp32,
-            rope_emb_L_1_1_D=rope_emb_L_1_1_D,
-            adaln_lora_B_T_3D=adaln_lora_B_T_3D,
-            extra_per_block_pos_emb=extra_pos_emb,
-        )
-        if block_idx in ref_set:
-            collected.append(x)
-        if block_idx == max_block:
-            break
+    if -1 in ref_set:
+        # "block -1" = x_embedder 出力 (ブロック通過前)。昇順収集なので常に先頭
+        collected.append(x)
+
+    if max_block >= 0:
+        t = torch.full((bsz, 1), float(ref_timestep), device=cond_latent.device, dtype=cond_latent.dtype)
+        t_embedding_B_T_D, adaln_lora_B_T_3D = dit.t_embedder(t)
+        t_embedding_B_T_D = dit.t_embedding_norm(t_embedding_B_T_D)
+
+        ctx_dim = dit.blocks[0].cross_attn.context_dim
+        context = torch.zeros(bsz, 1, ctx_dim, device=cond_latent.device, dtype=cond_latent.dtype)
+
+        attn_params = attention_lib.AttentionParams.create_attention_params(dit.attn_mode, dit.split_attn)
+        use_fp32 = x.dtype == torch.float16
+
+        for block_idx, block in enumerate(dit.blocks):
+            x = block(
+                x,
+                t_embedding_B_T_D,
+                context,
+                attn_params,
+                use_fp32,
+                rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+                extra_per_block_pos_emb=extra_pos_emb,
+            )
+            if block_idx in ref_set:
+                collected.append(x)
+            if block_idx == max_block:
+                break
     assert len(collected) == len(ref_blocks)
     if single:
         return collected[0]  # (B, T, H, W, D)
