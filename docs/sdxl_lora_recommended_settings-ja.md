@@ -65,7 +65,7 @@
 | `--avg_window`（独自） | 4 | 平均に使う ckpt 数 | 窓サイズ |
 | `--avg_begin`（独自） | 0.6 | 平均を開始する進行率 | 進行率 60% 以降 |
 | `--avg_mode`（独自） | ema | 平均方法 | 直近ほど重くする EMA |
-| `--avg_promote_pick`（独自） | fixed | promote 候補の選び方 | `fixed` は `avg_mode` で指定した候補を使う `best` は proxy bank 上で `ema` と `uniform` の良い方を選ぶ |
+| `--avg_promote_pick`（独自） | fixed | promote 候補の選び方 | `promote` の `fixed` は `avg_mode` で指定した候補だけを採点して使う `best` は proxy bank 上で `ema` と `uniform` の両方を採点して良い方を選ぶ。`shadow` は常に両方を採点する |
 | `--avg_shadow_bank_size`（独自） | 12 | proxy bank に保持するサンプル数 | 学習タグが多い場合は必要に応じて数を増やす |
 | `--avg_save_last_candidates`（独自） | 無効 | 最終 raw / center を追加保存 | `shadow` / `promote` 専用 `<output_name>_raw.safetensors` と `<output_name>_center.safetensors` を保存する |
 | `--avg_reset_stats`（独自） | `--no-avg_reset_stats` | 平均後に optimizer 統計をリセット | 推奨は `--no-avg_reset_stats` `promote` ではまず reset なしを試し、不安定なら戻す `live` も伸び鈍化が気になるなら reset なしを試す価値が高い。注: `AdamW8bit` は現行のリセット対象である `exp_avg` / `exp_avg_sq` / `exp_avg_max` を optimizer state に持たないため、実質何もリセットされない |

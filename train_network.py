@@ -74,6 +74,16 @@ def _set_delta_fake_quant_compat(network, step, mode, **kwargs):
     setter(step, mode, **kwargs)
 
 
+def resolve_avg_proxy_candidate_modes(avg_cp_mode: str, avg_promote_pick: str, avg_mode: str) -> List[str]:
+    if avg_cp_mode == "promote" and avg_promote_pick == "fixed":
+        return [avg_mode]
+
+    candidate_modes = ["ema", "uniform"]
+    if avg_mode not in candidate_modes:
+        candidate_modes.append(avg_mode)
+    return candidate_modes
+
+
 @dataclass
 class GradNormGuardianConfig:
     skip_grad_norm: bool
@@ -247,7 +257,7 @@ GRAD_NORM_PRESETS = {
     "stable": {
         "skip_grad_norm": True,
         "log_grad_norm": True,
-        "log_grad_cosine": True,
+        "log_grad_cosine": False,
         "skip_grad_norm_max": 200000.0,
         "nan_to_window": True,
         "inf_to_window": True,
@@ -257,7 +267,7 @@ GRAD_NORM_PRESETS = {
     "stable_no_threshoff": {
         "skip_grad_norm": True,
         "log_grad_norm": True,
-        "log_grad_cosine": True,
+        "log_grad_cosine": False,
         "skip_grad_norm_max": 200000.0,
         "nan_to_window": False,
         "inf_to_window": False,
@@ -267,7 +277,7 @@ GRAD_NORM_PRESETS = {
     "gamble": {
         "skip_grad_norm": True,
         "log_grad_norm": True,
-        "log_grad_cosine": True,
+        "log_grad_cosine": False,
         "skip_grad_norm_max": None,
         "nan_to_window": False,
         "inf_to_window": False,
@@ -863,6 +873,8 @@ class NetworkTrainer:
         return noise_pred
 
     def all_reduce_network(self, accelerator, network):
+        if accelerator.num_processes <= 1:
+            return
         for param in network.parameters():
             if param.grad is not None:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
@@ -4319,18 +4331,13 @@ class NetworkTrainer:
                         elif len(cp_window) < args.avg_window:
                             shadow_log_payload["status"] = "waiting_window"
                         elif accelerator.is_main_process:
+                            candidate_modes = resolve_avg_proxy_candidate_modes(avg_cp_mode, avg_promote_pick, args.avg_mode)
                             candidate_state_dicts: Dict[str, Dict[str, torch.Tensor]] = {
-                                "ema": self._restore_frozen_te_state_dict(
-                                    average_state_dicts(list(cp_window), "ema")
-                                ),
-                                "uniform": self._restore_frozen_te_state_dict(
-                                    average_state_dicts(list(cp_window), "uniform")
-                                ),
-                            }
-                            if args.avg_mode not in candidate_state_dicts:
-                                candidate_state_dicts[args.avg_mode] = self._restore_frozen_te_state_dict(
-                                    average_state_dicts(list(cp_window), args.avg_mode)
+                                candidate_mode: self._restore_frozen_te_state_dict(
+                                    average_state_dicts(list(cp_window), candidate_mode)
                                 )
+                                for candidate_mode in candidate_modes
+                            }
 
                             rng_state = _capture_torch_rng_state()
                             raw_score = None
@@ -4347,9 +4354,16 @@ class NetworkTrainer:
                                 clean_memory_on_device(accelerator.device)
 
                             center_score = candidate_scores[args.avg_mode]
-                            best_candidate_mode = min(("ema", "uniform"), key=lambda mode: candidate_scores[mode])
-                            best_candidate_score = candidate_scores[best_candidate_mode]
-                            selected_candidate_mode = args.avg_mode if avg_promote_pick == "fixed" else best_candidate_mode
+                            if "ema" in candidate_scores and "uniform" in candidate_scores:
+                                best_candidate_mode = min(("ema", "uniform"), key=lambda mode: candidate_scores[mode])
+                                best_candidate_score = candidate_scores[best_candidate_mode]
+                            else:
+                                best_candidate_mode = None
+                                best_candidate_score = None
+                            if avg_promote_pick == "best":
+                                selected_candidate_mode = best_candidate_mode
+                            else:
+                                selected_candidate_mode = args.avg_mode
                             selected_sd = candidate_state_dicts[selected_candidate_mode]
                             selected_score = candidate_scores[selected_candidate_mode]
                             delta_abs = selected_score - raw_score
@@ -4367,10 +4381,16 @@ class NetworkTrainer:
                                 {
                                     "raw_proxy_loss": round(raw_score, 10),
                                     "center_proxy_loss": round(center_score, 10),
-                                    "ema_proxy_loss": round(candidate_scores["ema"], 10),
-                                    "uniform_proxy_loss": round(candidate_scores["uniform"], 10),
+                                    "ema_proxy_loss": (
+                                        round(candidate_scores["ema"], 10) if "ema" in candidate_scores else None
+                                    ),
+                                    "uniform_proxy_loss": (
+                                        round(candidate_scores["uniform"], 10) if "uniform" in candidate_scores else None
+                                    ),
                                     "best_candidate_mode": best_candidate_mode,
-                                    "best_candidate_proxy_loss": round(best_candidate_score, 10),
+                                    "best_candidate_proxy_loss": (
+                                        round(best_candidate_score, 10) if best_candidate_score is not None else None
+                                    ),
                                     "selected_candidate_mode": selected_candidate_mode,
                                     "selected_proxy_loss": round(selected_score, 10),
                                     "delta_abs": round(delta_abs, 10),
@@ -4402,14 +4422,22 @@ class NetworkTrainer:
                             )
 
                             logger.info(
-                                "avg_cp %s epoch %d: raw=%.6f center(%s)=%.6f ema=%.6f uniform=%.6f winner=%s promote_pick=%s selected=%s streak=%d promote=%s window=%s",
+                                "avg_cp %s epoch %d: raw=%.6f center(%s)=%.6f ema=%s uniform=%s winner=%s promote_pick=%s selected=%s streak=%d promote=%s window=%s",
                                 avg_cp_mode,
                                 epoch + 1,
                                 raw_score,
                                 args.avg_mode,
                                 center_score,
-                                candidate_scores["ema"],
-                                candidate_scores["uniform"],
+                                (
+                                    f"{candidate_scores['ema']:.6f}"
+                                    if "ema" in candidate_scores
+                                    else "not_scored"
+                                ),
+                                (
+                                    f"{candidate_scores['uniform']:.6f}"
+                                    if "uniform" in candidate_scores
+                                    else "not_scored"
+                                ),
                                 winner_mode,
                                 avg_promote_pick,
                                 selected_candidate_mode,
@@ -4695,7 +4723,7 @@ def setup_parser() -> argparse.ArgumentParser:
         type=str,
         default="fixed",
         choices=["fixed", "best"],
-        help="promote candidate selection: fixed uses avg_mode, best picks the better of ema/uniform on proxy bank / promote 候補の選び方。fixed は avg_mode を使用、best は proxy bank 上で ema/uniform の良い方を使う",
+        help="promote candidate selection: fixed scores only avg_mode in promote mode, best scores ema/uniform and picks the better one; shadow always scores comparison candidates / promote 候補の選び方。promote の fixed は avg_mode だけを採点、best は ema/uniform の良い方を使う。shadow は常に比較候補を採点する",
     )
     parser.add_argument(
         "--avg_shadow_bank_size",

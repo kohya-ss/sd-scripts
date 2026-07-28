@@ -139,8 +139,9 @@ epoch_t   : 0.400
   - `promote` は平均候補を採点し、条件を満たしたときだけ次 epoch 開始点として center を採用する
 - `--avg_promote_pick {fixed,best}`
   - 既定値は `fixed`
-  - `fixed` は `avg_mode` で指定した center を promote 判定に使う
+  - `promote` の `fixed` は `avg_mode` で指定した center だけを採点し、promote 判定に使う
   - `best` は proxy bank 上で `ema` と `uniform` を両方採点し、その epoch の良い方を promote 判定に使う
+  - `shadow` はこの設定にかかわらず、観測用に `ema` と `uniform` を両方採点する
 - `--avg_save_last_candidates`
   - 既定値は `False`
   - `shadow` / `promote` で学習終了時に `<output_name>_raw.safetensors` と `<output_name>_center.safetensors` を追加保存する
@@ -464,10 +465,10 @@ shadow 有効時は epoch ごとに 1 行の JSONL を出す。
 
 初版では複雑化を避け、次の方針に限定する。
 
-- 観測用には `ema` と `uniform` の両方を毎 epoch 採点する
 - promote 判定に実際に使う候補は `avg_promote_pick` で決める
-  - `fixed`: `current args.avg_mode` で作る center 1 本
+  - `promote` の `fixed`: `current args.avg_mode` で作る center 1 本だけを作成・採点する
   - `best`: `ema` と `uniform` のその epoch の良い方
+- `shadow` は従来どおり、観測用の `ema` と `uniform` を両方作成・採点する
 - promote 判定は fixed proxy bank 上の score に基づく
 - center が継続的に優勢と判断されたときだけ promote する
 - promote 後も averaging 用履歴には **raw endpoint** を使う
@@ -494,9 +495,9 @@ epoch end の流れ:
 
 1. その epoch の学習終了時点を `raw endpoint` として CPU に保持する
 2. `raw endpoint` を `cp_window` に追加する
-3. `cp_window` が `avg_window` 個揃っていれば `ema` と `uniform` を作る
-4. 必要なら `avg_mode` 指定の center も作る
-5. fixed proxy bank 上で `raw_score` と各候補 score を比較する
+3. `cp_window` が `avg_window` 個揃っていれば、`promote + fixed` は `avg_mode` のみ、それ以外は `ema` と `uniform` を作る
+4. `best` かつ `avg_mode` が別モードなら、その center も作る
+5. fixed proxy bank 上で `raw_score` と必要な候補 score を比較する
 6. `avg_promote_pick` に応じて、promote 判定に使う候補を 1 本選ぶ
 7. promote 条件を満たさなければ、次 epoch は raw で継続する
 8. promote 条件を満たせば、次 epoch は選ばれた center をロードして開始する
@@ -570,11 +571,11 @@ JSONL は shadow と同じ形式をベースにしつつ、promote 用に以下�
 - `optimizer_reset_applied`
   - promote 時に optimizer reset を行ったか
 - `ema_proxy_loss`
-  - `ema` で作った center の proxy loss
+  - `ema` で作った center の proxy loss。`promote + fixed` で別モードを指定した場合は `null`
 - `uniform_proxy_loss`
-  - `uniform` で作った center の proxy loss
+  - `uniform` で作った center の proxy loss。`promote + fixed` で別モードを指定した場合は `null`
 - `best_candidate_mode`
-  - `ema` と `uniform` のうち、その epoch の proxy loss が良かった候補
+  - `best` または `shadow` では `ema` と `uniform` のうち、その epoch の proxy loss が良かった候補。`promote + fixed` では `null`
 - `selected_candidate_mode`
   - 実際に promote 判定へ使った候補
 

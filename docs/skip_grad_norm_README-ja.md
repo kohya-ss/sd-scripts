@@ -19,7 +19,7 @@
 - **`--skip_grad_norm_max <float>`**: 動的しきい値の絶対上限。設定しない場合は無制限。窓が埋まる前は常に 200000 を使用する点に注意。
 - **`--grad_norm_log`**: `--output_dir/gradient_logs+<output_name>.txt` に CSV 形式で `Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff[,Scale][,CosineSim]` を出力。100 ステップごとに追記。`ThreshOff=1` は NaN によりしきい値が無効化された状態を示す。
 - **`--grad_cosine_log`**: `--grad_norm_log` 併用時に有効。前ステップの勾配テンソルを複製保持し、コサイン類似度を計算・出力する。保持コストが掛かるが挙動には影響しない。
-- **`--grad_norm_mode {stable,stable_no_threshoff,gamble}`**: 推奨プリセットを一括指定。`stable` は安定重視、`stable_no_threshoff` は `stable` から ThreshOff 区間を抑制した設定、`gamble` は当たり狙い。指定時は個別オプションを無視し、`--no-skip_nan_immediate` / `--no-skip_inf_immediate` のみ上書き可能。
+- **`--grad_norm_mode {stable,stable_no_threshoff,gamble}`**: 推奨プリセットを一括指定。`stable` は安定重視、`stable_no_threshoff` は `stable` から ThreshOff 区間を抑制した設定、`gamble` は当たり狙い。全プリセットで勾配コサインログは無効。指定時は個別オプションを無視し、`--no-skip_nan_immediate` / `--no-skip_inf_immediate` のみ上書き可能。
 - **GradScaler との関係**: スケール適用前の勾配に切り替えると学習結果が変わったため、仕様として「スケール適用済みの勾配ノルムで平均を作る」ことを前提にしている。スケールが変動した瞬間は窓の平均が追随するまでスキップ判定が遅れる。
 
 ## NaN/Inf 取り扱い関連
@@ -30,15 +30,16 @@
 
 ## よく使うプリセットの挙動
 - **設定 1（`--grad_norm_mode stable`）**<br>`--grad_norm_mode stable`
-  - 200 ステップ窓を維持しつつしきい値は 200000 にキャップ。ログはノルム・閾値・GradScaler スケール・勾配類似度まで記録。
+  - 200 ステップ窓を維持しつつしきい値は 200000 にキャップ。ログはノルム・閾値・GradScaler スケールを記録し、勾配類似度は記録しない。
   - NaN/Inf を窓に混入させ、即スキップは無効化するため、ランダムな「スキップ停止区間」が生まれ、GradScaler によるスケール調整も維持される。
   - 実質的に「極端なスパイクのみスキップし、NaN/Inf は学習を止めずにスケール調整へ渡す」挙動になる。
 - **設定 2（`--grad_norm_mode stable_no_threshoff`）**<br>`--grad_norm_mode stable_no_threshoff`
   - `stable` と同様にしきい値を 200000 にキャップし、即スキップは無効化する。
   - `nan_to_window` / `inf_to_window` を使わないため、しきい値が NaN 化しにくく、`ThreshOff=1` 区間を抑制できる。
+  - 前ステップの勾配を保持せず、`CosineSim` をログ出力しない。
   - フェイク量子化（例: `--dq_delta_bits 8`）時に、`stable` のランダムなブレーキ解除を避けたい場合の比較用モード。
 - **設定 3（`--grad_norm_mode gamble`）**<br>`--grad_norm_mode gamble`
-  - 最小構成。移動平均 + 2.5σ を超えたステップをスキップし、ログにはノルム・閾値・Loss・勾配類似度が出力される。
+  - 最小構成。移動平均 + 2.5σ を超えたステップをスキップし、ログにはノルム・閾値・Lossが出力される。勾配類似度は記録しない。
   - NaN/Inf は即時スキップする（デフォルト値）ため、GradScaler がトリガーされずスケールが上昇し続ける場合がある点に注意。
 
 ## 学習進行への影響
