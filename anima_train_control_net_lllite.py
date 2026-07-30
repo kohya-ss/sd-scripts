@@ -65,6 +65,7 @@ from networks.control_net_lllite_anima import (
     COND_INPUT_SPACES as LLLITE_COND_INPUT_SPACES,
     TRUNK_TYPES as LLLITE_TRUNK_TYPES,
     REF_CONTEXT_MODES as LLLITE_REF_CONTEXT_MODES,
+    GATE_MODES as LLLITE_GATE_MODES,
     PRESETS as LLLITE_PRESETS,
     ATOMIC_SPECIFIERS as LLLITE_ATOMIC_SPECIFIERS,
 )
@@ -453,6 +454,20 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
             "テキスト非依存のまま、推奨)、caption=本体と同じ context (instruct-pix2pix 型)"
         ),
     )
+    parser.add_argument(
+        "--lllite_gate",
+        type=str,
+        default="scalar",
+        choices=list(LLLITE_GATE_MODES),
+        help=(
+            "[semantic] gate mode: 'scalar' = per-token scalar gate on the value path (v3 default), "
+            "'none' = no gate; the value path alone learns both where and what to inject "
+            "(ablation for cases where a per-token scalar cannot express keep-geometry / "
+            "release-appearance at the same token). Ignored for trunk='stem'. "
+            "/ semantic trunk のゲート。scalar=per-token スカラーゲート (v3 既定)、"
+            "none=ゲートなし (値パス単独で注入の場所と内容を学ぶ ablation)。stem では無視"
+        ),
+    )
     # --conditioning_data_dir は args_util.add_dataset_arguments 側で既に定義済み
 
 
@@ -722,6 +737,7 @@ def train(args):
         ref_block=args.lllite_ref_block,
         ref_timestep=args.lllite_ref_timestep,
         ref_context=args.lllite_ref_context,
+        gate=args.lllite_gate,
     )
 
     if args.network_weights is not None:
@@ -912,6 +928,7 @@ def train(args):
             sai_metadata["lllite.ref_block"] = unwrapped.ref_blocks_str
             sai_metadata["lllite.ref_timestep"] = str(unwrapped.ref_timestep)
             sai_metadata["lllite.ref_context"] = unwrapped.ref_context
+            sai_metadata["lllite.gate"] = unwrapped.gate_mode
         save_lllite_model(ckpt_file, unwrapped, dtype=save_dtype, metadata=sai_metadata)
 
     def _save_step(global_step_: int, epoch_: int):

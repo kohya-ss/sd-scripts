@@ -49,6 +49,13 @@ LATENT_COND_CHANNELS = 16
 # 勾配が 0 倍されて学習が立ち上がらない)。σ(2.0) ≈ 0.88
 GATE_INIT_BIAS = 2.0
 
+# v3 semantic trunk のゲートモード (メタデータ欠落時は "scalar" = 旧 v3 重み互換)
+#   scalar: per-token スカラーゲート g = σ(gate([cond_local, h])) を値パス出力に乗じる (v3 既定)
+#   none  : ゲートなし。per-token スカラーでは同一 token 内の「幾何は保持・外観は解放」を
+#           表現できないため、空間ゲートへの分業を禁じて値パス (mid + FiLM + up) に
+#           チャネル方向の選択まで学ばせる ablation
+GATE_MODES: Tuple[str, ...] = ("scalar", "none")
+
 
 # ----------------------------------------------------------------------------
 # target_layers: atomic specifiers と preset
@@ -427,6 +434,7 @@ class LLLiteModuleDiT(nn.Module):
         dropout: Optional[float] = None,
         multiplier: float = 1.0,
         use_gate: bool = False,
+        require_t_local: bool = False,
     ):
         super().__init__()
         self.lllite_name = name
@@ -437,6 +445,8 @@ class LLLiteModuleDiT(nn.Module):
         self.dropout = dropout
         self.multiplier = multiplier
         self.use_gate = use_gate
+        # semantic trunk では gate の有無に関わらず t-FiLM フックが毎 forward 届いている必要がある
+        self.require_t_local = require_t_local
 
         in_dim = org_module.in_features
 
@@ -507,7 +517,7 @@ class LLLiteModuleDiT(nn.Module):
         # v3 (semantic trunk): per-step の timestep 埋め込みを cond 空間で加算する (t-FiLM)。
         # t_local は dit.t_embedding_norm の forward hook が blocks 実行前に毎 forward 更新する。
         t_local = self.t_local
-        if self.use_gate:
+        if self.require_t_local:
             assert t_local is not None, (
                 f"t_local is not set ({self.lllite_name}); the semantic trunk requires the "
                 "timestep hook on dit.t_embedding_norm (registered by ControlNetLLLiteDiT) "
@@ -592,6 +602,7 @@ class ControlNetLLLiteDiT(nn.Module):
         ref_block=None,  # int / "2,13" 形式の str / int sequence (parse_ref_blocks 参照)
         ref_timestep: float = 0.0,
         ref_context: str = "zero",
+        gate: str = "scalar",
     ):
         super().__init__()
 
@@ -603,6 +614,7 @@ class ControlNetLLLiteDiT(nn.Module):
         assert ref_context in REF_CONTEXT_MODES, (
             f"ref_context must be one of {list(REF_CONTEXT_MODES)}, got {ref_context!r}"
         )
+        assert gate in GATE_MODES, f"gate must be one of {list(GATE_MODES)}, got {gate!r}"
         if trunk != "semantic" and ref_context != "zero":
             raise ValueError(f"ref_context={ref_context!r} is only supported with trunk='semantic'")
 
@@ -625,6 +637,8 @@ class ControlNetLLLiteDiT(nn.Module):
         self.cond_input_space = cond_input_space
         # "stem": conditioning1 = conv stem (v2/v2.1) / "semantic": 凍結 DiT hidden states (v3)
         self.trunk = trunk
+        # ゲートは semantic trunk 専用。stem では指定に関わらず "none" に落とす
+        self.gate_mode = gate if trunk == "semantic" else "none"
 
         if trunk == "semantic":
             # cond latent を凍結 DiT に通すため latent 入力が前提。mask (inpaint) は MVP 未対応
@@ -678,7 +692,9 @@ class ControlNetLLLiteDiT(nn.Module):
             )
 
         modules = self._create_modules(
-            dit, cond_emb_dim, mlp_dim, atomics, dropout, multiplier, use_gate=trunk == "semantic"
+            dit, cond_emb_dim, mlp_dim, atomics, dropout, multiplier,
+            use_gate=self.gate_mode == "scalar",
+            require_t_local=trunk == "semantic",
         )
         self.lllite_modules = nn.ModuleList(modules)
 
@@ -714,7 +730,7 @@ class ControlNetLLLiteDiT(nn.Module):
         )
         trunk_info = (
             f"trunk=semantic(ref_blocks={list(self.ref_blocks)}, ref_timestep={self.ref_timestep}, "
-            f"ref_context={self.ref_context}, model_dim={self.model_dim})"
+            f"ref_context={self.ref_context}, gate={self.gate_mode}, model_dim={self.model_dim})"
             if trunk == "semantic"
             else "trunk=stem"
         )
@@ -764,6 +780,7 @@ class ControlNetLLLiteDiT(nn.Module):
         dropout: Optional[float],
         multiplier: float,
         use_gate: bool = False,
+        require_t_local: bool = False,
     ) -> List[LLLiteModuleDiT]:
         modules: List[LLLiteModuleDiT] = []
         want_mlp_fc1 = "mlp_fc1_pre" in atomics
@@ -786,7 +803,10 @@ class ControlNetLLLiteDiT(nn.Module):
                         continue
                     full_name = f"lllite_dit.{name}.{child_name}".replace(".", "_")
                     modules.append(
-                        LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier, use_gate)
+                        LLLiteModuleDiT(
+                            full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier,
+                            use_gate, require_t_local,
+                        )
                     )
 
             elif want_mlp_fc1 and cls == TARGET_MLP_CLASS:
@@ -796,7 +816,10 @@ class ControlNetLLLiteDiT(nn.Module):
                     continue
                 full_name = f"lllite_dit.{name}.layer1".replace(".", "_")
                 modules.append(
-                    LLLiteModuleDiT(full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier, use_gate)
+                    LLLiteModuleDiT(
+                        full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier,
+                        use_gate, require_t_local,
+                    )
                 )
 
         return modules
@@ -1444,6 +1467,17 @@ def load_lllite_weights(lllite: ControlNetLLLiteDiT, file: str, strict: bool = F
                 f"Check --lllite_ref_block / the 'lllite.ref_block' metadata."
             )
 
+    # v3 gate モード (scalar / none) の取り違え検出。strict=False だと欠落/余剰キーが
+    # 黙って無視され、初期値 gate のまま推論が進んでしまうため早期に落とす。
+    file_has_gate = any(k.endswith(".gate.weight") for k in weights_sd)
+    model_has_gate = any(m.use_gate for m in lllite.lllite_modules)
+    if file_has_gate != model_has_gate:
+        raise RuntimeError(
+            f"gate mode mismatch: weights at {file} were trained with "
+            f"gate='{'scalar' if file_has_gate else 'none'}', but this LLLite was built with "
+            f"gate='{lllite.gate_mode}'. Check --lllite_gate / the 'lllite.gate' metadata."
+        )
+
     # pixel / latent の取り違え検出 (stem trunk のみ。semantic は latent 固定)。
     file_space = None
     if any(k.startswith(_SAVED_COND_PREFIX + "lat_conv1.") for k in weights_sd):
@@ -1976,6 +2010,33 @@ if __name__ == "__main__":
     assert torch.allclose(g0.bias, torch.full_like(g0.bias, GATE_INIT_BIAS))
     logger.info("  v3 semantic trunk build / keys / gate init OK")
 
+    # gate="none": gate パラメータなし、zero-init 恒等、t-FiLM は引き続き必須
+    dit_v3_ng = _DummyDiTV3(num_blocks=4)
+    lllite_v3_ng = ControlNetLLLiteDiT(
+        dit_v3_ng, cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+        cond_input_space="latent", trunk="semantic", ref_block=2, gate="none",
+    )
+    assert lllite_v3_ng.gate_mode == "none"
+    keys_ng = list(lllite_v3_ng.state_dict().keys())
+    assert not any(".gate." in k for k in keys_ng), [k for k in keys_ng if ".gate." in k]
+    lllite_v3_ng.apply_to()
+    lllite_v3_ng.set_cond_hidden_states(torch.randn(1, 1, 8, 8, MODEL_DIM))
+    mod_ng = lllite_v3_ng.lllite_modules[0]
+    assert not mod_ng.use_gate and mod_ng.require_t_local
+    x_ng = torch.randn(1, 64, mod_ng.org_module[0].in_features)
+    try:
+        mod_ng(x_ng)
+        raise RuntimeError("expected t_local-missing assert")
+    except AssertionError as e:
+        assert "t_local is not set" in str(e), str(e)
+    lllite_v3_ng._update_t_local(torch.randn(1, 1, MODEL_DIM))
+    y_ng = mod_ng(x_ng)
+    assert torch.allclose(y_ng, mod_ng.org_forward(x_ng)), "gate=none zero-init forward mismatch"
+    lllite_v3_ng.clear_cond_image()
+    # stem trunk では gate 指定に関わらず gate_mode="none"
+    assert ControlNetLLLiteDiT(_DummyDiT(), target_layers="self_attn_q").gate_mode == "none"
+    logger.info("  v3 gate=none build / keys / t_local guard / zero-init forward OK")
+
     # ref_block デフォルト = num_blocks // 2
     lllite_v3_d = ControlNetLLLiteDiT(
         _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
@@ -2068,6 +2129,19 @@ if __name__ == "__main__":
         for k in sd_v3a:
             assert torch.allclose(sd_v3a[k].float(), sd_v3b[k].float()), f"v3 round-trip mismatch at {k}"
         logger.info("  v3 save / load round-trip OK")
+
+        # gate='scalar' の重みを gate='none' モデルに読ませると明示エラー
+        lllite_v3_ng2 = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64,
+            target_layers="self_attn_qkv_cross_q", cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=2, gate="none",
+        )
+        try:
+            load_lllite_weights(lllite_v3_ng2, tmp_v3)
+            raise AssertionError("expected gate mode mismatch error")
+        except RuntimeError as e:
+            assert "gate mode mismatch" in str(e), str(e)
+        logger.info("  v3 gate mode mismatch detection OK")
 
         # semantic 重みを stem (latent) モデルに読ませると明示エラー
         lllite_stem = ControlNetLLLiteDiT(

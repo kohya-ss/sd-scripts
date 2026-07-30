@@ -405,13 +405,16 @@ def load_dit_model(args, device, dit_weight_dtype=None):
             f"ref_context override: weights were trained with '{meta_ref_context}' but running "
             f"with '{ref_context}' (train/inference mismatch; for ablation only)"
         )
+    # gate モード (v3)。メタデータ欠落時は scalar (旧 v3 重み互換)。アーキテクチャそのもの
+    # なので CLI 上書きは提供しない (取り違えは load_lllite_weights が検出する)
+    gate = meta.get("lllite.gate", "scalar")
     version = meta.get("lllite.version", "?")
     inpaint_log = (
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
     )
     trunk_log = (
         f", trunk=semantic(ref_blocks={list(ref_blocks) if ref_blocks else None}, "
-        f"ref_timestep={ref_timestep}, ref_context={ref_context})"
+        f"ref_timestep={ref_timestep}, ref_context={ref_context}, gate={gate})"
         if trunk == "semantic"
         else ""
     )
@@ -440,6 +443,7 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         ref_block=ref_blocks,
         ref_timestep=ref_timestep,
         ref_context=ref_context if trunk == "semantic" else "zero",
+        gate=gate,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -586,9 +590,12 @@ def generate_body(
     else:
         anima.lllite.set_cond_image(cond_image, cond_mask)
 
-    capture_gates = args.save_gate_maps is not None and anima.lllite.trunk == "semantic"
-    if args.save_gate_maps is not None and anima.lllite.trunk != "semantic":
-        logger.warning("--save_gate_maps is only supported with the semantic trunk (v3); ignored")
+    capture_gates = args.save_gate_maps is not None and anima.lllite.gate_mode == "scalar"
+    if args.save_gate_maps is not None and not capture_gates:
+        logger.warning(
+            "--save_gate_maps requires the semantic trunk (v3) with gate='scalar' "
+            f"(this model: trunk={anima.lllite.trunk}, gate={anima.lllite.gate_mode}); ignored"
+        )
     if capture_gates:
         for m in anima.lllite.lllite_modules:
             m.capture_gate = True
