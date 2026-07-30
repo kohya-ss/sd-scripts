@@ -61,6 +61,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_TORCH_GET_TOTAL_NORM = getattr(torch.nn.utils, "get_total_norm", None)
+_FOREACH_GRAD_NORM_DISABLED = False
+
 
 def _set_delta_fake_quant_compat(network, step, mode, **kwargs):
     """Call older network implementations without Triton-only kwargs."""
@@ -82,6 +85,78 @@ def resolve_avg_proxy_candidate_modes(avg_cp_mode: str, avg_promote_pick: str, a
     if avg_mode not in candidate_modes:
         candidate_modes.append(avg_mode)
     return candidate_modes
+
+
+def _legacy_grad_norm(grads: List[torch.Tensor]) -> torch.Tensor:
+    if not grads:
+        return torch.tensor(0.0)
+
+    grad_norm_sqr = torch.tensor(0.0, device=grads[0].device)
+    for grad in grads:
+        detached_grad = grad.detach()
+        grad_norm_sqr += (detached_grad * detached_grad).sum()
+    return torch.sqrt(grad_norm_sqr)
+
+
+def _can_use_foreach_grad_norm(grads: List[torch.Tensor]) -> bool:
+    if _FOREACH_GRAD_NORM_DISABLED or not grads:
+        return False
+    if not callable(_TORCH_GET_TOTAL_NORM) and not callable(getattr(torch, "_foreach_norm", None)):
+        return False
+
+    first_grad = grads[0]
+    if (
+        first_grad.dtype != torch.float32
+        or first_grad.layout != torch.strided
+        or first_grad.device.type not in ("cpu", "cuda")
+    ):
+        return False
+
+    return all(
+        grad.dtype == first_grad.dtype and grad.layout == torch.strided and grad.device == first_grad.device
+        for grad in grads[1:]
+    )
+
+
+def _foreach_grad_norm(grads: List[torch.Tensor]) -> torch.Tensor:
+    if callable(_TORCH_GET_TOTAL_NORM):
+        total_norm = _TORCH_GET_TOTAL_NORM(grads, norm_type=2.0, error_if_nonfinite=False, foreach=True)
+    else:
+        per_grad_norms = torch._foreach_norm(grads, 2.0)
+        total_norm = torch.linalg.vector_norm(torch.stack(per_grad_norms), 2.0)
+
+    # The legacy path squares FP32 values before taking the square root. Preserve
+    # its overflow/underflow classification while keeping the multi-tensor norm.
+    return torch.sqrt(total_norm * total_norm)
+
+
+def _is_unsupported_foreach_error(error: RuntimeError) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "not implemented",
+            "not supported",
+            "unsupported",
+            "can't use the foreach",
+            "cannot use the foreach",
+        )
+    )
+
+
+def _calculate_grad_norm(grads: List[torch.Tensor]) -> torch.Tensor:
+    global _FOREACH_GRAD_NORM_DISABLED
+
+    if _can_use_foreach_grad_norm(grads):
+        try:
+            return _foreach_grad_norm(grads)
+        except (TypeError, NotImplementedError):
+            _FOREACH_GRAD_NORM_DISABLED = True
+        except RuntimeError as error:
+            if not _is_unsupported_foreach_error(error):
+                raise
+            _FOREACH_GRAD_NORM_DISABLED = True
+    return _legacy_grad_norm(grads)
 
 
 @dataclass
@@ -115,6 +190,8 @@ class GradNormGuardian:
         self.log_buffer: List[str] = []
         self.prev_grad_map = None
         self.prev_grad_norm = None
+        self._cached_model = None
+        self._cached_parameters = None
 
         if self.config.log_grad_norm and self.log_file_path is not None:
             with open(self.log_file_path, "w") as f:
@@ -125,33 +202,55 @@ class GradNormGuardian:
                     header += ",CosineSim"
                 f.write(header + "\n")
 
+    def _get_parameters(self, model):
+        if self._cached_model is not model:
+            # Training fixes parameter topology before the first step; only grad
+            # presence changes later due to module dropout or TE freezing.
+            self._cached_model = model
+            self._cached_parameters = tuple(model.parameters())
+        return self._cached_parameters
+
     def observe(self, model, epoch: int, step: int, loss_val: float) -> bool:
-        device = next(model.parameters()).device
-        grad_norm_sqr = torch.tensor(0.0, device=device)
+        parameters = self._get_parameters(model)
         use_cosine = self.config.log_grad_cosine
-        dot_sum = torch.tensor(0.0, device=device) if (use_cosine and self.prev_grad_map is not None) else None
-        cur_grads = {} if use_cosine else None
-        grad_topology_changed = False
 
         with torch.no_grad():
-            for param in model.parameters():
-                if param.grad is not None:
+            if not use_cosine:
+                # Keep scaler-applied grads (pre-unscale) to retain fp16 scaling behavior.
+                grads = [
+                    param.grad.detach()
+                    for param in parameters
+                    if param.grad is not None
+                ]
+                current_grad_norm_tensor = _calculate_grad_norm(grads)
+            else:
+                device = parameters[0].device if parameters else torch.device("cpu")
+                grad_norm_sqr = torch.tensor(0.0, device=device)
+                dot_sum = torch.tensor(0.0, device=device) if self.prev_grad_map is not None else None
+                cur_grads = {}
+                grad_topology_changed = False
+
+                for param in parameters:
+                    if param.grad is None:
+                        continue
                     grad = param.grad  # NOTE: keep scaler-applied grads (pre-unscale) to retain fp16 scaling behavior
                     grad_norm_sqr += (grad.detach() * grad.detach()).sum()
-                    if use_cosine:
-                        param_id = id(param)
-                        if self.prev_grad_map is not None:
-                            prev_grad = self.prev_grad_map.get(param_id)
-                            if prev_grad is None or prev_grad.shape != grad.shape:
-                                grad_topology_changed = True
-                            else:
-                                dot_sum += (grad.detach() * prev_grad).sum()
-                        cur_grads[param_id] = grad.detach().clone()
+                    param_id = id(param)
+                    if self.prev_grad_map is not None:
+                        prev_grad = self.prev_grad_map.get(param_id)
+                        if prev_grad is None or prev_grad.shape != grad.shape:
+                            grad_topology_changed = True
+                        else:
+                            dot_sum += (grad.detach() * prev_grad).sum()
+                    cur_grads[param_id] = grad.detach().clone()
 
-            if use_cosine and self.prev_grad_map is not None:
-                grad_topology_changed = grad_topology_changed or set(cur_grads.keys()) != set(self.prev_grad_map.keys())
+                if self.prev_grad_map is not None:
+                    grad_topology_changed = grad_topology_changed or set(cur_grads.keys()) != set(
+                        self.prev_grad_map.keys()
+                    )
+                current_grad_norm_tensor = torch.sqrt(grad_norm_sqr)
 
-        current_grad_norm = torch.sqrt(grad_norm_sqr).item()
+        current_grad_norm = current_grad_norm_tensor.item()
         cosine_sim = None
         if use_cosine:
             if (
