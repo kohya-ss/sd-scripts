@@ -247,7 +247,8 @@ def parse_args() -> argparse.Namespace:
         "--save_gate_maps", type=str, default=None,
         help=(
             "[semantic trunk] directory to dump per-module gate maps (predicted change-region masks) "
-            "as grayscale PNGs after each generation"
+            "as grayscale PNGs after each generation. With gate='vector' the map is the "
+            "channel-mean of the per-channel gate"
         ),
     )
 
@@ -590,10 +591,10 @@ def generate_body(
     else:
         anima.lllite.set_cond_image(cond_image, cond_mask)
 
-    capture_gates = args.save_gate_maps is not None and anima.lllite.gate_mode == "scalar"
+    capture_gates = args.save_gate_maps is not None and anima.lllite.gate_mode in ("scalar", "vector")
     if args.save_gate_maps is not None and not capture_gates:
         logger.warning(
-            "--save_gate_maps requires the semantic trunk (v3) with gate='scalar' "
+            "--save_gate_maps requires the semantic trunk (v3) with gate='scalar' or 'vector' "
             f"(this model: trunk={anima.lllite.trunk}, gate={anima.lllite.gate_mode}); ignored"
         )
     if capture_gates:

@@ -461,10 +461,14 @@ def add_anima_lllite_arguments(parser: argparse.ArgumentParser):
         choices=list(LLLITE_GATE_MODES),
         help=(
             "[semantic] gate mode: 'scalar' = per-token scalar gate on the value path (v3 default), "
-            "'none' = no gate; the value path alone learns both where and what to inject "
-            "(ablation for cases where a per-token scalar cannot express keep-geometry / "
-            "release-appearance at the same token). Ignored for trunk='stem'. "
+            "'vector' = per-token per-channel gate (mlp_dim wide) applied before 'up' "
+            "(expresses keep-geometry / release-appearance within a single token while keeping "
+            "the multiplicative structure), "
+            "'none' = no gate; the value path alone learns both where and what to inject. "
+            "Ignored for trunk='stem'. "
             "/ semantic trunk のゲート。scalar=per-token スカラーゲート (v3 既定)、"
+            "vector=per-token・per-channel ゲート (mlp_dim 次元、up の前に乗算。"
+            "乗算構造を保ったまま同一 token 内の幾何保持/外観解放をチャネル方向で表現)、"
             "none=ゲートなし (値パス単独で注入の場所と内容を学ぶ ablation)。stem では無視"
         ),
     )

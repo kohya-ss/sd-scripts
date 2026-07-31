@@ -51,10 +51,13 @@ GATE_INIT_BIAS = 2.0
 
 # v3 semantic trunk のゲートモード (メタデータ欠落時は "scalar" = 旧 v3 重み互換)
 #   scalar: per-token スカラーゲート g = σ(gate([cond_local, h])) を値パス出力に乗じる (v3 既定)
-#   none  : ゲートなし。per-token スカラーでは同一 token 内の「幾何は保持・外観は解放」を
-#           表現できないため、空間ゲートへの分業を禁じて値パス (mid + FiLM + up) に
+#   vector: per-token・per-channel ゲート g (mlp_dim 次元) を up の前に m へ乗じる
+#           (Δx = up(g ⊙ m))。スカラーが表現できない同一 token 内の
+#           「幾何は保持・外観は解放」をチャネル方向の選択として表現しつつ、
+#           乗算構造 (multiplier 耐性・自己剪定・マップ可視化 = チャネル平均) を保持する
+#   none  : ゲートなし。空間ゲートへの分業を禁じて値パス (mid + FiLM + up) に
 #           チャネル方向の選択まで学ばせる ablation
-GATE_MODES: Tuple[str, ...] = ("scalar", "none")
+GATE_MODES: Tuple[str, ...] = ("scalar", "vector", "none")
 
 
 # ----------------------------------------------------------------------------
@@ -421,8 +424,9 @@ class LLLiteModuleDiT(nn.Module):
     """単一の Attention Linear (q_proj/k_proj/v_proj) に対し LLLite の補正 x + cx を注入する.
 
     v2: concat-then-mid をベースに FiLM (γ, β) を mid 出力に適用、SiLU 化、depth embedding 対応.
-    v3 (use_gate=True): さらに per-token スカラーゲート g = σ(gate([cond_local, h])) を持ち、
+    v3 (gate_mode="scalar"): per-token スカラーゲート g = σ(gate([cond_local, h])) を持ち、
     出力を Δx = g ⊙ up(m) にする (値パス=何を注入するか / ゲート=どこで注入するか の分解)。
+    v3 (gate_mode="vector"): ゲートを mlp_dim 次元にし、up の前に m へ乗じる (Δx = up(g ⊙ m))。
     """
 
     def __init__(
@@ -433,10 +437,11 @@ class LLLiteModuleDiT(nn.Module):
         mlp_dim: int,
         dropout: Optional[float] = None,
         multiplier: float = 1.0,
-        use_gate: bool = False,
+        gate_mode: str = "none",
         require_t_local: bool = False,
     ):
         super().__init__()
+        assert gate_mode in GATE_MODES, f"gate_mode must be one of {list(GATE_MODES)}, got {gate_mode!r}"
         self.lllite_name = name
         # list 包みで nn.Module 登録を回避し、state_dict に元 Linear の重みが入らないようにする
         self.org_module = [org_module]
@@ -444,7 +449,7 @@ class LLLiteModuleDiT(nn.Module):
         self.mlp_dim = mlp_dim
         self.dropout = dropout
         self.multiplier = multiplier
-        self.use_gate = use_gate
+        self.gate_mode = gate_mode
         # semantic trunk では gate の有無に関わらず t-FiLM フックが毎 forward 届いている必要がある
         self.require_t_local = require_t_local
 
@@ -462,11 +467,13 @@ class LLLiteModuleDiT(nn.Module):
         nn.init.zeros_(self.up.weight)
         nn.init.zeros_(self.up.bias)
 
-        if use_gate:
-            # per-token スカラーゲート。weight は zero-init (空間一様スタート)、bias は
-            # 開いた状態 (GATE_INIT_BIAS)。値パス up が zero-init なので恒等スタートは維持され、
+        if gate_mode != "none":
+            # scalar: per-token スカラーゲート / vector: per-token・per-channel (mlp_dim) ゲート。
+            # weight は zero-init (空間一様スタート)、bias は開いた状態 (GATE_INIT_BIAS)。
+            # 値パス up が zero-init なので恒等スタートは維持され、
             # 開いたゲート越しに値パスへ勾配が流れ、ゲートは後から「閉じるべき場所」を学ぶ。
-            self.gate = nn.Linear(cond_emb_dim + mlp_dim, 1)
+            gate_out = 1 if gate_mode == "scalar" else mlp_dim
+            self.gate = nn.Linear(cond_emb_dim + mlp_dim, gate_out)
             nn.init.zeros_(self.gate.weight)
             nn.init.constant_(self.gate.bias, GATE_INIT_BIAS)
 
@@ -482,7 +489,8 @@ class LLLiteModuleDiT(nn.Module):
         self.t_local: Optional[torch.Tensor] = None
 
         # gate 可視化用 (推論時のみ有効化する想定。capture_gate=True のとき forward 毎に
-        # last_gate へ detach 済みゲートマップ (B, S, 1) を保存する)
+        # last_gate へ detach 済みゲートマップ (B, S, 1) を保存する。
+        # vector gate ではチャネル平均に落とした (B, S, 1) を保存する)
         self.capture_gate: bool = False
         self.last_gate: Optional[torch.Tensor] = None
 
@@ -558,9 +566,17 @@ class LLLiteModuleDiT(nn.Module):
         if self.dropout is not None and self.training:
             m = F.dropout(m, p=self.dropout)
 
+        if self.gate_mode == "vector":
+            # per-token・per-channel ゲート: スカラーでは表現できない同一 token 内の
+            # 「幾何は保持・外観は解放」をチャネル方向の選択として学ぶ (Δx = up(g ⊙ m))
+            g = torch.sigmoid(self.gate(torch.cat([cond_local, h], dim=-1)))  # (B, S, mlp)
+            if self.capture_gate:
+                self.last_gate = g.detach().mean(dim=-1, keepdim=True)
+            m = m * g
+
         out = self.up(m)
 
-        if self.use_gate:
+        if self.gate_mode == "scalar":
             # per-token スカラーゲート: cond の意味特徴と生成側の現在特徴 h の両方を見て
             # 「この位置に条件を注入するか」を内容依存に決める
             g = torch.sigmoid(self.gate(torch.cat([cond_local, h], dim=-1)))  # (B, S, 1)
@@ -693,7 +709,7 @@ class ControlNetLLLiteDiT(nn.Module):
 
         modules = self._create_modules(
             dit, cond_emb_dim, mlp_dim, atomics, dropout, multiplier,
-            use_gate=self.gate_mode == "scalar",
+            gate_mode=self.gate_mode,
             require_t_local=trunk == "semantic",
         )
         self.lllite_modules = nn.ModuleList(modules)
@@ -779,7 +795,7 @@ class ControlNetLLLiteDiT(nn.Module):
         atomics: Tuple[str, ...],
         dropout: Optional[float],
         multiplier: float,
-        use_gate: bool = False,
+        gate_mode: str = "none",
         require_t_local: bool = False,
     ) -> List[LLLiteModuleDiT]:
         modules: List[LLLiteModuleDiT] = []
@@ -805,7 +821,7 @@ class ControlNetLLLiteDiT(nn.Module):
                     modules.append(
                         LLLiteModuleDiT(
                             full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier,
-                            use_gate, require_t_local,
+                            gate_mode, require_t_local,
                         )
                     )
 
@@ -818,7 +834,7 @@ class ControlNetLLLiteDiT(nn.Module):
                 modules.append(
                     LLLiteModuleDiT(
                         full_name, child, cond_emb_dim, mlp_dim, dropout, multiplier,
-                        use_gate, require_t_local,
+                        gate_mode, require_t_local,
                     )
                 )
 
@@ -1467,14 +1483,20 @@ def load_lllite_weights(lllite: ControlNetLLLiteDiT, file: str, strict: bool = F
                 f"Check --lllite_ref_block / the 'lllite.ref_block' metadata."
             )
 
-    # v3 gate モード (scalar / none) の取り違え検出。strict=False だと欠落/余剰キーが
+    # v3 gate モード (scalar / vector / none) の取り違え検出。strict=False だと欠落/余剰キーが
     # 黙って無視され、初期値 gate のまま推論が進んでしまうため早期に落とす。
-    file_has_gate = any(k.endswith(".gate.weight") for k in weights_sd)
-    model_has_gate = any(m.use_gate for m in lllite.lllite_modules)
-    if file_has_gate != model_has_gate:
+    # scalar / vector は gate.weight の出力次元 (1 / mlp_dim) で判別する。
+    gate_weight_keys = [k for k in weights_sd if k.endswith(".gate.weight")]
+    if not gate_weight_keys:
+        file_gate = "none"
+    elif weights_sd[gate_weight_keys[0]].shape[0] == 1:
+        file_gate = "scalar"
+    else:
+        file_gate = "vector"
+    if file_gate != lllite.gate_mode:
         raise RuntimeError(
             f"gate mode mismatch: weights at {file} were trained with "
-            f"gate='{'scalar' if file_has_gate else 'none'}', but this LLLite was built with "
+            f"gate='{file_gate}', but this LLLite was built with "
             f"gate='{lllite.gate_mode}'. Check --lllite_gate / the 'lllite.gate' metadata."
         )
 
@@ -2022,7 +2044,7 @@ if __name__ == "__main__":
     lllite_v3_ng.apply_to()
     lllite_v3_ng.set_cond_hidden_states(torch.randn(1, 1, 8, 8, MODEL_DIM))
     mod_ng = lllite_v3_ng.lllite_modules[0]
-    assert not mod_ng.use_gate and mod_ng.require_t_local
+    assert mod_ng.gate_mode == "none" and mod_ng.require_t_local
     x_ng = torch.randn(1, 64, mod_ng.org_module[0].in_features)
     try:
         mod_ng(x_ng)
@@ -2036,6 +2058,34 @@ if __name__ == "__main__":
     # stem trunk では gate 指定に関わらず gate_mode="none"
     assert ControlNetLLLiteDiT(_DummyDiT(), target_layers="self_attn_q").gate_mode == "none"
     logger.info("  v3 gate=none build / keys / t_local guard / zero-init forward OK")
+
+    # gate="vector": gate 出力は mlp_dim 次元、up の前に m へ乗算。zero-init 恒等は維持
+    dit_v3_vg = _DummyDiTV3(num_blocks=4)
+    lllite_v3_vg = ControlNetLLLiteDiT(
+        dit_v3_vg, cond_emb_dim=32, mlp_dim=64, target_layers="self_attn_q",
+        cond_input_space="latent", trunk="semantic", ref_block=2, gate="vector",
+    )
+    assert lllite_v3_vg.gate_mode == "vector"
+    mod_vg = lllite_v3_vg.lllite_modules[0]
+    assert mod_vg.gate_mode == "vector"
+    assert mod_vg.gate.weight.shape == (64, 32 + 64), mod_vg.gate.weight.shape
+    assert mod_vg.gate.weight.abs().sum().item() == 0.0
+    assert torch.allclose(mod_vg.gate.bias, torch.full_like(mod_vg.gate.bias, GATE_INIT_BIAS))
+    lllite_v3_vg.apply_to()
+    lllite_v3_vg.set_cond_hidden_states(torch.randn(1, 1, 8, 8, MODEL_DIM))
+    lllite_v3_vg._update_t_local(torch.randn(1, 1, MODEL_DIM))
+    x_vg = torch.randn(1, 64, mod_vg.org_module[0].in_features)
+    y_vg = mod_vg(x_vg)
+    assert torch.allclose(y_vg, mod_vg.org_forward(x_vg)), "gate=vector zero-init forward mismatch"
+    # capture はチャネル平均に落とした (B, S, 1)。zero-init では空間一様に σ(GATE_INIT_BIAS)
+    mod_vg.capture_gate = True
+    mod_vg(x_vg)
+    assert mod_vg.last_gate is not None and mod_vg.last_gate.shape == (1, 64, 1)
+    expected_vg = torch.sigmoid(torch.tensor(GATE_INIT_BIAS))
+    assert torch.allclose(mod_vg.last_gate, expected_vg.expand_as(mod_vg.last_gate), atol=1e-6)
+    mod_vg.capture_gate = False
+    lllite_v3_vg.clear_cond_image()
+    logger.info("  v3 gate=vector build / keys / zero-init forward / capture OK")
 
     # ref_block デフォルト = num_blocks // 2
     lllite_v3_d = ControlNetLLLiteDiT(
@@ -2141,7 +2191,36 @@ if __name__ == "__main__":
             raise AssertionError("expected gate mode mismatch error")
         except RuntimeError as e:
             assert "gate mode mismatch" in str(e), str(e)
-        logger.info("  v3 gate mode mismatch detection OK")
+        # gate='scalar' の重みを gate='vector' モデルに読ませても明示エラー (形状判別)
+        lllite_v3_vg2 = ControlNetLLLiteDiT(
+            _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64,
+            target_layers="self_attn_qkv_cross_q", cond_dim=64, cond_resblocks=1,
+            cond_input_space="latent", trunk="semantic", ref_block=2, gate="vector",
+        )
+        try:
+            load_lllite_weights(lllite_v3_vg2, tmp_v3)
+            raise AssertionError("expected gate mode mismatch error (scalar -> vector)")
+        except RuntimeError as e:
+            assert "gate='scalar'" in str(e), str(e)
+        # gate='vector' の round-trip と、vector 重み -> scalar モデルの明示エラー
+        tmp_vg = tmp_v3 + ".vector.safetensors"
+        try:
+            save_lllite_model(tmp_vg, lllite_v3_vg2, dtype=torch.float32)
+            lllite_v3_vg3 = ControlNetLLLiteDiT(
+                _DummyDiTV3(num_blocks=4), cond_emb_dim=32, mlp_dim=64,
+                target_layers="self_attn_qkv_cross_q", cond_dim=64, cond_resblocks=1,
+                cond_input_space="latent", trunk="semantic", ref_block=2, gate="vector",
+            )
+            load_lllite_weights(lllite_v3_vg3, tmp_vg, strict=True)
+            try:
+                load_lllite_weights(lllite_v3_b, tmp_vg)
+                raise AssertionError("expected gate mode mismatch error (vector -> scalar)")
+            except RuntimeError as e:
+                assert "gate='vector'" in str(e), str(e)
+        finally:
+            if os.path.exists(tmp_vg):
+                os.unlink(tmp_vg)
+        logger.info("  v3 gate mode mismatch detection (scalar/vector/none) OK")
 
         # semantic 重みを stem (latent) モデルに読ませると明示エラー
         lllite_stem = ControlNetLLLiteDiT(
