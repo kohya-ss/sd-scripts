@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from types import SimpleNamespace
 
@@ -182,6 +183,45 @@ def test_grad_norm_handles_zero_and_no_gradients():
     assert list(guardian.moving_avg_window) == [0.0]
 
 
+def test_grad_norm_logs_foreach_path_only_once(monkeypatch, caplog):
+    grads = [torch.tensor([3.0, 4.0], dtype=torch.float32)]
+    expected = _legacy_grad_norm(grads)
+
+    def fake_get_total_norm(_grads, norm_type, error_if_nonfinite, foreach):
+        assert norm_type == 2.0
+        assert error_if_nonfinite is False
+        assert foreach is True
+        return expected.clone()
+
+    monkeypatch.setattr(train_network, "_FOREACH_GRAD_NORM_DISABLED", False)
+    monkeypatch.setattr(train_network, "_FOREACH_GRAD_NORM_PATH_LOGGED", False)
+    monkeypatch.setattr(train_network, "_TORCH_GET_TOTAL_NORM", fake_get_total_norm)
+
+    with caplog.at_level(logging.INFO, logger=train_network.__name__):
+        _calculate_grad_norm(grads)
+        _calculate_grad_norm(grads)
+
+    messages = [record.getMessage() for record in caplog.records if "GradNorm Guardian:" in record.getMessage()]
+    assert messages == ["GradNorm Guardian: foreach fallback=no; using foreach grad norm"]
+
+
+def test_grad_norm_logs_fallback_only_once_after_nonempty_gradients(monkeypatch, caplog):
+    grads = [torch.tensor([3.0, 4.0], dtype=torch.float16)]
+    monkeypatch.setattr(train_network, "_FOREACH_GRAD_NORM_DISABLED", False)
+    monkeypatch.setattr(train_network, "_FOREACH_GRAD_NORM_PATH_LOGGED", False)
+
+    with caplog.at_level(logging.WARNING, logger=train_network.__name__):
+        _calculate_grad_norm([])
+        _calculate_grad_norm(grads)
+        _calculate_grad_norm(grads)
+
+    messages = [record.getMessage() for record in caplog.records if "GradNorm Guardian:" in record.getMessage()]
+    assert messages == [
+        "GradNorm Guardian: foreach fallback=yes; using legacy grad norm "
+        "(reason: foreach requirements are not met)"
+    ]
+
+
 class _CountingGradModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -327,7 +367,7 @@ def test_foreach_grad_norm_preserves_legacy_fp32_extreme_value_classification():
     assert _calculate_grad_norm(tiny_grad).item() == 0.0
 
 
-def test_cosine_logging_keeps_legacy_observe_path_and_columns(monkeypatch, tmp_path):
+def test_cosine_logging_keeps_legacy_observe_path_and_columns(monkeypatch, tmp_path, caplog):
     log_path = tmp_path / "gradient_logs+cosine.txt"
     model = _single_parameter_model(torch.tensor([3.0, 4.0]))
 
@@ -335,14 +375,16 @@ def test_cosine_logging_keeps_legacy_observe_path_and_columns(monkeypatch, tmp_p
         raise AssertionError("cosine diagnostics must keep the existing observe path")
 
     monkeypatch.setattr(train_network, "_calculate_grad_norm", fail_if_fast_path_is_used)
+    monkeypatch.setattr(train_network, "_FOREACH_GRAD_NORM_PATH_LOGGED", False)
     guardian = GradNormGuardian(
         _guardian_config(log_grad_norm=True, log_grad_scale=True, log_grad_cosine=True),
         scaler_for_log=SimpleNamespace(get_scale=lambda: 1024.0),
         log_file_path=str(log_path),
     )
 
-    guardian.observe(model, epoch=2, step=1, loss_val=0.25)
-    guardian.observe(model, epoch=2, step=2, loss_val=0.20)
+    with caplog.at_level(logging.WARNING, logger=train_network.__name__):
+        guardian.observe(model, epoch=2, step=1, loss_val=0.25)
+        guardian.observe(model, epoch=2, step=2, loss_val=0.20)
 
     assert log_path.read_text(encoding="utf-8").splitlines() == [
         "Epoch,Step,Gradient Norm,Threshold,Loss,ThreshOff,Scale,CosineSim"
@@ -356,6 +398,11 @@ def test_cosine_logging_keeps_legacy_observe_path_and_columns(monkeypatch, tmp_p
     assert second_fields[-2] == "1024.0"
     assert math.isclose(float(second_fields[-1]), 1.0)
     assert list(guardian.moving_avg_window) == [5.0, 5.0]
+    messages = [record.getMessage() for record in caplog.records if "GradNorm Guardian:" in record.getMessage()]
+    assert messages == [
+        "GradNorm Guardian: foreach fallback=yes; using legacy grad norm "
+        "(reason: gradient cosine logging is enabled)"
+    ]
 
 
 def test_nonfinite_grad_norm_matches_legacy_classification_and_skip_behavior():

@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 
 _TORCH_GET_TOTAL_NORM = getattr(torch.nn.utils, "get_total_norm", None)
 _FOREACH_GRAD_NORM_DISABLED = False
+_FOREACH_GRAD_NORM_PATH_LOGGED = False
 
 
 def _set_delta_fake_quant_compat(network, step, mode, **kwargs):
@@ -144,18 +145,41 @@ def _is_unsupported_foreach_error(error: RuntimeError) -> bool:
     )
 
 
+def _log_grad_norm_path_once(*, fallback: bool, reason: Optional[str] = None) -> None:
+    global _FOREACH_GRAD_NORM_PATH_LOGGED
+
+    if _FOREACH_GRAD_NORM_PATH_LOGGED:
+        return
+
+    if fallback:
+        suffix = f" (reason: {reason})" if reason else ""
+        logger.warning("GradNorm Guardian: foreach fallback=yes; using legacy grad norm%s", suffix)
+    else:
+        logger.info("GradNorm Guardian: foreach fallback=no; using foreach grad norm")
+    _FOREACH_GRAD_NORM_PATH_LOGGED = True
+
+
 def _calculate_grad_norm(grads: List[torch.Tensor]) -> torch.Tensor:
     global _FOREACH_GRAD_NORM_DISABLED
 
     if _can_use_foreach_grad_norm(grads):
         try:
-            return _foreach_grad_norm(grads)
+            total_norm = _foreach_grad_norm(grads)
+            _log_grad_norm_path_once(fallback=False)
+            return total_norm
         except (TypeError, NotImplementedError):
             _FOREACH_GRAD_NORM_DISABLED = True
         except RuntimeError as error:
             if not _is_unsupported_foreach_error(error):
                 raise
             _FOREACH_GRAD_NORM_DISABLED = True
+    if grads:
+        reason = (
+            "foreach is unsupported by this runtime"
+            if _FOREACH_GRAD_NORM_DISABLED
+            else "foreach requirements are not met"
+        )
+        _log_grad_norm_path_once(fallback=True, reason=reason)
     return _legacy_grad_norm(grads)
 
 
@@ -249,6 +273,8 @@ class GradNormGuardian:
                         self.prev_grad_map.keys()
                     )
                 current_grad_norm_tensor = torch.sqrt(grad_norm_sqr)
+                if cur_grads:
+                    _log_grad_norm_path_once(fallback=True, reason="gradient cosine logging is enabled")
 
         current_grad_norm = current_grad_norm_tensor.item()
         cosine_sim = None
