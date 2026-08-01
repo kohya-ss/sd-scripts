@@ -611,6 +611,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 - `--optimizer_type`
     --オプティマイザの種類を指定します。以下が指定できます。
     - AdamW : [torch.optim.AdamW](https://pytorch.org/docs/stable/generated/torch.optim.AdamW.html)
+    - AdamW8bitFast : AdamW8bit互換の単GPU向け同期集約版。詳細は [adamw8bit_fast-ja.md](adamw8bit_fast-ja.md) を参照
     - 過去のバージョンのオプション未指定時と同じ
     - AdamW8bit : 引数は同上
     - PagedAdamW8bit : 引数は同上

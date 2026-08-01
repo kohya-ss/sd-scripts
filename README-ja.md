@@ -31,12 +31,12 @@ GUIやPowerShellスクリプトなど、より使いやすくする機能が[bma
 
 ## Windowsでの動作に必要なプログラム
 
-Python 3.10.6およびGitが必要です。
+Python 3.10.x（64bit）およびGitが必要です。
 
-- Python 3.10.6: https://www.python.org/ftp/python/3.10.6/python-3.10.6-amd64.exe
+- Python 3.10.x: https://www.python.org/downloads/windows/
 - git: https://git-scm.com/download/win
 
-Python 3.10.x、3.11.x、3.12.xでも恐らく動作しますが、3.10.6でテストしています。
+このフォークではPython 3.10で動作確認しています。
 
 PowerShellを使う場合、venvを使えるようにするためには以下の手順でセキュリティ設定を変更してください。
 （venvに限らずスクリプトの実行が可能になりますので注意してください。）
@@ -47,33 +47,48 @@ PowerShellを使う場合、venvを使えるようにするためには以下の
 
 ## Windows環境でのインストール
 
-スクリプトはPyTorch 2.1.2でテストしています。PyTorch 2.2以降でも恐らく動作します。
+このフォークでは、Windows環境のPyTorch 2.9.1、torchvision 0.24.1、CUDA 13.0、bitsandbytes 0.48.2、およびSDPAの組み合わせを動作確認済みの基準環境としています。RTX 50シリーズでは、この構成を推奨します。
+
+bitsandbytes 0.48.2が対応するPyTorchの範囲は`2.3 <= PyTorch < 3.0`です。PyTorch 2.9.1以外も利用できますが、このフォークでの動作確認範囲外です。
 
 （なお、python -m venv～の行で「python」とだけ表示された場合、py -m venv～のようにpythonをpyに変更してください。）
 
 PowerShellを使う場合、通常の（管理者ではない）PowerShellを開き以下を順に実行します。
 
 ```powershell
-git clone https://github.com/kohya-ss/sd-scripts.git
+git clone https://github.com/maruo555/sd-scripts.git
 cd sd-scripts
 
 python -m venv venv
 .\venv\Scripts\activate
 
-pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
-pip install --upgrade -r requirements.txt
-pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu118
+python -m pip install --upgrade pip
+python -m pip install "numpy<2"
+python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install --upgrade -r requirements.txt
 
 accelerate config
 ```
 
 コマンドプロンプトでも同一です。
 
-注：`bitsandbytes==0.44.0`、`prodigyopt==1.0`、`lion-pytorch==0.0.6` は `requirements.txt` に含まれるようになりました。他のバージョンを使う場合は適宜インストールしてください。
+`numpy<2`を先にインストールする順序には意味があります。後続パッケージが要求するNumPyの条件を満たしているため、通常は`requirements.txt`のインストール時にNumPy 2へ置き換えられません。新しい仮想環境で上記の順に実行することを推奨します。
 
-この例では PyTorch および xfomers は2.1.2／CUDA 11.8版をインストールします。CUDA 12.1版やPyTorch 1.12.1を使う場合は適宜書き換えください。たとえば CUDA 12.1版の場合は `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` および `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121` としてください。
+注：`bitsandbytes`は本家の当時の`0.44.0`から、このフォークでは`0.48.2`へ更新しています。`requirements.txt`からインストールされるため、通常は別途インストールする必要はありません。`prodigyopt==1.0`、`lion-pytorch==0.0.6`もrequirements.txtに含まれています。
 
-PyTorch 2.2以降を用いる場合は、`torch==2.1.2` と `torchvision==0.16.2` 、および `xformers==0.0.23.post1` を適宜変更してください。
+上記の例はPyTorch 2.9.1およびCUDA 13.0用です。異なるCUDA版を使う場合は、[PyTorch公式のインストール手順](https://pytorch.org/get-started/locally/)で対応するコマンドを確認してください。bitsandbytesを使う場合は、前述の対応PyTorch範囲にも注意してください。
+
+### Attention実装について
+
+RTX 50シリーズのWindows環境では、xformersを追加せず、学習オプションに`--sdpa`を指定する構成を動作確認済みの基準としています。
+
+RTX 40シリーズなど、利用環境に対応するxformersのwheelが提供されている場合は、xformersを選ぶこともできます。上記のPyTorch 2.9.1 / CUDA 13.0構成では、必要に応じて次のようにインストールできます。
+
+```powershell
+python -m pip install xformers==0.0.33.post2 --index-url https://download.pytorch.org/whl/cu130
+```
+
+xformersを使う場合は`--xformers`、SDPAを使う場合は`--sdpa`を指定してください。両方を同時に指定する必要はありません。GPU、PyTorch、CUDAの組み合わせによって速度や互換性が異なるため、環境ごとに確認してください。
 
 accelerate configの質問には以下のように答えてください。（bf16で学習する場合、最後の質問にはbf16と答えてください。）
 
@@ -94,11 +109,14 @@ accelerate configの質問には以下のように答えてください。（bf1
 
 新しいリリースがあった場合、以下のコマンドで更新できます。
 
+重要：以前の手順に従ってPyTorch 2.1.2 / torchvision 0.16.2で作成した仮想環境は、`requirements.txt`だけで更新しないでください。`bitsandbytes==0.48.2`にはPyTorch 2.3以降が必要です。PyTorchとtorchvisionを互換性のある組み合わせで更新するため、新しい仮想環境を作成し、現在の[Windows環境でのインストール](#windows環境でのインストール)手順を実行してください。以下の更新コマンドは、動作確認済みのPyTorch 2.9.1 / torchvision 0.24.1環境へ移行済みの場合に使用します。
+
 ```powershell
 cd sd-scripts
 git pull
 .\venv\Scripts\activate
-pip install --use-pep517 --upgrade -r requirements.txt
+python -m pip install --use-pep517 --upgrade -r requirements.txt
+python -m pip check
 ```
 
 コマンドが成功すれば新しいバージョンが使用できます。

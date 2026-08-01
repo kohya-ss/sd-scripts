@@ -9,6 +9,7 @@
 
 | オプション | 既定値 | 主な効果 | 実装箇所／備考 |
 |------------|:------:|----------|----------------|
+| `--optimizer_type AdamW8bitFast` | 無効 | **LoRA向けAdamW8bit同期集約版**。bitsandbytesと同じ更新・stateを維持し、parameterごとのCUDA同期をstep末尾の1回へまとめる。 | 実験用。単GPU・non-paged CUDAで自動高速化し、非対応条件はstock AdamW8bitへfallback。fork不要。詳細: [docs/adamw8bit_fast-ja.md](docs/adamw8bit_fast-ja.md) |
 | `--downscale_freq_shift` | `0.0` | **時間埋め込みの周波数ダウンスケール**を 1.0 (従来値) に戻す。キャラクター LoRA で *identity* が定着しやすい傾向。 | `library/sdxl_original_unet.py`<br>本家 PR #1187 で 1.0→0.0 に変更された挙動を選択式に復活。|
 | `--te_mlp_fc_only` | 全層 | Text Encoder の学習対象を **MLP (全結合) 層だけ**に限定。キーワードベースのキャラ LoRA で“語彙を固めつつ柔軟性を保つ”目的。 | 本家 PR #1964 以前の挙動を再現。|
 | `--fp16_safe_norms` | `False` | 縮約系（LayerNorm/GroupNorm/Softmax）だけ **fp32 で演算**し、重みと他演算は fp16 のまま。fp16 + 小バッチ（例: `batch_size=1`）で学習安定性を向上。 | `library/sdxl_original_unet.py` にラッパ実装。<br>注意: Softmax の fp32 化は通常のAttention経路のみ（`--xformers`/`--sdpa` 使用時は各実装に依存）。Normは全経路でfp32化。|
@@ -61,7 +62,7 @@ bf16 環境での挙動は未検証です。GradScaler が不要になるため 
 
 ---
 
-## 以下、公式のまま
+## 以下は公式READMEをベースにしています（セットアップ手順など一部を本フォーク向けに更新）
 <!--- ここまで自分の追記 --->
 
 
@@ -94,7 +95,9 @@ This repository contains the scripts for:
 
 The file does not contain requirements for PyTorch. Because the version of PyTorch depends on the environment, it is not included in the file. Please install PyTorch first according to the environment. See installation instructions below.
 
-The scripts are tested with Pytorch 2.1.2. PyTorch 2.2 or later will work. Please install the appropriate version of PyTorch and xformers.
+This fork is tested on Windows with PyTorch 2.9.1, torchvision 0.24.1 and CUDA 13.0. The verified RTX 50-series setup uses PyTorch SDPA and does not require xformers. Other PyTorch versions may work, but have not been verified with this fork.
+
+`bitsandbytes==0.48.2` requires PyTorch 2.3 or later. The installation steps below pin a mutually compatible, tested package set instead of installing whichever PyTorch version happens to be latest.
 
 ## Links to usage documentation
 
@@ -134,26 +137,39 @@ Give unrestricted script access to powershell so venv can work:
 Open a regular Powershell terminal and type the following inside:
 
 ```powershell
-git clone https://github.com/kohya-ss/sd-scripts.git
+git clone https://github.com/maruo555/sd-scripts.git
 cd sd-scripts
 
 python -m venv venv
 .\venv\Scripts\activate
 
-pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
-pip install --upgrade -r requirements.txt
-pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu118
+python -m pip install --upgrade pip
+python -m pip install "numpy<2"
+python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install --upgrade -r requirements.txt
 
 accelerate config
 ```
 
 If `python -m venv` shows only `python`, change `python` to `py`.
 
-Note: Now `bitsandbytes==0.44.0`, `prodigyopt==1.0` and `lion-pytorch==0.0.6` are included in the requirements.txt. If you'd like to use the another version, please install it manually.
+The installation order is intentional. Installing `numpy<2` first keeps the older binary dependencies in this fork on the NumPy 1.x ABI. A clean installation from this branch kept NumPy 1.26.4 when `requirements.txt` was installed and completed with no broken requirements.
 
-This installation is for CUDA 11.8. If you use a different version of CUDA, please install the appropriate version of PyTorch and xformers. For example, if you use CUDA 12, please install `pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121` and `pip install xformers==0.0.23.post1 --index-url https://download.pytorch.org/whl/cu121`.
+Note: The original version used `bitsandbytes==0.44.0` (`0.48.2` in this fork). The latest upstream no longer pins the bitsandbytes version, while this fork pins the GPU-tested `0.48.2` in requirements.txt. Installing bitsandbytes separately is not required. `prodigyopt==1.0` and `lion-pytorch==0.0.6` are also included. If you'd like to use another version, please install it manually and rerun the optimizer regression tests.
 
-If you use PyTorch 2.2 or later, please change `torch==2.1.2` and `torchvision==0.16.2` and `xformers==0.0.23.post1` to the appropriate version.
+This installation targets the tested CUDA 13.0 environment. If you use a different CUDA build, install a matching PyTorch and torchvision pair from the [official PyTorch installation guide](https://pytorch.org/get-started/locally/). Keep PyTorch at 2.3 or later, but below 3.0, for compatibility with bitsandbytes 0.48.2.
+
+### Attention implementation: SDPA or xformers
+
+For RTX 50-series GPUs on Windows, this fork's verified and recommended baseline omits xformers and uses PyTorch SDPA. Specify `--sdpa` in the training command.
+
+For RTX 40-series and other supported GPUs, SDPA remains available. xformers is optional; if you prefer it with the pinned PyTorch 2.9.1 setup, install the matching build:
+
+```powershell
+python -m pip install xformers==0.0.33.post2 --index-url https://download.pytorch.org/whl/cu130
+```
+
+Specify `--xformers` instead of `--sdpa` when using xformers. Do not specify both options. The faster implementation depends on the GPU and workload, so compare them under the same training settings when possible.
 
 <!-- 
 cp .\bitsandbytes_windows\*.dll .\venv\Lib\site-packages\bitsandbytes\
@@ -183,18 +199,21 @@ Note: Some user reports ``ValueError: fp16 mixed precision requires a GPU`` is o
 
 When a new release comes out you can upgrade your repo with the following command:
 
+Important: If your virtual environment was created with the previous PyTorch 2.1.2 / torchvision 0.16.2 instructions, do not upgrade it by installing only `requirements.txt`. `bitsandbytes==0.48.2` requires PyTorch 2.3 or later. Create a new virtual environment and follow the current [Windows Installation](#windows-installation) steps so that PyTorch and torchvision are upgraded as a compatible pair. The commands below are for an environment that has already been migrated to the tested PyTorch 2.9.1 / torchvision 0.24.1 setup.
+
 ```powershell
 cd sd-scripts
 git pull
 .\venv\Scripts\activate
-pip install --use-pep517 --upgrade -r requirements.txt
+python -m pip install --use-pep517 --upgrade -r requirements.txt
+python -m pip check
 ```
 
 Once the commands have completed successfully you should be ready to use the new version.
 
 ### Upgrade PyTorch
 
-If you want to upgrade PyTorch, you can upgrade it with `pip install` command in [Windows Installation](#windows-installation) section. `xformers` is also required to be upgraded when PyTorch is upgraded.
+When changing PyTorch versions, install a compatible PyTorch and torchvision pair together. xformers is not required when using SDPA. If you use xformers, update it to a build compatible with the selected PyTorch and CUDA versions.
 
 ## Credits
 
@@ -208,7 +227,7 @@ The majority of scripts is licensed under ASL 2.0 (including codes from Diffuser
 
 [Memory Efficient Attention Pytorch](https://github.com/lucidrains/memory-efficient-attention-pytorch): MIT
 
-[bitsandbytes](https://github.com/TimDettmers/bitsandbytes): MIT
+[bitsandbytes](https://github.com/TimDettmers/bitsandbytes): MIT ([license](third_party/bitsandbytes-LICENSE.txt))
 
 [BLIP](https://github.com/salesforce/BLIP): BSD-3-Clause
 
