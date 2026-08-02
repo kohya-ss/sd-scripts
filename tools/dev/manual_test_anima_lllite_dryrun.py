@@ -7,9 +7,11 @@ Verifies, end-to-end on CPU:
   4. wrapper.forward propagates cond and reaches each patched Linear
   5. backward gives grads to LLLite params, but not to DiT params
   6. save_lllite_model -> reload into a fresh LLLite -> state_dicts match
+  7. cond_input_space="latent" (v2.1): latent stem / mask pyramid build, forward, grads,
+     save-load round-trip and pixel<->latent weight mix-up detection
 
 Run:
-    python tests/manual_test_anima_lllite_dryrun.py
+    python tools/dev/manual_test_anima_lllite_dryrun.py
 """
 
 import os
@@ -20,13 +22,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# repo root on sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# repo root on sys.path (this file lives in tools/dev/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from library.anima_models import Attention  # real Anima Attention
 from networks.control_net_lllite_anima import (
+    LATENT_COND_CHANNELS,
     ControlNetLLLiteDiT,
     AnimaControlNetLLLiteWrapper,
+    build_cond_tensors,
     save_lllite_model,
     load_lllite_weights,
 )
@@ -240,7 +244,153 @@ def main():
         assert _state_dicts_equal(sd_orig, sd_after)
         print("[9] load round-trip OK (state_dicts match exactly)")
 
+    check_latent_cond()
+
     print("\nAll dry-run checks PASSED.")
+
+
+class _StubVae:
+    """Minimal stand-in for the Qwen-Image VAE: /8 downsample into LATENT_COND_CHANNELS."""
+
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    def encode_pixels_to_latents(self, pixels: torch.Tensor) -> torch.Tensor:
+        pooled = F.avg_pool2d(pixels, 8)  # (B, 3, H/8, W/8)
+        return pooled.repeat(1, 6, 1, 1)[:, :LATENT_COND_CHANNELS]
+
+
+def check_latent_cond():
+    """v2.1: cond_input_space='latent' の構築 / forward / backward / round-trip / 取り違え検出."""
+    torch.manual_seed(1)
+
+    num_blocks = 2
+    query_dim = 64
+    context_dim = 96
+    target_layers = "self_attn_q_pre"
+
+    B = 2
+    lat_H, lat_W = 8, 8                      # VAE latent 解像度 (= x の HW)
+    img_H, img_W = lat_H * 8, lat_W * 8      # 元画像解像度
+    S_ctx = 5
+
+    x = torch.randn(B, query_dim, 1, lat_H, lat_W)
+    t = torch.zeros(B)
+    ctx = torch.randn(B, S_ctx, context_dim)
+    rgb = torch.randn(B, 3, img_H, img_W).clamp(-1, 1)
+    mask = (torch.rand(B, 1, img_H, img_W) > 0.5).float()
+    vae = _StubVae()
+
+    for cond_in_channels in (3, 4):
+        dit = _StubDiT(num_blocks=num_blocks, query_dim=query_dim, context_dim=context_dim)
+        dit.requires_grad_(False)
+        lllite = ControlNetLLLiteDiT(
+            dit,
+            cond_emb_dim=32,
+            mlp_dim=64,
+            target_layers=target_layers,
+            cond_in_channels=cond_in_channels,
+            inpaint_masked_input=(cond_in_channels == 4),
+            cond_input_space="latent",
+        )
+        lllite.apply_to()
+        wrapper = AnimaControlNetLLLiteWrapper(dit, lllite)
+
+        cond_image, cond_mask = build_cond_tensors(
+            rgb,
+            mask if cond_in_channels == 4 else None,
+            cond_input_space="latent",
+            cond_in_channels=cond_in_channels,
+            inpaint_masked_input=(cond_in_channels == 4),
+            vae=vae,
+        )
+        assert cond_image.shape == (B, LATENT_COND_CHANNELS, lat_H, lat_W), cond_image.shape
+        if cond_in_channels == 4:
+            assert cond_mask is not None and cond_mask.shape == (B, 1, img_H, img_W)
+        else:
+            assert cond_mask is None
+
+        # zero-init: cond ありでも cond なしと一致する
+        out_no_cond = wrapper(x, t, ctx)
+        out_zero_init = wrapper(x, t, ctx, cond_image=cond_image, cond_mask=cond_mask)
+        assert torch.allclose(out_no_cond, out_zero_init, atol=1e-6), (
+            f"latent (cin={cond_in_channels}) zero-init mismatch"
+        )
+
+        # perturb して cond が出力を動かすことを確認
+        with torch.no_grad():
+            for m in lllite.lllite_modules:
+                m.up.weight.normal_(0, 0.01)
+        out_perturbed = wrapper(x, t, ctx, cond_image=cond_image, cond_mask=cond_mask)
+        assert not torch.allclose(out_no_cond, out_perturbed, atol=1e-6), (
+            f"latent (cin={cond_in_channels}) cond path did not move the output"
+        )
+
+        # backward: latent stem (と mask pyramid) に勾配が流れる
+        lllite.train()
+        wrapper(x, t, ctx, cond_image=cond_image, cond_mask=cond_mask).float().pow(2).mean().backward()
+        stem_grads = {
+            n: p.grad for n, p in lllite.named_parameters()
+            if n.startswith("conditioning1.lat_") or n.startswith("conditioning1.mask_")
+        }
+        assert stem_grads, "no latent stem params found"
+        for n, g in stem_grads.items():
+            assert g is not None and g.abs().sum().item() > 0, f"no grad on {n}"
+        if cond_in_channels == 4:
+            assert any(n.startswith("conditioning1.mask_conv") for n in stem_grads), (
+                "mask pyramid params missing in inpaint mode"
+            )
+        assert not any(
+            p.grad is not None and p.grad.abs().sum().item() > 0 for p in dit.parameters()
+        ), "DiT params should not receive grad"
+
+        print(
+            f"[L1] latent cond_in_channels={cond_in_channels}: build / zero-init / cond effect / "
+            f"grads OK ({len(stem_grads)} stem params)"
+        )
+
+        # save / load round-trip
+        with tempfile.TemporaryDirectory() as tmp:
+            ckpt = os.path.join(tmp, "lllite_latent.safetensors")
+            save_lllite_model(ckpt, lllite, dtype=torch.float32, metadata={
+                "lllite.cond_input_space": "latent",
+                "lllite.cond_in_channels": str(cond_in_channels),
+            })
+            dit_b = _StubDiT(num_blocks=num_blocks, query_dim=query_dim, context_dim=context_dim)
+            lllite_b = ControlNetLLLiteDiT(
+                dit_b, cond_emb_dim=32, mlp_dim=64, target_layers=target_layers,
+                cond_in_channels=cond_in_channels, cond_input_space="latent",
+            )
+            load_lllite_weights(lllite_b, ckpt, strict=True)
+            assert _state_dicts_equal(lllite.state_dict(), lllite_b.state_dict())
+            print(f"[L2] latent cond_in_channels={cond_in_channels}: save/load round-trip OK")
+
+            # pixel モデルに latent 重みを読ませると明示的に失敗する
+            dit_px = _StubDiT(num_blocks=num_blocks, query_dim=query_dim, context_dim=context_dim)
+            lllite_px = ControlNetLLLiteDiT(
+                dit_px, cond_emb_dim=32, mlp_dim=64, target_layers=target_layers,
+                cond_in_channels=cond_in_channels, cond_input_space="pixel",
+            )
+            try:
+                load_lllite_weights(lllite_px, ckpt, strict=False)
+                raise AssertionError("loading latent weights into a pixel model should fail")
+            except RuntimeError as e:
+                assert "cond input space mismatch" in str(e), str(e)
+
+            # 逆方向: pixel 重みを latent モデルに読ませても失敗する
+            ckpt_px = os.path.join(tmp, "lllite_pixel.safetensors")
+            save_lllite_model(ckpt_px, lllite_px, dtype=torch.float32)
+            lllite_lat_c = ControlNetLLLiteDiT(
+                _StubDiT(num_blocks=num_blocks, query_dim=query_dim, context_dim=context_dim),
+                cond_emb_dim=32, mlp_dim=64, target_layers=target_layers,
+                cond_in_channels=cond_in_channels, cond_input_space="latent",
+            )
+            try:
+                load_lllite_weights(lllite_lat_c, ckpt_px, strict=False)
+                raise AssertionError("loading pixel weights into a latent model should fail")
+            except RuntimeError as e:
+                assert "cond input space mismatch" in str(e), str(e)
+            print(f"[L3] latent cond_in_channels={cond_in_channels}: pixel/latent mix-up rejected")
 
 
 if __name__ == "__main__":
