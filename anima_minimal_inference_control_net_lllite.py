@@ -35,6 +35,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -46,9 +47,14 @@ import anima_minimal_inference as ami
 from library import anima_train_utils
 from networks.control_net_lllite_anima import (
     COND_INPUT_SPACES,
+    REF_CONTEXT_MODES,
     ControlNetLLLiteDiT,
     build_cond_tensors,
+    build_uncond_ref_context,
+    encode_reference_hidden_states,
+    install_ref_context_dispatch,
     load_lllite_weights,
+    parse_ref_blocks,
 )
 from library.utils import setup_logging
 
@@ -218,6 +224,33 @@ def parse_args() -> argparse.Namespace:
         "--lllite_cond_input", type=str, default=None, choices=list(COND_INPUT_SPACES),
         help="override cond_input_space from weights metadata (pixel/latent)",
     )
+    parser.add_argument(
+        "--lllite_ref_block", type=str, default=None,
+        help=(
+            "[semantic trunk] override ref_block from weights metadata "
+            "(comma-separated for the dual/multi concat trunk, e.g. '2,13')"
+        ),
+    )
+    parser.add_argument(
+        "--lllite_ref_timestep", type=float, default=None,
+        help="[semantic trunk] override ref_timestep from weights metadata",
+    )
+    parser.add_argument(
+        "--lllite_ref_context", type=str, default=None, choices=list(REF_CONTEXT_MODES),
+        help=(
+            "[semantic trunk] override ref_context from weights metadata (zero/uncond/caption). "
+            "Use the mode the weights were trained with; overriding is for ablation only. "
+            "'caption' precomputes one reference forward per CFG branch before the denoising loop"
+        ),
+    )
+    parser.add_argument(
+        "--save_gate_maps", type=str, default=None,
+        help=(
+            "[semantic trunk] directory to dump per-module gate maps (predicted change-region masks) "
+            "as grayscale PNGs after each generation. With gate='vector' the map is the "
+            "channel-mean of the per-channel gate"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -350,15 +383,47 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         if args.lllite_cond_input is not None
         else meta.get("lllite.cond_input_space", "pixel")
     )
+    # trunk (v3). メタデータ欠落時は stem (旧重み互換)
+    trunk = meta.get("lllite.trunk", "stem")
+    # single は "13"、dual/multi は "2,13" (カンマ区切り、v3 dual)
+    ref_blocks = parse_ref_blocks(
+        args.lllite_ref_block
+        if args.lllite_ref_block is not None
+        else meta.get("lllite.ref_block")
+    )
+    ref_timestep = (
+        args.lllite_ref_timestep
+        if args.lllite_ref_timestep is not None
+        else float(meta.get("lllite.ref_timestep", 0.0))
+    )
+    # ref_context (v3). メタデータ欠落時は zero (旧重み互換)
+    meta_ref_context = meta.get("lllite.ref_context", "zero")
+    ref_context = (
+        args.lllite_ref_context if args.lllite_ref_context is not None else meta_ref_context
+    )
+    if trunk == "semantic" and ref_context != meta_ref_context:
+        logger.warning(
+            f"ref_context override: weights were trained with '{meta_ref_context}' but running "
+            f"with '{ref_context}' (train/inference mismatch; for ablation only)"
+        )
+    # gate モード (v3)。メタデータ欠落時は scalar (旧 v3 重み互換)。アーキテクチャそのもの
+    # なので CLI 上書きは提供しない (取り違えは load_lllite_weights が検出する)
+    gate = meta.get("lllite.gate", "scalar")
     version = meta.get("lllite.version", "?")
     inpaint_log = (
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
+    )
+    trunk_log = (
+        f", trunk=semantic(ref_blocks={list(ref_blocks) if ref_blocks else None}, "
+        f"ref_timestep={ref_timestep}, ref_context={ref_context}, gate={gate})"
+        if trunk == "semantic"
+        else ""
     )
     logger.info(
         f"LLLite config (v{version}): cond_emb_dim={cond_emb_dim}, mlp_dim={mlp_dim}, "
         f"target_layers={target_layers}, cond_dim={cond_dim}, cond_resblocks={cond_resblocks}, "
         f"use_aspp={use_aspp}{(' dilations=' + str(list(aspp_dilations))) if use_aspp else ''}, "
-        f"cond_input={cond_input_space}, "
+        f"cond_input={cond_input_space}{trunk_log}, "
         f"cond_in_channels={cond_in_channels}{inpaint_log}, multiplier={args.lllite_multiplier}"
     )
 
@@ -375,6 +440,11 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         cond_in_channels=cond_in_channels,
         inpaint_masked_input=inpaint_masked_input,
         cond_input_space=cond_input_space,
+        trunk=trunk,
+        ref_block=ref_blocks,
+        ref_timestep=ref_timestep,
+        ref_context=ref_context if trunk == "semantic" else "zero",
+        gate=gate,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -453,12 +523,123 @@ def generate_body(
 
     # honor per-prompt override of multiplier
     anima.lllite.set_multiplier(args.lllite_multiplier)
-    anima.lllite.set_cond_image(cond_image, cond_mask)
+
+    dispatch_handle = None
+    if anima.lllite.trunk == "semantic":
+        # v3: cond latent を凍結 DiT に通し hidden states を条件源にする (デノイズループ前に 1 回)。
+        # per-step の t は dit.t_embedding_norm の forward hook が毎ステップ配る。
+        # h_ref は t 不変なので、ref_context='caption' でも (画像, context) 毎の前計算で足りる
+        anima.lllite.clear_cond_image()
+        ref_context = anima.lllite.ref_context
+        with torch.no_grad(), torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=args.fp8
+        ):
+            if ref_context == "caption":
+                # 正プロンプトの context で h_ref を作り、CFG 有効時は negative 側も前計算して
+                # forward pre-hook (install_ref_context_dispatch) でブランチごとに切り替える。
+                # 学習の「本体と同じ context を参照にも渡す」配線 (caption dropout ↔ uncond) と整合
+                ctx_pos = context["embed"][0].to(device, dtype=torch.bfloat16)
+                entries = [
+                    (
+                        ctx_pos,
+                        encode_reference_hidden_states(
+                            anima, cond_image, anima.lllite.ref_blocks,
+                            anima.lllite.ref_timestep, context=ctx_pos,
+                        ),
+                    )
+                ]
+                if args.guidance_scale != 1.0:
+                    ctx_neg = (context_null if context_null is not None else context)["embed"][0].to(
+                        device, dtype=torch.bfloat16
+                    )
+                    if not torch.equal(ctx_neg, ctx_pos):
+                        entries.append(
+                            (
+                                ctx_neg,
+                                encode_reference_hidden_states(
+                                    anima, cond_image, anima.lllite.ref_blocks,
+                                    anima.lllite.ref_timestep, context=ctx_neg,
+                                ),
+                            )
+                        )
+                if len(entries) == 1:
+                    anima.lllite.set_cond_hidden_states(entries[0][1])
+                else:
+                    dispatch_handle = install_ref_context_dispatch(anima, anima.lllite, entries)
+                h_ref = entries[0][1]
+                branch_log = f"{len(entries)} CFG branch(es)"
+            else:
+                ref_ctx = (
+                    build_uncond_ref_context(
+                        anima, device, torch.bfloat16,
+                        pad_to_length=context["embed"][0].shape[1],
+                    )
+                    if ref_context == "uncond"
+                    else None
+                )
+                h_ref = encode_reference_hidden_states(
+                    anima, cond_image, anima.lllite.ref_blocks, anima.lllite.ref_timestep,
+                    context=ref_ctx,
+                )
+                anima.lllite.set_cond_hidden_states(h_ref)
+                branch_log = "shared"
+        logger.info(
+            f"LLLite reference forward: h_ref={tuple(h_ref.shape)} "
+            f"(ref_blocks={list(anima.lllite.ref_blocks)}, ref_timestep={anima.lllite.ref_timestep}, "
+            f"ref_context={ref_context}, {branch_log})"
+        )
+    else:
+        anima.lllite.set_cond_image(cond_image, cond_mask)
+
+    capture_gates = args.save_gate_maps is not None and anima.lllite.gate_mode in ("scalar", "vector")
+    if args.save_gate_maps is not None and not capture_gates:
+        logger.warning(
+            "--save_gate_maps requires the semantic trunk (v3) with gate='scalar' or 'vector' "
+            f"(this model: trunk={anima.lllite.trunk}, gate={anima.lllite.gate_mode}); ignored"
+        )
+    if capture_gates:
+        for m in anima.lllite.lllite_modules:
+            m.capture_gate = True
 
     try:
         return _original_generate_body(args, anima, context, context_null, device, seed)
     finally:
+        if capture_gates:
+            _dump_gate_maps(anima.lllite, args.save_gate_maps, f"seed{seed}")
+            for m in anima.lllite.lllite_modules:
+                m.capture_gate = False
+                m.last_gate = None
+        if dispatch_handle is not None:
+            dispatch_handle.remove()
         anima.lllite.clear_cond_image()
+
+
+def _dump_gate_maps(lllite, out_dir: str, prefix: str) -> None:
+    """各 LLLite モジュールの最終ステップの gate マップ (= モデルが予測した変更領域マスクの逆:
+    1=コピー / 0=書き換え) を token grid 解像度のグレースケール PNG として保存する。"""
+    hw = lllite.last_cond_hw
+    if hw is None:
+        logger.warning("no cond token grid recorded; skipping gate map dump")
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    gates = []
+    for m in lllite.lllite_modules:
+        if m.last_gate is None:
+            continue
+        g = m.last_gate[0, :, 0].float().reshape(hw)  # (H, W)
+        gates.append(g)
+        arr = (g.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        Image.fromarray(arr, mode="L").save(
+            os.path.join(out_dir, f"{prefix}_{m.lllite_name}.png")
+        )
+    if gates:
+        mean_g = torch.stack(gates).mean(0)
+        arr = (mean_g.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+        Image.fromarray(arr, mode="L").save(os.path.join(out_dir, f"{prefix}_mean.png"))
+        logger.info(
+            f"saved {len(gates)} gate maps (+mean) to {out_dir} "
+            f"(grid={hw}, mean gate={mean_g.mean().item():.3f})"
+        )
 
 
 # ---------------------------------------------------------------------------
