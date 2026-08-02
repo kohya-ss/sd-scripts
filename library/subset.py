@@ -242,6 +242,7 @@ class ControlNetSubset(BaseSubset):
         caption_suffix,
         token_warmup_min,
         token_warmup_step,
+        alpha_mask: bool = False,
         custom_attributes: Optional[Dict[str, Any]] = None,
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
@@ -251,7 +252,7 @@ class ControlNetSubset(BaseSubset):
 
         super().__init__(
             image_dir,
-            False,  # alpha_mask
+            alpha_mask,
             num_repeats,
             shuffle_caption,
             caption_separator,

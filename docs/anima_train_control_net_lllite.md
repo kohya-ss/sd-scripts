@@ -93,6 +93,27 @@ In addition you need:
 
 </details>
 
+### 2.1 Loss Weighting with Alpha Masks / アルファマスクによる loss 重み付け
+
+Setting `alpha_mask = true` on a dataset subset uses the **alpha channel of each training (target) image as a per-pixel loss weight** (0–1). This is useful for editing-type tasks where the changed region is a small fraction of the image (e.g. expression editing): baking a soft weight map into the target images (for example 1.0 on the face region, 0.25 elsewhere) counters the vanishing loss contribution of small regions. Notes:
+
+* The weight map is area-downsampled to the latent resolution, so a hard-edged mask already gets a one-texel linear transition; dilating the mask by ~8 px (one latent texel) before baking is recommended.
+* The per-sample loss is normalized by the mean mask value, so the overall loss scale stays independent of the mask area (which varies with framing).
+* Latent caches must be rebuilt when enabling this option (the alpha mask is stored in the `.npz` cache; existing caches are invalidated automatically).
+* `--masked_loss` is **not** supported by this script (conditioning images are control images, not masks) and is rejected with an error.
+
+<details>
+<summary>日本語</summary>
+
+dataset の subset に `alpha_mask = true` を指定すると、**教師（target）画像のアルファチャネルを per-pixel の loss 重み**（0〜1）として使用します。変更領域が画像のごく一部となる編集系タスク（表情編集など）で、微小領域の loss 寄与が消える問題への対策として有効です（例: 顔領域 1.0、それ以外 0.25 の重みマップを target 画像に焼き込む）。補足：
+
+* 重みマップは latent 解像度へ area 縮小されるため、ハードエッジのマスクでも幅 1 テクセルの線形遷移が自動的に付きます。焼き込み前にマスクを 8px（latent 1 テクセル）程度膨張させておくことを推奨します。
+* サンプル毎にマスク平均で正規化されるため、loss 全体のスケールはマスク面積（framing により変動）に依存しません。
+* このオプションを有効にした場合、latent キャッシュの再作成が必要です（アルファマスクが `.npz` キャッシュに保存されるため。既存キャッシュは自動的に無効と判定されます）。
+* `--masked_loss` は本スクリプトでは**非対応**です（conditioning 画像は制御画像でありマスクではないため、エラーになります）。
+
+</details>
+
 ## 3. Running the Training / 学習の実行
 
 Example command (one line in practice — line breaks shown for readability; use `\` on Linux/macOS or `^` on Windows to wrap):

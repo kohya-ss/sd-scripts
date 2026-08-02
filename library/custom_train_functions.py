@@ -484,22 +484,27 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale) -> to
     return noise
 
 
-def apply_masked_loss(loss, batch) -> torch.FloatTensor:
-    if "conditioning_images" in batch:
+def apply_masked_loss(loss, batch, normalize: bool = False) -> torch.FloatTensor:
+    # alpha_masks must be checked first: in ControlNet(-LLLite) datasets, conditioning_images
+    # are control images, not loss masks
+    if "alpha_masks" in batch and batch["alpha_masks"] is not None:
+        # alpha mask is 0 to 1
+        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1) # add channel dimension
+        # print(f"mask_image: {mask_image.shape}, {mask_image.mean()}")
+    elif "conditioning_images" in batch:
         # conditioning image is -1 to 1. we need to convert it to 0 to 1
         mask_image = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)  # use R channel
         mask_image = mask_image / 2 + 0.5
         # print(f"conditioning_image: {mask_image.shape}")
-    elif "alpha_masks" in batch and batch["alpha_masks"] is not None:
-        # alpha mask is 0 to 1
-        mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1) # add channel dimension
-        # print(f"mask_image: {mask_image.shape}, {mask_image.mean()}")
     else:
         return loss
 
     # resize to the same size as the loss
     mask_image = torch.nn.functional.interpolate(mask_image, size=loss.shape[2:], mode="area")
     loss = loss * mask_image
+    if normalize:
+        # keep the per-sample loss scale independent of the mask area (weighting stays relative)
+        loss = loss / mask_image.mean(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
     return loss
 
 

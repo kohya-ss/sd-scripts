@@ -481,6 +481,14 @@ def train(args):
     deepspeed_utils.prepare_deepspeed_args(args)
     setup_logging(args, reset=True)
 
+    if args.masked_loss:
+        raise ValueError(
+            "--masked_loss is not supported for ControlNet-LLLite training (conditioning images are control images,"
+            " not loss masks). Use `alpha_mask = true` in the dataset subset instead."
+            " / ControlNet-LLLite学習では--masked_lossは使用できません（conditioning imageは制御画像でありマスクではありません）。"
+            "datasetのsubsetで `alpha_mask = true` を指定してください。"
+        )
+
     flux_train_utils.log_timestep_sampling_info(args)
 
     if not args.skip_cache_check:
@@ -1082,8 +1090,10 @@ def train(args):
                 )
                 huber_c = loss_util.get_huber_threshold_if_needed(args, timesteps, None)
                 loss = loss_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
-                if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
-                    loss = apply_masked_loss(loss, batch)
+                if "alpha_masks" in batch and batch["alpha_masks"] is not None:
+                    # normalize so that per-sample loss scale is independent of the mask area
+                    # (the face-mask fraction varies with framing: full body vs bust-up)
+                    loss = apply_masked_loss(loss, batch, normalize=True)
                 loss = loss.mean([1, 2, 3])
 
                 if weighting is not None:
