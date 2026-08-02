@@ -13,7 +13,7 @@ import toml
 from collections import Counter, deque
 import numpy as np
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from tqdm import tqdm
 
@@ -64,6 +64,21 @@ logger = logging.getLogger(__name__)
 _TORCH_GET_TOTAL_NORM = getattr(torch.nn.utils, "get_total_norm", None)
 _FOREACH_GRAD_NORM_DISABLED = False
 _FOREACH_GRAD_NORM_PATH_LOGGED = False
+
+
+def _write_csv_rows(path: str, header: str, lines: Sequence[str], header_written: bool) -> bool:
+    """Write one CSV event with a single file open and report header state."""
+    if not path or not lines:
+        return header_written
+
+    dirpath = os.path.dirname(path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+    with open(path, "a" if header_written else "w", encoding="utf-8") as f:
+        if not header_written:
+            f.write(header + "\n")
+        f.writelines(line + "\n" for line in lines)
+    return True
 
 
 def _set_delta_fake_quant_compat(network, step, mode, **kwargs):
@@ -1341,30 +1356,27 @@ class NetworkTrainer:
         dq_auto_log_header_written = False
         rank_log_header_written = False
 
-        def _write_csv(path: str, header: str, line: str):
+        def _write_csv_lines(path: str, header: str, lines: Sequence[str]):
             nonlocal dq_log_header_written, dq_auto_log_header_written, rank_log_header_written
             if not path:
                 return
-            dirpath = os.path.dirname(path)
-            if dirpath:
-                os.makedirs(dirpath, exist_ok=True)
             if path == dq_log_path:
                 header_written = dq_log_header_written
             elif path == dq_auto_log_path:
                 header_written = dq_auto_log_header_written
             else:
                 header_written = rank_log_header_written
-            if not header_written:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(header + "\n")
+            header_written = _write_csv_rows(path, header, lines, header_written)
+            if header_written:
                 if path == dq_log_path:
                     dq_log_header_written = True
                 elif path == dq_auto_log_path:
                     dq_auto_log_header_written = True
                 else:
                     rank_log_header_written = True
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+
+        def _write_csv(path: str, header: str, line: str):
+            _write_csv_lines(path, header, (line,))
 
         if dq_auto_enabled:
             if args.dq_delta_stat != "rms":
@@ -4273,6 +4285,7 @@ class NetworkTrainer:
                                     header = _rank_log_header(rank_log_mode)
                                     lr_snapshot = self.collect_rank_log_lr_snapshot(args, lr_scheduler, lr_descriptions)
                                     if rank_log_mode == "per_module":
+                                        rank_log_lines = []
                                         for item in rank_stats.get("per_module", []):
                                             row = [
                                                 epoch + 1,
@@ -4290,7 +4303,8 @@ class NetworkTrainer:
                                                 item.get("top1"),
                                                 item.get("energy"),
                                             ]
-                                            _write_csv(rank_log_path, header, ",".join(_dq_format_value(v) for v in row))
+                                            rank_log_lines.append(",".join(_dq_format_value(v) for v in row))
+                                        _write_csv_lines(rank_log_path, header, rank_log_lines)
                                     else:
                                         row = [
                                             epoch + 1,
