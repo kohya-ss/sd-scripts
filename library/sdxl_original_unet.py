@@ -38,6 +38,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_NATIVE_FP16_LAYER_NORM_FALLBACK_LOGGED = False
+_DISABLE_AUTOCAST = getattr(torch._C, "_DisableAutocast", None)
+
 IN_CHANNELS: int = 4
 OUT_CHANNELS: int = 4
 ADM_IN_CHANNELS: int = 2816
@@ -298,6 +301,61 @@ class GroupNorm32(nn.GroupNorm):
         if self.weight.dtype == torch.float32:
             return super().forward(x.float()).type(x.dtype)
         return super().forward(x)
+
+
+def _can_use_native_fp16_layer_norm(x: torch.Tensor, norm: nn.LayerNorm) -> bool:
+    if not x.is_cuda or x.dtype != torch.float16:
+        return False
+    return all(
+        parameter is None or (parameter.device == x.device and parameter.dtype == x.dtype)
+        for parameter in (norm.weight, norm.bias)
+    )
+
+
+def _strict_fp16_layer_norm(x: torch.Tensor, norm: nn.LayerNorm) -> torch.Tensor:
+    return F.layer_norm(
+        x.float(),
+        norm.normalized_shape,
+        norm.weight.float() if norm.weight is not None else None,
+        norm.bias.float() if norm.bias is not None else None,
+        norm.eps,
+    ).to(dtype=x.dtype)
+
+
+def _native_fp16_layer_norm(x: torch.Tensor, norm: nn.LayerNorm) -> torch.Tensor:
+    is_compiling = (
+        hasattr(torch, "compiler")
+        and hasattr(torch.compiler, "is_compiling")
+        and torch.compiler.is_compiling()
+    )
+    if is_compiling or _DISABLE_AUTOCAST is None:
+        # The private eager guard cannot be traced by TorchDynamo. The public
+        # context is traceable and its Python overhead is paid only while compiling.
+        with torch.autocast(device_type="cuda", enabled=False):
+            return F.layer_norm(x, norm.normalized_shape, norm.weight, norm.bias, norm.eps)
+    with _DISABLE_AUTOCAST():
+        return F.layer_norm(x, norm.normalized_shape, norm.weight, norm.bias, norm.eps)
+
+
+def _fp16_safe_layer_norm(x: torch.Tensor, norm: nn.LayerNorm) -> torch.Tensor:
+    global _NATIVE_FP16_LAYER_NORM_FALLBACK_LOGGED
+
+    if maruoCfg.fp16_safe_norms_mode == "native_accum":
+        if _can_use_native_fp16_layer_norm(x, norm):
+            # CUDA LayerNorm keeps mean/rstd and fp16 reduction accumulation in fp32,
+            # while avoiding materialized fp32 activation/parameter copies.
+            return _native_fp16_layer_norm(x, norm)
+        if not _NATIVE_FP16_LAYER_NORM_FALLBACK_LOGGED:
+            logger.warning(
+                "fp16_safe_norms native_accum LayerNorm is unavailable for device=%s, input=%s, weight=%s, bias=%s; "
+                "falling back to strict fp32 LayerNorm",
+                x.device,
+                x.dtype,
+                None if norm.weight is None else (norm.weight.device, norm.weight.dtype),
+                None if norm.bias is None else (norm.bias.device, norm.bias.dtype),
+            )
+            _NATIVE_FP16_LAYER_NORM_FALLBACK_LOGGED = True
+    return _strict_fp16_layer_norm(x, norm)
 
 
 class ResnetBlock2D(nn.Module):
@@ -652,13 +710,7 @@ class BasicTransformerBlock(nn.Module):
     def forward_body(self, hidden_states, context=None, timestep=None):
         # 1. Self-Attention (LayerNorm in fp32 when requested)
         if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
-            norm_hidden_states = F.layer_norm(
-                hidden_states.float(),
-                self.norm1.normalized_shape,
-                self.norm1.weight.float() if self.norm1.weight is not None else None,
-                self.norm1.bias.float() if self.norm1.bias is not None else None,
-                self.norm1.eps,
-            ).to(dtype=hidden_states.dtype)
+            norm_hidden_states = _fp16_safe_layer_norm(hidden_states, self.norm1)
         else:
             norm_hidden_states = self.norm1(hidden_states)
 
@@ -666,26 +718,14 @@ class BasicTransformerBlock(nn.Module):
 
         # 2. Cross-Attention (LayerNorm in fp32 when requested)
         if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
-            norm_hidden_states = F.layer_norm(
-                hidden_states.float(),
-                self.norm2.normalized_shape,
-                self.norm2.weight.float() if self.norm2.weight is not None else None,
-                self.norm2.bias.float() if self.norm2.bias is not None else None,
-                self.norm2.eps,
-            ).to(dtype=hidden_states.dtype)
+            norm_hidden_states = _fp16_safe_layer_norm(hidden_states, self.norm2)
         else:
             norm_hidden_states = self.norm2(hidden_states)
         hidden_states = self.attn2(norm_hidden_states, context=context) + hidden_states
 
         # 3. Feed-forward (LayerNorm in fp32 when requested)
         if maruoCfg.fp16_safe_norms and hidden_states.dtype == torch.float16:
-            ln3 = F.layer_norm(
-                hidden_states.float(),
-                self.norm3.normalized_shape,
-                self.norm3.weight.float() if self.norm3.weight is not None else None,
-                self.norm3.bias.float() if self.norm3.bias is not None else None,
-                self.norm3.eps,
-            ).to(dtype=hidden_states.dtype)
+            ln3 = _fp16_safe_layer_norm(hidden_states, self.norm3)
         else:
             ln3 = self.norm3(hidden_states)
         hidden_states = self.ff(ln3) + hidden_states

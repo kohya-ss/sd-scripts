@@ -6,3 +6,4 @@ Imported as `import maruo_global_config as cfg`.
 downscale_freq_shift: bool = False
 te_mlp_fc_only: bool = False
 fp16_safe_norms: bool = False
+fp16_safe_norms_mode: str = "off"

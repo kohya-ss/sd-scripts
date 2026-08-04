@@ -12,6 +12,24 @@ setup_logging()
 import logging
 logger = logging.getLogger(__name__)
 
+
+FP16_SAFE_NORMS_MODES = ("off", "strict", "native_accum")
+
+
+def resolve_fp16_safe_norms_mode(args: argparse.Namespace) -> str:
+    legacy_enabled = bool(getattr(args, "fp16_safe_norms", False))
+    requested_mode = getattr(args, "fp16_safe_norms_mode", None)
+    if requested_mode is not None and requested_mode not in FP16_SAFE_NORMS_MODES:
+        raise ValueError(
+            f"--fp16_safe_norms_mode must be one of {', '.join(FP16_SAFE_NORMS_MODES)}, got {requested_mode!r}"
+        )
+    if legacy_enabled and requested_mode == "off":
+        raise ValueError("--fp16_safe_norms conflicts with --fp16_safe_norms_mode off")
+    if requested_mode is not None:
+        return requested_mode
+    return "strict" if legacy_enabled else "off"
+
+
 class SdxlNetworkTrainer(train_network.NetworkTrainer):
     def __init__(self):
         super().__init__()
@@ -186,6 +204,16 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Compute reduction ops (LayerNorm/GroupNorm/Softmax) in fp32 while keeping weights/other ops in fp16.",
     )
+    parser.add_argument(
+        "--fp16_safe_norms_mode",
+        choices=FP16_SAFE_NORMS_MODES,
+        default=None,
+        help=(
+            "Select fp16 safe norm behavior. 'strict' is identical to --fp16_safe_norms; "
+            "'native_accum' uses native fp16 I/O with fp32 statistics for CUDA LayerNorm only, "
+            "while GroupNorm/Softmax remain strict."
+        ),
+    )
     return parser
 
 
@@ -198,10 +226,11 @@ if __name__ == "__main__":
     # map CLI options to global config
     maruoCfg.downscale_freq_shift = bool(getattr(args, "downscale_freq_shift", False))
     maruoCfg.te_mlp_fc_only = bool(getattr(args, "te_mlp_fc_only", False))
-    maruoCfg.fp16_safe_norms = bool(getattr(args, "fp16_safe_norms", False))
-    print(
-        f"fp16_safe_norms is {'enabled' if maruoCfg.fp16_safe_norms else 'disabled'}"
-    )
+    fp16_safe_norms_mode = resolve_fp16_safe_norms_mode(args)
+    maruoCfg.fp16_safe_norms_mode = fp16_safe_norms_mode
+    maruoCfg.fp16_safe_norms = fp16_safe_norms_mode != "off"
+    args.fp16_safe_norms_mode_resolved = fp16_safe_norms_mode
+    print(f"fp16_safe_norms mode: {fp16_safe_norms_mode}")
 
     trainer = SdxlNetworkTrainer()
     trainer.train(args)

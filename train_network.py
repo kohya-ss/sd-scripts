@@ -2556,6 +2556,9 @@ class NetworkTrainer:
             "ss_huber_schedule": args.huber_schedule,
             "ss_huber_c": args.huber_c,
         }
+        fp16_safe_norms_mode = getattr(args, "fp16_safe_norms_mode_resolved", None)
+        if fp16_safe_norms_mode is not None:
+            metadata["ss_fp16_safe_norms_mode"] = fp16_safe_norms_mode
 
         if use_user_config:
             # save metadata of multiple datasets
