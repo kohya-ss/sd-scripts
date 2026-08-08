@@ -32,11 +32,15 @@ class AdamW8bitFast(bnb.optim.AdamW8bit):
     closure-based calls use the unmodified bitsandbytes implementation.
     """
 
+    _optimizer_display_name = "AdamW8bitFast"
+    _stock_optimizer_display_name = "AdamW8bit"
+
     def _log_fast_path_once(self, device: torch.device) -> None:
         if getattr(self, "_adamw8bit_fast_path_logged", False):
             return
         logger.info(
-            "AdamW8bitFast: fast path enabled on %s (bitsandbytes %s)",
+            "%s: fast path enabled on %s (bitsandbytes %s)",
+            self._optimizer_display_name,
             device,
             BITSANDBYTES_VERSION,
         )
@@ -46,7 +50,9 @@ class AdamW8bitFast(bnb.optim.AdamW8bit):
         if getattr(self, "_adamw8bit_stock_fallback_logged", False):
             return
         logger.warning(
-            "AdamW8bitFast: using stock AdamW8bit step (reason: %s, bitsandbytes %s)",
+            "%s: using stock %s step (reason: %s, bitsandbytes %s)",
+            self._optimizer_display_name,
+            self._stock_optimizer_display_name,
             reason,
             BITSANDBYTES_VERSION,
         )

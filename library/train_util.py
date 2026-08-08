@@ -3074,7 +3074,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="",
         help="Optimizer to use / オプティマイザの種類: AdamW (default), AdamW8bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit, "
-        "AdamW8bitFast, Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
+        "AdamW8bitFast, AdamWBnb, Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
         "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, "
         "AdaFactor. "
         "Also, you can use any optimizer by specifying the full path to the class, like 'bitsandbytes.optim.AdEMAMix8bit' or 'bitsandbytes.optim.PagedAdEMAMix8bit'.",
@@ -4248,6 +4248,16 @@ def get_optimizer(args, trainable_params):
 
         logger.info(f"use synchronized-once 8-bit AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = AdamW8bitFast
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type == "AdamWBnb".lower():
+        try:
+            from library.adamw_bnb import AdamWBnb
+        except ImportError as e:
+            raise ImportError("AdamWBnb requires bitsandbytes") from e
+
+        logger.info(f"use synchronized-once bitsandbytes 32-bit AdamW optimizer | {optimizer_kwargs}")
+        optimizer_class = AdamWBnb
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.endswith("8bit".lower()):
