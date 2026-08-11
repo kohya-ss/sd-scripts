@@ -85,7 +85,7 @@ def index_sv_ratio(S, target):
 
 
 # Modified from Kohaku-blueleaf's extract/merge functions
-def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=2):
+def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=10):
     out_size, in_size, kernel_size, _ = weight.size()
     weight = weight.reshape(out_size, -1)
     _in_size = in_size * kernel_size * kernel_size
@@ -110,7 +110,7 @@ def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale
     return param_dict
 
 
-def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=2):
+def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1, svd_lowrank_niter=10):
     out_size, in_size = weight.size()
 
     if svd_lowrank_niter > 0 and out_size > 2048 and in_size > 2048:
@@ -209,7 +209,7 @@ def rank_resize(S, rank, dynamic_method, dynamic_param, scale=1):
     return param_dict
 
 
-def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dynamic_method, dynamic_param, verbose, svd_lowrank_niter=2):
+def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dynamic_method, dynamic_param, verbose, svd_lowrank_niter=10):
     max_old_rank = None
     new_alpha = None
     fro_list = []
@@ -424,7 +424,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--svd_lowrank_niter",
         type=int,
-        default=2,
+        default=10,
         help="Number of iterations for svd_lowrank on large matrices (>2048 dims). 0 to disable and use full SVD"
         " / 大行列(2048次元超)に対するsvd_lowrankの反復回数。0で無効化し完全SVDを使用",
     )
