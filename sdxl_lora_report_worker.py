@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from library.generation_lora_strengths import flatten_strength_specs, normalize_strength_spec
+
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_LBW = "ALL"
@@ -84,10 +86,11 @@ def prompt_line(job: dict, slots: list[dict]) -> str:
         text += f" --h {job['height']}"
 
     if slots:
-        multipliers = [0.0] * len(slots)
+        strength_specs = [(0.0,)] * len(slots)
         slot_by_key = {lora_slot_key(slot): index for index, slot in enumerate(slots)}
         for item in job["condition_items"]:
-            multipliers[slot_by_key[lora_slot_key(item)]] = item["strength"]
+            strength_specs[slot_by_key[lora_slot_key(item)]] = normalize_strength_spec(item["strength"])
+        multipliers = flatten_strength_specs(strength_specs)
         text += " --am " + ",".join(format_multiplier(v) for v in multipliers)
 
     return text

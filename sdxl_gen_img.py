@@ -56,6 +56,11 @@ from library.original_unet import FlashAttentionFunction
 from networks.control_net_lllite import ControlNetLLLite
 from library.utils import GradualLatent, EulerAncestralDiscreteSchedulerGL
 from library.utils import setup_logging, add_logging_arguments
+from library.generation_lora_strengths import (
+    apply_generation_strengths,
+    resolve_flat_strengths,
+    validate_component_strength_compatibility,
+)
 
 setup_logging()
 import logging
@@ -1661,10 +1666,17 @@ def main(args):
     if args.network_lbw and not args.network_module:
         raise ValueError("--network_lbw requires --network_module / --network_lbwには--network_moduleが必要です")
 
+    network_default_strengths = resolve_flat_strengths(args.network_mul, len(args.network_module or []))
+    validate_component_strength_compatibility(
+        network_default_strengths,
+        network_merge=bool(args.network_merge or args.network_merge_n_models),
+        network_pre_calc=bool(args.network_pre_calc),
+    )
+
     # networkを組み込む
     if args.network_module:
         networks = []
-        network_default_muls = []
+        loaded_network_default_strengths = []
         network_default_lbws = []
         network_pre_calc = args.network_pre_calc
 
@@ -1681,7 +1693,7 @@ def main(args):
             logger.info(f"import network module: {network_module}")
             imported_module = importlib.import_module(network_module)
 
-            network_mul = 1.0 if args.network_mul is None or len(args.network_mul) <= i else args.network_mul[i]
+            network_mul = network_default_strengths[i].unet
 
             net_kwargs = {}
             if args.network_args and i < len(args.network_args):
@@ -1741,13 +1753,14 @@ def main(args):
                     network.backup_weights()
 
                 networks.append(network)
-                network_default_muls.append(network_mul)
+                loaded_network_default_strengths.append(network_default_strengths[i])
                 network_default_lbws.append(network_lbw)
             else:
                 network.merge_to([text_encoder1, text_encoder2], unet, weights_sd, dtype, device)
 
     else:
         networks = []
+        loaded_network_default_strengths = []
         network_default_lbws = []
 
     # upscalerの指定があれば取得する
@@ -2319,13 +2332,42 @@ def main(args):
                     guide_images = guide_images[0]
 
             # generate
+            effective_network_strengths = ()
+            if network_muls is not None and (args.network_merge or args.network_merge_n_models):
+                requested_line_strengths = resolve_flat_strengths(
+                    network_muls,
+                    len(args.network_module or []),
+                    repeat_last_legacy_value=True,
+                )
+                validate_component_strength_compatibility(requested_line_strengths, network_merge=True)
             if networks:
                 # 追加ネットワークの処理
                 shared = {}
                 lbw_weights = network_default_lbws if args.network_lbw else [None] * len(networks)
 
-                for n, m, lbw in zip(networks, network_muls if network_muls else network_default_muls, lbw_weights):
-                    n.set_multiplier(m)
+                if network_muls is None:
+                    effective_network_strengths = tuple(loaded_network_default_strengths)
+                else:
+                    effective_network_strengths = resolve_flat_strengths(
+                        network_muls,
+                        len(networks),
+                        repeat_last_legacy_value=True,
+                    )
+                validate_component_strength_compatibility(
+                    effective_network_strengths,
+                    network_merge=bool(args.network_merge or args.network_merge_n_models),
+                    network_pre_calc=bool(args.network_pre_calc),
+                )
+                logger.info(
+                    "resolved network strengths: %s",
+                    [
+                        {"te1": strengths.te1, "te2": strengths.te2, "unet": strengths.unet}
+                        for strengths in effective_network_strengths
+                    ],
+                )
+
+                for n, component_strengths, lbw in zip(networks, effective_network_strengths, lbw_weights):
+                    apply_generation_strengths(n, component_strengths)
                     if lbw is not None:
                         if not hasattr(n, "set_lbw_weights"):
                             raise ValueError(
@@ -2400,6 +2442,23 @@ def main(args):
                 metadata.add_text("original-width-negative", str(original_width_negative))
                 metadata.add_text("crop-top", str(crop_top))
                 metadata.add_text("crop-left", str(crop_left))
+                if effective_network_strengths:
+                    metadata.add_text(
+                        "network-strength-mode",
+                        json.dumps([strengths.value_count for strengths in effective_network_strengths]),
+                    )
+                    metadata.add_text(
+                        "network-te1-strength",
+                        json.dumps([strengths.te1 for strengths in effective_network_strengths]),
+                    )
+                    metadata.add_text(
+                        "network-te2-strength",
+                        json.dumps([strengths.te2 for strengths in effective_network_strengths]),
+                    )
+                    metadata.add_text(
+                        "network-unet-strength",
+                        json.dumps([strengths.unet for strengths in effective_network_strengths]),
+                    )
 
                 if args.use_original_file_name and init_images is not None:
                     if type(init_images) is list:
@@ -2595,8 +2654,6 @@ def main(args):
                             m = re.match(r"am ([\d\.\-,]+)", parg, re.IGNORECASE)
                             if m:  # network multiplies
                                 network_muls = [float(v) for v in m.group(1).split(",")]
-                                while len(network_muls) < len(networks):
-                                    network_muls.append(network_muls[-1])
                                 logger.info(f"network mul: {network_muls}")
                                 continue
 
@@ -3023,7 +3080,15 @@ def setup_parser() -> argparse.ArgumentParser:
         "--network_weights", type=str, default=None, nargs="*", help="additional network weights to load / 追加ネットワークの重み"
     )
     parser.add_argument(
-        "--network_mul", type=float, default=None, nargs="*", help="additional network multiplier / 追加ネットワークの効果の倍率"
+        "--network_mul",
+        type=float,
+        default=None,
+        nargs="*",
+        help=(
+            "additional network strengths: N values=common per network, 2N=TE/U-Net per network, "
+            "3N=TE1/TE2/U-Net per network / 追加ネットワークの強度。N個=各network共通、"
+            "2N個=各networkのTE/U-Net、3N個=各networkのTE1/TE2/U-Net"
+        ),
     )
     parser.add_argument(
         "--network_lbw",

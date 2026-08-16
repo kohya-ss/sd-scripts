@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from library.generation_lora_strengths import serialize_strength_spec
+
 
 def sanitize_id(value: str, fallback: str) -> str:
     value = (value or "").strip()
@@ -234,7 +236,7 @@ def normalize_lora_item(item: dict, config_dir: Path, force_lbw_module: bool, co
     return {
         "name": item.get("name") or Path(path).stem,
         "path": str(path),
-        "strength": float(item.get("strength", 1.0)),
+        "strength": serialize_strength_spec(item.get("strength", 1.0)),
         "lbw": lbw,
         "module": module,
     }
@@ -547,6 +549,7 @@ let viewerJobs = [];
 let viewerIndex = -1;
 const byId = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"}}[ch]));
+const strengthLabel = value => Array.isArray(value) ? value.join(" / ") : value;
 const promptPosition = job => `p${{String(job.prompt_index ?? 0).padStart(4, "0")}}`;
 const caseId = job => `${{promptPosition(job)}} / ${{job.prompt_id}} / seed ${{job.seed}}`;
 const jobKey = job => `${{job.condition_id}}@@${{caseId(job)}}`;
@@ -576,7 +579,7 @@ function card(job, title) {{
   const image = job.status === "done"
     ? `<img src="${{esc(job.image)}}" alt="" loading="lazy" data-job-key="${{esc(jobKey(job))}}">`
     : `<div class="missing">${{esc(job.status)}}</div>`;
-  const items = (job.condition_items || []).map(item => `${{esc(item.name || item.path)}} x${{esc(item.strength)}} lbw=${{esc(item.lbw ?? "")}}`).join("<br>");
+  const items = (job.condition_items || []).map(item => `${{esc(item.name || item.path)}} x${{esc(strengthLabel(item.strength))}} lbw=${{esc(item.lbw ?? "")}}`).join("<br>");
   return `<article class="card"><div class="card-title">${{esc(title || job.condition_name)}}</div>${{image}}<div class="meta">${{items}}<br>${{esc(caseId(job))}}<br>${{esc(job.width)}}x${{esc(job.height)}}</div></article>`;
 }}
 function setImageSize(value) {{
@@ -723,6 +726,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => {
   if (ch === '"') return "&quot;";
   return "&#39;";
 });
+const strengthLabel = value => Array.isArray(value) ? value.join(" / ") : value;
 const promptPosition = job => `p${String(job.prompt_index ?? 0).padStart(4, "0")}`;
 const caseId = job => `${promptPosition(job)} / ${job.prompt_id} / seed ${job.seed}`;
 function shuffle(items) {
@@ -734,7 +738,7 @@ function shuffle(items) {
   return result;
 }
 function conditionLabel(job) {
-  const items = (job.condition_items || []).map(item => `${esc(item.name || item.path)} x${esc(item.strength)} lbw=${esc(item.lbw ?? "")}`).join("<br>");
+  const items = (job.condition_items || []).map(item => `${esc(item.name || item.path)} x${esc(strengthLabel(item.strength))} lbw=${esc(item.lbw ?? "")}`).join("<br>");
   return `${esc(job.condition_name)}${items ? "<br>" + items : ""}`;
 }
 function buildGroups() {

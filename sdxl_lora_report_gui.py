@@ -14,8 +14,12 @@ from PySide6.QtCore import QProcess, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -31,6 +35,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QSplitter,
     QTextEdit,
     QTreeWidget,
@@ -39,12 +44,134 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from library.generation_lora_strengths import (
+    component_strengths_from_spec,
+    format_strength_spec,
+    normalize_strength_spec,
+    serialize_strength_spec,
+)
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 GUI_CONFIG_PATH = SCRIPT_DIR / ".tmp" / "lora_report_gui_last.json"
 QUEUE_DIR = SCRIPT_DIR / ".tmp" / "queue"
 QUEUE_STATE_PATH = QUEUE_DIR / "queue_state.json"
 DEFAULT_LBW_PRESETS = ["ALL", "XLMIDD", "XLMLT1"]
+
+
+class StrengthEditorWidget(QWidget):
+    """Meaning-aware editor that serializes to the CLI's 1/2/3-value format."""
+
+    MODE_LABELS = ["Common", "TE / U-Net", "TE1 / TE2 / U-Net"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(self.MODE_LABELS)
+        layout.addWidget(self.mode_combo)
+
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack)
+
+        self.common_spin = self._strength_spin()
+        self.te_spin = self._strength_spin()
+        self.pair_unet_spin = self._strength_spin()
+        self.te1_spin = self._strength_spin()
+        self.te2_spin = self._strength_spin()
+        self.split_unet_spin = self._strength_spin()
+
+        self.stack.addWidget(self._form_page([("Common", self.common_spin)]))
+        self.stack.addWidget(self._form_page([("TE", self.te_spin), ("U-Net", self.pair_unet_spin)]))
+        self.stack.addWidget(
+            self._form_page(
+                [("TE1", self.te1_spin), ("TE2", self.te2_spin), ("U-Net", self.split_unet_spin)]
+            )
+        )
+
+        self._last_mode = 0
+        self.set_strength_spec((0.8,))
+        self.mode_combo.currentIndexChanged.connect(self._change_mode)
+
+    @staticmethod
+    def _strength_spin() -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(-sys.float_info.max, sys.float_info.max)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(12)
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        return spin
+
+    @staticmethod
+    def _form_page(rows) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(0, 0, 0, 0)
+        for label, widget in rows:
+            form.addRow(label, widget)
+        return page
+
+    def _spec_for_mode(self, mode: int) -> tuple[float, ...]:
+        if mode == 0:
+            return (self.common_spin.value(),)
+        if mode == 1:
+            return (self.te_spin.value(), self.pair_unet_spin.value())
+        return (self.te1_spin.value(), self.te2_spin.value(), self.split_unet_spin.value())
+
+    def _change_mode(self, mode: int):
+        previous = component_strengths_from_spec(self._spec_for_mode(self._last_mode))
+        if mode == 0:
+            self.common_spin.setValue(previous.te1)
+        elif mode == 1:
+            self.te_spin.setValue(previous.te1)
+            self.pair_unet_spin.setValue(previous.unet)
+        else:
+            self.te1_spin.setValue(previous.te1)
+            self.te2_spin.setValue(previous.te2)
+            self.split_unet_spin.setValue(previous.unet)
+        self.stack.setCurrentIndex(mode)
+        self._last_mode = mode
+
+    def set_strength_spec(self, value):
+        values = normalize_strength_spec(value)
+        strengths = component_strengths_from_spec(values)
+        self.common_spin.setValue(strengths.te1)
+        self.te_spin.setValue(strengths.te1)
+        self.pair_unet_spin.setValue(strengths.unet)
+        self.te1_spin.setValue(strengths.te1)
+        self.te2_spin.setValue(strengths.te2)
+        self.split_unet_spin.setValue(strengths.unet)
+        mode = len(values) - 1
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.setCurrentIndex(mode)
+        self.mode_combo.blockSignals(False)
+        self.stack.setCurrentIndex(mode)
+        self._last_mode = mode
+
+    def strength_spec(self) -> tuple[float, ...]:
+        return normalize_strength_spec(self._spec_for_mode(self.mode_combo.currentIndex()))
+
+
+class StrengthDialog(QDialog):
+    def __init__(self, value, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("LoRA component strengths")
+        layout = QVBoxLayout(self)
+        hint = QLabel("Choose how this LoRA is divided. Values are final inference strengths, not extra scales.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.editor = StrengthEditorWidget()
+        self.editor.set_strength_spec(value)
+        layout.addWidget(self.editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def strength_spec(self) -> tuple[float, ...]:
+        return self.editor.strength_spec()
 
 
 def sanitize_id(value: str, fallback: str) -> str:
@@ -69,7 +196,7 @@ class LoraAsset:
     asset_id: str
     name: str
     path: str
-    strength: float = 0.8
+    strength: tuple[float, ...] = (0.8,)
     lbw: str = "XLMLT1"
 
 
@@ -78,7 +205,7 @@ class ConditionItem:
     asset_id: str
     name: str
     path: str
-    strength: float = 0.8
+    strength: tuple[float, ...] = (0.8,)
     lbw: str = "XLMLT1"
 
 
@@ -171,9 +298,9 @@ class ConditionTreeWidget(QTreeWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setAlternatingRowColors(True)
-        self.setHeaderLabels(["Condition / LoRA", "Strength", "LBW", "Path"])
+        self.setHeaderLabels(["Condition / LoRA", "Strength(s)", "LBW", "Path"])
         self.setColumnWidth(0, 260)
-        self.setColumnWidth(1, 90)
+        self.setColumnWidth(1, 180)
         self.setColumnWidth(2, 120)
 
     def dragEnterEvent(self, event):
@@ -341,14 +468,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(make_conditions_button)
 
         defaults = QFormLayout()
-        self.default_strength_spin = QDoubleSpinBox()
-        self.default_strength_spin.setRange(-10.0, 10.0)
-        self.default_strength_spin.setSingleStep(0.05)
-        self.default_strength_spin.setDecimals(3)
+        self.default_strength_editor = StrengthEditorWidget()
         self.default_lbw_combo = QComboBox()
         self.default_lbw_combo.setEditable(True)
         self.default_lbw_combo.addItems(DEFAULT_LBW_PRESETS)
-        defaults.addRow("Default strength", self.default_strength_spin)
+        defaults.addRow("Default strengths", self.default_strength_editor)
         defaults.addRow("Default LBW", self.default_lbw_combo)
         layout.addLayout(defaults)
 
@@ -360,7 +484,15 @@ class MainWindow(QMainWindow):
     def _build_condition_panel(self) -> QWidget:
         panel = QGroupBox("Comparison conditions")
         layout = QVBoxLayout(panel)
+        strength_hint = QLabel(
+            "Strength(s): 1 value = common, 2 = TE / U-Net, 3 = TE1 / TE2 / U-Net (comma-separated)"
+        )
+        strength_hint.setWordWrap(True)
+        layout.addWidget(strength_hint)
         self.condition_tree = ConditionTreeWidget()
+        # Double-click is reserved for the structured strength dialog.  F2
+        # remains available for direct comma-separated cell editing.
+        self.condition_tree.setEditTriggers(QAbstractItemView.EditKeyPressed)
         layout.addWidget(self.condition_tree, 1)
 
         controls = QGridLayout()
@@ -370,6 +502,7 @@ class MainWindow(QMainWindow):
         remove_button = QPushButton("Remove")
         move_up_button = QPushButton("Move up")
         move_down_button = QPushButton("Move down")
+        edit_strength_button = QPushButton("Edit strengths")
         clear_all_button = QPushButton("Clear all")
         controls.addWidget(add_condition_button, 0, 0)
         controls.addWidget(add_selected_button, 0, 1)
@@ -377,16 +510,19 @@ class MainWindow(QMainWindow):
         controls.addWidget(remove_button, 1, 1)
         controls.addWidget(move_up_button, 2, 0)
         controls.addWidget(move_down_button, 2, 1)
-        controls.addWidget(clear_all_button, 3, 0, 1, 2)
+        controls.addWidget(edit_strength_button, 3, 0, 1, 2)
+        controls.addWidget(clear_all_button, 4, 0, 1, 2)
         layout.addLayout(controls)
 
         self.condition_tree.itemChanged.connect(self.on_condition_item_changed)
+        self.condition_tree.itemDoubleClicked.connect(self.on_condition_item_double_clicked)
         add_condition_button.clicked.connect(self.add_empty_condition)
         add_selected_button.clicked.connect(self.add_selected_assets_to_selected_condition)
         duplicate_button.clicked.connect(self.duplicate_selected_condition)
         remove_button.clicked.connect(self.remove_selected_condition_items)
         move_up_button.clicked.connect(lambda: self.move_selected_condition(-1))
         move_down_button.clicked.connect(lambda: self.move_selected_condition(1))
+        edit_strength_button.clicked.connect(self.edit_selected_condition_strengths)
         clear_all_button.clicked.connect(self.clear_all_conditions)
         return panel
 
@@ -480,7 +616,7 @@ class MainWindow(QMainWindow):
     def _set_defaults(self):
         self.output_edit.setText(str((SCRIPT_DIR / ".." / "lora_reports").resolve()))
         self.run_name_edit.setText("lora_report")
-        self.default_strength_spin.setValue(0.8)
+        self.default_strength_editor.set_strength_spec((0.8,))
         self.default_lbw_combo.setCurrentText("XLMLT1")
         self.seed_values_edit.setText("12345")
         self.precision_combo.setCurrentText("bf16")
@@ -562,7 +698,7 @@ class MainWindow(QMainWindow):
                 asset_id=asset_id,
                 name=path_to_name(str(path)),
                 path=str(resolved),
-                strength=float(self.default_strength_spin.value()),
+                strength=self.default_strength_editor.strength_spec(),
                 lbw=self.default_lbw_combo.currentText().strip() or "ALL",
             )
             self.assets.append(asset)
@@ -738,7 +874,16 @@ class MainWindow(QMainWindow):
                 return
 
     def condition_item_from_asset(self, asset: LoraAsset) -> ConditionItem:
-        return ConditionItem(asset.asset_id, asset.name, asset.path, asset.strength, asset.lbw)
+        # Defaults belong to condition creation, not asset registration.  This
+        # makes changing the controls immediately before "Make single
+        # conditions" or "Add selected LoRA" behave as the UI promises.
+        return ConditionItem(
+            asset.asset_id,
+            asset.name,
+            asset.path,
+            self.default_strength_editor.strength_spec(),
+            self.default_lbw_combo.currentText().strip() or "ALL",
+        )
 
     def rebuild_assets_from_conditions(self):
         by_path: dict[str, LoraAsset] = {}
@@ -779,7 +924,7 @@ class MainWindow(QMainWindow):
             top.setFlags(top.flags() | Qt.ItemIsEditable)
             self.condition_tree.addTopLevelItem(top)
             for index, item in enumerate(condition.items):
-                child = QTreeWidgetItem([item.name, str(item.strength), item.lbw, item.path])
+                child = QTreeWidgetItem([item.name, format_strength_spec(item.strength), item.lbw, item.path])
                 child.setData(0, Qt.UserRole, index)
                 child.setFlags(child.flags() | Qt.ItemIsEditable)
                 top.addChild(child)
@@ -807,12 +952,41 @@ class MainWindow(QMainWindow):
                 condition_item = condition.items[item_index]
                 condition_item.name = tree_item.text(0).strip() or path_to_name(condition_item.path)
                 try:
-                    condition_item.strength = float(tree_item.text(1).strip())
-                except ValueError:
-                    tree_item.setText(1, str(condition_item.strength))
+                    condition_item.strength = normalize_strength_spec(tree_item.text(1).strip())
+                    tree_item.setText(1, format_strength_spec(condition_item.strength))
+                except ValueError as exc:
+                    tree_item.setText(1, format_strength_spec(condition_item.strength))
+                    self.log(f"Invalid strength setting: {exc}")
                 condition_item.lbw = tree_item.text(2).strip() or "ALL"
                 condition_item.path = tree_item.text(3).strip() or condition_item.path
                 break
+
+    def on_condition_item_double_clicked(self, tree_item: QTreeWidgetItem, column: int):
+        if tree_item.parent() is not None and column == 1:
+            self.edit_selected_condition_strengths()
+
+    def edit_selected_condition_strengths(self):
+        tree_item = self.condition_tree.currentItem()
+        if tree_item is None or tree_item.parent() is None:
+            QMessageBox.information(self, "Select a LoRA", "Select a LoRA row inside a comparison condition first.")
+            return
+
+        parent = tree_item.parent()
+        condition_id = parent.data(0, Qt.UserRole)
+        item_index = tree_item.data(0, Qt.UserRole)
+        condition_item = None
+        for condition in self.conditions:
+            if condition.condition_id == condition_id and 0 <= item_index < len(condition.items):
+                condition_item = condition.items[item_index]
+                break
+        if condition_item is None:
+            return
+
+        dialog = StrengthDialog(condition_item.strength, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        condition_item.strength = dialog.strength_spec()
+        tree_item.setText(1, format_strength_spec(condition_item.strength))
 
     def generate_random_seed_values(self):
         count = self.random_count_spin.value()
@@ -881,7 +1055,7 @@ class MainWindow(QMainWindow):
                 entry.update(
                     {
                         "path": absolutize_gui_path(item.path),
-                        "strength": item.strength,
+                        "strength": serialize_strength_spec(item.strength),
                         "lbw": item.lbw,
                     }
                 )
@@ -890,7 +1064,7 @@ class MainWindow(QMainWindow):
                     {
                         "name": item.name,
                         "path": absolutize_gui_path(item.path),
-                        "strength": item.strength,
+                        "strength": serialize_strength_spec(item.strength),
                         "lbw": item.lbw,
                     }
                     for item in condition.items
@@ -1143,7 +1317,7 @@ class MainWindow(QMainWindow):
                         asset_id="",
                         name=name,
                         path=path,
-                        strength=float(raw_item.get("strength", 1.0)),
+                        strength=normalize_strength_spec(raw_item.get("strength", 1.0)),
                         lbw=str(raw_item.get("lbw") or "ALL"),
                     )
                 )

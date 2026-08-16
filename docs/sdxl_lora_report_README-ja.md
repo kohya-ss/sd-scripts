@@ -65,7 +65,19 @@ python sdxl_lora_report_gui.py
 - `Add selected LoRA`: 選択中のLoRAを、選択中の比較条件に追加します。
 - `Move up` / `Move down`: 選択中の比較条件を上下に移動します。この順番がHTMLレポート上のLoRA条件の並び順になります。
 - 1つの条件にLoRAが1個なら単体LoRA、2個以上なら重ね掛け条件です。
-- 条件内のLoRA行で `strength` と `LBW` を編集できます。
+- 条件内のLoRA行で `Strength(s)` と `LBW` を編集できます。
+- LoRA行を選んで `Edit strengths` を押すか、Strength(s)セルをダブルクリックすると、`Common`、`TE / U-Net`、`TE1 / TE2 / U-Net` のモードを意味付き入力欄で選べます。
+- Strength(s)セルへ直接入力する場合は、セルを選んで `F2` を押します。1個なら共通強度、2個なら `TE, U-Net`、3個なら `TE1, TE2, U-Net` の順で、複数値はカンマ区切りです。
+
+Strength(s)の例:
+
+```text
+0.8              # TE1=0.8, TE2=0.8, U-Net=0.8
+1.0, 0.5         # TE1=1.0, TE2=1.0, U-Net=0.5
+1.0, 0.25, 0.5   # TE1=1.0, TE2=0.25, U-Net=0.5
+```
+
+左側の `Default strengths` にも同じ3モードがあります。初期値は従来どおり `Common = 0.8` です。`Default strengths` と `Default LBW` は、LoRAファイルをassets一覧へ追加した時ではなく、`Make single conditions` または `Add selected LoRA` で比較条件へ登録した時点の値が適用されます。このため、ファイル追加後にdefaultを変更してから条件を作っても新しい値が反映されます。
 
 右側で生成設定を指定します。
 
@@ -245,7 +257,7 @@ LoRA重ね掛け条件:
     {
       "name": "character",
       "path": "D:/loras/sample_character.safetensors",
-      "strength": 0.8,
+      "strength": [1.0, 0.5],
       "lbw": "XLMLT1"
     },
     {
@@ -257,6 +269,8 @@ LoRA重ね掛け条件:
   ]
 }
 ```
+
+`strength` は従来どおり数値1個も使用できます。配列が2個なら `TE, U-Net`、3個なら `TE1, TE2, U-Net` として扱います。
 
 LBWを使う条件では、その条件内のすべてのLoRA itemに `lbw` を指定してください。
 
@@ -302,21 +316,29 @@ output_root/
 - GUIは生成ロジックを持たない。
 - GUIはconfig JSONを作り、CUIを起動するだけにする。
 - CUIはconfigを正規化し、prompt/seed/LoRA条件をジョブへ展開する。
-- workerは `sdxl_gen_img.py --from_file --sequential_file_name` を1回だけ起動し、各prompt行の `--am` でLoRA倍率を切り替える。
+- workerは `sdxl_gen_img.py --from_file --sequential_file_name` を1回だけ起動し、各prompt行の `--am` でLoRA強度を切り替える。
 - LoRAの読み込み回数とモデルロード回数を減らし、比較条件が増えても扱いやすくする。
 
 workerは全LoRA条件で必要なLoRAをスロット化します。
 
-同じ `(module, path, lbw)` のLoRAは1つのスロットとしてまとめられます。各画像生成時には、条件に応じて `--am` の倍率を変えます。
+同じ `(module, path, lbw)` のLoRAは1つのスロットとしてまとめられます。各画像生成時には、条件に応じて `--am` の強度を変えます。TE/U-Net分離を含む条件では、workerが全スロットを自動的に2Nまたは3N形式へ展開します。
 
 例:
 
 ```text
-LoRA A only:  --am 0.8 0.0
-LoRA B only:  --am 0.0 0.8
-LoRA A+B:     --am 0.8 0.8
-baseline:     --am 0.0 0.0
+LoRA A only:  --am 0.8,0.0
+LoRA B only:  --am 0.0,0.8
+LoRA A+B:     --am 0.8,0.8
+baseline:     --am 0.0,0.0
 ```
+
+2スロットのうちLoRA Aだけを `TE=1.0 / U-Net=0.5` で使う場合、2N形式へ展開されます。
+
+```text
+LoRA A only:  --am 1.0,0.5,0.0,0.0
+```
+
+いずれかのLoRAがTE1/TE2分離を使う場合は、他の共通指定やTE/U-Net指定も3N形式へ展開されます。
 
 これにより、単体LoRA、複数LoRA重ね掛け、baselineを同じ生成プロセス内で扱えます。
 
