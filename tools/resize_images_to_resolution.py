@@ -55,7 +55,7 @@ def resize_images(src_img_folder, dst_img_folder, max_resolution="512x512", divi
         new_height = int(img.shape[0] * math.sqrt(scale_factor))
         new_width = int(img.shape[1] * math.sqrt(scale_factor))
 
-        img = resize_image(img,  img.shape[0], img.shape[1], new_height, new_width, interpolation)
+        img = resize_image(img, img.shape[1], img.shape[0], new_width, new_height, interpolation)
       else:
         new_height, new_width = img.shape[0:2]
 
