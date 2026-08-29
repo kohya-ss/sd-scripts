@@ -8,3 +8,4 @@ build
 wandb
 analyze_lora_result
 .tmp/
+dq_profile_output/
