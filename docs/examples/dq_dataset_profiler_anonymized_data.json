@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0.0",
+  "title": "SDXL DQ Dataset Profiler実測例",
+  "metric_scope": "numerical_safety_fidelity_not_image_quality",
+  "fixed_y_max": 4.0,
+  "anonymization": {
+    "rounded_values": true,
+    "removed": [
+      "dataset names",
+      "work names",
+      "character names",
+      "absolute paths",
+      "captions and tags",
+      "image and source identifiers",
+      "file hashes"
+    ]
+  },
+  "datasets": [
+    {
+      "id": "Dataset A",
+      "pattern": "全候補で比較的小さな変形",
+      "source_group_count": 18,
+      "edge_unresolved": true,
+      "retained_muls": [3.45],
+      "candidates": [
+        {"mul": 2.70, "body": 0.279, "body_ci": [0.215, 0.383], "tail": 0.396, "tail_ci": [0.261, 0.554]},
+        {"mul": 3.15, "body": 0.232, "body_ci": [0.169, 0.323], "tail": 0.326, "tail_ci": [0.213, 0.529]},
+        {"mul": 3.45, "body": 0.206, "body_ci": [0.140, 0.256], "tail": 0.280, "tail_ci": [0.206, 0.443]}
+      ]
+    },
+    {
+      "id": "Dataset B",
+      "pattern": "低mul側でTailが大きい",
+      "source_group_count": 12,
+      "edge_unresolved": true,
+      "retained_muls": [2.70, 3.15, 3.45],
+      "candidates": [
+        {"mul": 2.70, "body": 0.975, "body_ci": [0.730, 1.608], "tail": 3.795, "tail_ci": [0.917, 4.908]},
+        {"mul": 3.15, "body": 0.807, "body_ci": [0.629, 1.239], "tail": 1.589, "tail_ci": [0.766, 4.383]},
+        {"mul": 3.45, "body": 0.898, "body_ci": [0.673, 2.796], "tail": 1.740, "tail_ci": [0.809, 8.298]}
+      ]
+    },
+    {
+      "id": "Dataset C",
+      "pattern": "試した全候補で変形が相対的に大きい",
+      "source_group_count": 19,
+      "edge_unresolved": true,
+      "retained_muls": [2.25, 2.70, 3.15, 3.45, 3.75],
+      "candidates": [
+        {"mul": 2.25, "body": 1.385, "body_ci": [0.975, 1.756], "tail": 1.678, "tail_ci": [1.271, 4.026]},
+        {"mul": 2.70, "body": 1.499, "body_ci": [1.023, 1.937], "tail": 1.640, "tail_ci": [1.486, 4.266]},
+        {"mul": 3.15, "body": 1.331, "body_ci": [0.802, 1.844], "tail": 1.484, "tail_ci": [1.170, 4.173]},
+        {"mul": 3.45, "body": 1.341, "body_ci": [0.820, 1.801], "tail": 1.776, "tail_ci": [1.081, 4.743]},
+        {"mul": 3.75, "body": 1.216, "body_ci": [0.761, 1.779], "tail": 1.641, "tail_ci": [1.106, 3.086]}
+      ]
+    },
+    {
+      "id": "Dataset D",
+      "pattern": "mul増加に沿ってBodyとTailが低下",
+      "source_group_count": 6,
+      "edge_unresolved": true,
+      "retained_muls": [3.45, 3.75],
+      "candidates": [
+        {"mul": 2.70, "body": 0.607, "body_ci": [0.557, 0.943], "tail": 0.717, "tail_ci": [0.706, 1.479]},
+        {"mul": 3.15, "body": 0.453, "body_ci": [0.325, 0.772], "tail": 0.612, "tail_ci": [0.418, 1.161]},
+        {"mul": 3.45, "body": 0.374, "body_ci": [0.336, 0.689], "tail": 0.488, "tail_ci": [0.374, 0.949]},
+        {"mul": 3.75, "body": 0.308, "body_ci": [0.269, 0.352], "tail": 0.323, "tail_ci": [0.308, 1.054]}
+      ]
+    },
+    {
+      "id": "Dataset E",
+      "pattern": "Bodyは低下し、Tailは中盤からplateau",
+      "source_group_count": 13,
+      "edge_unresolved": true,
+      "retained_muls": [3.45, 3.75, 4.05],
+      "candidates": [
+        {"mul": 2.70, "body": 1.069, "body_ci": [0.581, 1.646], "tail": 1.964, "tail_ci": [0.950, 2.830]},
+        {"mul": 3.15, "body": 0.925, "body_ci": [0.480, 1.151], "tail": 0.973, "tail_ci": [0.859, 1.841]},
+        {"mul": 3.45, "body": 0.845, "body_ci": [0.464, 0.981], "tail": 0.878, "tail_ci": [0.725, 2.522]},
+        {"mul": 3.75, "body": 0.831, "body_ci": [0.433, 0.968], "tail": 0.837, "tail_ci": [0.639, 3.467]},
+        {"mul": 4.05, "body": 0.658, "body_ci": [0.390, 0.937], "tail": 0.837, "tail_ci": [0.521, 3.598]}
+      ]
+    },
+    {
+      "id": "Dataset F1",
+      "pattern": "同一画像・タグ設計方式1",
+      "source_group_count": 6,
+      "edge_unresolved": true,
+      "retained_muls": [2.70, 3.15, 3.45],
+      "candidates": [
+        {"mul": 2.70, "body": 0.974, "body_ci": [0.769, 1.033], "tail": 1.042, "tail_ci": [0.967, 2.574]},
+        {"mul": 3.15, "body": 0.885, "body_ci": [0.495, 1.080], "tail": 1.474, "tail_ci": [1.083, 2.740]},
+        {"mul": 3.45, "body": 0.966, "body_ci": [0.511, 1.116], "tail": 1.484, "tail_ci": [1.116, 3.549]}
+      ]
+    },
+    {
+      "id": "Dataset F2",
+      "pattern": "同一画像・タグ設計方式2",
+      "source_group_count": 6,
+      "edge_unresolved": true,
+      "retained_muls": [2.70, 3.15, 3.45],
+      "candidates": [
+        {"mul": 2.70, "body": 1.039, "body_ci": [0.801, 1.566], "tail": 2.167, "tail_ci": [1.053, 2.762]},
+        {"mul": 3.15, "body": 1.476, "body_ci": [0.516, 1.794], "tail": 1.794, "tail_ci": [0.895, 2.956]},
+        {"mul": 3.45, "body": 0.659, "body_ci": [0.469, 0.855], "tail": 1.471, "tail_ci": [0.914, 3.368]}
+      ]
+    }
+  ]
+}

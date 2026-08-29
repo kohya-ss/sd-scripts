@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SDXL DQ Dataset Profiler実測例</title>
+<style>
+:root{--ink:#172033;--muted:#5b677a;--line:#dbe3ef;--panel:#fff;--bg:#f4f7fb;--blue:#2563eb;--orange:#d97706;--purple:#7c3aed}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.65}
+main{max-width:1320px;margin:auto;padding:28px 22px 64px} h1{font-size:clamp(1.8rem,4vw,3rem);line-height:1.15;margin:.2em 0} h2{margin-top:2.2em} h3{font-size:1.3rem;margin:0}
+.hero,.notice,section,.dataset-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 7px 24px rgba(30,48,80,.06)}
+.hero{padding:28px;background:linear-gradient(135deg,#eef5ff,#fff 62%,#f6f0ff)} .eyebrow{font-size:.78rem;letter-spacing:.14em;font-weight:800;color:#4f46e5}
+.hero p{max-width:900px} .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:20px} .metrics div,.mini-grid div{padding:12px;border-radius:11px;background:#f7f9fc;border:1px solid #e5eaf2}
+.metrics span,.mini-grid span{display:block;color:var(--muted);font-size:.78rem} .metrics strong,.mini-grid strong{display:block;font-size:1.08rem}
+.notice,section{padding:22px;margin-top:20px} .warning{border-left:5px solid #dc2626} .legend{display:flex;flex-wrap:wrap;gap:16px;color:var(--muted);font-size:.9rem}
+.dot,.square,.bar{display:inline-block;margin-right:7px;vertical-align:middle} .dot{width:10px;height:10px;border-radius:50%;background:var(--blue)} .square{width:10px;height:10px;background:var(--orange)} .bar{width:7px;height:24px;background:rgba(37,99,235,.18)}
+.dataset-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px} .dataset-card{overflow:hidden} .dataset-card header{padding:18px 20px 0;display:flex;justify-content:space-between;gap:14px;align-items:flex-start} .dataset-card header p{margin:.3em 0;color:var(--muted)}
+.edge-pill{font-size:.68rem;font-weight:800;color:#5b21b6;background:#f1eaff;border:1px solid #c7aaf4;border-radius:999px;padding:5px 8px;white-space:nowrap} .chart{display:block;width:100%;height:auto;padding:4px 8px}
+.mini-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:0 18px 18px} .table-wrap{overflow:auto} table{width:100%;border-collapse:collapse;font-size:.9rem} th,td{border-bottom:1px solid var(--line);padding:9px 11px;text-align:right} th:first-child,td:first-child,td:nth-child(2){text-align:left} thead th{background:#eef3f9;color:#405069;position:sticky;top:0}
+code{background:#eef2f7;border-radius:5px;padding:.1em .35em} footer{margin-top:30px;color:var(--muted);font-size:.82rem} a{color:#1d4ed8}
+@media(max-width:850px){.dataset-grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<article class="hero">
+  <div class="eyebrow">ANONYMIZED MEASURED EXAMPLE · NUMERICAL SAFETY/FIDELITY</div>
+  <h1>SDXL DQ Dataset Profiler実測例</h1>
+  <p>保存済み実測から点推定とsource-cluster bootstrap区間だけを抜粋し、名称・パス・caption・画像識別子を除いた比較例です。すべてのchartを固定Y軸0–4.0で描き、dataset間の高さを直接比較できます。</p>
+  <div class="metrics">
+    <div><span>匿名dataset config</span><strong>7件</strong></div>
+    <div><span>Body点推定の観測幅</span><strong>0.206–1.499</strong></div>
+    <div><span>Tail点推定の観測幅</span><strong>0.280–3.795</strong></div>
+  </div>
+</article>
+
+<aside class="notice warning">
+  <strong>この例は画質比較ではありません。</strong>
+  値が小さいほどno-quant勾配に近いことを示しますが、最終画像が良いことや量子化のUtilityを保証しません。
+</aside>
+
+<section>
+  <h2>グラフの読み方</h2>
+  <div class="legend">
+    <span><i class="dot"></i>Body: 通常範囲の変形</span>
+    <span><i class="square"></i>Tail: 最も厳しいtimestep帯</span>
+    <span><i class="bar"></i>上下の半透明棒: source-cluster bootstrap 95%区間</span>
+  </div>
+  <p>棒が長いほど、どの独立sourceを含めるかによる不確実性が大きく、候補の細かな順位を断定しにくいことを示します。量子化が必ず悪いという意味ではありません。CI上限が固定Y軸4.0を超える場合は、chart上端の三角で示し、値を打ち切っています。</p>
+</section>
+
+<section>
+  <h2>同じmulでもdatasetごとに違う</h2>
+  <p>Dataset Aは全候補でBody/Tailが1未満ですが、Dataset Cは全候補の点推定が1を超えます。Dataset BはBodyよりTailが大きく、Dataset Dはmul増加に沿って両方が低下します。このように、単一の共通mulだけでは説明できない反応差が観測されています。</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>匿名ID</th><th>観測パターン</th><th>Body範囲</th><th>Tail範囲</th><th>Body最小mul</th><th>Tail最小mul</th><th>source群</th></tr></thead>
+    <tbody><tr><th>Dataset A</th><td>全候補で比較的小さな変形</td><td>0.206–0.279</td><td>0.280–0.396</td><td>3.45</td><td>3.45</td><td>18</td></tr><tr><th>Dataset B</th><td>低mul側でTailが大きい</td><td>0.807–0.975</td><td>1.589–3.795</td><td>3.15</td><td>3.15</td><td>12</td></tr><tr><th>Dataset C</th><td>試した全候補で変形が相対的に大きい</td><td>1.216–1.499</td><td>1.484–1.776</td><td>3.75</td><td>3.15</td><td>19</td></tr><tr><th>Dataset D</th><td>mul増加に沿ってBodyとTailが低下</td><td>0.308–0.607</td><td>0.323–0.717</td><td>3.75</td><td>3.75</td><td>6</td></tr><tr><th>Dataset E</th><td>Bodyは低下し、Tailは中盤からplateau</td><td>0.658–1.069</td><td>0.837–1.964</td><td>4.05</td><td>3.75</td><td>13</td></tr><tr><th>Dataset F1</th><td>同一画像・タグ設計方式1</td><td>0.885–0.974</td><td>1.042–1.484</td><td>3.15</td><td>2.70</td><td>6</td></tr><tr><th>Dataset F2</th><td>同一画像・タグ設計方式2</td><td>0.659–1.476</td><td>1.471–2.167</td><td>3.45</td><td>3.45</td><td>6</td></tr></tbody>
+  </table></div>
+</section>
+
+<div class="dataset-grid">
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset A</h3>
+      <p>全候補で比較的小さな変形</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset Aのmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="226.5" y2="217.5" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.215, 0.383]</title></line><line x1="52.0" x2="52.0" y1="224.0" y2="208.4" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.261, 0.554]</title></line><line x1="380.8" x2="380.8" y1="229.0" y2="220.7" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.169, 0.323]</title></line><line x1="380.8" x2="380.8" y1="226.6" y2="209.7" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.213, 0.529]</title></line><line x1="600.0" x2="600.0" y1="230.5" y2="224.3" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.140, 0.256]</title></line><line x1="600.0" x2="600.0" y1="227.0" y2="214.3" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.206, 0.443]</title></line>
+
+  <polyline points="52.0,223.1 380.8,225.6 600.0,227.0" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,216.8 380.8,220.6 600.0,223.0" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="223.1" r="4" fill="#2563eb"><title>mul 2.70; Body 0.279</title></circle><rect x="48.0" y="212.8" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 0.396</title></rect><circle cx="380.8" cy="225.6" r="4" fill="#2563eb"><title>mul 3.15; Body 0.232</title></circle><rect x="376.8" y="216.6" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 0.326</title></rect><circle cx="600.0" cy="227.0" r="4" fill="#2563eb"><title>mul 3.45; Body 0.206</title></circle><rect x="596.0" y="219.0" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 0.280</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="380.8" y="269" text-anchor="middle" class="tick">3.15</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.45</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.45 / 0.206</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.45 / 0.280</strong></div>
+    <div><span>観測Tail最大</span><strong>0.396</strong></div>
+    <div><span>Fidelity retained</span><strong>3.45</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset B</h3>
+      <p>低mul側でTailが大きい</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset Bのmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="198.9" y2="152.0" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.730, 1.608]</title></line><line x1="52.0" x2="52.0" y1="188.9" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.917, 4.908]</title></line><line x1="380.8" x2="380.8" y1="204.3" y2="171.7" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.629, 1.239]</title></line><line x1="380.8" x2="380.8" y1="197.0" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.766, 4.383]</title></line><line x1="600.0" x2="600.0" y1="202.0" y2="88.4" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.673, 2.796]</title></line><line x1="600.0" x2="600.0" y1="194.7" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.809, 8.298]</title></line>
+  <polygon points="53.0,32.0 61.0,32.0 57.0,24.0" fill="#d97706"><title>95% interval上限 4.908 は固定Y軸 4.0 を超過</title></polygon><polygon points="381.8,32.0 389.8,32.0 385.8,24.0" fill="#d97706"><title>95% interval上限 4.383 は固定Y軸 4.0 を超過</title></polygon><polygon points="601.0,32.0 609.0,32.0 605.0,24.0" fill="#d97706"><title>95% interval上限 8.298 は固定Y軸 4.0 を超過</title></polygon>
+  <polyline points="52.0,185.8 380.8,194.8 600.0,190.0" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,35.0 380.8,153.0 600.0,144.9" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="185.8" r="4" fill="#2563eb"><title>mul 2.70; Body 0.975</title></circle><rect x="48.0" y="31.0" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 3.795</title></rect><circle cx="380.8" cy="194.8" r="4" fill="#2563eb"><title>mul 3.15; Body 0.807</title></circle><rect x="376.8" y="149.0" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 1.589</title></rect><circle cx="600.0" cy="190.0" r="4" fill="#2563eb"><title>mul 3.45; Body 0.898</title></circle><rect x="596.0" y="140.9" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 1.740</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="380.8" y="269" text-anchor="middle" class="tick">3.15</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.45</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.15 / 0.807</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.15 / 1.589</strong></div>
+    <div><span>観測Tail最大</span><strong>3.795</strong></div>
+    <div><span>Fidelity retained</span><strong>2.70 / 3.15 / 3.45</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset C</h3>
+      <p>試した全候補で変形が相対的に大きい</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset Cのmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="185.8" y2="144.1" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.975, 1.756]</title></line><line x1="52.0" x2="52.0" y1="170.0" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.271, 4.026]</title></line><line x1="216.4" x2="216.4" y1="183.3" y2="134.4" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [1.023, 1.937]</title></line><line x1="216.4" x2="216.4" y1="158.5" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.486, 4.266]</title></line><line x1="380.8" x2="380.8" y1="195.1" y2="139.3" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.802, 1.844]</title></line><line x1="380.8" x2="380.8" y1="175.4" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.170, 4.173]</title></line><line x1="490.4" x2="490.4" y1="194.1" y2="141.6" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.820, 1.801]</title></line><line x1="490.4" x2="490.4" y1="180.2" y2="24.0" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.081, 4.743]</title></line><line x1="600.0" x2="600.0" y1="197.3" y2="142.8" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.761, 1.779]</title></line><line x1="600.0" x2="600.0" y1="178.8" y2="72.9" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.106, 3.086]</title></line>
+  <polygon points="53.0,32.0 61.0,32.0 57.0,24.0" fill="#d97706"><title>95% interval上限 4.026 は固定Y軸 4.0 を超過</title></polygon><polygon points="217.4,32.0 225.4,32.0 221.4,24.0" fill="#d97706"><title>95% interval上限 4.266 は固定Y軸 4.0 を超過</title></polygon><polygon points="381.8,32.0 389.8,32.0 385.8,24.0" fill="#d97706"><title>95% interval上限 4.173 は固定Y軸 4.0 を超過</title></polygon><polygon points="491.4,32.0 499.4,32.0 495.4,24.0" fill="#d97706"><title>95% interval上限 4.743 は固定Y軸 4.0 を超過</title></polygon>
+  <polyline points="52.0,163.9 216.4,157.8 380.8,166.8 490.4,166.3 600.0,172.9" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,148.2 216.4,150.3 380.8,158.6 490.4,143.0 600.0,150.2" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="163.9" r="4" fill="#2563eb"><title>mul 2.25; Body 1.385</title></circle><rect x="48.0" y="144.2" width="8" height="8" fill="#d97706"><title>mul 2.25; Tail 1.678</title></rect><circle cx="216.4" cy="157.8" r="4" fill="#2563eb"><title>mul 2.70; Body 1.499</title></circle><rect x="212.4" y="146.3" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 1.640</title></rect><circle cx="380.8" cy="166.8" r="4" fill="#2563eb"><title>mul 3.15; Body 1.331</title></circle><rect x="376.8" y="154.6" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 1.484</title></rect><circle cx="490.4" cy="166.3" r="4" fill="#2563eb"><title>mul 3.45; Body 1.341</title></circle><rect x="486.4" y="139.0" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 1.776</title></rect><circle cx="600.0" cy="172.9" r="4" fill="#2563eb"><title>mul 3.75; Body 1.216</title></circle><rect x="596.0" y="146.2" width="8" height="8" fill="#d97706"><title>mul 3.75; Tail 1.641</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.25</text><text x="216.4" y="269" text-anchor="middle" class="tick">2.70</text><text x="380.8" y="269" text-anchor="middle" class="tick">3.15</text><text x="490.4" y="269" text-anchor="middle" class="tick">3.45</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.75</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.75 / 1.216</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.15 / 1.484</strong></div>
+    <div><span>観測Tail最大</span><strong>1.776</strong></div>
+    <div><span>Fidelity retained</span><strong>2.25 / 2.70 / 3.15 / 3.45 / 3.75</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset D</h3>
+      <p>mul増加に沿ってBodyとTailが低下</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset Dのmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="208.2" y2="187.5" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.557, 0.943]</title></line><line x1="52.0" x2="52.0" y1="200.2" y2="158.9" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.706, 1.479]</title></line><line x1="286.9" x2="286.9" y1="220.6" y2="196.7" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.325, 0.772]</title></line><line x1="286.9" x2="286.9" y1="215.6" y2="175.9" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.418, 1.161]</title></line><line x1="443.4" x2="443.4" y1="220.0" y2="201.1" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.336, 0.689]</title></line><line x1="443.4" x2="443.4" y1="218.0" y2="187.2" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.374, 0.949]</title></line><line x1="600.0" x2="600.0" y1="223.6" y2="219.2" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.269, 0.352]</title></line><line x1="600.0" x2="600.0" y1="221.5" y2="181.6" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.308, 1.054]</title></line>
+
+  <polyline points="52.0,205.5 286.9,213.8 443.4,218.0 600.0,221.5" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,199.6 286.9,205.3 443.4,211.9 600.0,220.7" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="205.5" r="4" fill="#2563eb"><title>mul 2.70; Body 0.607</title></circle><rect x="48.0" y="195.6" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 0.717</title></rect><circle cx="286.9" cy="213.8" r="4" fill="#2563eb"><title>mul 3.15; Body 0.453</title></circle><rect x="282.9" y="201.3" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 0.612</title></rect><circle cx="443.4" cy="218.0" r="4" fill="#2563eb"><title>mul 3.45; Body 0.374</title></circle><rect x="439.4" y="207.9" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 0.488</title></rect><circle cx="600.0" cy="221.5" r="4" fill="#2563eb"><title>mul 3.75; Body 0.308</title></circle><rect x="596.0" y="216.7" width="8" height="8" fill="#d97706"><title>mul 3.75; Tail 0.323</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="286.9" y="269" text-anchor="middle" class="tick">3.15</text><text x="443.4" y="269" text-anchor="middle" class="tick">3.45</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.75</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.75 / 0.308</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.75 / 0.323</strong></div>
+    <div><span>観測Tail最大</span><strong>0.717</strong></div>
+    <div><span>Fidelity retained</span><strong>3.45 / 3.75</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset E</h3>
+      <p>Bodyは低下し、Tailは中盤からplateau</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset Eのmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="206.9" y2="149.9" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.581, 1.646]</title></line><line x1="52.0" x2="52.0" y1="187.2" y2="86.6" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.950, 2.830]</title></line><line x1="234.7" x2="234.7" y1="212.3" y2="176.4" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.480, 1.151]</title></line><line x1="234.7" x2="234.7" y1="192.0" y2="139.5" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.859, 1.841]</title></line><line x1="356.4" x2="356.4" y1="213.2" y2="185.5" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.464, 0.981]</title></line><line x1="356.4" x2="356.4" y1="199.2" y2="103.1" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.725, 2.522]</title></line><line x1="478.2" x2="478.2" y1="214.8" y2="186.2" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.433, 0.968]</title></line><line x1="478.2" x2="478.2" y1="203.8" y2="52.5" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.639, 3.467]</title></line><line x1="600.0" x2="600.0" y1="217.1" y2="187.9" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.390, 0.937]</title></line><line x1="600.0" x2="600.0" y1="210.1" y2="45.5" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.521, 3.598]</title></line>
+
+  <polyline points="52.0,180.8 234.7,188.5 356.4,192.8 478.2,193.5 600.0,202.8" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,132.9 234.7,185.9 356.4,191.0 478.2,193.2 600.0,193.2" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="180.8" r="4" fill="#2563eb"><title>mul 2.70; Body 1.069</title></circle><rect x="48.0" y="128.9" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 1.964</title></rect><circle cx="234.7" cy="188.5" r="4" fill="#2563eb"><title>mul 3.15; Body 0.925</title></circle><rect x="230.7" y="181.9" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 0.973</title></rect><circle cx="356.4" cy="192.8" r="4" fill="#2563eb"><title>mul 3.45; Body 0.845</title></circle><rect x="352.4" y="187.0" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 0.878</title></rect><circle cx="478.2" cy="193.5" r="4" fill="#2563eb"><title>mul 3.75; Body 0.831</title></circle><rect x="474.2" y="189.2" width="8" height="8" fill="#d97706"><title>mul 3.75; Tail 0.837</title></rect><circle cx="600.0" cy="202.8" r="4" fill="#2563eb"><title>mul 4.05; Body 0.658</title></circle><rect x="596.0" y="189.2" width="8" height="8" fill="#d97706"><title>mul 4.05; Tail 0.837</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="234.7" y="269" text-anchor="middle" class="tick">3.15</text><text x="356.4" y="269" text-anchor="middle" class="tick">3.45</text><text x="478.2" y="269" text-anchor="middle" class="tick">3.75</text><text x="600.0" y="269" text-anchor="middle" class="tick">4.05</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 4.05 / 0.658</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.75 / 0.837</strong></div>
+    <div><span>観測Tail最大</span><strong>1.964</strong></div>
+    <div><span>Fidelity retained</span><strong>3.45 / 3.75 / 4.05</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset F1</h3>
+      <p>同一画像・タグ設計方式1</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset F1のmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="196.9" y2="182.7" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.769, 1.033]</title></line><line x1="52.0" x2="52.0" y1="186.3" y2="100.3" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.967, 2.574]</title></line><line x1="380.8" x2="380.8" y1="211.5" y2="180.2" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.495, 1.080]</title></line><line x1="380.8" x2="380.8" y1="180.1" y2="91.4" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.083, 2.740]</title></line><line x1="600.0" x2="600.0" y1="210.7" y2="178.3" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.511, 1.116]</title></line><line x1="600.0" x2="600.0" y1="178.3" y2="48.1" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.116, 3.549]</title></line>
+
+  <polyline points="52.0,185.9 380.8,190.7 600.0,186.3" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,182.3 380.8,159.1 600.0,158.6" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="185.9" r="4" fill="#2563eb"><title>mul 2.70; Body 0.974</title></circle><rect x="48.0" y="178.3" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 1.042</title></rect><circle cx="380.8" cy="190.7" r="4" fill="#2563eb"><title>mul 3.15; Body 0.885</title></circle><rect x="376.8" y="155.1" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 1.474</title></rect><circle cx="600.0" cy="186.3" r="4" fill="#2563eb"><title>mul 3.45; Body 0.966</title></circle><rect x="596.0" y="154.6" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 1.484</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="380.8" y="269" text-anchor="middle" class="tick">3.15</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.45</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.15 / 0.885</strong></div>
+    <div><span>Tail最小点</span><strong>mul 2.70 / 1.042</strong></div>
+    <div><span>観測Tail最大</span><strong>1.484</strong></div>
+    <div><span>Fidelity retained</span><strong>2.70 / 3.15 / 3.45</strong></div>
+  </div>
+</article>
+
+<article class="dataset-card">
+  <header>
+    <div>
+      <h3>Dataset F2</h3>
+      <p>同一画像・タグ設計方式2</p>
+    </div>
+    <span class="edge-pill">EDGE UNRESOLVED</span>
+  </header>
+
+<svg class="chart" viewBox="0 0 620 286" role="img"
+     aria-label="Dataset F2のmul affinity curve。青はBody、橙はTail、半透明の棒は95%区間">
+  <style>
+    .tick{font:11px system-ui,sans-serif;fill:#526176}
+    .axis-label{font:11px system-ui,sans-serif;fill:#334155}
+    .reference{font:10px system-ui,sans-serif;fill:#991b1b;font-weight:700}
+    .edge{font:10px system-ui,sans-serif;fill:#6d28d9;font-weight:700}
+  </style>
+  <line x1="52" x2="600" y1="238.0" y2="238.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="242.0" text-anchor="end" class="tick">0.0</text><line x1="52" x2="600" y1="184.5" y2="184.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="188.5" text-anchor="end" class="tick">1.0</text><line x1="52" x2="600" y1="131.0" y2="131.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="135.0" text-anchor="end" class="tick">2.0</text><line x1="52" x2="600" y1="77.5" y2="77.5" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="81.5" text-anchor="end" class="tick">3.0</text><line x1="52" x2="600" y1="24.0" y2="24.0" stroke="#dbe3ef" stroke-width="1"/><text x="44" y="28.0" text-anchor="end" class="tick">4.0</text>
+  <line x1="52" x2="600" y1="184.5" y2="184.5"
+        stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="597" y="179.5" text-anchor="end"
+        class="reference">距離1.0（画質の合否線ではない）</text>
+  <line x1="600.0" x2="600.0" y1="24" y2="238" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5 5"/><text x="600" y="255" text-anchor="end" class="edge">上側を未解決 →</text>
+  <line x1="52.0" x2="52.0" y1="195.1" y2="154.2" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.801, 1.566]</title></line><line x1="52.0" x2="52.0" y1="181.7" y2="90.2" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [1.053, 2.762]</title></line><line x1="380.8" x2="380.8" y1="210.4" y2="142.0" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.516, 1.794]</title></line><line x1="380.8" x2="380.8" y1="190.1" y2="79.9" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.895, 2.956]</title></line><line x1="600.0" x2="600.0" y1="212.9" y2="192.3" stroke="#2563eb" stroke-width="7" opacity=".17"><title>body 95% interval [0.469, 0.855]</title></line><line x1="600.0" x2="600.0" y1="189.1" y2="57.8" stroke="#d97706" stroke-width="7" opacity=".17"><title>tail 95% interval [0.914, 3.368]</title></line>
+
+  <polyline points="52.0,182.4 380.8,159.0 600.0,202.7" fill="none" stroke="#2563eb" stroke-width="3"/>
+  <polyline points="52.0,122.1 380.8,142.0 600.0,159.3" fill="none" stroke="#d97706" stroke-width="3"/>
+  <circle cx="52.0" cy="182.4" r="4" fill="#2563eb"><title>mul 2.70; Body 1.039</title></circle><rect x="48.0" y="118.1" width="8" height="8" fill="#d97706"><title>mul 2.70; Tail 2.167</title></rect><circle cx="380.8" cy="159.0" r="4" fill="#2563eb"><title>mul 3.15; Body 1.476</title></circle><rect x="376.8" y="138.0" width="8" height="8" fill="#d97706"><title>mul 3.15; Tail 1.794</title></rect><circle cx="600.0" cy="202.7" r="4" fill="#2563eb"><title>mul 3.45; Body 0.659</title></circle><rect x="596.0" y="155.3" width="8" height="8" fill="#d97706"><title>mul 3.45; Tail 1.471</title></rect>
+  <text x="52.0" y="269" text-anchor="middle" class="tick">2.70</text><text x="380.8" y="269" text-anchor="middle" class="tick">3.15</text><text x="600.0" y="269" text-anchor="middle" class="tick">3.45</text>
+  <text x="310.0" y="284" text-anchor="middle" class="axis-label">range_mul</text>
+  <text x="14" y="143.0" transform="rotate(-90 14 143.0)"
+        text-anchor="middle" class="axis-label">gradient deformation</text>
+</svg>
+
+  <div class="mini-grid">
+    <div><span>Body最小点</span><strong>mul 3.45 / 0.659</strong></div>
+    <div><span>Tail最小点</span><strong>mul 3.45 / 1.471</strong></div>
+    <div><span>観測Tail最大</span><strong>2.167</strong></div>
+    <div><span>Fidelity retained</span><strong>2.70 / 3.15 / 3.45</strong></div>
+  </div>
+</article>
+</div>
+
+<section>
+  <h2>同一画像・タグ設計だけを変えたpaired例</h2>
+  <p>Dataset F1とF2は画像集合を共通にし、タグの組み立てだけを変更した匿名paired例です。
+  mul 3.45ではBodyが0.966から0.659へ変わる一方、Tailは1.484と1.471で近いなど、
+  caption設計だけでも曲線の形が変わることを確認できます。ただしsourceが6群なので、
+  長い95%区間を含み、細かな優劣の断定には向きません。</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>mul</th><th>F1 Body</th><th>F2 Body</th><th>F1 Tail</th><th>F2 Tail</th></tr></thead>
+    <tbody><tr><th>2.70</th><td>0.974</td><td>1.039</td><td>1.042</td><td>2.167</td></tr><tr><th>3.15</th><td>0.885</td><td>1.476</td><td>1.474</td><td>1.794</td></tr><tr><th>3.45</th><td>0.966</td><td>0.659</td><td>1.484</td><td>1.471</td></tr></tbody>
+  </table></div>
+</section>
+
+
+<section>
+  <h2>この例から確認できること／できないこと</h2>
+  <ul>
+    <li>datasetごとにBody/Tailの絶対水準、mul依存、Tail増幅、区間幅が異なります。</li>
+    <li>同一画像でもタグ設計を変えると、勾配変形曲線が変わる例があります。</li>
+    <li>上端候補が残ったdatasetは<code>edge_unresolved</code>であり、best mulを宣言できません。</li>
+    <li>Fidelity retainedは数値的な候補集合で、最終画質の推薦ではありません。</li>
+    <li>最終画質との対応には、別のcontrolled Utility Bridgeが必要です。</li>
+  </ul>
+</section>
+
+<footer>
+  Checked-in anonymized example schema 1.0.0. Values are rounded snapshots of measured v2.4 numerical outputs. No external CDN, images, fonts, or scripts are used; all charts are inline SVG.
+</footer>
+</main></body></html>

@@ -23,8 +23,8 @@
 | **基本設定** |  |  |  |
 | `--num_cpu_threads_per_process` | 8 | DataLoader など CPU スレッド数 | `accelerate launch` 側の指定 |
 | 実行スクリプト | `sdxl_train_network.py` | SDXL LoRA 学習の本体スクリプト |  |
-| `--pretrained_model_name_or_path` | `D:\train_model\xxx.safetensors` | 学習元のモデル |  |
-| `--dataset_config` | `D:\train_data\dataset_config.toml` | dataset 設定ファイル | 下の TOML の例を参照 |
+| `--pretrained_model_name_or_path` | `D:\models\base_model.safetensors` | 学習元のモデル |  |
+| `--dataset_config` | `D:\datasets\example\dataset_config.toml` | dataset 設定ファイル | 下の TOML の例を参照 |
 | `--prior_loss_weight` | 1.0 | prior loss の重み | prior 付き学習時の重み係数 |
 | `--output_dir` | `..\lora_output` | 出力先ディレクトリ |  |
 | `--output_name` | `loraABC` | 出力ファイル名のベース |  |
@@ -125,8 +125,8 @@
 
 ## データセット設定例（dataset_config.toml）
 ```
-キャラクタータグ二人分 stnc,tkgw
-画像ごとの捨てタグ xa,xb... 画像1種類に1つ
+キャラクタータグ二人分 character_a,character_b
+画像ごとの捨てタグ unique_01,unique_02... 画像1種類に1つ
 1つのフォルダに同じ画像のトリミング違いの画像を1～4個ほど入れる
 その他1girlなどのタグは付けない
 
@@ -139,62 +139,62 @@ resolution = [720,720]
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\stnc_saa\'
-  class_tokens = 'stnc,xa'
+  image_dir = 'D:\datasets\example\character_a\source_01\'
+  class_tokens = 'character_a,unique_01'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\stnc_sbb\'
-  class_tokens = 'stnc,xb'
+  image_dir = 'D:\datasets\example\character_a\source_02\'
+  class_tokens = 'character_a,unique_02'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\stnc_scc\'
-  class_tokens = 'stnc,xc'
+  image_dir = 'D:\datasets\example\character_a\source_03\'
+  class_tokens = 'character_a,unique_03'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\stnc_sdd\'
-  class_tokens = 'stnc,xd'
+  image_dir = 'D:\datasets\example\character_a\source_04\'
+  class_tokens = 'character_a,unique_04'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\stnc_see\'
-  class_tokens = 'stnc,xe'
+  image_dir = 'D:\datasets\example\character_a\source_05\'
+  class_tokens = 'character_a,unique_05'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\tkgw_taa\'
-  class_tokens = 'tkgw,xg'
+  image_dir = 'D:\datasets\example\character_b\source_01\'
+  class_tokens = 'character_b,unique_06'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\tkgw_tbb\'
-  class_tokens = 'tkgw,xh'
+  image_dir = 'D:\datasets\example\character_b\source_02\'
+  class_tokens = 'character_b,unique_07'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\tkgw_tcc\'
-  class_tokens = 'tkgw,xi'
+  image_dir = 'D:\datasets\example\character_b\source_03\'
+  class_tokens = 'character_b,unique_08'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\tkgw_tdd\'
-  class_tokens = 'tkgw,xj'
+  image_dir = 'D:\datasets\example\character_b\source_04\'
+  class_tokens = 'character_b,unique_09'
   num_repeats = 20
   flip_aug = false
 
   [[datasets.subsets]]
-  image_dir = 'D:\train_data\01_データ\tkgw_tee\'
-  class_tokens = 'tkgw,xk'
+  image_dir = 'D:\datasets\example\character_b\source_05\'
+  class_tokens = 'character_b,unique_10'
   num_repeats = 20
   flip_aug = false
 

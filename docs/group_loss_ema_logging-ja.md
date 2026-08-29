@@ -24,7 +24,7 @@
 
 `[[datasets.subsets]]` に以下の任意キーを追加できます。
 
-- `group = "hyuzu"`
+- `group = "character_a"`
   - グループ識別子（文字列）
 
 `group` 未指定（または空文字）のsubsetは、ログ上 `__ungrouped__` として扱われます。
@@ -126,16 +126,16 @@ resolution = [1024, 1024]
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = "D:\train_data\hyuzu"
-  class_tokens = "hyuzu"
+  image_dir = "D:\datasets\example\character_a"
+  class_tokens = "character_a"
   num_repeats = 20
-  group = "hyuzu"
+  group = "character_a"
 
   [[datasets.subsets]]
-  image_dir = "D:\train_data\ieimi"
-  class_tokens = "ieimi"
+  image_dir = "D:\datasets\example\character_b"
+  class_tokens = "character_b"
   num_repeats = 20
-  group = "ieimi"
+  group = "character_b"
 ```
 
 ### 2) 解像度違いの `[[datasets]]` をまたいで同一groupに集約
@@ -149,20 +149,20 @@ resolution = [720, 720]
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = "D:\train_data\small\hyuzu"
-  class_tokens = "hyuzu"
+  image_dir = "D:\datasets\example\small\character_a"
+  class_tokens = "character_a"
   num_repeats = 20
-  group = "hyuzu"
+  group = "character_a"
 
 [[datasets]]
 resolution = [1024, 1024]
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = "D:\train_data\big\hyuzu"
-  class_tokens = "hyuzu"
+  image_dir = "D:\datasets\example\large\character_a"
+  class_tokens = "character_a"
   num_repeats = 10
-  group = "hyuzu"
+  group = "character_a"
 ```
 
-この例では、`group=hyuzu` のログが2つの `[[datasets]]` をまたいで合算されます。
+この例では、`group=character_a` のログが2つの `[[datasets]]` をまたいで合算されます。

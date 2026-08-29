@@ -19,7 +19,7 @@ SDXL の2つのテキストエンコーダー（TE1/TE2）で、入力タグ文�
 **`--search-core` モード（候補探索）**
 | オプション | 説明 | 既定値 |
 |---|---|---|
-| `--search-core` | 探索対象のコア語（例: `yuzu`） | なし |
+| `--search-core` | 探索対象のコア語（例: `sample`） | なし |
 | `--search-side` | 追加文字の位置（`prefix`/`suffix`/`both`） | `both` |
 | `--search-min-add` | 追加文字数の最小（`0` の場合は追加なしも探索） | `1` |
 | `--search-max-add` | 追加文字数の最大 | `3` |
@@ -35,19 +35,20 @@ SDXL の2つのテキストエンコーダー（TE1/TE2）で、入力タグ文�
 
 ## 使い方の例1: `--text` で分割を調べる
 ```bash
-python tools/sdxl_tokenize.py --text "stnc,xa"
+python tools/sdxl_tokenize.py --text "character_a,unique_01"
 ```
 TE1/TE2 それぞれの `boundary`（`|`区切り）とトークン一覧が表示されます。
 
 ## 使い方の例2: `--search-core` で候補探索
 ```bash
-python tools/sdxl_tokenize.py --search-core "yuzu" --search-side both --search-min-add 0 --search-max-add 3
+python tools/sdxl_tokenize.py --search-core "sample" --search-side both --search-min-add 0 --search-max-add 3
 ```
-`yuzu` の前後に 1～3 文字を付けた候補を探索し、条件に合う最短候補を表示します。  
+`sample` の前後に 1～3 文字を付けた候補を探索し、条件に合う最短候補を表示します。
 TE1/TE2 どちらかだけ条件を満たせば良い場合は `--search-either` を付けてください。
 
 ## 使い方の例3: `--search-min-tokens` で条件を変更
 ```bash
-python tools/sdxl_tokenize.py --search-core "yuzu" --search-side both --search-min-add 0 --search-max-add 3 --search-min-tokens 3
+python tools/sdxl_tokenize.py --search-core "sample" --search-side both --search-min-add 0 --search-max-add 3 --search-min-tokens 3
 ```
-`yuzu` の前後に付与した文字列で、`2` ではなく `3` トークン以上かつ単文字トークンを含まない候補を探索します。
+`sample` の前後に付与した文字列で、`2` ではなく`3`トークン以上かつ単文字トークンを
+含まない候補を探索します。
