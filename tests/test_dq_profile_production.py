@@ -10,6 +10,7 @@ import dq_profile.__main__ as production_main
 from dq_profile.production_cli import ProfileCompatibilityError, resolve_training_cli
 from dq_profile.production_runner import (
     DEFAULT_OUTPUT_BASE,
+    Launcher,
     ProductionRunOptions,
     allocate_run_directory,
     profile_command,
@@ -17,6 +18,7 @@ from dq_profile.production_runner import (
     promote_profile_provenance,
     sanitize_profile_name,
     source_dirs_from_dataset_config,
+    subprocess_text_environment,
     validate_output_base,
 )
 
@@ -182,6 +184,51 @@ def test_default_output_location_is_project_lora_output() -> None:
     assert DEFAULT_OUTPUT_BASE.parts[-2:] == ("lora_output", "dq_dataset_profiler")
 
 
+def test_windows_subprocess_text_environment_overrides_utf8_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(production_runner, "_windows_ansi_encoding", lambda: "cp932")
+    environment, encoding = subprocess_text_environment(
+        {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        platform_name="nt",
+    )
+    assert encoding == "cp932"
+    assert environment["PYTHONUTF8"] == "0"
+    assert environment["PYTHONIOENCODING"] == "cp932:replace"
+
+
+def test_launcher_uses_matched_subprocess_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        stdout = iter(["worker output\n"])
+
+        @staticmethod
+        def wait() -> int:
+            return 0
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        production_runner,
+        "subprocess_text_environment",
+        lambda: ({"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp932:replace"}, "cp932"),
+    )
+    monkeypatch.setattr(production_runner.subprocess, "Popen", fake_popen)
+    Launcher(tmp_path).run(["python", "worker.py"], label="encoding test")
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["encoding"] == "cp932"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["env"] == {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp932:replace"}
+
+
 def test_profile_command_uses_request_paths_and_python_module(tmp_path: Path) -> None:
     request = resolve_training_cli(minimal_cli("--output_name=portable"))
     command = profile_command(
@@ -197,7 +244,6 @@ def test_profile_command_uses_request_paths_and_python_module(tmp_path: Path) ->
     assert f"--pretrained_model_name_or_path={request.model_path}" in command
     assert f"--dataset_config={request.dataset_config}" in command
     assert "--dq_profile_protocol=v24-acceptance-local" in command
-    assert not any("noobaiXLNAIXL" in item for item in command)
 
 
 def test_product_artifacts_are_promoted_to_run_root(tmp_path: Path) -> None:

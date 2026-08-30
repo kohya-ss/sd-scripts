@@ -63,6 +63,36 @@ def canonical_sha256(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _windows_ansi_encoding() -> str:
+    # Accelerate relays worker output through a text-mode subprocess pipe. On
+    # Windows, native helpers can still emit the active ANSI code page even
+    # when Python UTF-8 mode is enabled. Keep every Python layer and the outer
+    # reader on that code page so one native line cannot terminate Accelerate's
+    # background reader thread.
+    import ctypes
+
+    code_page = int(ctypes.windll.kernel32.GetACP())
+    return f"cp{code_page}" if code_page > 0 else "mbcs"
+
+
+def subprocess_text_environment(
+    base_environment: Mapping[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+) -> tuple[dict[str, str], str]:
+    environment = dict(os.environ if base_environment is None else base_environment)
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name == "nt":
+        encoding = _windows_ansi_encoding()
+        environment["PYTHONUTF8"] = "0"
+        environment["PYTHONIOENCODING"] = f"{encoding}:replace"
+    else:
+        encoding = "utf-8"
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8:replace"
+    return environment, encoding
+
+
 def git_head() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -286,8 +316,7 @@ class Launcher:
         self.log(f"RUN {label}: {rendered}")
         if self.dry_run:
             return
-        environment = dict(os.environ)
-        environment["PYTHONUTF8"] = "1"
+        environment, stream_encoding = subprocess_text_environment()
         process = subprocess.Popen(
             [str(item) for item in command],
             cwd=REPO_ROOT,
@@ -295,7 +324,7 @@ class Launcher:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            encoding="utf-8",
+            encoding=stream_encoding,
             errors="replace",
             bufsize=1,
         )
