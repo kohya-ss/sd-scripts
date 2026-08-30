@@ -213,7 +213,12 @@ def test_dataset_card_keeps_local_only_and_edge_uncertainty() -> None:
     assert card["measurement_quality"]["level"] == "PASS"
     assert card["local_comparison_confidence"]["level"] == "Medium"
     assert card["recommendation_maturity"]["level"] == "Local-only"
-    assert card["single_representative_mul"] == 3.15
+    assert card["single_representative_mul"] is None
+    assert card["representative_selection_state"] == "no_single_edge_unresolved"
+    assert card["actions"]["minimum_comparison_set"] == [
+        "no_quant",
+        "mul 3.15（観測上のBody／Tail代表）",
+    ]
     assert card["not_quality_or_utility"] is True
 
 
@@ -263,6 +268,45 @@ def test_all_retained_candidates_do_not_force_a_single_representative() -> None:
     assert card["fidelity_retained_muls"] == [2.70, 3.15, 3.45]
     assert card["single_representative_mul"] is None
     assert card["representative_selection_state"] == "no_single_all_retained"
+
+
+def test_edge_unresolved_with_one_retained_candidate_still_abstains() -> None:
+    rows = [
+        _candidate(2.70, 1.20, 1.30, dominated_by=3.45),
+        _candidate(3.45, 0.72, 0.81),
+    ]
+    detail = _detail()
+    detail["selection"].update(
+        {
+            "credible_muls": [3.45],
+            "point_body_min_candidate": "mul_3.450",
+            "point_tail_min_candidate": "mul_3.450",
+            "edge_unresolved": True,
+            "retained_endpoint_candidates": ["mul_3.450"],
+        }
+    )
+    evaluation = _evaluation()
+    evaluation.update(
+        {
+            "credible_muls": "[3.45]",
+            "point_body_min_candidate": "mul_3.450",
+            "point_tail_min_candidate": "mul_3.450",
+            "edge_unresolved_within_core": True,
+        }
+    )
+    card = build_dataset_card(
+        evaluation=evaluation,
+        candidate_rows=rows,
+        detail=detail,
+    )
+    assert card["body_representative_mul"] == 3.45
+    assert card["tail_representative_mul"] == 3.45
+    assert card["single_representative_mul"] is None
+    assert card["representative_selection_state"] == "no_single_edge_unresolved"
+    assert card["actions"]["minimum_comparison_set"] == [
+        "no_quant",
+        "mul 3.45（観測上のBody／Tail代表）",
+    ]
 
 
 def test_body_tail_tradeoff_keeps_two_representatives() -> None:

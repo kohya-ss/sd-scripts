@@ -15,8 +15,12 @@ import math
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "2.4.2-practical-report-prototype"
-METRIC_DEFINITION_VERSION = "2.4.0"
+PRACTICAL_REPORT_SCHEMA_VERSION = "2.4.2-practical-report-prototype"
+LOCAL_ACCEPTANCE_METRIC_VERSION = "2.4.0"
+
+# Compatibility aliases retained for existing report readers.
+SCHEMA_VERSION = PRACTICAL_REPORT_SCHEMA_VERSION
+METRIC_DEFINITION_VERSION = LOCAL_ACCEPTANCE_METRIC_VERSION
 REPORT_CONTRACT_VERSION = "1.2.0-prototype"
 ABSOLUTE_REFERENCE_DISTANCE = 1.0
 AFFINITY_FIXED_Y_MAX = 4.0
@@ -848,6 +852,12 @@ def build_dataset_card(
         representative_selection_reason = (
             "相対的なFidelity retained候補がないため、単一代表を選びません。"
         )
+    elif edge_unresolved:
+        representative_selection_state = "no_single_edge_unresolved"
+        representative_selection_reason = (
+            "測定範囲の端でも改善傾向が続いているため、単一代表を選びません。"
+            "Body／Tail代表は観測範囲内の参考点であり、preset基準点とは区別します。"
+        )
     elif len(fidelity_retained) == 1:
         single_representative = fidelity_retained[0]
         representative_selection_state = "provisional_single"
@@ -936,15 +946,25 @@ def build_dataset_card(
             f"mul {single_representative['range_mul']:.2f}（暫定代表）",
         ]
     elif (
-        representative_selection_state == "no_single_body_tail_tradeoff"
+        representative_selection_state
+        in {"no_single_body_tail_tradeoff", "no_single_edge_unresolved"}
         and body_representative
         and tail_representative
     ):
-        minimum_comparison_set = [
-            "no_quant",
-            f"mul {body_representative['range_mul']:.2f}（Body代表）",
-            f"mul {tail_representative['range_mul']:.2f}（Tail代表）",
-        ]
+        if body_representative["candidate"] == tail_representative["candidate"]:
+            minimum_comparison_set = [
+                "no_quant",
+                (
+                    f"mul {body_representative['range_mul']:.2f}"
+                    "（観測上のBody／Tail代表）"
+                ),
+            ]
+        else:
+            minimum_comparison_set = [
+                "no_quant",
+                f"mul {body_representative['range_mul']:.2f}（Body代表）",
+                f"mul {tail_representative['range_mul']:.2f}（Tail代表）",
+            ]
     elif all_candidates_retained:
         minimum_comparison_set = ["no_quant"] + [
             f"mul {card['range_mul']:.2f}" for card in fidelity_retained

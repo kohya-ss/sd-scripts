@@ -5,7 +5,14 @@ import math
 import numpy as np
 import torch
 
-from dq_profile import METRIC_DEFINITION_VERSION, SCHEMA_VERSION
+from dq_profile import (
+    METRIC_DEFINITION_VERSION,
+    PREFIX_GATE_METRIC_VERSION,
+    RUNTIME_METRIC_DEFINITION_VERSION,
+    RUNTIME_PROTOCOL_VERSION,
+    RUNTIME_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+)
 from dq_profile.protocol import CandidateDefinition
 from dq_profile.quant_context import ProfileQuantContext
 from dq_profile.v2_calibration import (
@@ -64,6 +71,10 @@ def _trace_row(step: int) -> dict:
 
 def test_schema_and_metric_definition_are_v21():
     assert SCHEMA_VERSION == "2.1.0"
+    assert RUNTIME_SCHEMA_VERSION == SCHEMA_VERSION
+    assert RUNTIME_METRIC_DEFINITION_VERSION == METRIC_DEFINITION_VERSION
+    assert PREFIX_GATE_METRIC_VERSION == METRIC_DEFINITION_VERSION
+    assert RUNTIME_PROTOCOL_VERSION == "sdxl-dq-profile-v2.1"
     assert METRIC_DEFINITION_VERSION == "2.1.0"
 
 

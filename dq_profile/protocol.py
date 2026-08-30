@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - Python 3.10 used by this project
 
 import toml
 
-from dq_profile import PROTOCOL_VERSION
+from dq_profile import RUNTIME_PROTOCOL_VERSION as PROTOCOL_VERSION
 
 
 IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}

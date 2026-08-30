@@ -11,7 +11,11 @@ from typing import Any, Iterable, Optional
 
 import torch
 
-from dq_profile import METRIC_DEFINITION_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
+from dq_profile import (
+    RUNTIME_METRIC_DEFINITION_VERSION as METRIC_DEFINITION_VERSION,
+    RUNTIME_PROTOCOL_VERSION as PROTOCOL_VERSION,
+    RUNTIME_SCHEMA_VERSION as SCHEMA_VERSION,
+)
 from dq_profile.protocol import canonical_sha256
 
 
@@ -143,6 +147,7 @@ def build_source_manifest(
         root / "dq_profile" / "__init__.py",
         root / "dq_profile" / "copied_train_network.py",
         root / "dq_profile" / "copied_lora.py",
+        root / "dq_profile" / "copied_sources.json",
         root / "dq_profile" / "sdxl_profile_trainer.py",
         root / "dq_profile" / "trainer_runtime.py",
         root / "dq_profile" / "v2_runtime.py",
@@ -157,6 +162,7 @@ def build_source_manifest(
         root / "dq_profile" / "snapshot_parity.py",
         root / "dq_profile" / "report.py",
         root / "dq_profile" / "manifest.py",
+        root / "tools" / "check_dq_profile_copy_drift.py",
         root / "library" / "train_util.py",
         root / "library" / "config_util.py",
         root / "library" / "sdxl_train_util.py",

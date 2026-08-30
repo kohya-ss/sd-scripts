@@ -76,7 +76,8 @@ Localの単純な延長ではない。
 - 通常レポートの主表示はHard-safety、Body、Tail、Tail Amplification、
   source bootstrap、credible set、edge uncertaintyとする。
 - Fidelity retainedはLocalに基づくbeta候補削減であり、best qualityではない。
-- Trajectoryは`--with-trajectory-research`を明示した場合だけ実行する。
+- Trajectoryは公開`python -m dq_profile`入口では実行せず、低レベル研究protocolを
+  明示的に選んだ場合だけ実行する。
 - Trajectoryは候補削減、best mul、Utility、学習成功保証へ使用しない。
 - 最終画質との対応は、将来の固定blind比較によるUtility Bridgeで別に検証する。
 

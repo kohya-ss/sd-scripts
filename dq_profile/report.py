@@ -14,7 +14,10 @@ from typing import Any, Iterable, Mapping, Optional
 import numpy as np
 import toml
 
-from dq_profile import METRIC_DEFINITION_VERSION, SCHEMA_VERSION
+from dq_profile import (
+    RUNTIME_METRIC_DEFINITION_VERSION as METRIC_DEFINITION_VERSION,
+    RUNTIME_SCHEMA_VERSION as SCHEMA_VERSION,
+)
 
 
 KNOWN_RESULT_DEFAULTS: dict[str, Any] = {

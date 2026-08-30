@@ -5,8 +5,24 @@ public training entry points never import it; only ``sdxl_dq_dataset_profile``
 does.
 """
 
-SCHEMA_VERSION = "2.1.0"
-METRIC_DEFINITION_VERSION = "2.1.0"
-PROTOCOL_VERSION = "sdxl-dq-profile-v2.1"
+RUNTIME_SCHEMA_VERSION = "2.1.0"
+RUNTIME_METRIC_DEFINITION_VERSION = "2.1.0"
+PREFIX_GATE_METRIC_VERSION = RUNTIME_METRIC_DEFINITION_VERSION
+RUNTIME_PROTOCOL_VERSION = "sdxl-dq-profile-v2.1"
 
-__all__ = ["SCHEMA_VERSION", "METRIC_DEFINITION_VERSION", "PROTOCOL_VERSION"]
+# Backward-compatible aliases for v2.1 artifacts and external readers. New
+# code should use the role-specific names above; changing these values would be
+# a persisted schema migration rather than a package-version bump.
+SCHEMA_VERSION = RUNTIME_SCHEMA_VERSION
+METRIC_DEFINITION_VERSION = RUNTIME_METRIC_DEFINITION_VERSION
+PROTOCOL_VERSION = RUNTIME_PROTOCOL_VERSION
+
+__all__ = [
+    "RUNTIME_SCHEMA_VERSION",
+    "RUNTIME_METRIC_DEFINITION_VERSION",
+    "PREFIX_GATE_METRIC_VERSION",
+    "RUNTIME_PROTOCOL_VERSION",
+    "SCHEMA_VERSION",
+    "METRIC_DEFINITION_VERSION",
+    "PROTOCOL_VERSION",
+]

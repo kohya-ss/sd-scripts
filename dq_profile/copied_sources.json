@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Track the ordinary source revision used to create the isolated diagnostic copies and detect later drift.",
+  "source_commit": "9cda02a632edb25e89513de3b601abd73358b917",
+  "hash_definition": "sha256 after normalizing CRLF and CR line endings to LF",
+  "files": {
+    "dq_profile/copied_train_network.py": {
+      "source": "train_network.py",
+      "source_git_blob_oid": "d1dedba47512bc60bfc1959a13053d8b74178821",
+      "source_normalized_sha256": "6a6485e6a3b08d662335910e557d9be205b29914208c45a64e36931a04a7ba2b",
+      "copied_normalized_sha256": "015125254c757aa56c742049b5011d5b1424c291bc508480fdf8e0fcd46ce9ba",
+      "diagnostic_changes": [
+        "uses the isolated profiler NetworkTrainer runtime instead of the ordinary training entry",
+        "captures reproducible snapshots, replay inputs, prefix fingerprints, and Local diagnostic artifacts"
+      ]
+    },
+    "dq_profile/copied_lora.py": {
+      "source": "networks/lora.py",
+      "source_git_blob_oid": "9b81f347a2db706e89366d6da0e33a2e7fdc6b5c",
+      "source_normalized_sha256": "0173552b2139cc1f95ac214d52c7a2f45a91ec1981600cb74d7a659fa6e5cea8",
+      "copied_normalized_sha256": "c2324276801d95abde12d5dba06ddb270cc51048829a28dea9242836e94d7353",
+      "diagnostic_changes": [
+        "accepts profiler quantization context and stateless common-random-number tensors",
+        "supports shadow, Local, mechanism, parity, and descriptive research instrumentation without changing the ordinary LoRA module"
+      ]
+    }
+  }
+}

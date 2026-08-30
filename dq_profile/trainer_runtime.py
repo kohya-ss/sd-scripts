@@ -12,7 +12,11 @@ import numpy as np
 import torch
 
 from dq_profile.geometry import SourceGroupMap, captions_from_batches
-from dq_profile import METRIC_DEFINITION_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
+from dq_profile import (
+    RUNTIME_METRIC_DEFINITION_VERSION as METRIC_DEFINITION_VERSION,
+    RUNTIME_PROTOCOL_VERSION as PROTOCOL_VERSION,
+    RUNTIME_SCHEMA_VERSION as SCHEMA_VERSION,
+)
 from dq_profile.manifest import build_source_manifest, sha256_file
 from dq_profile.metrics import CountSketch, ExactGradient, aggregate_numeric, gradient_noise_scale, gram_and_rank
 from dq_profile.protocol import (

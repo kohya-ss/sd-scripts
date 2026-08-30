@@ -26,11 +26,42 @@ The older staged custom-dataset runners remain research/reproduction tools;
 they are not the ordinary product entry.
 
 The 128-step Trajectory channel is not part of the production candidate
-reduction rule. It is available only through explicit
-`--with-trajectory-research`, remains descriptive, and cannot claim a best mul,
-quality, Utility, or training-success verdict. See
+reduction rule and cannot be started from the public `python -m dq_profile`
+entry. It remains available only through low-level research protocols, is
+descriptive, and cannot claim a best mul, quality, Utility, or training-success
+verdict. See
 [`docs/dq_dataset_profiler_trajectory_decision-ja.md`](../docs/dq_dataset_profiler_trajectory_decision-ja.md)
 for the validation decision.
+
+## Copied-source maintenance
+
+`copied_train_network.py` and `copied_lora.py` intentionally isolate the
+profiler from the ordinary training classes. Their source commit, source blob
+IDs, normalized SHA-256 values, and diagnostic-copy SHA-256 values are recorded
+in [`copied_sources.json`](copied_sources.json). After updating the ordinary
+training sources or either diagnostic copy, run:
+
+```powershell
+python -m tools.check_dq_profile_copy_drift
+```
+
+Review the upstream change before updating the recorded hashes. A passing check
+means that the recorded copy relationship is current; it does not assert that
+the two files are textually identical.
+
+## Version layers
+
+The profiler persists several independent contracts. They must not be compared
+as if they were one package version:
+
+- runtime and prefix-gate artifacts use schema/metric `2.1.0`;
+- Local Body/Tail acceptance metrics use definition `2.4.0`;
+- the current practical-report model uses schema
+  `2.4.2-practical-report-prototype`.
+
+Role-specific constants name these layers. The older generic v2.1 constant
+names remain compatibility aliases so existing artifacts and readers keep the
+same serialized values.
 
 ## Low-level protocol entry
 
