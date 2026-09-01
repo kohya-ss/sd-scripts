@@ -823,14 +823,10 @@ def train(args):
                 loss = loss_util.conditional_loss(model_pred.float(), target.float(), args.loss_type, "none", huber_c)
                 if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                     loss = apply_masked_loss(loss, batch)
-                loss = loss.mean([1, 2, 3])
-
-                if weighting is not None:
-                    loss = loss * weighting
-
                 loss_weights = batch["loss_weights"]
-                loss = loss * loss_weights
-                loss = loss.mean()
+                loss = loss_util.reduce_per_sample_loss(
+                    loss, weighting, loss_weights
+                ).mean()
 
                 try:
                     accelerator.backward(loss)
