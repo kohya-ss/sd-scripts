@@ -10,10 +10,11 @@ trainer:
 - :func:`get_huber_threshold_if_needed` — per-timestep Huber/Smooth-L1
   threshold schedule (exponential / SNR / constant).
 - :func:`conditional_loss` — dispatch over ``l2 / l1 / huber / smooth_l1``.
+- :func:`reduce_per_sample_loss` — apply per-timestep weights, reduce every
+  non-batch dimension, then apply dataset weights without mixing samples.
 
-These used to live in ``library.train_util`` and are still re-exported
-from there for backward compatibility. New code should import from this
-module.
+Functions that previously lived in ``library.train_util`` remain re-exported
+from there for backward compatibility. New code should import from this module.
 """
 
 import math
@@ -128,3 +129,53 @@ def conditional_loss(
     else:
         raise NotImplementedError(f"Unsupported Loss Type: {loss_type}")
     return loss
+
+
+def reduce_per_sample_loss(
+    loss: torch.Tensor,
+    weighting: Optional[torch.Tensor] = None,
+    loss_weights: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Reduce an elementwise loss to one value per sample without cross-sample broadcasting.
+
+    ``weighting`` is a per-sample timestep weight. It is intentionally applied
+    before reducing the spatial/token dimensions so a shape such as
+    ``(batch, 1, 1, 1)`` cannot broadcast against an already-reduced
+    ``(batch,)`` loss and create a Cartesian product across the batch.
+
+    ``loss_weights`` contains dataset-level per-sample weights and is applied
+    only after the loss has been reduced to exactly ``(batch,)``.
+    """
+    if loss.ndim < 2:
+        raise ValueError(
+            f"loss must have a batch axis and at least one non-batch axis before reduction, got shape {tuple(loss.shape)}"
+        )
+
+    batch_size = loss.shape[0]
+    if weighting is not None:
+        if weighting.ndim == 0 or weighting.shape[0] != batch_size:
+            raise ValueError(
+                f"weighting must be batch-first with batch size {batch_size}, got shape {tuple(weighting.shape)}"
+            )
+        if any(size != 1 for size in weighting.shape[1:]):
+            raise ValueError(
+                f"weighting must contain one scalar per sample, got shape {tuple(weighting.shape)}"
+            )
+
+        weighting = weighting.reshape(batch_size, *([1] * (loss.ndim - 1)))
+        loss = loss * weighting
+
+    per_sample_loss = loss.mean(dim=tuple(range(1, loss.ndim)))
+    if per_sample_loss.shape != (batch_size,):
+        raise RuntimeError(
+            f"loss reduction must produce exactly one value per sample, got shape {tuple(per_sample_loss.shape)}"
+        )
+
+    if loss_weights is not None:
+        if loss_weights.shape != (batch_size,):
+            raise ValueError(
+                f"loss_weights must have shape ({batch_size},), got {tuple(loss_weights.shape)}"
+            )
+        per_sample_loss = per_sample_loss * loss_weights
+
+    return per_sample_loss
