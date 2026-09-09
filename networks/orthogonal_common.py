@@ -98,17 +98,11 @@ def save_weights_sd(file, state_dict, dtype, metadata):
 
     if os.path.splitext(file)[1] == ".safetensors":
         from safetensors.torch import save_file
-        try:
-            from library.model_io import precalculate_safetensors_hashes
-        except ModuleNotFoundError as e:
-            if e.name != "library.model_io":
-                raise
-            # リファクタリング前の sd-scripts との互換性を保つ。
-            from library.train_util import precalculate_safetensors_hashes
+        import library.model_io as model_io
 
         if metadata is None:
             metadata = {}
-        model_hash, legacy_hash = precalculate_safetensors_hashes(state_dict, metadata)
+        model_hash, legacy_hash = model_io.precalculate_safetensors_hashes(state_dict, metadata)
         metadata["sshs_model_hash"] = model_hash
         metadata["sshs_legacy_hash"] = legacy_hash
         save_file(state_dict, file, metadata)

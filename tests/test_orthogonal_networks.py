@@ -1,19 +1,8 @@
 import copy
-import sys
-import types
 
 import pytest
 import torch
 from torch import nn
-
-try:
-    import library.utils
-except ModuleNotFoundError as e:
-    if e.name != "diffusers":
-        raise
-    utils_mod = types.ModuleType("library.utils")
-    utils_mod.setup_logging = lambda *args, **kwargs: None
-    sys.modules["library.utils"] = utils_mod
 
 from networks import boft, oft_v2
 
