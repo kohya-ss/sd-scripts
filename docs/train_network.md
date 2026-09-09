@@ -141,6 +141,7 @@ Next, we'll explain the main command-line arguments.
   * Specifies the type of network to train. For LoRA, specify `networks.lora`.
 * `--network_dim=16` **[Required]**
   * Specifies the rank (dimension) of LoRA. Higher values increase expressiveness but also increase file size and computational cost. Values between 4 and 128 are commonly used. There is no default (module dependent).
+  * For orthogonal adapters, `networks.oft` interprets this value as the number of blocks, while `networks.oft_v2` and `networks.boft` interpret it as the block size. The same value therefore has a different meaning depending on the network module.
 * `--network_alpha=1`
   * Specifies the alpha value for LoRA. This parameter is related to learning rate scaling. It is generally recommended to set it to about half the value of `network_dim`, but it can also be the same value as `network_dim`. The default is 1. Setting it to the same value as `network_dim` will result in behavior similar to older versions.
 * `--network_args`
@@ -229,6 +230,7 @@ Next, we'll explain the main command-line arguments.
     *   学習するネットワークの種別を指定します。LoRA の場合は `networks.lora` を指定します。
 *   `--network_dim=16` **[必須]**
     *   LoRA のランク (rank / 次元数) を指定します。値が大きいほど表現力は増しますが、ファイルサイズと計算コストが増加します。一般的には 4〜128 程度の値が使われます。デフォルトは指定されていません（モジュール依存）。
+    *   直交変換系アダプタでは、`networks.oft` はブロック数、`networks.oft_v2` と `networks.boft` はブロックサイズとして解釈します。同じ値でも、ネットワークモジュールによって意味が異なります。
 *   `--network_alpha=1`
     *   LoRA のアルファ値 (alpha) を指定します。学習率のスケーリングに関係するパラメータで、一般的には `network_dim` の半分程度の値を指定することが推奨されますが、`network_dim` と同じ値を指定する場合もあります。デフォルトは 1 です。`network_dim` と同じ値に設定すると、旧バージョンと同様の挙動になります。
 
