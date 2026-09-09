@@ -47,6 +47,15 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added OFTv2 and BOFT network modules (`networks.oft_v2`, `networks.boft`) for SD1.x / SD2.x / SDXL training. [PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
+        - Orthogonal fine-tuning adapters following the PEFT implementation. Weights in PEFT format can also be loaded. Thanks to umisetokikaze.
+        - Note that `--network_dim` means the block size for these modules. For details, please refer to the [documentation](./docs/train_network_oft_boft.md).
+    - Added per-subset timestep sampling offset (`custom_attributes.timestep_sampling.offset`) for FLUX.1 and Anima LoRA training. [PR #2401](https://github.com/kohya-ss/sd-scripts/pull/2401) Thanks to okdsf.
+        - Shifts the timestep sampling distribution of each dataset subset toward lower- or higher-noise timesteps. For details, please refer to the [documentation](./docs/timestep_sampling_offset.md).
+    - Added `--show_timesteps_offset` to preview the timestep distribution with the offset applied when using `--show_timesteps`. [PR #2410](https://github.com/kohya-ss/sd-scripts/pull/2410)
+        - The documentation also describes how the offset behaves with `shift` / `flux_shift` timestep sampling.
+
 - **Version 0.11.1 (2026-06-16):**
     - Added support for torch.compile in Anima LoRA/LLLite training. [PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
         - It seems to speed up training by about 20%. It requires Triton and MSVC compiler. For details, please refer to the [documentation](./docs/anima_torch_compile.md).
@@ -104,6 +113,7 @@ If you find this project helpful, please consider supporting its development via
 * [LoRA Training Overview](./docs/train_network.md)
 * [Dataset config](./docs/config_README-en.md) / [Japanese version](./docs/config_README-ja.md)
 * [Advanced Training](./docs/train_network_advanced.md)
+* [OFTv2 / BOFT Training](./docs/train_network_oft_boft.md)
 * [SDXL Training](./docs/sdxl_train_network.md)
 * [SD3 Training](./docs/sd3_train_network.md)
 * [FLUX.1 Training](./docs/flux_train_network.md)
