@@ -138,7 +138,7 @@ Next, we'll explain the main command-line arguments.
 #### LoRA Parameters / LoRA パラメータ
 
 * `--network_module=networks.lora` **[Required]**
-  * Specifies the type of network to train. For LoRA, specify `networks.lora`.
+  * Specifies the type of network to train. For LoRA, specify `networks.lora`. For OFTv2 / BOFT, specify `networks.oft_v2` / `networks.boft` (see [train_network_oft_boft.md](./train_network_oft_boft.md)).
 * `--network_dim=16` **[Required]**
   * Specifies the rank (dimension) of LoRA. Higher values increase expressiveness but also increase file size and computational cost. Values between 4 and 128 are commonly used. There is no default (module dependent).
   * For orthogonal adapters, `networks.oft` interprets this value as the number of blocks, while `networks.oft_v2` and `networks.boft` interpret it as the block size. The same value therefore has a different meaning depending on the network module.
@@ -227,7 +227,7 @@ Next, we'll explain the main command-line arguments.
 #### LoRA パラメータ
 
 *   `--network_module=networks.lora` **[必須]**
-    *   学習するネットワークの種別を指定します。LoRA の場合は `networks.lora` を指定します。
+    *   学習するネットワークの種別を指定します。LoRA の場合は `networks.lora` を指定します。OFTv2 / BOFT の場合は `networks.oft_v2` / `networks.boft` を指定します（[train_network_oft_boft.md](./train_network_oft_boft.md) を参照）。
 *   `--network_dim=16` **[必須]**
     *   LoRA のランク (rank / 次元数) を指定します。値が大きいほど表現力は増しますが、ファイルサイズと計算コストが増加します。一般的には 4〜128 程度の値が使われます。デフォルトは指定されていません（モジュール依存）。
     *   直交変換系アダプタでは、`networks.oft` はブロック数、`networks.oft_v2` と `networks.boft` はブロックサイズとして解釈します。同じ値でも、ネットワークモジュールによって意味が異なります。
