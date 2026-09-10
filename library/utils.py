@@ -3,6 +3,8 @@ import random
 import sys
 import threading
 from typing import *
+import sys
+import io
 
 import torch
 from torchvision import transforms
@@ -13,6 +15,10 @@ import cv2
 from PIL import Image
 import numpy as np
 
+try:
+    from PIL import ImageCms
+except:
+    print( "ImageCms not available. Images will not be converted to sRGB. Colours may be handled incorrectly." )
 
 def fire_in_thread(f, *args, **kwargs):
     threading.Thread(target=f, args=args, kwargs=kwargs).start()
@@ -167,17 +173,76 @@ IMAGE_TRANSFORMS = transforms.Compose(
 )
 
 
-def load_image(image_path, alpha=False):
+def load_image(image_path, keep_alpha : bool = False):
     try:
         with Image.open(image_path) as image:
-            if alpha:
-                if not image.mode == "RGBA":
-                    image = image.convert("RGBA")
+            if "A" in image.getbands():
+                transparency = image.getchannel("A")
+            elif "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                transparency = rgba.getchannel("A")
             else:
-                if not image.mode == "RGB":
-                    image = image.convert("RGB")
+                transparency = None
+
+            icc = image.info.get("icc_profile", None)
+            if icc and "PIL.ImageCms" in sys.modules:
+
+                try:
+                    src_profile = ImageCms.ImageCmsProfile( io.BytesIO(icc) )
+                    srgb_profile = ImageCms.createProfile( "sRGB" )
+
+                    if image.mode in ["RGB", "CMYK"]:
+                        rgb = ImageCms.profileToProfile(
+                            image,
+                            src_profile,
+                            srgb_profile,
+                            outputMode="RGB",
+                        )
+                    elif image.mode in ("L", "LA"):
+                        luma = image.getchannel("L")
+                        rgb = ImageCms.profileToProfile(
+                            luma,
+                            src_profile,
+                            srgb_profile,
+                            outputMode="RGB",
+                        )
+                    else:
+                        source = image.convert("RGB")
+                        rgb = ImageCms.profileToProfile(
+                            source,
+                            src_profile,
+                            srgb_profile,
+                            outputMode="RGB",
+                        )
+                except Exception as e:
+                    logger.warning( f"Could not convert {image_path} to sRGB. Using image as is. {e}" )
+                    rgb = image.convert("RGB")
+            else:
+                rgb = image.convert("RGB")
+
+            if keep_alpha:
+                if transparency:
+                    # Place transparency back in image
+                    image = Image.merge( "RGBA",  (*rgb.split(), transparency), )
+
+                else:
+                    image = rgb.convert("RGBA")
+
+            else:
+                if transparency:
+                    # Replace alpha with white background
+                    image = Image.new(
+                        "RGB",
+                        rgb.size,
+                        (255, 255, 255),
+                        )
+                    image.paste(rgb, mask=transparency)
+
+                else:
+                    image = rgb
             img = np.array(image, np.uint8)
             return img
+
     except (IOError, OSError) as e:
         logger.error(f"Error loading file: {image_path}")
         raise e
