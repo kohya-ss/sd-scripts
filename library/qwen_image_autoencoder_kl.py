@@ -146,8 +146,8 @@ class ChunkedConv2d(nn.Conv2d):
             overlap = 0
 
         # If stride > 1, QwenImageVAE pads manually with zeros before convolution, so we do not need to consider it here
-        y_height = org_shape[2] // self.stride[0]
-        y_width = org_shape[3] // self.stride[1]
+        y_height = (org_shape[2] + 2 * self.original_padding[0] - self.kernel_size[0]) // self.stride[0] + 1
+        y_width = (org_shape[3] + 2 * self.original_padding[1] - self.kernel_size[1]) // self.stride[1] + 1
         y = torch.zeros((org_shape[0], self.out_channels, y_height, y_width), dtype=x.dtype, device=x.device)
         yi = 0
         i = 0
