@@ -438,6 +438,10 @@ def ipex_hijacks():
         torch.nn.functional.scaled_dot_product_attention = dynamic_scaled_dot_product_attention
 
     # AMP:
+    # torch.cuda.amp is deprecated since torch 2.3/2.4, but aliasing it here
+    # (to the torch.amp / torch.xpu.amp implementations below) keeps
+    # third-party code importing torch.cuda.amp working without the
+    # FutureWarning until the alias is removed.
     torch.amp.grad_scaler.GradScaler.__init__ = GradScaler_init
     torch.is_autocast_enabled = torch_is_autocast_enabled
     torch.get_autocast_gpu_dtype = torch_get_autocast_dtype
