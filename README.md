@@ -57,6 +57,14 @@ If you find this project helpful, please consider supporting its development via
     - Added OPLoRA (`--oplora`) for LoRA/network training across all model families: orthogonal-projection LoRA that confines each adapter update to the orthogonal complement of the base weight's top-k singular subspace (`--oplora_rank`), so each base weight's top-k singular triples are preserved exactly — a hard guarantee (over that subspace, not the model's full behaviour) with no teacher and no extra forward pass. Bases are computed once by SVD of each base weight at startup, and after every optimizer step the LoRA factors are re-projected. It is LoRA only (full fine-tune scripts reject the flag), supersedes output distillation when both are set, and leaves split-qkv modules unprojected. `--oplora_full_svd` switches from the default randomized SVD to full SVD. Disabled by default. See the [anti-forgetting documentation](./docs/anti-forgetting.md).
     - Added `networks/extract_lora.py`, a unified LoRA extractor that approximates a LoRA by SVD of the weight difference between two models of the same architecture (original → tuned), at a customizable rank (`--dim`, plus `--conv_dim` for conv layers). One tool covers every supported family via a `--model_type` registry (SD1.x/SDXL/SD3/FLUX/Lumina/HunyuanImage/Anima); target layers and key names are taken from each model's own `create_network`, so the extracted adapter matches training-time naming and loads in the matching trainer and ComfyUI. Besides LoRA it can also extract **LoKr** (`--extract_as lokr`, nearest-Kronecker-product; smaller file) for Linear/conv-1×1/conv-3×3-flat, and can project a LoRA onto the orthogonal complement of the base's top-k singular subspace (`--orthogonal_to_base`, OPLoRA-style) to keep only the part of the difference that does not overwrite the base. The existing per-architecture extractors (`extract_lora_from_models.py`, `flux_extract_lora.py`) remain unchanged. See the [LoRA extraction documentation](./docs/extract-lora.md).
     - Added `anima_train_adapter.py`, a standalone training script for the Anima DiT adapter. See the [adapter documentation](./docs/anima_train_adapter.md).
+- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added OFTv2 and BOFT network modules (`networks.oft_v2`, `networks.boft`) for SD1.x / SD2.x / SDXL training. [PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
+        - Orthogonal fine-tuning adapters following the PEFT implementation. Weights in PEFT format can also be loaded. Thanks to umisetokikaze.
+        - Note that `--network_dim` means the block size for these modules. For details, please refer to the [documentation](./docs/train_network_oft_boft.md).
+    - Added per-subset timestep sampling offset (`custom_attributes.timestep_sampling.offset`) for FLUX.1 and Anima LoRA training. [PR #2401](https://github.com/kohya-ss/sd-scripts/pull/2401) Thanks to okdsf.
+        - Shifts the timestep sampling distribution of each dataset subset toward lower- or higher-noise timesteps. For details, please refer to the [documentation](./docs/timestep_sampling_offset.md).
+    - Added `--show_timesteps_offset` to preview the timestep distribution with the offset applied when using `--show_timesteps`. [PR #2410](https://github.com/kohya-ss/sd-scripts/pull/2410)
+        - The documentation also describes how the offset behaves with `shift` / `flux_shift` timestep sampling.
 
 - **Version 0.11.1 (2026-06-16):**
     - Added support for torch.compile in Anima LoRA/LLLite training. [PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
@@ -115,6 +123,7 @@ If you find this project helpful, please consider supporting its development via
 * [LoRA Training Overview](./docs/train_network.md)
 * [Dataset config](./docs/config_README-en.md) / [Japanese version](./docs/config_README-ja.md)
 * [Advanced Training](./docs/train_network_advanced.md)
+* [OFTv2 / BOFT Training](./docs/train_network_oft_boft.md)
 * [SDXL Training](./docs/sdxl_train_network.md)
 * [SD3 Training](./docs/sd3_train_network.md)
 * [FLUX.1 Training](./docs/flux_train_network.md)

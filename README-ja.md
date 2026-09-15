@@ -50,6 +50,15 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - SD1.x / SD2.x / SDXL の学習向けに、OFTv2 と BOFT のネットワークモジュール（`networks.oft_v2`、`networks.boft`）を追加しました。[PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
+        - PEFT の実装に準拠した直交変換系のアダプタです。PEFT 形式の重みも読み込めます。umisetokikaze 氏に感謝します。
+        - これらのモジュールでは `--network_dim` はブロックサイズを意味します。詳細は[ドキュメント](./docs/train_network_oft_boft.md)をご覧ください。
+    - FLUX.1 および Anima の LoRA 学習で、サブセットごとの timestep sampling offset（`custom_attributes.timestep_sampling.offset`）を追加しました。[PR #2401](https://github.com/kohya-ss/sd-scripts/pull/2401) okdsf 氏に感謝します。
+        - データセットのサブセットごとに、timestep のサンプリング分布を低ノイズ側または高ノイズ側へ偏らせることができます。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
+    - `--show_timesteps` 使用時に offset を適用した timestep の分布を確認できる `--show_timesteps_offset` を追加しました。[PR #2410](https://github.com/kohya-ss/sd-scripts/pull/2410)
+        - `shift` / `flux_shift` の timestep sampling における offset の挙動もドキュメントに記載しました。
+
 - **Version 0.11.1 (2026-06-16):**
     - Anima LoRA／LLLite学習でtorch.compileサポートを追加しました。[PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
         - 学習が20%ほど高速化されるようです。動作にはTritonやMSVCコンパイラが必要です。詳細は[ドキュメント](./docs/anima_torch_compile.md)をご覧ください。
@@ -109,6 +118,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [LoRA学習の概要](./docs/train_network.md)
 * [データセット設定](./docs/config_README-ja.md) / [英語版](./docs/config_README-en.md)
 * [高度な学習オプション](./docs/train_network_advanced.md)
+* [OFTv2 / BOFT学習](./docs/train_network_oft_boft.md)
 * [SDXL学習](./docs/sdxl_train_network.md)
 * [SD3学習](./docs/sd3_train_network.md)
 * [FLUX.1学習](./docs/flux_train_network.md)
