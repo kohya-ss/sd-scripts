@@ -52,6 +52,17 @@ class DreamBoothDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str],
         skip_image_resolution: Optional[Tuple[int, int]] = None,
+        enable_fad: bool = False,
+        fad_curriculum: bool = False,
+        fad_p_min: float = 0.35,
+        fad_p_max: float = 1.0,
+        fad_alpha: float = 10.0,
+        fad_c: float = 0.5,
+        fad_curriculum_start: float = 0.1,
+        fad_curriculum_end: float = 0.8,
+        fad_curriculum_beta: float = 3.0,
+        fad_step_start: float = 0.0,
+        fad_step_end: float = 1.0,
     ) -> None:
         super().__init__(
             resolution,
@@ -60,6 +71,17 @@ class DreamBoothDataset(BaseDataset):
             debug_dataset,
             resize_interpolation,
             skip_image_resolution,
+            enable_fad,
+            fad_curriculum,
+            fad_p_min,
+            fad_p_max,
+            fad_alpha,
+            fad_c,
+            fad_curriculum_start,
+            fad_curriculum_end,
+            fad_curriculum_beta,
+            fad_step_start,
+            fad_step_end,
         )
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"

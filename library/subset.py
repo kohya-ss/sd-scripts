@@ -44,6 +44,8 @@ class BaseSubset:
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        enable_fad: bool = False,
+        fad_curriculum: bool = False,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
@@ -75,6 +77,10 @@ class BaseSubset:
         self.validation_split = validation_split
 
         self.resize_interpolation = resize_interpolation
+
+        self.enable_fad = enable_fad
+        self.fad_curriculum = fad_curriculum
+        self.fad_tag_frequencies = {}
 
 
 class DreamBoothSubset(BaseSubset):
@@ -108,6 +114,7 @@ class DreamBoothSubset(BaseSubset):
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        **kwargs,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -136,6 +143,7 @@ class DreamBoothSubset(BaseSubset):
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
+            **kwargs,
         )
 
         self.is_reg = is_reg
@@ -179,6 +187,7 @@ class FineTuningSubset(BaseSubset):
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        **kwargs,
     ) -> None:
         assert metadata_file is not None, "metadata_file must be specified / metadata_fileは指定が必須です"
 
@@ -207,6 +216,7 @@ class FineTuningSubset(BaseSubset):
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
+            **kwargs,
         )
 
         self.metadata_file = metadata_file
@@ -246,6 +256,7 @@ class ControlNetSubset(BaseSubset):
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        **kwargs,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -274,6 +285,7 @@ class ControlNetSubset(BaseSubset):
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
+            **kwargs,
         )
 
         self.conditioning_data_dir = conditioning_data_dir
