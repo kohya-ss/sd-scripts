@@ -233,7 +233,7 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
             for _format in LORA_DOWN_UP_FORMATS:
                 # Currently we only match lora_down_name in the last two parts of key
                 # because ("down", "up") are general words and may appear in block_down_name
-                if len(key_parts) >= 2 and _format[0] == key_parts[-2]:
+                if len(key_parts) >= 2 and _format[0] == key_parts[-2] and "alpha" != key_parts[-1]:
                     block_down_name = ".".join(key_parts[:-2])
                     lora_down_name = "." + _format[0]
                     lora_up_name = "." + _format[1]
