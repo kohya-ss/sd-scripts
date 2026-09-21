@@ -16,7 +16,11 @@ schedulefree==1.4
 pytorch-optimizer==3.10.0
 prodigy-plus-schedule-free==1.9.2
 prodigyopt==1.1.2
-tensorboard
+# tensorboard 2.x needs grpcio, which has no Windows ARM64 wheel; pip would
+# silently fall back to the ancient tensorboard 1.10. tensorboardX is a
+# pure-Python drop-in that accelerate uses automatically for --log_with tensorboard
+# (view the logs with TensorBoard on another machine).
+tensorboardX
 safetensors==0.4.5
 # gradio==3.16.2
 # altair==4.2.2
