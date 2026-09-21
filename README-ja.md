@@ -265,7 +265,8 @@ pip install --upgrade -r requirements-no-opencv.txt
 
 `opencv-python` がインストールされていない場合、Pillow と NumPy による軽量な代替実装（`library/_cv2_stub`）が自動的に `cv2` として登録されるため、既存のスクリプトはそのまま動作します。ただし以下に注意してください：
 
-- デフォルトの `requirements.txt` では OpenCV がそのまま使われ、こちらが推奨される経路です。特に縮小時の `cv2.INTER_AREA` は Pillow による代替より高画質です。
+- デフォルトの `requirements.txt` では OpenCV がそのまま使われ、こちらが推奨される経路です。代替実装は、データセット処理がデフォルトで使う `INTER_AREA` と `INTER_LINEAR` のリサイズを NumPy で OpenCV と同じ計算で再現しているため、学習結果は丸め誤差の範囲で一致しますが、OpenCV より低速です（2400 万画素の画像 1 枚あたり 0.1 秒程度）。`INTER_CUBIC` / `INTER_LANCZOS4` は Pillow を経由するため、わずかに結果が異なります。
+- `opencv-python` のビルド済み wheel が提供されていないプラットフォーム（Windows on ARM64、たとえば NVIDIA RTX Spark PC など）では、この方法でインストールしてください。
 - 次のツールは実際の `opencv-python` を必要とし、未インストール時は明確なメッセージで終了します：`tools/canny.py`、`tools/detect_face_rotate.py`、および `gen_img.py` / `sdxl_gen_img.py` の ControlNet `canny` プリプロセッサ。
 - データセット確認時の `cv2.imshow` は、OpenCV が無い場合 Pillow 標準のビューア（`PIL.Image.show`）で表示され、`cv2.waitKey` はターミナルでの `input()` 待ちに置き換わります（1枚ずつ確認できます）。
 

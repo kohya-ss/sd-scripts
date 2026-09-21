@@ -11,8 +11,11 @@ is implemented. In particular:
 
 - ``cvtColor`` supports BGR/RGB/BGRA/RGBA/HSV/GRAY conversions used in the
   codebase (the HSV variant follows OpenCV's H=[0,180) convention).
-- ``resize`` is implemented via Pillow, mapping ``INTER_*`` constants to
-  their closest ``PIL.Image.Resampling`` equivalents.
+- ``resize`` reproduces OpenCV's ``INTER_AREA`` and ``INTER_LINEAR`` sampling
+  in NumPy (these are the modes the dataset pipeline uses by default, so
+  results match a real OpenCV install up to rounding). ``INTER_CUBIC``,
+  ``INTER_LANCZOS4`` and ``INTER_NEAREST*`` go through Pillow's closest
+  ``PIL.Image.Resampling`` filter and differ slightly from OpenCV.
 - ``imshow`` displays the image through Pillow's default image viewer
   (``PIL.Image.show``). ``waitKey`` blocks on ``input()`` so that the caller
   can page through images one at a time; it returns ``ord(s[0])`` of the
@@ -81,16 +84,151 @@ IMWRITE_JPEG_QUALITY = 300
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Interpolation modes that go through Pillow. INTER_AREA and INTER_LINEAR are
+# implemented in NumPy instead (see _area_resample_rows / _linear_resample_rows)
+# because Pillow's filters are antialiased and do not reproduce OpenCV's output.
 _INTER_TO_PIL = {
     INTER_NEAREST: Image.Resampling.NEAREST,
     INTER_NEAREST_EXACT: Image.Resampling.NEAREST,
-    INTER_LINEAR: Image.Resampling.BILINEAR,
     INTER_CUBIC: Image.Resampling.BICUBIC,
-    # INTER_AREA has no exact PIL analogue; HAMMING is a reasonable
-    # approximation for downsampling and BOX-like averaging.
-    INTER_AREA: Image.Resampling.HAMMING,
     INTER_LANCZOS4: Image.Resampling.LANCZOS,
 }
+
+
+def _resize_single_channel(ch: np.ndarray, dsize: Tuple[int, int], pil_interp) -> np.ndarray:
+    return np.asarray(Image.fromarray(ch).resize(dsize, resample=pil_interp))
+
+
+def _area_resample_rows(x: np.ndarray, new_len: int) -> np.ndarray:
+    """Exact pixel-area resampling along axis 0 (OpenCV INTER_AREA when shrinking).
+
+    Output row j is the average of the input over its footprint
+    ``[j * scale, (j + 1) * scale)``, which is exactly what OpenCV computes
+    when both axes shrink. Only used for ``scale > 1``.
+    """
+    n = x.shape[0]
+    if new_len == n:
+        return x
+    scale = 1.0 / (new_len / n)  # same rounding as OpenCV's scale = 1 / inv_scale
+    dt = _work_dtype(x, n)
+
+    # The footprint of output row j is: a fractional first row idx_j, between
+    # k-1 and k whole rows (k = floor(scale)), and a fractional last row
+    # idx_{j+1}. The whole rows are summed with a fixed-width gather (rows
+    # idx_j+1 .. idx_j+k) followed by a plain sum, which is much faster in
+    # NumPy than cumsum or reduceat. Whenever the gather window runs past the
+    # whole rows it lands on row idx_{j+1} (`extra` times), which is taken
+    # out again through the last-row weight.
+    bounds = np.arange(new_len + 1, dtype=np.float64) * scale
+    bounds[-1] = n
+    idx = np.minimum(np.floor(bounds).astype(np.int64), n - 1)
+    frac = bounds - idx
+    k = int(np.floor(scale))
+
+    rows = np.minimum(idx[:-1, None] + 1 + np.arange(k, dtype=np.int64)[None, :], n - 1)
+    gathered = np.take(x, rows.ravel(), axis=0)
+    sums = gathered.reshape((new_len, k) + x.shape[1:]).sum(axis=1, dtype=dt)
+
+    whole = idx[1:] - idx[:-1] - 1  # whole rows actually inside the footprint (k-1 or k)
+    extra = k - whole  # how many gathered rows were row idx_{j+1} instead
+    w_first = _column((1.0 - frac[:-1]).astype(dt), x.ndim)
+    w_last = _column((frac[1:] - extra).astype(dt), x.ndim)
+    sums += w_first * np.take(x, idx[:-1], axis=0)
+    sums += w_last * np.take(x, idx[1:], axis=0)
+    sums /= scale
+    return sums
+
+
+def _area_2tap_resample_rows(x: np.ndarray, new_len: int) -> np.ndarray:
+    """OpenCV's INTER_AREA fallback used when the image is not shrunk on both axes.
+
+    OpenCV only performs true area averaging when ``scale >= 1`` for both
+    axes. Otherwise it runs its generic two-tap resampler with the
+    ``area_mode`` sample positions (``sx = floor(dx * scale)``, weight taken
+    from the overlap of the destination pixel with the next source pixel).
+    For an enlarging axis this equals exact area averaging; for a shrinking
+    axis it is a coarse two-tap approximation. Reproduced here so that mixed
+    up/down scaling matches OpenCV up to rounding.
+    """
+    n = x.shape[0]
+    if new_len == n:
+        return x
+    # Mirror OpenCV's arithmetic exactly (inv_scale = dst/src as double,
+    # scale = 1/inv_scale, weight computed in double then truncated to float)
+    # so that floating-point ties at exact pixel boundaries resolve the same way.
+    inv_scale = new_len / n
+    scale = 1.0 / inv_scale
+    d = np.arange(new_len, dtype=np.float64)
+    lo = np.floor(d * scale).astype(np.int64)
+    w = ((d + 1.0) - (lo + 1) * inv_scale).astype(np.float32)
+    w = np.where(w <= 0, np.float32(0), w - np.floor(w))
+    w[lo >= n - 1] = 0.0
+    lo[lo >= n - 1] = n - 1
+    return _two_tap_rows(x, lo, w)
+
+
+def _linear_resample_rows(x: np.ndarray, new_len: int) -> np.ndarray:
+    """Two-tap bilinear resampling along axis 0 (OpenCV INTER_LINEAR semantics).
+
+    Sample positions use half-pixel centres and are clamped at the borders the
+    same way OpenCV does; there is no antialiasing when downscaling.
+    """
+    n = x.shape[0]
+    if new_len == n:
+        return x
+    # Same arithmetic as OpenCV: position in double, truncated to float
+    # before the floor, so boundary ties resolve identically.
+    scale = 1.0 / (new_len / n)
+    pos = ((np.arange(new_len, dtype=np.float64) + 0.5) * scale - 0.5).astype(np.float32)
+    lo = np.floor(pos).astype(np.int64)
+    w = pos - lo
+    w[lo < 0] = 0.0
+    lo[lo < 0] = 0
+    w[lo >= n - 1] = 0.0
+    lo[lo >= n - 1] = n - 1
+    return _two_tap_rows(x, lo, w)
+
+
+def _column(v: np.ndarray, ndim: int) -> np.ndarray:
+    """Reshape a 1-D per-row weight vector so it broadcasts along axis 0."""
+    return v.reshape((-1,) + (1,) * (ndim - 1))
+
+
+def _work_dtype(x: np.ndarray, n: int) -> type:
+    # float32 keeps sums of uint8 data exact as long as the total stays below
+    # 2**24 (i.e. fewer than ~65k pixels along the axis); otherwise float64.
+    if x.dtype == np.uint8 and n * 255 < (1 << 24):
+        return np.float32
+    return np.float64
+
+
+def _two_tap_rows(x: np.ndarray, lo: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """out = x[lo] * (1 - w) + x[lo + 1] * w along axis 0 (lo + 1 clamped)."""
+    n = x.shape[0]
+    hi = np.minimum(lo + 1, n - 1)
+    dt = np.float64 if x.dtype == np.float64 else np.float32
+    w = _column(w.astype(dt), x.ndim)
+    return np.take(x, lo, axis=0) * (1 - w) + np.take(x, hi, axis=0) * w
+
+
+def _resample_2d(src: np.ndarray, new_h: int, new_w: int, fn) -> np.ndarray:
+    """Apply a row resampler to both axes: rows first on the contiguous
+    input, then on a contiguous transposed copy of the (already smaller)
+    intermediate so the column pass also reduces over a contiguous block."""
+    out = fn(src, new_h)
+    out = np.ascontiguousarray(np.swapaxes(out, 0, 1))
+    out = fn(out, new_w)
+    return np.ascontiguousarray(np.swapaxes(out, 0, 1))
+
+
+def _cast_like(out: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        out += 0.5
+        np.floor(out, out=out)
+        np.clip(out, info.min, info.max, out=out)
+        return out.astype(dtype)
+    return out.astype(dtype, copy=False)
 
 
 def _swap_rgb_bgr_3ch(img: np.ndarray) -> np.ndarray:
@@ -142,12 +280,13 @@ def _bgr_to_hsv_uint8(img: np.ndarray) -> np.ndarray:
     h[mask_g] = (60.0 * (2.0 + (b[mask_g] - r[mask_g]) / diff[mask_g]))
     h[mask_b] = (60.0 * (4.0 + (r[mask_b] - g[mask_b]) / diff[mask_b]))
     h = np.where(h < 0, h + 360.0, h)
-    # Map [0,360) -> [0,180) to match OpenCV uint8 convention.
-    h = h / 2.0
+    # Map [0,360) -> [0,180) to match OpenCV uint8 convention. Hues that
+    # round up to 180 wrap to 0 (they are the same colour), as in OpenCV.
+    h = np.floor(h / 2.0 + 0.5) % 180.0
 
     out = np.stack(
         [
-            np.clip(h + 0.5, 0, 179).astype(np.uint8),
+            h.astype(np.uint8),
             np.clip(s + 0.5, 0, 255).astype(np.uint8),
             np.clip(v + 0.5, 0, 255).astype(np.uint8),
         ],
@@ -253,39 +392,48 @@ def resize(
     fy: float = 0,
     interpolation: int = INTER_LINEAR,
 ) -> np.ndarray:
-    """Subset of OpenCV's ``cv2.resize`` implemented via Pillow."""
+    """Subset of OpenCV's ``cv2.resize`` (NumPy for AREA/LINEAR, Pillow otherwise)."""
     if src is None:
         raise ValueError("resize: src is None")
+    if src.ndim == 3 and src.shape[2] == 1:
+        src = src[..., 0]  # OpenCV returns a 2-D array for single-channel input
 
     if dsize is None or dsize == (0, 0):
         if fx <= 0 or fy <= 0:
             raise ValueError("resize: either dsize or fx/fy must be provided")
         dsize = (int(round(src.shape[1] * fx)), int(round(src.shape[0] * fy)))
 
-    pil_interp = _INTER_TO_PIL.get(interpolation, Image.Resampling.BILINEAR)
+    new_w, new_h = int(dsize[0]), int(dsize[1])
 
-    # Pillow cannot handle every dtype/shape cv2 does; fall back to a
-    # per-channel resize for the cases we care about (uint8 HxW, HxWx{1,3,4}).
+    if interpolation in (INTER_AREA, INTER_LINEAR):
+        # NumPy implementations that reproduce OpenCV's sampling (see helpers).
+        if (new_h, new_w) == src.shape[:2]:
+            return src.copy()
+        if interpolation == INTER_LINEAR:
+            fn = _linear_resample_rows
+        elif new_h <= src.shape[0] and new_w <= src.shape[1]:
+            fn = _area_resample_rows
+        else:
+            fn = _area_2tap_resample_rows
+        out = _resample_2d(src, new_h, new_w, fn)
+        return _cast_like(out, src.dtype)
+
+    pil_interp = _INTER_TO_PIL.get(interpolation, Image.Resampling.BICUBIC)
+    dsize = (new_w, new_h)
+
     if src.ndim == 2:
-        pil = Image.fromarray(src)
-        resized = pil.resize(dsize, resample=pil_interp)
-        return np.asarray(resized)
+        return _resize_single_channel(src, dsize, pil_interp)
 
-    if src.ndim == 3 and src.shape[2] in (1, 3, 4) and src.dtype == np.uint8:
-        if src.shape[2] == 1:
-            pil = Image.fromarray(src[..., 0])
-            resized = pil.resize(dsize, resample=pil_interp)
-            return np.asarray(resized)[..., None]
-        mode = "RGB" if src.shape[2] == 3 else "RGBA"
-        pil = Image.fromarray(src, mode=mode)
-        resized = pil.resize(dsize, resample=pil_interp)
-        return np.asarray(resized)
+    if src.ndim == 3 and src.shape[2] == 3 and src.dtype == np.uint8:
+        pil = Image.fromarray(src, mode="RGB")
+        return np.asarray(pil.resize(dsize, resample=pil_interp))
 
-    # Generic fallback: resize each channel independently.
-    channels = [
-        np.asarray(Image.fromarray(src[..., c]).resize(dsize, resample=pil_interp))
-        for c in range(src.shape[2])
-    ]
+    # Everything else (single channel with trailing dim, RGBA, non-uint8) is
+    # resized one channel at a time. In particular RGBA must NOT go through
+    # Pillow's "RGBA" mode: Pillow premultiplies by alpha while resampling,
+    # which alters the colour channels wherever alpha < 255, whereas OpenCV
+    # treats the four channels independently.
+    channels = [_resize_single_channel(src[..., c], dsize, pil_interp) for c in range(src.shape[2])]
     return np.stack(channels, axis=-1)
 
 

@@ -234,7 +234,8 @@ pip install --upgrade -r requirements-no-opencv.txt
 
 When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under `library/_cv2_stub` is automatically registered as `cv2`, so existing scripts continue to work. Note that:
 
-- The default install (`requirements.txt`) keeps OpenCV, which remains the recommended path — `cv2.INTER_AREA` in particular produces better results for downscaling than the Pillow fallback.
+- The default install (`requirements.txt`) keeps OpenCV, which remains the recommended path. The fallback reproduces OpenCV's `INTER_AREA` and `INTER_LINEAR` resizing (the modes the dataset pipeline uses by default) in NumPy, so training results match up to rounding, but it is slower than OpenCV (roughly 0.1 s per 24-megapixel image). `INTER_CUBIC` / `INTER_LANCZOS4` go through Pillow and differ slightly.
+- This is also the way to install on platforms where `opencv-python` has no prebuilt wheel, such as Windows on ARM64 (e.g. NVIDIA RTX Spark PCs).
 - The following tools still require real `opencv-python` and will exit with a clear message when it is missing: `tools/canny.py`, `tools/detect_face_rotate.py`, and the ControlNet `canny` preprocessor used by `gen_img.py` / `sdxl_gen_img.py`.
 - Debug-only features such as `cv2.imshow` during dataset inspection fall back to Pillow's default image viewer (`PIL.Image.show`), and `cv2.waitKey` blocks on `input()` in the terminal so you can page through images one at a time.
 
