@@ -450,11 +450,11 @@ def load_config(path: Path = DEFAULT_CONFIG) -> Dict[str, Any]:
     return toml.load(path)
 
 
-def model_specs(config: Dict[str, Any]) -> List[ModelSpec]:
+def model_specs(config: Dict[str, Any], include_disabled: bool = False) -> List[ModelSpec]:
     common = config.get("common", {})
     specs = []
     for entry in config.get("models", []):
-        if not entry.get("enabled", True):
+        if not entry.get("enabled", True) and not include_disabled:
             continue
         if entry["type"] not in RUNNERS:
             raise ValueError(f"unknown model type {entry['type']!r} for {entry['name']!r}; expected one of {sorted(RUNNERS)}")
@@ -472,14 +472,16 @@ def schedulers_spec(config: Dict[str, Any]) -> ModelSpec:
     return ModelSpec(name=SCHEDULERS_NAME, type=SCHEDULERS_NAME, cfg={}, device="cpu", dtype=torch.float32, atol=atol, rtol=rtol)
 
 
-def all_specs(config: Dict[str, Any], names: Optional[List[str]] = None) -> List[ModelSpec]:
-    specs = [schedulers_spec(config)] + model_specs(config)
+def all_specs(config: Dict[str, Any], names: Optional[List[str]] = None, include_disabled: bool = False) -> List[ModelSpec]:
+    """All runnable specs. Entries with ``enabled = false`` are skipped unless they are named explicitly in ``names``."""
     if names:
+        # an explicit name overrides `enabled = false`
+        specs = [schedulers_spec(config)] + model_specs(config, include_disabled=True)
         missing = set(names) - {s.name for s in specs}
         if missing:
             raise ValueError(f"unknown model name(s): {sorted(missing)}; available: {[s.name for s in specs]}")
-        specs = [s for s in specs if s.name in names]
-    return specs
+        return [s for s in specs if s.name in names]
+    return [schedulers_spec(config)] + model_specs(config, include_disabled=include_disabled)
 
 
 def run_spec(spec: ModelSpec) -> Dict[str, np.ndarray]:
@@ -634,8 +636,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     names = [n.strip() for n in args.models.split(",")] if args.models else None
 
     if args.mode == "list":
-        for spec in all_specs(config):
-            print(f"{spec.name:<20} type={spec.type:<14} device={spec.device:<6} dtype={str(spec.dtype).replace('torch.', ''):<9} atol={spec.atol:g} rtol={spec.rtol:g}")
+        for spec in all_specs(config, include_disabled=True):
+            enabled = spec.cfg.get("enabled", True)
+            print(
+                f"{spec.name:<20} type={spec.type:<14} device={spec.device:<6} dtype={str(spec.dtype).replace('torch.', ''):<9} "
+                f"atol={spec.atol:g} rtol={spec.rtol:g}{'' if enabled else '  (enabled = false; runs only when named with --models)'}"
+            )
         return 0
     if args.mode == "record":
         record(config, names)

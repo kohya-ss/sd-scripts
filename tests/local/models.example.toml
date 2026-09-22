@@ -9,7 +9,8 @@
 # Every [[models]] entry needs `name` (used for the reference file name) and
 # `type` (sd / sdxl / sd3 / flux / lumina / hunyuan_image / anima).
 # Optional keys for every entry:
-#   enabled = false            skip this entry without deleting it
+#   enabled = false            skip this entry in `record` / `compare` / pytest runs without deleting it
+#                              (it still runs when named explicitly with --models)
 #   device  = "cuda" | "cpu"   overrides [common].device
 #   dtype   = "float32" | "bfloat16" | "float16"
 #                              dtype of the text encoders. Default: float32 for
