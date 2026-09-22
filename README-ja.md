@@ -51,7 +51,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
-    - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #PRNUM](https://github.com/kohya-ss/sd-scripts/pull/PRNUM)
+    - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
         - `opencv-python` がオプションになり（未インストール時は Pillow/NumPy による代替実装を使用）、`requirements.txt` が Windows ARM64 用 wheel のあるパッケージを自動的に選択するようになりました。詳細は[OpenCVなしでのインストール／Windows on ARM64について](#opencvなしでのインストールwindows-on-arm64について)をご覧ください。
         - `requirements.txt` の `transformers`、`schedulefree`、`safetensors` を Windows ARM64 用 wheel が提供されているバージョンに更新しました。
     - SD1.x / SD2.x / SDXL の学習向けに、OFTv2 と BOFT のネットワークモジュール（`networks.oft_v2`、`networks.boft`）を追加しました。[PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)

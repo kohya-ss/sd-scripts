@@ -48,7 +48,7 @@ If you find this project helpful, please consider supporting its development via
 ### Change History
 
 - **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
-    - Added support for Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). [PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430), [PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431), [PR #PRNUM](https://github.com/kohya-ss/sd-scripts/pull/PRNUM)
+    - Added support for Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). [PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430), [PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431), [PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
         - `opencv-python` is now optional (a Pillow/NumPy fallback is used when it is missing), and `requirements.txt` selects the packages that have Windows ARM64 wheels automatically. For details, please refer to [Installing without OpenCV / Windows on ARM64](#installing-without-opencv--windows-on-arm64).
         - `transformers`, `schedulefree` and `safetensors` in `requirements.txt` have been updated to versions that provide Windows ARM64 wheels.
     - Added OFTv2 and BOFT network modules (`networks.oft_v2`, `networks.boft`) for SD1.x / SD2.x / SDXL training. [PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
