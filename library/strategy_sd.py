@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from library import accelerator_setup
 import library.device_utils as device_utils
 from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy

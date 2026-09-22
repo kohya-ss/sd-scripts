@@ -3,7 +3,8 @@ import glob
 from typing import Any, List, Optional, Tuple, Union
 import torch
 import numpy as np
-from transformers import CLIPTokenizer, T5TokenizerFast
+from transformers import T5TokenizerFast
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 
 from library import flux_utils
 import library.accelerator_setup as accelerator_setup

@@ -370,6 +370,13 @@ def run_hunyuan_image(spec: ModelSpec) -> Dict[str, np.ndarray]:
     tok = strategy_hunyuan_image.HunyuanImageTokenizeStrategy(cfg.get("tokenizer_cache_dir"))
     enc = strategy_hunyuan_image.HunyuanImageTextEncodingStrategy()
     out = encode_prompts(tok, enc, [qwen2vl, byt5])
+    # The VLM hidden states at padded positions are garbage that the model masks out downstream
+    # (encoder_attention_mask); they also depend on the transformers version. Zero them so that
+    # only the positions that matter are compared. out.0 = embeddings, out.1 = attention mask.
+    for prefix in [f"p{i}" for i in range(len(PROMPTS))] + ["batch"]:
+        emb, mask = out.get(f"{prefix}.out.0"), out.get(f"{prefix}.out.1")
+        if emb is not None and mask is not None:
+            out[f"{prefix}.out.0"] = emb * mask[..., None].astype(emb.dtype)
     _free(qwen2vl, byt5)
     return out
 

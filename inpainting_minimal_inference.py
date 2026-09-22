@@ -38,7 +38,7 @@ import torch
 from diffusers import EulerDiscreteScheduler
 from PIL import Image
 from tqdm import tqdm
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 
 from library.device_utils import get_preferred_device, init_ipex
 

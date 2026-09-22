@@ -10,7 +10,7 @@ init_ipex()
 
 from accelerate import init_empty_weights
 from tqdm import tqdm
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from library import model_util, sdxl_model_util, checkpoint_io, sampling, sdxl_original_unet
 import library.model_io as model_io
 from .utils import setup_logging

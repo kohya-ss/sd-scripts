@@ -45,7 +45,8 @@ from diffusers import (
 )
 from einops import rearrange
 from tqdm import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
+from transformers import CLIPTextModel, CLIPVisionModelWithProjection, CLIPImageProcessor
+from library.clip_tokenizer import CLIPTokenizer, as_legacy_clip_tokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from accelerate import init_empty_weights
 import PIL
 from PIL import Image
@@ -1665,7 +1666,7 @@ def main(args):
             text_encoder = loading_pipe.text_encoder
             vae = loading_pipe.vae
             unet = loading_pipe.unet
-            tokenizer = loading_pipe.tokenizer
+            tokenizer = as_legacy_clip_tokenizer(loading_pipe.tokenizer)
             del loading_pipe
 
             # Diffusers U-Net to original U-Net
