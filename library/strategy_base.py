@@ -50,17 +50,30 @@ class TokenizeStrategy:
         return cls._strategy
 
     def _load_tokenizer(
-        self, model_class: Any, model_id: str, subfolder: Optional[str] = None, tokenizer_cache_dir: Optional[str] = None
+        self,
+        model_class: Any,
+        model_id: str,
+        subfolder: Optional[str] = None,
+        tokenizer_cache_dir: Optional[str] = None,
+        cache_name: Optional[str] = None,
+        **from_pretrained_kwargs,
     ) -> Any:
+        """
+        Load a tokenizer from the Hub (or from `tokenizer_cache_dir` if it was saved there before).
+
+        `cache_name` overrides the directory name under `tokenizer_cache_dir` (default: `model_id` with "/" replaced).
+        `from_pretrained_kwargs` are passed to `model_class.from_pretrained` when loading from the Hub; they are
+        persisted by `save_pretrained`, so the cached tokenizer does not need them.
+        """
         tokenizer = None
         if tokenizer_cache_dir:
-            local_tokenizer_path = os.path.join(tokenizer_cache_dir, model_id.replace("/", "_"))
+            local_tokenizer_path = os.path.join(tokenizer_cache_dir, (cache_name or model_id).replace("/", "_"))
             if os.path.exists(local_tokenizer_path):
                 logger.info(f"load tokenizer from cache: {local_tokenizer_path}")
                 tokenizer = model_class.from_pretrained(local_tokenizer_path)  # same for v1 and v2
 
         if tokenizer is None:
-            tokenizer = model_class.from_pretrained(model_id, subfolder=subfolder)
+            tokenizer = model_class.from_pretrained(model_id, subfolder=subfolder, **from_pretrained_kwargs)
 
         if tokenizer_cache_dir and not os.path.exists(local_tokenizer_path):
             logger.info(f"save Tokenizer to cache: {local_tokenizer_path}")
