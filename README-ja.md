@@ -51,6 +51,9 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
+        - `opencv-python` がオプションになり（未インストール時は Pillow/NumPy による代替実装を使用）、`requirements.txt` が Windows ARM64 用 wheel のあるパッケージを自動的に選択するようになりました。詳細は[OpenCVなしでのインストール／Windows on ARM64について](#opencvなしでのインストールwindows-on-arm64について)をご覧ください。
+        - `requirements.txt` の `transformers`、`schedulefree`、`safetensors` を Windows ARM64 用 wheel が提供されているバージョンに更新しました。
     - SD1.x / SD2.x / SDXL の学習向けに、OFTv2 と BOFT のネットワークモジュール（`networks.oft_v2`、`networks.boft`）を追加しました。[PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
         - PEFT の実装に準拠した直交変換系のアダプタです。PEFT 形式の重みも読み込めます。umisetokikaze 氏に感謝します。
         - これらのモジュールでは `--network_dim` はブロックサイズを意味します。詳細は[ドキュメント](./docs/train_network_oft_boft.md)をご覧ください。
@@ -255,18 +258,19 @@ PyTorchは環境によってバージョンが異なるため、requirements.txt
 
 RTX 50シリーズGPUの場合、PyTorch 2.8.0とCUDA 12.8/12.9を使用してください。`requirements.txt`はこのバージョンでも動作します。
 
-### OpenCVなしでのインストール（オプション）
+### OpenCVなしでのインストール／Windows on ARM64について
 
-`opencv-python` はデフォルトで `requirements.txt` に含まれていますが、学習・データセット処理パイプラインが利用している OpenCV 機能は限定的です（主に `cv2.resize`、`cv2.cvtColor`、およびデバッグ用の `cv2.imshow`）。OpenCV の大きなインストールを避けたい場合は、代わりに `requirements-no-opencv.txt` を使用してください：
+`opencv-python` は `requirements.txt` に含まれていますが、学習・データセット処理パイプラインが利用している OpenCV 機能は限定的です（主に `cv2.resize`、`cv2.cvtColor`、およびデバッグ用の `cv2.imshow`）。`opencv-python` がインストールされていない場合、Pillow と NumPy による軽量な代替実装（`library/_cv2_stub`）が自動的に `cv2` として登録されるため、既存のスクリプトはそのまま動作します。OpenCV の大きなインストールを避けたい場合は、requirements のインストール後にアンインストールしてください：
 
 ```bash
-pip install --upgrade -r requirements-no-opencv.txt
+pip uninstall opencv-python
 ```
 
-`opencv-python` がインストールされていない場合、Pillow と NumPy による軽量な代替実装（`library/_cv2_stub`）が自動的に `cv2` として登録されるため、既存のスクリプトはそのまま動作します。ただし以下に注意してください：
+Windows on ARM64（たとえば NVIDIA RTX Spark PC など）では `opencv-python` のビルド済み wheel が提供されていないため、`requirements.txt` の環境マーカーにより自動的にスキップされます。通常どおり `pip install --upgrade -r requirements.txt` でインストールできます。同じ理由で、このプラットフォームでは `tensorboard` の代わりに `tensorboardX` がインストールされます（TensorBoard 2.x が依存する `grpcio` に Windows ARM64 用 wheel がないため）。`--log_with tensorboard` でのログ出力は `tensorboardX` 経由でそのまま動作します。ログの閲覧は別のマシンの TensorBoard で行ってください。
 
-- デフォルトの `requirements.txt` では OpenCV がそのまま使われ、こちらが推奨される経路です。代替実装は、データセット処理がデフォルトで使う `INTER_AREA` と `INTER_LINEAR` のリサイズを NumPy で OpenCV と同じ計算で再現しているため、学習結果は丸め誤差の範囲で一致しますが、OpenCV より低速です（2400 万画素の画像 1 枚あたり 0.1 秒程度）。`INTER_CUBIC` / `INTER_LANCZOS4` は Pillow を経由するため、わずかに結果が異なります。
-- `opencv-python` のビルド済み wheel が提供されていないプラットフォーム（Windows on ARM64、たとえば NVIDIA RTX Spark PC など）では、この方法でインストールしてください。同じ理由で `requirements-no-opencv.txt` では `tensorboard` の代わりに `tensorboardX` を指定しています（TensorBoard 2.x が依存する `grpcio` に Windows ARM64 用 wheel がないため）。`--log_with tensorboard` でのログ出力は `tensorboardX` 経由でそのまま動作します。ログの閲覧は別のマシンの TensorBoard で行ってください。
+以下に注意してください：
+
+- OpenCV を含むデフォルトのインストールが推奨される経路です。代替実装は、データセット処理がデフォルトで使う `INTER_AREA` と `INTER_LINEAR` のリサイズを NumPy で OpenCV と同じ計算で再現しているため、学習結果は丸め誤差の範囲で一致しますが、OpenCV より低速です（2400 万画素の画像 1 枚あたり 0.1 秒程度）。`INTER_CUBIC` / `INTER_LANCZOS4` は Pillow を経由するため、わずかに結果が異なります。
 - 次のツールは実際の `opencv-python` を必要とし、未インストール時は明確なメッセージで終了します：`tools/canny.py`、`tools/detect_face_rotate.py`、および `gen_img.py` / `sdxl_gen_img.py` の ControlNet `canny` プリプロセッサ。
 - データセット確認時の `cv2.imshow` は、OpenCV が無い場合 Pillow 標準のビューア（`PIL.Image.show`）で表示され、`cv2.waitKey` はターミナルでの `input()` 待ちに置き換わります（1枚ずつ確認できます）。
 
