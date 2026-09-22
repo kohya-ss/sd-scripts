@@ -69,6 +69,8 @@ PROMPTS: List[str] = [
     "1girl, solo, long hair, looking at viewer, smile, blue eyes, white shirt, outdoors, cherry blossoms, masterpiece, best quality",
     # Japanese + emoji: exercises byte-level / unicode handling of the tokenizers
     "桜の木の下で本を読む少女、夕暮れ、水彩画風🌸📖",
+    # quoted text: HunyuanImage extracts it for the byT5 glyph encoder (ASCII and CJK quotes)
+    'A neon sign on a brick wall that says "OPEN 24 HOURS", with a small paper poster below reading “本日開店”',
     # ~100 CLIP tokens: crosses the 77-token boundary (SD / SDXL chunking)
     (
         "A highly detailed oil painting of an ancient library carved into the side of a mountain, "
@@ -362,7 +364,7 @@ def run_hunyuan_image(spec: ModelSpec) -> Dict[str, np.ndarray]:
 
     cfg = spec.cfg
     _vlm_tokenizer, qwen2vl = hunyuan_image_text_encoder.load_qwen2_5_vl(cfg["qwen2_5_vl"], spec.dtype, spec.device)
-    byt5, _byt5_tokenizer = hunyuan_image_text_encoder.load_byt5(cfg["byt5"], spec.dtype, spec.device)
+    _byt5_tokenizer, byt5 = hunyuan_image_text_encoder.load_byt5(cfg["byt5"], spec.dtype, spec.device)  # (tokenizer, model)
     qwen2vl.to(spec.device).eval()
     byt5.to(spec.device).eval()
     tok = strategy_hunyuan_image.HunyuanImageTokenizeStrategy(cfg.get("tokenizer_cache_dir"))
