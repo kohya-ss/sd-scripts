@@ -48,6 +48,9 @@ If you find this project helpful, please consider supporting its development via
 ### Change History
 
 - **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added support for Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). [PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430), [PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431), [PR #PRNUM](https://github.com/kohya-ss/sd-scripts/pull/PRNUM)
+        - `opencv-python` is now optional (a Pillow/NumPy fallback is used when it is missing), and `requirements.txt` selects the packages that have Windows ARM64 wheels automatically. For details, please refer to [Installing without OpenCV / Windows on ARM64](#installing-without-opencv--windows-on-arm64).
+        - `transformers`, `schedulefree` and `safetensors` in `requirements.txt` have been updated to versions that provide Windows ARM64 wheels.
     - Added OFTv2 and BOFT network modules (`networks.oft_v2`, `networks.boft`) for SD1.x / SD2.x / SDXL training. [PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
         - Orthogonal fine-tuning adapters following the PEFT implementation. Weights in PEFT format can also be loaded. Thanks to umisetokikaze.
         - Note that `--network_dim` means the block size for these modules. For details, please refer to the [documentation](./docs/train_network_oft_boft.md).
@@ -224,18 +227,19 @@ The scripts are tested with PyTorch 2.6.0. PyTorch 2.6.0 or later is required.
 
 For RTX 50 series GPUs, PyTorch 2.8.0 with CUDA 12.8/12.9 should be used. `requirements.txt` will work with this version.
 
-### Installing without OpenCV (optional)
+### Installing without OpenCV / Windows on ARM64
 
-`opencv-python` is listed in `requirements.txt` as a default dependency, but the core training / dataset pipeline only uses a small subset of OpenCV (mainly `cv2.resize`, `cv2.cvtColor`, and a debug-only `cv2.imshow`). If you would rather avoid the large OpenCV install, use `requirements-no-opencv.txt` instead:
+`opencv-python` is listed in `requirements.txt`, but the core training / dataset pipeline only uses a small subset of OpenCV (mainly `cv2.resize`, `cv2.cvtColor`, and a debug-only `cv2.imshow`). When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under `library/_cv2_stub` is automatically registered as `cv2`, so existing scripts continue to work. If you would rather avoid the large OpenCV install, simply uninstall it after installing the requirements:
 
 ```bash
-pip install --upgrade -r requirements-no-opencv.txt
+pip uninstall opencv-python
 ```
 
-When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under `library/_cv2_stub` is automatically registered as `cv2`, so existing scripts continue to work. Note that:
+On Windows on ARM64 (e.g. NVIDIA RTX Spark PCs), `opencv-python` has no prebuilt wheel, so `requirements.txt` skips it automatically through an environment marker and the usual `pip install --upgrade -r requirements.txt` works as is. For the same reason `tensorboardX` is installed instead of `tensorboard` on that platform (TensorBoard 2.x depends on `grpcio`, which has no Windows ARM64 wheel). Logging with `--log_with tensorboard` works unchanged through `tensorboardX`; view the logs with TensorBoard on another machine.
 
-- The default install (`requirements.txt`) keeps OpenCV, which remains the recommended path. The fallback reproduces OpenCV's `INTER_AREA` and `INTER_LINEAR` resizing (the modes the dataset pipeline uses by default) in NumPy, so training results match up to rounding, but it is slower than OpenCV (roughly 0.1 s per 24-megapixel image). `INTER_CUBIC` / `INTER_LANCZOS4` go through Pillow and differ slightly.
-- This is also the way to install on platforms where `opencv-python` has no prebuilt wheel, such as Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). For the same reason `requirements-no-opencv.txt` lists `tensorboardX` instead of `tensorboard` (TensorBoard 2.x depends on `grpcio`, which has no Windows ARM64 wheel). Logging with `--log_with tensorboard` works unchanged through `tensorboardX`; view the logs with TensorBoard on another machine.
+Note that:
+
+- The default install with OpenCV remains the recommended path. The fallback reproduces OpenCV's `INTER_AREA` and `INTER_LINEAR` resizing (the modes the dataset pipeline uses by default) in NumPy, so training results match up to rounding, but it is slower than OpenCV (roughly 0.1 s per 24-megapixel image). `INTER_CUBIC` / `INTER_LANCZOS4` go through Pillow and differ slightly.
 - The following tools still require real `opencv-python` and will exit with a clear message when it is missing: `tools/canny.py`, `tools/detect_face_rotate.py`, and the ControlNet `canny` preprocessor used by `gen_img.py` / `sdxl_gen_img.py`.
 - Debug-only features such as `cv2.imshow` during dataset inspection fall back to Pillow's default image viewer (`PIL.Image.show`), and `cv2.waitKey` blocks on `input()` in the terminal so you can page through images one at a time.
 
