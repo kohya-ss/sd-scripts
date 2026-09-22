@@ -1,6 +1,5 @@
 import glob
 import os
-import cv2
 import argparse
 import shutil
 import math

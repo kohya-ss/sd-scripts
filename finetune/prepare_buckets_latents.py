@@ -8,7 +8,6 @@ from typing import List
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
-import cv2
 
 import torch
 from library.device_utils import init_ipex, get_preferred_device

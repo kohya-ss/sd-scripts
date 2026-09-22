@@ -9,6 +9,10 @@
 
 import argparse
 import math
+
+from library import cv2_compat
+
+cv2_compat.require_opencv("tools/detect_face_rotate.py")
 import cv2
 import glob
 import os
