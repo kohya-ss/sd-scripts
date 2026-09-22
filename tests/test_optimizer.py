@@ -9,8 +9,14 @@ import bitsandbytes as bnb
 from lion_pytorch import lion_pytorch
 import schedulefree
 
-import dadaptation
-import dadaptation.experimental as dadapt_experimental
+# dadaptation is not in requirements.txt (CI installs it separately); skip its
+# cases when it is not available instead of failing the whole module.
+try:
+    import dadaptation
+    import dadaptation.experimental as dadapt_experimental
+except ImportError:
+    dadaptation = None
+    dadapt_experimental = None
 
 import prodigyopt
 import schedulefree as sf
@@ -87,36 +93,6 @@ def test_all_supported_optimizers():
         },
         {"name": "torch.optim.sgd.SGD", "alias": "SGD", "instance": torch.optim.SGD},
         {
-            "name": "dadaptation.experimental.dadapt_adam_preprint.DAdaptAdamPreprint",
-            "alias": "DAdaptAdamPreprint",
-            "instance": dadapt_experimental.DAdaptAdamPreprint,
-        },
-        {
-            "name": "dadaptation.dadapt_adagrad.DAdaptAdaGrad",
-            "alias": "DAdaptAdaGrad",
-            "instance": dadaptation.DAdaptAdaGrad,
-        },
-        {
-            "name": "dadaptation.dadapt_adan.DAdaptAdan",
-            "alias": "DAdaptAdan",
-            "instance": dadaptation.DAdaptAdan,
-        },
-        {
-            "name": "dadaptation.experimental.dadapt_adan_ip.DAdaptAdanIP",
-            "alias": "DAdaptAdanIP",
-            "instance": dadapt_experimental.DAdaptAdanIP,
-        },
-        {
-            "name": "dadaptation.dadapt_lion.DAdaptLion",
-            "alias": "DAdaptLion",
-            "instance": dadaptation.DAdaptLion,
-        },
-        {
-            "name": "dadaptation.dadapt_sgd.DAdaptSGD",
-            "alias": "DAdaptSGD",
-            "instance": dadaptation.DAdaptSGD,
-        },
-        {
             "name": "prodigyopt.prodigy.Prodigy",
             "alias": "Prodigy",
             "instance": prodigyopt.Prodigy,
@@ -137,6 +113,39 @@ def test_all_supported_optimizers():
             "instance": sf.SGDScheduleFree,
         },
     ]
+    if dadaptation is not None:
+        optimizers += [
+            {
+                "name": "dadaptation.experimental.dadapt_adam_preprint.DAdaptAdamPreprint",
+                "alias": "DAdaptAdamPreprint",
+                "instance": dadapt_experimental.DAdaptAdamPreprint,
+            },
+            {
+                "name": "dadaptation.dadapt_adagrad.DAdaptAdaGrad",
+                "alias": "DAdaptAdaGrad",
+                "instance": dadaptation.DAdaptAdaGrad,
+            },
+            {
+                "name": "dadaptation.dadapt_adan.DAdaptAdan",
+                "alias": "DAdaptAdan",
+                "instance": dadaptation.DAdaptAdan,
+            },
+            {
+                "name": "dadaptation.experimental.dadapt_adan_ip.DAdaptAdanIP",
+                "alias": "DAdaptAdanIP",
+                "instance": dadapt_experimental.DAdaptAdanIP,
+            },
+            {
+                "name": "dadaptation.dadapt_lion.DAdaptLion",
+                "alias": "DAdaptLion",
+                "instance": dadaptation.DAdaptLion,
+            },
+            {
+                "name": "dadaptation.dadapt_sgd.DAdaptSGD",
+                "alias": "DAdaptSGD",
+                "instance": dadaptation.DAdaptSGD,
+            },
+        ]
 
     for opt in optimizers:
         with patch("sys.argv", ["", "--optimizer_type", opt.get("alias")]):
