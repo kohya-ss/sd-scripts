@@ -306,7 +306,7 @@ USE_CUTOUTS = False
 """
 
 
-def replace_unet_modules(unet: diffusers.models.unet_2d_condition.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
+def replace_unet_modules(unet: diffusers.models.UNet2DConditionModel, mem_eff_attn, xformers, sdpa):
     if mem_eff_attn:
         logger.info("Enable memory efficient attention for U-Net")
 
@@ -2754,8 +2754,8 @@ def main(args):
     # Extended Textual Inversion および Textual Inversionを処理する
     if args.XTI_embeddings:
         diffusers.models.UNet2DConditionModel.forward = unet_forward_XTI
-        diffusers.models.unet_2d_blocks.CrossAttnDownBlock2D.forward = downblock_forward_XTI
-        diffusers.models.unet_2d_blocks.CrossAttnUpBlock2D.forward = upblock_forward_XTI
+        diffusers.models.unets.unet_2d_blocks.CrossAttnDownBlock2D.forward = downblock_forward_XTI
+        diffusers.models.unets.unet_2d_blocks.CrossAttnUpBlock2D.forward = upblock_forward_XTI
 
     if args.textual_inversion_embeddings:
         token_ids_embeds = []

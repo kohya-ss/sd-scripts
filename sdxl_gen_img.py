@@ -47,7 +47,8 @@ from diffusers import (
 from einops import rearrange
 from tqdm import tqdm
 from torchvision import transforms
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
+from transformers import CLIPTextModel, CLIPVisionModelWithProjection, CLIPImageProcessor
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 import PIL
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo

@@ -4,7 +4,7 @@ from tqdm import tqdm
 from library import model_util
 import library.model_io as model_io
 import argparse
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 
 import torch
 from library.device_utils import init_ipex, get_preferred_device
