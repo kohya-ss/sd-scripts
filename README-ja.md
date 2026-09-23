@@ -53,6 +53,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
     - `requirements.txt` の依存関係を更新しました: `transformers` 4.57.6 → 5.5.4、`diffusers` 0.32.1 → 0.40.0、`accelerate` 1.6.0 → 1.15.0、`huggingface-hub` 0.34.3 → 1.32.0。[PR #2436](https://github.com/kohya-ss/sd-scripts/pull/2436)
         - 主にセキュリティ上の保守のための更新です（`transformers` 4.x 系と `diffusers` 0.38 未満には修正が提供されなくなっています）。更新後は `pip install --upgrade -r requirements.txt` を実行してください。
+        - `diffusers` 0.40 は PyTorch 2.6 以降を必要とします（sd-scripts はすでに PyTorch 2.6.0 以降を必要としています）。CI は PyTorch 2.6.0 と 2.8.0 でテストするようになりました。
         - `transformers` 5.6 以降はまだサポートしていません。5.6 で `CLIPTextModel` の内部構造が変わり、Text Encoder のチェックポイントおよび LoRA の重み名が変わってしまうためです。当面は 5.5.x をお使いください。
         - `transformers` 5.x の `CLIPTokenizer` は、オリジナルの CLIP トークナイザが行っていた `ftfy` によるテキスト正規化（曲がった引用符の直線化、全角文字の半角化など）を行わなくなりました。sd-scripts 側で同じ正規化を行うようにしたため、トークナイズ結果は従来と変わりません。
         - `tests/local` のローカル回帰テストにより、Text Encoder の出力、VAE の出力、ノイズスケジューラが従来のバージョンと同一であることを確認しています。
