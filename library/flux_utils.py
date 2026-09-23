@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from library import flux_models
 from library.safetensors_utils import load_safetensors
+from library.clip_text_model import wrap_clip_text_model
 
 MODEL_VERSION_FLUX_V1 = "flux1"
 MODEL_NAME_DEV = "dev"
@@ -342,7 +343,7 @@ def load_clip_l(
     }
     config = CLIPConfig(**CLIPL_CONFIG)
     with init_empty_weights():
-        clip = CLIPTextModel._from_config(config)
+        clip = wrap_clip_text_model(CLIPTextModel._from_config(config))
 
     if state_dict is not None:
         sd = state_dict
@@ -396,8 +397,11 @@ def load_t5xxl(
 """
     config = json.loads(T5_CONFIG_JSON)
     config = T5Config(**config)
+    # transformers >= 5.6 selects sdpa for T5 by default, which changes the bf16/fp16 outputs slightly
+    # (and therefore the cached text encoder outputs). Keep the eager implementation, which is what
+    # older versions used (they had no sdpa for T5), so the outputs stay identical across versions.
     with init_empty_weights():
-        t5xxl = T5EncoderModel._from_config(config)
+        t5xxl = T5EncoderModel._from_config(config, attn_implementation="eager")
 
     if state_dict is not None:
         sd = state_dict

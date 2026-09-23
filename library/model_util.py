@@ -11,6 +11,7 @@ init_ipex()
 
 import diffusers
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPTextConfig, logging
+from library.clip_text_model import wrap_clip_text_model, unwrap_clip_text_model
 from diffusers import AutoencoderKL, DDIMScheduler, StableDiffusionPipeline  # , UNet2DConditionModel
 from safetensors.torch import load_file, save_file
 from library.original_unet import UNet2DConditionModel
@@ -1049,7 +1050,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
             torch_dtype="float32",
             transformers_version="4.25.0.dev0",
         )
-        text_model = CLIPTextModel._from_config(cfg)
+        text_model = wrap_clip_text_model(CLIPTextModel._from_config(cfg))
         info = text_model.load_state_dict(converted_text_encoder_checkpoint)
     else:
         converted_text_encoder_checkpoint = convert_ldm_clip_checkpoint_v1(state_dict)
@@ -1078,7 +1079,7 @@ def load_models_from_stable_diffusion_checkpoint(v2, ckpt_path, device="cpu", dt
             projection_dim=768,
             torch_dtype="float32",
         )
-        text_model = CLIPTextModel._from_config(cfg)
+        text_model = wrap_clip_text_model(CLIPTextModel._from_config(cfg))
         info = text_model.load_state_dict(converted_text_encoder_checkpoint)
     logger.info(f"loading text encoder: {info}")
 
@@ -1259,7 +1260,7 @@ def save_diffusers_checkpoint(v2, output_dir, text_encoder, unet, pretrained_mod
 
     pipeline = StableDiffusionPipeline(
         unet=diffusers_unet,
-        text_encoder=text_encoder,
+        text_encoder=unwrap_clip_text_model(text_encoder),
         vae=vae,
         scheduler=scheduler,
         tokenizer=tokenizer,

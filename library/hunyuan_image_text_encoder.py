@@ -212,7 +212,8 @@ def load_byt5(
     config = json.loads(BYT5_CONFIG_JSON)
     config = T5Config(**config)
     with init_empty_weights():
-        byt5_text_encoder = T5ForConditionalGeneration._from_config(config).get_encoder()
+        # attn_implementation="eager": keep the pre-5.6 (non-sdpa) T5 attention so outputs stay identical, see flux_utils.load_t5xxl
+        byt5_text_encoder = T5ForConditionalGeneration._from_config(config, attn_implementation="eager").get_encoder()
 
     add_special_token(byt5_tokenizer, byt5_text_encoder)
 
