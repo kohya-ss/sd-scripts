@@ -13,6 +13,7 @@ from tqdm import tqdm
 from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from library import model_util, sdxl_model_util, checkpoint_io, sampling, sdxl_original_unet
 import library.model_io as model_io
+from library.clip_text_model import wrap_clip_text_model
 from .utils import setup_logging
 
 setup_logging()
@@ -112,7 +113,7 @@ def _load_target_model(
             )
             raise ex
 
-        text_encoder1 = pipe.text_encoder
+        text_encoder1 = wrap_clip_text_model(pipe.text_encoder)
         text_encoder2 = pipe.text_encoder_2
 
         # convert to fp32 for cache text_encoders outputs

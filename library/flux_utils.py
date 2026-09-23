@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from library import flux_models
 from library.safetensors_utils import load_safetensors
+from library.clip_text_model import wrap_clip_text_model
 
 MODEL_VERSION_FLUX_V1 = "flux1"
 MODEL_NAME_DEV = "dev"
@@ -342,7 +343,7 @@ def load_clip_l(
     }
     config = CLIPConfig(**CLIPL_CONFIG)
     with init_empty_weights():
-        clip = CLIPTextModel._from_config(config)
+        clip = wrap_clip_text_model(CLIPTextModel._from_config(config))
 
     if state_dict is not None:
         sd = state_dict
