@@ -13,7 +13,7 @@ def test_clean_clip_text_matches_legacy_normalization():
     assert clean_clip_text("“quoted”") == '"quoted"'
     assert clean_clip_text("ＡＢＣ　１２３") == "ABC 123"
     assert clean_clip_text("a &amp; b") == "a & b"
-    assert clean_clip_text("caf\u00c3\u00a9") == "caf\u00e9"
+    assert clean_clip_text("rÃ©sumÃ©") == "résumé"  # mojibake of "résumé"
     assert clean_clip_text("  many   spaces\n\tand lines  ") == "many spaces and lines"
     # plain text is unchanged
     assert clean_clip_text("a photo of a cat, masterpiece") == "a photo of a cat, masterpiece"
