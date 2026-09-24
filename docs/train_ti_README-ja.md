@@ -101,5 +101,5 @@ tokenizerがすでに持っている単語（一般的な単語）は使用で�
 
 ## 当リポジトリ内の画像生成スクリプトで生成する
 
-gen_img_diffusers.pyに、``--textual_inversion_embeddings`` オプションで学習したembeddingsファイルを指定してください（複数可）。プロンプトでembeddingsファイルのファイル名（拡張子を除く）を使うと、そのembeddingsが適用されます。
+gen_img.pyに、``--textual_inversion_embeddings`` オプションで学習したembeddingsファイルを指定してください（複数可）。プロンプトでembeddingsファイルのファイル名（拡張子を除く）を使うと、そのembeddingsが適用されます。
 
