@@ -66,6 +66,7 @@ from library.original_unet import FlashAttentionFunction
 from library.custom_train_functions import pyramid_noise_like
 from networks.control_net_lllite import ControlNetLLLite
 from library.utils import GradualLatent, EulerAncestralDiscreteSchedulerGL
+from library.sampling import check_sampler_requirements
 from library.utils import setup_logging, add_logging_arguments
 
 setup_logging()
@@ -1611,6 +1612,8 @@ class ListPrompter:
 
 
 def main(args):
+    check_sampler_requirements(args.sampler)  # fail before loading the models if the sampler needs a missing package
+
     if args.fp16:
         dtype = torch.float16
     elif args.bf16:
@@ -1735,6 +1738,9 @@ def main(args):
     elif args.sampler == "dpmsolver" or args.sampler == "dpmsolver++":
         scheduler_cls = DPMSolverMultistepScheduler
         sched_init_args["algorithm_type"] = args.sampler
+        if args.sampler == "dpmsolver":
+            # diffusers rejects the default final_sigmas_type="zero" for the (non-++) dpmsolver algorithm
+            sched_init_args["final_sigmas_type"] = "sigma_min"
         scheduler_module = diffusers.schedulers.scheduling_dpmsolver_multistep
         has_clip_sample = False
     elif args.sampler == "dpmsingle":
