@@ -47,7 +47,7 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
-- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+- **Version 0.12.0 (2026-09-24):**
     - Updated the dependencies in `requirements.txt`: `transformers` 4.57.6 -> 5.5.4, `diffusers` 0.32.1 -> 0.40.0, `accelerate` 1.6.0 -> 1.15.0, `huggingface-hub` 0.34.3 -> 1.32.0. [PR #2436](https://github.com/kohya-ss/sd-scripts/pull/2436)
         - This is mainly a security maintenance update (the 4.x line of `transformers` and `diffusers` < 0.38 no longer receive fixes). Please run `pip install --upgrade -r requirements.txt` after updating.
         - `diffusers` 0.40 requires PyTorch 2.6 or later (PyTorch 2.6.0 or later has been the requirement of sd-scripts already). CI now tests with PyTorch 2.6.0 and 2.8.0.
