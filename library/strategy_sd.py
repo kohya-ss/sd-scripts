@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from library import accelerator_setup
 import library.device_utils as device_utils
 from library.strategy_base import LatentsCachingStrategy, TokenizeStrategy, TextEncodingStrategy
@@ -17,7 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 TOKENIZER_ID = "openai/clip-vit-large-patch14"
-V2_STABLE_DIFFUSION_ID = "stabilityai/stable-diffusion-2"  # ここからtokenizerだけ使う v2とv2.1はtokenizer仕様は同じ
+
+# The SD2.x tokenizer (previously loaded from stabilityai/stable-diffusion-2, which is no longer accessible on the Hub)
+# is the v1 (OpenAI CLIP) tokenizer with "!" (id 0) as the pad token instead of <|endoftext|>: same vocabulary,
+# same merges, same token ids. So it is built from the v1 tokenizer. v2 and v2.1 use the same tokenizer.
+V2_TOKENIZER_PAD_TOKEN = "!"
+# directory name under --tokenizer_cache_dir, kept so that existing caches of the v2 tokenizer are still used
+V2_TOKENIZER_CACHE_NAME = "stabilityai_stable-diffusion-2"
 
 
 class SdTokenizeStrategy(TokenizeStrategy):
@@ -28,7 +34,11 @@ class SdTokenizeStrategy(TokenizeStrategy):
         logger.info(f"Using {'v2' if v2 else 'v1'} tokenizer")
         if v2:
             self.tokenizer = self._load_tokenizer(
-                CLIPTokenizer, V2_STABLE_DIFFUSION_ID, subfolder="tokenizer", tokenizer_cache_dir=tokenizer_cache_dir
+                CLIPTokenizer,
+                TOKENIZER_ID,
+                tokenizer_cache_dir=tokenizer_cache_dir,
+                cache_name=V2_TOKENIZER_CACHE_NAME,
+                pad_token=V2_TOKENIZER_PAD_TOKEN,
             )
         else:
             self.tokenizer = self._load_tokenizer(CLIPTokenizer, TOKENIZER_ID, tokenizer_cache_dir=tokenizer_cache_dir)

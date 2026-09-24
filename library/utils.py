@@ -9,6 +9,7 @@ from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 from PIL import Image
 import numpy as np
@@ -85,6 +86,23 @@ def setup_logging(args=None, log_level=None, reset=False):
     if msg_init is not None:
         logger = logging.getLogger(__name__)
         logger.info(msg_init)
+
+
+class SpuriousDiffusersFp32WarningFilter(logging.Filter):
+    """Drops a spurious warning of diffusers >= 0.40.
+
+    `ModelMixin.to()` warns "There are modules in <Model> that should be kept in float32: [] ..." on every
+    `.to(dtype)` call, even when the model has no module to keep in float32 (the check is
+    `fp32_modules = self._keep_in_fp32_modules or []` followed by `if ... and fp32_modules is not None`,
+    which is always true). sd-scripts casts the VAE / U-Net with `.to(dtype)` on purpose, so the warning
+    is noise. It is only dropped when the list is empty; a real "keep in float32" warning still shows.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "should be kept in float32: []" not in record.getMessage()
+
+
+logging.getLogger("diffusers.models.modeling_utils").addFilter(SpuriousDiffusersFp32WarningFilter())
 
 
 setup_logging()

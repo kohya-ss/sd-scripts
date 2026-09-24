@@ -1,5 +1,6 @@
 from typing import List, NamedTuple, Any
 import numpy as np
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 import torch
 from safetensors.torch import load_file
@@ -110,6 +111,7 @@ def load_preprocess(prep_type: str):
         return None
 
     if prep_type.startswith("canny"):
+        cv2_compat.require_opencv("ControlNet canny preprocessor")
         args = prep_type.split("_")
         th1 = int(args[1]) if len(args) >= 2 else 63
         th2 = int(args[2]) if len(args) >= 3 else 191

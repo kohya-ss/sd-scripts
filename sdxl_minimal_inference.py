@@ -15,7 +15,7 @@ from library.device_utils import init_ipex, get_preferred_device
 init_ipex()
 
 from tqdm import tqdm
-from transformers import CLIPTokenizer
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from diffusers import EulerDiscreteScheduler
 from PIL import Image
 

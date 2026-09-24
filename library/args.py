@@ -839,6 +839,12 @@ def verify_training_args(args: argparse.Namespace):
             "cache_latents_to_disk is enabled, so cache_latents is also enabled / cache_latents_to_diskが有効なため、cache_latentsを有効にします"
         )
 
+    if getattr(args, "sample_prompts", None) and getattr(args, "sample_sampler", None):
+        # e.g. lms needs scipy: fail here rather than at the first sample generation after loading the models
+        from library.sampling import check_sampler_requirements
+
+        check_sampler_requirements(args.sample_sampler)
+
     if getattr(args, "train_inpainting", False) and getattr(args, "cache_latents", False):
         raise ValueError(
             "train_inpainting and cache_latents cannot be used together. "

@@ -4,6 +4,7 @@
 import argparse
 import glob
 import os
+from library import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 from diffusers import AutoencoderKL
 

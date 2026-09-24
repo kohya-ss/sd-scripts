@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10"] # Python versions to test
-        pytorch-version: ["2.4.0", "2.6.0"] # PyTorch versions to test
+        pytorch-version: ["2.6.0", "2.8.0"] # PyTorch versions to test (diffusers >= 0.40 requires torch >= 2.6)
 
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +45,12 @@ jobs:
           # Pre-install torch to pin version (requirements.txt has dependencies like transformers which requires pytorch)
           pip install dadaptation==3.2 torch==${{ matrix.pytorch-version }} torchvision pytest==8.3.4
           pip install -r requirements.txt
+
+      - name: Check that the pinned PyTorch version is still installed
+        run: |
+          # If a requirement needs a newer torch, pip silently upgrades torch and leaves torchvision behind,
+          # which breaks every import ("operator torchvision::nms does not exist"). Fail loudly instead.
+          python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__); assert torch.__version__.startswith('${{ matrix.pytorch-version }}'), 'torch was upgraded by requirements.txt'"
 
       - name: Test with pytest
         run: pytest # See pytest.ini for configuration

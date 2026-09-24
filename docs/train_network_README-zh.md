@@ -317,7 +317,7 @@ python networks\svd_merge_lora.py
 
 ## 在此存储库中生成图像的脚本中
 
-请在`gen_img_diffusers.py`中添加`--network_module`和`--network_weights`选项。其含义与训练时相同。
+请在`gen_img.py`中添加`--network_module`和`--network_weights`选项。其含义与训练时相同。详情请参考[图像生成脚本的文档](gen_img_README.md)。
 
 通过`--network_mul`选项，可以指定0~1.0的数字来改变LoRA的应用率。
 

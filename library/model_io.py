@@ -28,6 +28,7 @@ import safetensors.torch
 
 import library.sai_model_spec as sai_model_spec
 from library.device_utils import clean_memory_on_device
+from library.clip_text_model import wrap_clip_text_model
 from library.utils import setup_logging
 
 if TYPE_CHECKING:
@@ -372,7 +373,7 @@ def _load_target_model(args: argparse.Namespace, weight_dtype, device="cpu", une
                 f"model is not found as a file or in Hugging Face, perhaps file name is wrong? / 指定したモデル名のファイル、またはHugging Faceのモデルが見つかりません。ファイル名が誤っているかもしれません: {name_or_path}"
             )
             raise ex
-        text_encoder = pipe.text_encoder
+        text_encoder = wrap_clip_text_model(pipe.text_encoder)
         vae = pipe.vae
         unet = pipe.unet
         del pipe

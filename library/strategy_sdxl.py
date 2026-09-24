@@ -3,7 +3,8 @@ from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
+from transformers import CLIPTextModel, CLIPTextModelWithProjection
+from library.clip_tokenizer import CLIPTokenizer  # transformers.CLIPTokenizer with the legacy (ftfy) text normalization
 from library.strategy_base import TokenizeStrategy, TextEncodingStrategy, TextEncoderOutputsCachingStrategy
 
 

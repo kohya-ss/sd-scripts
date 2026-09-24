@@ -21,6 +21,7 @@ module.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -69,12 +70,31 @@ SCHEDULER_TIMESTEPS = 1000
 SCHEDLER_SCHEDULE = "scaled_linear"
 
 
+def check_sampler_requirements(sample_sampler: str) -> None:
+    """Raise a clear ``ImportError`` if an optional dependency of the sampler is missing.
+
+    ``lms`` / ``k_lms`` (``LMSDiscreteScheduler``) need ``scipy``, which is not in ``requirements.txt``.
+    Without this check the failure surfaces only when the scheduler is built, i.e. at the first sample
+    generation after the models are loaded.
+    """
+    if sample_sampler in ("lms", "k_lms") and importlib.util.find_spec("scipy") is None:
+        raise ImportError(
+            f"The sampler '{sample_sampler}' (LMSDiscreteScheduler) requires the `scipy` package, which is not included in"
+            " requirements.txt. Please run `pip install scipy`, or choose another sampler (e.g. euler, dpmsolver++)."
+            f" / サンプラー '{sample_sampler}' (LMSDiscreteScheduler) には requirements.txt に含まれない `scipy` パッケージが必要です。"
+            "`pip install scipy` を実行するか、他のサンプラー（euler、dpmsolver++ など）を指定してください。"
+        )
+
+
 def get_my_scheduler(
     *,
     sample_sampler: str,
     v_parameterization: bool,
 ):
+    check_sampler_requirements(sample_sampler)
+
     sched_init_args = {}
+    has_steps_offset = True
     if sample_sampler == "ddim":
         scheduler_cls = DDIMScheduler
     elif sample_sampler == "ddpm":  # ddpmはおかしくなるのでoptionから外してある
@@ -90,8 +110,12 @@ def get_my_scheduler(
     elif sample_sampler == "dpmsolver" or sample_sampler == "dpmsolver++":
         scheduler_cls = DPMSolverMultistepScheduler
         sched_init_args["algorithm_type"] = sample_sampler
+        if sample_sampler == "dpmsolver":
+            # diffusers rejects the default final_sigmas_type="zero" for the (non-++) dpmsolver algorithm
+            sched_init_args["final_sigmas_type"] = "sigma_min"
     elif sample_sampler == "dpmsingle":
         scheduler_cls = DPMSolverSinglestepScheduler
+        has_steps_offset = False  # DPMSolverSinglestepScheduler has no steps_offset argument
     elif sample_sampler == "heun":
         scheduler_cls = HeunDiscreteScheduler
     elif sample_sampler == "dpm_2" or sample_sampler == "k_dpm_2":
@@ -103,13 +127,14 @@ def get_my_scheduler(
 
     if v_parameterization:
         sched_init_args["prediction_type"] = "v_prediction"
+    if has_steps_offset:
+        sched_init_args["steps_offset"] = 1
 
     scheduler = scheduler_cls(
         num_train_timesteps=SCHEDULER_TIMESTEPS,
         beta_start=SCHEDULER_LINEAR_START,
         beta_end=SCHEDULER_LINEAR_END,
         beta_schedule=SCHEDLER_SCHEDULE,
-        steps_offset=1,
         **sched_init_args,
     )
 
@@ -126,7 +151,7 @@ def sample_images(*args, **kwargs):
 
 
 def line_to_prompt_dict(line: str) -> dict:
-    # subset of gen_img_diffusers
+    # subset of gen_img.py
     prompt_args = line.split(" --")
     prompt_dict = {}
     prompt_dict["prompt"] = prompt_args[0]

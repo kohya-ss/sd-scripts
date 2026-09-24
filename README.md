@@ -47,7 +47,20 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
-- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+- **Version 0.12.0 (2026-09-24):**
+    - Added support for Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). [PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430), [PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431), [PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
+        - `opencv-python` is now optional (a Pillow/NumPy fallback is used when it is missing), and `requirements.txt` selects the packages that have Windows ARM64 wheels automatically. For details, please refer to [Installing without OpenCV / Windows on ARM64](#installing-without-opencv--windows-on-arm64).
+        - `transformers`, `schedulefree` and `safetensors` in `requirements.txt` have been updated to versions that provide Windows ARM64 wheels.
+    - Updated the dependencies in `requirements.txt`: `transformers` 4.57.6 -> 5.5.4, `diffusers` 0.32.1 -> 0.40.0, `accelerate` 1.6.0 -> 1.15.0, `huggingface-hub` 0.34.3 -> 1.32.0. [PR #2436](https://github.com/kohya-ss/sd-scripts/pull/2436)
+        - This is mainly a security maintenance update (the 4.x line of `transformers` and `diffusers` < 0.38 no longer receive fixes). The previous versions of the libraries still work with this release, so you do not have to update them immediately, but it is recommended to run `pip install --upgrade -r requirements.txt` at your earliest convenience.
+        - `diffusers` 0.40 requires PyTorch 2.6 or later (PyTorch 2.6.0 or later has been the requirement of sd-scripts already). CI now tests with PyTorch 2.6.0 and 2.8.0.
+        - In `transformers` 5.x, `CLIPTokenizer` no longer applies the `ftfy` text normalization of the original CLIP tokenizer (straightening curly quotes, converting full-width characters, etc.). sd-scripts now applies it itself, so tokenization is unchanged from previous versions.
+        - Text encoder outputs, VAE outputs and the noise schedulers were verified to be identical to the previous versions with the local regression tests in `tests/local`.
+        - `diffusers` 0.40 prints a spurious warning "There are modules in AutoencoderKL that should be kept in float32: [] ..." on every `.to(dtype)` call (a bug in diffusers: the check fires even when the list is empty). sd-scripts suppresses this warning when the list is empty.
+    - Added support for `transformers` 5.6 and later, and updated `transformers` in `requirements.txt` to 5.17.0. [PR #2437](https://github.com/kohya-ss/sd-scripts/pull/2437)
+        - `transformers` 5.6 changed the internal structure of `CLIPTextModel` (the `text_model` submodule was removed). sd-scripts now wraps the model so that the checkpoint keys, the LoRA weight names of the text encoders (`lora_te_text_model_...`) and `text_encoder.text_model.*` access stay the same as before. Nothing changes for `transformers` < 5.6, where the wrapper is not applied.
+        - `transformers` 5.6 also switched the attention implementation of T5 (T5-XXL of FLUX.1 / SD3, byT5 of HunyuanImage) to SDPA, which should be faster and use less memory. The bf16/fp16 outputs of T5 differ very slightly from previous versions (cosine similarity ≈ 0.998 for T5-XXL, the accuracy against fp32 is the same). This may change generated images or trained weights in minor details, and cached text encoder outputs from previous versions are still usable. The outputs of the other text encoders are identical.
+        - As above, the previous versions of `transformers` still work, but updating with `pip install --upgrade -r requirements.txt` is recommended.
     - Added OFTv2 and BOFT network modules (`networks.oft_v2`, `networks.boft`) for SD1.x / SD2.x / SDXL training. [PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
         - Orthogonal fine-tuning adapters following the PEFT implementation. Weights in PEFT format can also be loaded. Thanks to umisetokikaze.
         - Note that `--network_dim` means the block size for these modules. For details, please refer to the [documentation](./docs/train_network_oft_boft.md).
@@ -55,6 +68,9 @@ If you find this project helpful, please consider supporting its development via
         - Shifts the timestep sampling distribution of each dataset subset toward lower- or higher-noise timesteps. For details, please refer to the [documentation](./docs/timestep_sampling_offset.md).
     - Added `--show_timesteps_offset` to preview the timestep distribution with the offset applied when using `--show_timesteps`. [PR #2410](https://github.com/kohya-ss/sd-scripts/pull/2410)
         - The documentation also describes how the offset behaves with `shift` / `flux_shift` timestep sampling.
+    - Removed `gen_img_diffusers.py`, the old image generation script for SD1.x / SD2.x. It had not worked for a while (it depended on a function removed by the refactoring) and `gen_img.py` supports everything it did except the experimental CLIP / VGG16 guidance. Please use `gen_img.py` instead (see [gen_img_README.md](./docs/gen_img_README.md)). The file is still available in the previous releases. [PR #2439](https://github.com/kohya-ss/sd-scripts/pull/2439)
+    - Fixed the `dpmsolver` and `dpmsingle` samplers of `--sample_sampler` (sample image generation during training) and `--sampler` of `gen_img.py` / `sdxl_gen_img.py`, which failed with an error on recent versions of `diffusers`. [PR #2438](https://github.com/kohya-ss/sd-scripts/pull/2438)
+        - The `lms` / `k_lms` samplers require the `scipy` package, which is not included in `requirements.txt`. A clear error message is now shown at startup (instead of at the first sample generation) when `scipy` is missing. Please run `pip install scipy` to use them.
 
 - **Version 0.11.1 (2026-06-16):**
     - Added support for torch.compile in Anima LoRA/LLLite training. [PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
@@ -223,6 +239,22 @@ The file does not contain requirements for PyTorch. Because the version of PyTor
 The scripts are tested with PyTorch 2.6.0. PyTorch 2.6.0 or later is required.
 
 For RTX 50 series GPUs, PyTorch 2.8.0 with CUDA 12.8/12.9 should be used. `requirements.txt` will work with this version.
+
+### Installing without OpenCV / Windows on ARM64
+
+`opencv-python` is listed in `requirements.txt`, but the core training / dataset pipeline only uses a small subset of OpenCV (mainly `cv2.resize`, `cv2.cvtColor`, and a debug-only `cv2.imshow`). When `opencv-python` is not available, a lightweight Pillow/NumPy fallback under `library/_cv2_stub` is automatically registered as `cv2`, so existing scripts continue to work. If you would rather avoid the large OpenCV install, simply uninstall it after installing the requirements:
+
+```bash
+pip uninstall opencv-python
+```
+
+On Windows on ARM64 (e.g. NVIDIA RTX Spark PCs), `opencv-python` has no prebuilt wheel, so `requirements.txt` skips it automatically through an environment marker and the usual `pip install --upgrade -r requirements.txt` works as is. For the same reason `tensorboardX` is installed instead of `tensorboard` on that platform (TensorBoard 2.x depends on `grpcio`, which has no Windows ARM64 wheel). Logging with `--log_with tensorboard` works unchanged through `tensorboardX`; view the logs with TensorBoard on another machine.
+
+Note that:
+
+- The default install with OpenCV remains the recommended path. The fallback reproduces OpenCV's `INTER_AREA` and `INTER_LINEAR` resizing (the modes the dataset pipeline uses by default) in NumPy, so training results match up to rounding, but it is slower than OpenCV (roughly 0.1 s per 24-megapixel image). `INTER_CUBIC` / `INTER_LANCZOS4` go through Pillow and differ slightly.
+- The following tools still require real `opencv-python` and will exit with a clear message when it is missing: `tools/canny.py`, `tools/detect_face_rotate.py`, and the ControlNet `canny` preprocessor used by `gen_img.py` / `sdxl_gen_img.py`.
+- Debug-only features such as `cv2.imshow` during dataset inspection fall back to Pillow's default image viewer (`PIL.Image.show`), and `cv2.waitKey` blocks on `input()` in the terminal so you can page through images one at a time.
 
 ### xformers installation (optional)
 
