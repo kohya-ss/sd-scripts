@@ -51,8 +51,11 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **Version 0.12.0 (2026-09-24):**
+    - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
+        - `opencv-python` がオプションになり（未インストール時は Pillow/NumPy による代替実装を使用）、`requirements.txt` が Windows ARM64 用 wheel のあるパッケージを自動的に選択するようになりました。詳細は[OpenCVなしでのインストール／Windows on ARM64について](#opencvなしでのインストールwindows-on-arm64について)をご覧ください。
+        - `requirements.txt` の `transformers`、`schedulefree`、`safetensors` を Windows ARM64 用 wheel が提供されているバージョンに更新しました。
     - `requirements.txt` の依存関係を更新しました: `transformers` 4.57.6 → 5.5.4、`diffusers` 0.32.1 → 0.40.0、`accelerate` 1.6.0 → 1.15.0、`huggingface-hub` 0.34.3 → 1.32.0。[PR #2436](https://github.com/kohya-ss/sd-scripts/pull/2436)
-        - 主にセキュリティ上の保守のための更新です（`transformers` 4.x 系と `diffusers` 0.38 未満には修正が提供されなくなっています）。更新後は `pip install --upgrade -r requirements.txt` を実行してください。
+        - 主にセキュリティ上の保守のための更新です（`transformers` 4.x 系と `diffusers` 0.38 未満には修正が提供されなくなっています）。以前のバージョンのライブラリでもこのリリースは動作しますので、すぐに更新する必要はありませんが、なるべく早めに `pip install --upgrade -r requirements.txt` を実行することをお勧めします。
         - `diffusers` 0.40 は PyTorch 2.6 以降を必要とします（sd-scripts はすでに PyTorch 2.6.0 以降を必要としています）。CI は PyTorch 2.6.0 と 2.8.0 でテストするようになりました。
         - `transformers` 5.x の `CLIPTokenizer` は、オリジナルの CLIP トークナイザが行っていた `ftfy` によるテキスト正規化（曲がった引用符の直線化、全角文字の半角化など）を行わなくなりました。sd-scripts 側で同じ正規化を行うようにしたため、トークナイズ結果は従来と変わりません。
         - `tests/local` のローカル回帰テストにより、Text Encoder の出力、VAE の出力、ノイズスケジューラが従来のバージョンと同一であることを確認しています。
@@ -60,13 +63,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
     - `transformers` 5.6 以降に対応し、`requirements.txt` の `transformers` を 5.17.0 に更新しました。[PR #2437](https://github.com/kohya-ss/sd-scripts/pull/2437)
         - `transformers` 5.6 で `CLIPTextModel` の内部構造が変わりました（`text_model` サブモジュールが無くなりました）。sd-scripts ではモデルをラップすることで、チェックポイントのキー、Text Encoder の LoRA の重み名（`lora_te_text_model_...`）、`text_encoder.text_model.*` によるアクセスが従来と変わらないようにしています。`transformers` 5.6 未満ではラップは行われず、何も変わりません。
         - また `transformers` 5.6 では T5（FLUX.1 / SD3 の T5-XXL、HunyuanImage の byT5）の attention の実装が SDPA に切り替わり、高速化・省メモリ化が期待できます。T5 の bf16/fp16 出力は従来のバージョンからごくわずかに変わります（T5-XXL でコサイン類似度 ≈ 0.998、fp32 に対する精度は同等）。生成画像や学習結果の細部が変わる可能性がありますが、以前のバージョンでキャッシュした Text Encoder 出力もそのまま使えます。他の Text Encoder の出力は同一です。
-        - 更新後は `pip install --upgrade -r requirements.txt` を実行してください。
-    - SD1.x / SD2.x 用の古い画像生成スクリプト `gen_img_diffusers.py` を削除しました。しばらく前から動作しておらず（リファクタリングで削除された関数に依存していました）、実験的な CLIP / VGG16 guidance を除くすべての機能は `gen_img.py` でサポートされています。代わりに `gen_img.py` をお使いください（[gen_img_README-ja.md](./docs/gen_img_README-ja.md) をご覧ください）。ファイルは以前のリリースから取得できます。[PR #2439](https://github.com/kohya-ss/sd-scripts/pull/2439)
-    - 学習中のサンプル画像生成の `--sample_sampler`、および `gen_img.py` / `sdxl_gen_img.py` の `--sampler` で、`dpmsolver` と `dpmsingle` を指定すると最近のバージョンの `diffusers` でエラーになる問題を修正しました。[PR #2438](https://github.com/kohya-ss/sd-scripts/pull/2438)
-        - `lms` / `k_lms` サンプラーには `requirements.txt` に含まれない `scipy` パッケージが必要です。`scipy` が未インストールの場合、（最初のサンプル生成時ではなく）起動時に分かりやすいエラーを表示するようにしました。使用する場合は `pip install scipy` を実行してください。
-    - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
-        - `opencv-python` がオプションになり（未インストール時は Pillow/NumPy による代替実装を使用）、`requirements.txt` が Windows ARM64 用 wheel のあるパッケージを自動的に選択するようになりました。詳細は[OpenCVなしでのインストール／Windows on ARM64について](#opencvなしでのインストールwindows-on-arm64について)をご覧ください。
-        - `requirements.txt` の `transformers`、`schedulefree`、`safetensors` を Windows ARM64 用 wheel が提供されているバージョンに更新しました。
+        - 上記と同様に、以前のバージョンの `transformers` でも動作しますが、`pip install --upgrade -r requirements.txt` での更新をお勧めします。
     - SD1.x / SD2.x / SDXL の学習向けに、OFTv2 と BOFT のネットワークモジュール（`networks.oft_v2`、`networks.boft`）を追加しました。[PR #2357](https://github.com/kohya-ss/sd-scripts/pull/2357)
         - PEFT の実装に準拠した直交変換系のアダプタです。PEFT 形式の重みも読み込めます。umisetokikaze 氏に感謝します。
         - これらのモジュールでは `--network_dim` はブロックサイズを意味します。詳細は[ドキュメント](./docs/train_network_oft_boft.md)をご覧ください。
@@ -74,6 +71,9 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
         - データセットのサブセットごとに、timestep のサンプリング分布を低ノイズ側または高ノイズ側へ偏らせることができます。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
     - `--show_timesteps` 使用時に offset を適用した timestep の分布を確認できる `--show_timesteps_offset` を追加しました。[PR #2410](https://github.com/kohya-ss/sd-scripts/pull/2410)
         - `shift` / `flux_shift` の timestep sampling における offset の挙動もドキュメントに記載しました。
+    - SD1.x / SD2.x 用の古い画像生成スクリプト `gen_img_diffusers.py` を削除しました。しばらく前から動作しておらず（リファクタリングで削除された関数に依存していました）、実験的な CLIP / VGG16 guidance を除くすべての機能は `gen_img.py` でサポートされています。代わりに `gen_img.py` をお使いください（[gen_img_README-ja.md](./docs/gen_img_README-ja.md) をご覧ください）。ファイルは以前のリリースから取得できます。[PR #2439](https://github.com/kohya-ss/sd-scripts/pull/2439)
+    - 学習中のサンプル画像生成の `--sample_sampler`、および `gen_img.py` / `sdxl_gen_img.py` の `--sampler` で、`dpmsolver` と `dpmsingle` を指定すると最近のバージョンの `diffusers` でエラーになる問題を修正しました。[PR #2438](https://github.com/kohya-ss/sd-scripts/pull/2438)
+        - `lms` / `k_lms` サンプラーには `requirements.txt` に含まれない `scipy` パッケージが必要です。`scipy` が未インストールの場合、（最初のサンプル生成時ではなく）起動時に分かりやすいエラーを表示するようにしました。使用する場合は `pip install scipy` を実行してください。
 
 - **Version 0.11.1 (2026-06-16):**
     - Anima LoRA／LLLite学習でtorch.compileサポートを追加しました。[PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
