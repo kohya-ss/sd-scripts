@@ -339,7 +339,7 @@ python networks\svd_merge_lora.py
 
 ## 当リポジトリ内の画像生成スクリプトで生成する
 
-gen_img_diffusers.pyに、--network_module、--network_weightsの各オプションを追加してください。意味は学習時と同様です。
+gen_img.pyに、--network_module、--network_weightsの各オプションを追加してください。意味は学習時と同様です。詳細は[画像生成スクリプトのドキュメント](gen_img_README-ja.md)を参照してください。
 
 --network_mulオプションで0~1.0の数値を指定すると、LoRAの適用率を変えられます。
 

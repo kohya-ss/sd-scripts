@@ -151,7 +151,7 @@ def sample_images(*args, **kwargs):
 
 
 def line_to_prompt_dict(line: str) -> dict:
-    # subset of gen_img_diffusers
+    # subset of gen_img.py
     prompt_args = line.split(" --")
     prompt_dict = {}
     prompt_dict["prompt"] = prompt_args[0]
