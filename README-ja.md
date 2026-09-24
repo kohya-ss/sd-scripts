@@ -58,6 +58,8 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
         - `transformers` 5.x の `CLIPTokenizer` は、オリジナルの CLIP トークナイザが行っていた `ftfy` によるテキスト正規化（曲がった引用符の直線化、全角文字の半角化など）を行わなくなりました。sd-scripts 側で同じ正規化を行うようにしたため、トークナイズ結果は従来と変わりません。
         - `tests/local` のローカル回帰テストにより、Text Encoder の出力、VAE の出力、ノイズスケジューラが従来のバージョンと同一であることを確認しています。
         - `diffusers` 0.40 は `.to(dtype)` のたびに "There are modules in AutoencoderKL that should be kept in float32: [] ..." という誤った警告を出します（リストが空でも警告する diffusers 側のバグ）。sd-scripts ではリストが空の場合にこの警告を抑制しています。
+    - 学習中のサンプル画像生成の `--sample_sampler`、および `gen_img.py` / `sdxl_gen_img.py` の `--sampler` で、`dpmsolver` と `dpmsingle` を指定すると最近のバージョンの `diffusers` でエラーになる問題を修正しました。[PR #2438](https://github.com/kohya-ss/sd-scripts/pull/2438)
+        - `lms` / `k_lms` サンプラーには `requirements.txt` に含まれない `scipy` パッケージが必要です。`scipy` が未インストールの場合、（最初のサンプル生成時ではなく）起動時に分かりやすいエラーを表示するようにしました。使用する場合は `pip install scipy` を実行してください。
     - Windows on ARM64（NVIDIA RTX Spark PC など）に対応しました。[PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430)、[PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431)、[PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
         - `opencv-python` がオプションになり（未インストール時は Pillow/NumPy による代替実装を使用）、`requirements.txt` が Windows ARM64 用 wheel のあるパッケージを自動的に選択するようになりました。詳細は[OpenCVなしでのインストール／Windows on ARM64について](#opencvなしでのインストールwindows-on-arm64について)をご覧ください。
         - `requirements.txt` の `transformers`、`schedulefree`、`safetensors` を Windows ARM64 用 wheel が提供されているバージョンに更新しました。
