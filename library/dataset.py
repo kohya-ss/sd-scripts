@@ -478,11 +478,14 @@ class BaseDataset(torch.utils.data.Dataset):
     def set_max_train_steps(self, max_train_steps):
         self.max_train_steps = max_train_steps
 
-    def set_tag_frequency(self, dir_name, captions):
+    def set_tag_frequency(self, dir_name, captions, caption_separator=",", keep_tokens_separator=None):
         frequency_for_dir = self.tag_frequency.get(dir_name, {})
         self.tag_frequency[dir_name] = frequency_for_dir
         for caption in captions:
-            for tag in caption.split(","):
+            # split tags the same way as training does: keep_tokens_separator also separates tags
+            if keep_tokens_separator:
+                caption = caption.replace(keep_tokens_separator, caption_separator)
+            for tag in caption.split(caption_separator):
                 tag = tag.strip()
                 if tag:
                     tag = tag.lower()

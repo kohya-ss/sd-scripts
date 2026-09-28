@@ -246,6 +246,8 @@ class FineTuningDataset(BaseDataset):
             self.num_train_images += len(metadata) * subset.num_repeats
 
             # TODO do not record tag freq when no tag
-            self.set_tag_frequency(os.path.basename(subset.metadata_file), tags_list)
+            self.set_tag_frequency(
+                os.path.basename(subset.metadata_file), tags_list, subset.caption_separator, subset.keep_tokens_separator
+            )
             subset.img_count = len(metadata)
             self.subsets.append(subset)
