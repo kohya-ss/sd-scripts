@@ -44,6 +44,17 @@ class ControlNetDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str] = None,
         skip_image_resolution: Optional[Tuple[int, int]] = None,
+        enable_fad: bool = False,
+        fad_curriculum: bool = False,
+        fad_p_min: float = 0.35,
+        fad_p_max: float = 1.0,
+        fad_alpha: float = 10.0,
+        fad_c: float = 0.5,
+        fad_curriculum_start: float = 0.1,
+        fad_curriculum_end: float = 0.8,
+        fad_curriculum_beta: float = 3.0,
+        fad_step_start: float = 0.0,
+        fad_step_end: float = 1.0,
     ) -> None:
         super().__init__(
             resolution,
@@ -52,6 +63,17 @@ class ControlNetDataset(BaseDataset):
             debug_dataset,
             resize_interpolation,
             skip_image_resolution,
+            enable_fad,
+            fad_curriculum,
+            fad_p_min,
+            fad_p_max,
+            fad_alpha,
+            fad_c,
+            fad_curriculum_start,
+            fad_curriculum_end,
+            fad_curriculum_beta,
+            fad_step_start,
+            fad_step_end,
         )
 
         db_subsets = []
@@ -85,6 +107,8 @@ class ControlNetDataset(BaseDataset):
                 subset.token_warmup_min,
                 subset.token_warmup_step,
                 resize_interpolation=subset.resize_interpolation,
+                enable_fad=subset.enable_fad,
+                fad_curriculum=subset.fad_curriculum,
             )
             db_subsets.append(db_subset)
 
@@ -106,6 +130,17 @@ class ControlNetDataset(BaseDataset):
             validation_seed,
             resize_interpolation,
             skip_image_resolution,
+            enable_fad,
+            fad_curriculum,
+            fad_p_min,
+            fad_p_max,
+            fad_alpha,
+            fad_c,
+            fad_curriculum_start,
+            fad_curriculum_end,
+            fad_curriculum_beta,
+            fad_step_start,
+            fad_step_end,
         )
 
         # config_util等から参照される値をいれておく（若干微妙なのでなんとかしたい）
