@@ -41,7 +41,7 @@ Before starting training, you need the following files:
 
 ### About the Dataset Definition File
 
-The basic format of the dataset definition file (`.toml`) is the same as for `train_network.py`. Please refer to the [Dataset Configuration Guide](./config_README-en.md) and [How to Use the LoRA Training Script `train_network.py`](train_network.md#about-the-dataset-definition-file).
+The basic format of the dataset definition file (`.toml`) is the same as for `train_network.py`. Please refer to the [Dataset Configuration Guide](./config_README-en.md) and [How to Use the LoRA Training Script `train_network.py`](train_network.md#about-the-dataset-definition-file--データセット定義ファイルについて).
 
 For SDXL, it is common to use high-resolution datasets and the aspect ratio bucketing feature (`enable_bucket = true`).
 
@@ -56,7 +56,7 @@ In this example, we'll use a file named `my_sdxl_dataset_config.toml`.
 
 ### データセット定義ファイルについて
 
-データセット定義ファイル (`.toml`) の基本的な書き方は `train_network.py` と共通です。[データセット設定ガイド](./config_README-ja.md) および [LoRA学習スクリプト `train_network.py` の使い方](train_network.md#データセット定義ファイルについて) を参照してください。
+データセット定義ファイル (`.toml`) の基本的な書き方は `train_network.py` と共通です。[データセット設定ガイド](./config_README-ja.md) および [LoRA学習スクリプト `train_network.py` の使い方](train_network.md#about-the-dataset-definition-file--データセット定義ファイルについて) を参照してください。
 
 SDXL では、高解像度のデータセットや、アスペクト比バケツ機能 (`enable_bucket = true`) の利用が一般的です。
 
@@ -101,7 +101,7 @@ Comparing with the execution example of `train_network.py`, the following points
 * `--mixed_precision` is recommended to be `bf16` or `fp16`.
 * `--cache_text_encoder_outputs` and `--cache_latents` are recommended to reduce VRAM usage.
 
-Next, we'll explain the main command line arguments that differ from `train_network.py`. For common arguments, please refer to [How to Use the LoRA Training Script `train_network.py`](train_network.md#31-main-command-line-arguments).
+Next, we'll explain the main command line arguments that differ from `train_network.py`. For common arguments, please refer to [How to Use the LoRA Training Script `train_network.py`](train_network.md#31-main-command-line-arguments--主要なコマンドライン引数).
 
 <details>
 <summary>日本語</summary>
@@ -141,7 +141,7 @@ accelerate launch --num_cpu_threads_per_process 1 sdxl_train_network.py
 *   `--mixed_precision` は `bf16` または `fp16` が推奨されます。
 *   `--cache_text_encoder_outputs` や `--cache_latents` は VRAM 使用量を削減するために推奨されます。
 
-次に、`train_network.py` との差分となる主要なコマンドライン引数について解説します。共通の引数については、[LoRA学習スクリプト `train_network.py` の使い方](train_network.md#31-主要なコマンドライン引数) を参照してください。
+次に、`train_network.py` との差分となる主要なコマンドライン引数について解説します。共通の引数については、[LoRA学習スクリプト `train_network.py` の使い方](train_network.md#31-main-command-line-arguments--主要なコマンドライン引数) を参照してください。
 </details>
 
 ### 3.1. Main Command Line Arguments (Differences) / 主要なコマンドライン引数（差分）

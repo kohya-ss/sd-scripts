@@ -53,12 +53,12 @@ Options match `train_network.py`:
         *   `conv_block_dims`: Comma-separated dims for Conv2d 3x3 layers in U-Net.
         *   `conv_block_alphas`: Comma-separated alpha values corresponding to the above.
         *   Blocks not specified will use values from `--network_dim`/`--network_alpha` or `--conv_dim`/`--conv_alpha` (if they exist).
-        *   For details, refer to [Block-wise learning rate for LoRA](train_network.md#lora-の階層別学習率) (in train_network.md, applicable to SDXL) and the implementation ([lora.py](lora.py)).
+        *   For details, refer to [Block-wise learning rate for LoRA](train_network.md#lora-の階層別学習率) (in train_network.md, applicable to SDXL) and the implementation ([lora.py](../networks/lora.py)).
     *   **LoRA+:**
         *   `loraplus_lr_ratio=R`: Sets the learning rate of LoRA's upward weights (UP) to R times the learning rate of downward weights (DOWN). Expected to improve learning speed. Paper recommends 16.
         *   `loraplus_unet_lr_ratio=RU`: Specifies the LoRA+ learning rate ratio for the U-Net part individually.
         *   `loraplus_text_encoder_lr_ratio=RT`: Specifies the LoRA+ learning rate ratio for the Text Encoder part individually (multiplied by the learning rates specified with `--text_encoder_lr1`, `--text_encoder_lr2`).
-        *   For details, refer to [README](../README.md#jan-17-2025--2025-01-17-version-090) and the implementation ([lora.py](lora.py)).
+        *   For details, refer to [README](../README.md#jan-17-2025--2025-01-17-version-090) and the implementation ([lora.py](../networks/lora.py)).
 * `--network_train_unet_only`: Trains only the LoRA modules of the U-Net. Specify this if not training Text Encoders. Required when using `--cache_text_encoder_outputs`.
 * `--network_train_text_encoder_only`: Trains only the LoRA modules of the Text Encoders. Specify this if not training the U-Net.
 * `--network_weights=\"<weight file>\"`: Starts training by loading pre-trained LoRA weights. Used for fine-tuning or resuming training. The difference from `--resume` is that this option only loads LoRA module weights, while `--resume` also restores Optimizer state, step count, etc.
@@ -70,7 +70,7 @@ Options match `train_network.py`:
 *   `--unet_lr=LR_U`: Learning rate for the LoRA module of the U-Net part.
 *   `--text_encoder_lr1=LR_TE1`: Learning rate for the LoRA module of Text Encoder 1 (OpenCLIP ViT-G/14). Usually, a smaller value than U-Net (e.g., `1e-5`, `2e-5`) is recommended.
 *   `--text_encoder_lr2=LR_TE2`: Learning rate for the LoRA module of Text Encoder 2 (CLIP ViT-L/14). Usually, a smaller value than U-Net (e.g., `1e-5`, `2e-5`) is recommended.
-*   `--optimizer_type=\"...\"`: Specifies the optimizer to use. Options include `AdamW8bit` (memory-efficient, common), `Adafactor` (even more memory-efficient, proven in SDXL full model training), `Lion`, `DAdaptation`, `Prodigy`, etc. Each optimizer may require additional arguments (see `--optimizer_args`). `AdamW8bit` or `PagedAdamW8bit` (requires `bitsandbytes`) are common. `Adafactor` is memory-efficient but slightly complex to configure (relative step (`relative_step=True`) recommended, `adafactor` learning rate scheduler recommended). `DAdaptation`, `Prodigy` have automatic learning rate adjustment but cannot be used with LoRA+. Specify a learning rate around `1.0`. For details, see the `get_optimizer` function in [train_util.py](train_util.py).
+*   `--optimizer_type=\"...\"`: Specifies the optimizer to use. Options include `AdamW8bit` (memory-efficient, common), `Adafactor` (even more memory-efficient, proven in SDXL full model training), `Lion`, `DAdaptation`, `Prodigy`, etc. Each optimizer may require additional arguments (see `--optimizer_args`). `AdamW8bit` or `PagedAdamW8bit` (requires `bitsandbytes`) are common. `Adafactor` is memory-efficient but slightly complex to configure (relative step (`relative_step=True`) recommended, `adafactor` learning rate scheduler recommended). `DAdaptation`, `Prodigy` have automatic learning rate adjustment but cannot be used with LoRA+. Specify a learning rate around `1.0`. For details, see the `get_optimizer` function in [train_util.py](../library/train_util.py).
 *   `--optimizer_args ...`: Specifies additional arguments to the optimizer in `key=value` format (e.g., `\"weight_decay=0.01\"` `\"betas=0.9,0.999\"`).
 *   `--lr_scheduler=\"...\"`: Specifies the learning rate scheduler. Options include `constant` (no change), `cosine` (cosine curve), `linear` (linear decay), `constant_with_warmup` (constant with warmup), `cosine_with_restarts`, etc. `constant`, `cosine`, and `constant_with_warmup` are commonly used. Some schedulers require additional arguments (see `--lr_scheduler_args`). If using optimizers with auto LR adjustment like `DAdaptation` or `Prodigy`, a scheduler is not needed (`constant` should be specified).
 *   `--lr_warmup_steps=N`: Number of warmup steps for the learning rate scheduler. The learning rate gradually increases during this period at the start of training. If N < 1, it's interpreted as a fraction of total steps.
@@ -254,7 +254,7 @@ This technique involves merging a pre-trained LoRA into the base model before st
 
 `sdxl_train_network.py` は `train_network.py` の機能を継承しつつ、SDXL特有の機能を追加しています。ここでは、SDXL LoRA学習に関連する主要なコマンドライン引数について、機能別に分類して詳細に解説します。
 
-基本的な引数については、[LoRA学習スクリプト `train_network.py` の使い方](train_network.md#31-主要なコマンドライン引数) および [SDXL LoRA学習スクリプト `sdxl_train_network.py` の使い方](sdxl_train_network.md#31-主要なコマンドライン引数（差分）) を参照してください。
+基本的な引数については、[LoRA学習スクリプト `train_network.py` の使い方](train_network.md#31-main-command-line-arguments--主要なコマンドライン引数) および [SDXL LoRA学習スクリプト `sdxl_train_network.py` の使い方](sdxl_train_network.md#31-main-command-line-arguments-differences--主要なコマンドライン引数差分) を参照してください。
 
 ### 1.1. モデル読み込み関連
 
@@ -317,12 +317,12 @@ This technique involves merging a pre-trained LoRA into the base model before st
             *   `conv_block_dims`: U-NetのConv2d 3x3層に対するブロックごとのdimをカンマ区切りで指定します。
             *   `conv_block_alphas`: 上記に対応するalpha値をカンマ区切りで指定します。
             *   指定しないブロックは `--network_dim`/`--network_alpha` または `--conv_dim`/`--conv_alpha` (存在する場合) の値が使用されます。
-            *   詳細は[LoRA の階層別学習率](train_network.md#lora-の階層別学習率) (train\_network.md内、SDXLでも同様に適用可能) や実装 ([lora.py](lora.py)) を参照してください。
+            *   詳細は[LoRA の階層別学習率](train_network.md#lora-の階層別学習率) (train\_network.md内、SDXLでも同様に適用可能) や実装 ([lora.py](../networks/lora.py)) を参照してください。
         *   **LoRA+:**
             *   `loraplus_lr_ratio=R`: LoRAの上向き重み(UP)の学習率を、下向き重み(DOWN)の学習率のR倍にします。学習速度の向上が期待できます。論文推奨は16。
             *   `loraplus_unet_lr_ratio=RU`: U-Net部分のLoRA+学習率比を個別に指定します。
             *   `loraplus_text_encoder_lr_ratio=RT`: Text Encoder部分のLoRA+学習率比を個別に指定します。(`--text_encoder_lr1`, `--text_encoder_lr2`で指定した学習率に乗算されます)
-            *   詳細は[README](../README.md#jan-17-2025--2025-01-17-version-090)や実装 ([lora.py](lora.py)) を参照してください。
+            *   詳細は[README](../README.md#jan-17-2025--2025-01-17-version-090)や実装 ([lora.py](../networks/lora.py)) を参照してください。
 *   `--network_train_unet_only`
     *   U-NetのLoRAモジュールのみを学習します。Text Encoderの学習を行わない場合に指定します。`--cache_text_encoder_outputs` を使用する場合は必須です。
 *   `--network_train_text_encoder_only`
@@ -347,7 +347,7 @@ This technique involves merging a pre-trained LoRA into the base model before st
     *   `AdamW8bit` や `PagedAdamW8bit` (要 `bitsandbytes`) が一般的です。
     *   `Adafactor` はメモリ効率が良いですが、設定がやや複雑です (相対ステップ(`relative_step=True`)推奨、学習率スケジューラは`adafactor`推奨)。
     *   `DAdaptation`, `Prodigy` は学習率の自動調整機能がありますが、LoRA+との併用はできません。学習率は`1.0`程度を指定します。
-    *   詳細は[train\_util.py](train_util.py)の`get_optimizer`関数を参照してください。
+    *   詳細は[train\_util.py](../library/train_util.py)の`get_optimizer`関数を参照してください。
 *   `--optimizer_args ...`
     *   Optimizerへの追加引数を `key=value` 形式で指定します (例: `"weight_decay=0.01"` `"betas=0.9,0.999"`).
 *   `--lr_scheduler="..."`
