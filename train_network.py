@@ -779,7 +779,6 @@ class NetworkTrainer:
         epoch: int,
         global_step: int,
         is_tracking: bool,
-        loss_recorder: "logging_util.LossRecorder",
         train_loss_recorder: "logging_util.LossRecorder",
     ) -> None:
         """Run one validation pass: dataloader x validation_timesteps.
@@ -816,6 +815,8 @@ class NetworkTrainer:
         )
 
         val_timesteps_step = 0
+        val_loss_total = 0.0
+        val_avg_loss = 0.0
         for val_step, batch in enumerate(val_dataloader):
             if val_step >= validation_steps:
                 break
@@ -844,19 +845,20 @@ class NetworkTrainer:
                 )
 
                 current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=val_timesteps_step, loss=current_loss)
+                val_loss_total += current_loss
+                val_avg_loss = val_loss_total / (val_timesteps_step + 1)
                 val_progress_bar.update(1)
                 val_progress_bar.set_postfix(
-                    {progress_postfix_key: loss_recorder.moving_average, "timestep": timestep}
+                    {progress_postfix_key: val_avg_loss, "timestep": timestep}
                 )
 
                 self.on_validation_step_end(args, accelerator, network, text_encoders, unet, batch, weight_dtype)
                 val_timesteps_step += 1
 
         if is_tracking:
-            loss_validation_divergence = loss_recorder.moving_average - train_loss_recorder.moving_average
+            loss_validation_divergence = val_avg_loss - train_loss_recorder.moving_average
             logs = {
-                log_key_average: loss_recorder.moving_average,
+                log_key_average: val_avg_loss,
                 log_key_divergence: loss_validation_divergence,
             }
             log_fn(accelerator, logs, global_step, epoch + 1)
@@ -1475,8 +1477,6 @@ class NetworkTrainer:
         logging_util.init_trackers(accelerator, args, "network_train")
 
         loss_recorder = logging_util.LossRecorder()
-        val_step_loss_recorder = logging_util.LossRecorder()
-        val_epoch_loss_recorder = logging_util.LossRecorder()
 
         del train_dataset_group
         if val_dataset_group is not None:
@@ -1741,7 +1741,6 @@ class NetworkTrainer:
                         epoch=epoch,
                         global_step=global_step,
                         is_tracking=is_tracking,
-                        loss_recorder=val_step_loss_recorder,
                         train_loss_recorder=loss_recorder,
                     )
 
@@ -1787,7 +1786,6 @@ class NetworkTrainer:
                     epoch=epoch,
                     global_step=global_step,
                     is_tracking=is_tracking,
-                    loss_recorder=val_epoch_loss_recorder,
                     train_loss_recorder=loss_recorder,
                 )
 
