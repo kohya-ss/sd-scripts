@@ -150,7 +150,13 @@ class FineTuningDataset(BaseDataset):
                     npz_paths.extend(glob.glob(os.path.join(image_dir, "*" + strategy.cache_suffix)))
             npz_paths = sorted(npz_paths, key=lambda item: len(os.path.basename(item)), reverse=True)  # longer paths first
 
-            # Match image filename longer to shorter because some images share same prefix
+            npz_paths_by_stem = {}
+            for candidate in npz_paths:
+                # Remove only the model suffix and final resolution, preserving the image stem.
+                candidate_stem = candidate[: -len(strategy.cache_suffix)].rsplit("_", 1)[0]
+                npz_paths_by_stem.setdefault(os.path.normpath(candidate_stem), []).append(candidate)
+
+            # Process longer metadata keys first.
             image_keys_sorted_by_length_desc = sorted(metadata.keys(), key=len, reverse=True)
 
             # Collect tags and sizes
@@ -170,13 +176,21 @@ class FineTuningDataset(BaseDataset):
                 if image_size is None:
                     # match against the resolved absolute path and normalize separators, so that metadata
                     # paths written with "/" still match glob results using the OS-native separator
-                    abs_path_without_ext = os.path.normpath(os.path.splitext(abs_path)[0])
-                    for candidate in npz_paths:
-                        if os.path.normpath(candidate).startswith(abs_path_without_ext):
-                            npz_path = candidate
-                            break
+                    image_stems = {os.path.normpath(os.path.splitext(abs_path)[0])}
+                    if not os.path.exists(abs_path):
+                        # Metadata may already contain the complete stem, even one ending in ".png".
+                        image_stems.add(os.path.normpath(abs_path))
+                    matching_stems = image_stems.intersection(npz_paths_by_stem)
+                    if len(matching_stems) > 1:
+                        raise ValueError(
+                            f"Ambiguous latent caches for '{image_key}': {sorted(matching_stems)}. "
+                            "Cannot distinguish an image filename from an extensionless metadata key."
+                        )
+                    if matching_stems:
+                        candidates = npz_paths_by_stem[next(iter(matching_stems))]
+                        if candidates:
+                            npz_path = candidates.pop(0)
                     if npz_path is not None:
-                        npz_paths.remove(npz_path)  # remove to avoid matching same file (share prefix)
                         abs_path = npz_path
 
                 if caption is None:
