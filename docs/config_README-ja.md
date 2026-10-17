@@ -385,12 +385,13 @@ detailed digital art of a girl with a microphone on a stage
 さらに、`multiline_caption_separator`（デフォルト `---===---`）で始まる行で区切ることで、一つの画像に複数のキャプション候補を用意できます。学習時にはステップごとにランダムに一つの候補が選ばれます。
 
 ```txt
-The image depicts a girl with long hair standing on a stage.
-She is holding a microphone and looking at the viewer.
+The image depicts a girl with long hair standing on a stage under spotlights.
+She is holding a microphone with both hands and looking at the viewer with a smile.
 ---===---
-A girl is wearing a school uniform, standing at the classroom.
+A girl with long hair sings on a stage.
+She holds a microphone and smiles.
 ---===--- # タグ形式の候補
-1girl, solo, school uniform, classroom
+1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer
 ```
 
 * 区切り行の `#` 以降はコメントとして無視されます。区切り文字列と `#` の間には何も書けません（将来の拡張のために予約されており、書くとエラーになります）。
@@ -407,10 +408,11 @@ A girl is wearing a school uniform, standing at the classroom.
 {
     "/path/to/image.png": {
         "caption": [
-            "The image depicts a girl with long hair standing on a stage.\nShe is holding a microphone.",
-            "1girl, solo, school uniform, classroom"
+            "The image depicts a girl with long hair standing on a stage under spotlights.\nShe is holding a microphone with both hands and looking at the viewer with a smile.",
+            "A girl with long hair sings on a stage.\nShe holds a microphone and smiles.",
+            "1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer"
         ],
-        "tags": "open mouth, simple background"
+        "tags": "upper body, indoors"
     }
 }
 ```

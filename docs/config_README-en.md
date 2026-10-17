@@ -376,12 +376,13 @@ By setting `enable_multiline_caption = true`, the whole caption file is used as 
 In addition, lines starting with `multiline_caption_separator` (default `---===---`) separate multiple caption candidates for one image. One candidate is chosen randomly at each training step.
 
 ```txt
-The image depicts a girl with long hair standing on a stage.
-She is holding a microphone and looking at the viewer.
+The image depicts a girl with long hair standing on a stage under spotlights.
+She is holding a microphone with both hands and looking at the viewer with a smile.
 ---===---
-A girl is wearing a school uniform, standing at the classroom.
+A girl with long hair sings on a stage.
+She holds a microphone and smiles.
 ---===--- # tag-style candidate
-1girl, solo, school uniform, classroom
+1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer
 ```
 
 * Text after `#` on a separator line is a comment and ignored. Nothing else can be written between the separator and `#` (it is reserved for future extensions and causes an error).
@@ -398,10 +399,11 @@ The same applies to metadata files (fine tuning method). Write a string containi
 {
     "/path/to/image.png": {
         "caption": [
-            "The image depicts a girl with long hair standing on a stage.\nShe is holding a microphone.",
-            "1girl, solo, school uniform, classroom"
+            "The image depicts a girl with long hair standing on a stage under spotlights.\nShe is holding a microphone with both hands and looking at the viewer with a smile.",
+            "A girl with long hair sings on a stage.\nShe holds a microphone and smiles.",
+            "1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer"
         ],
-        "tags": "open mouth, simple background"
+        "tags": "upper body, indoors"
     }
 }
 ```
