@@ -308,10 +308,15 @@ def load_safetensors(
         synchronize_device(device)
         return state_dict
     else:
+        # safetensors accepts a device string (or int) but not a torch.device object
+        device_str = str(device) if device is not None else "cpu"
         try:
-            state_dict = load_file(path, device=device)
+            state_dict = load_file(path, device=device_str)
         except:
             state_dict = load_file(path)  # prevent device invalid Error
+            if device is not None:
+                for key in state_dict.keys():
+                    state_dict[key] = state_dict[key].to(device)
         if dtype is not None:
             for key in state_dict.keys():
                 state_dict[key] = state_dict[key].to(dtype=dtype)
