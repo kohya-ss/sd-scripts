@@ -15,6 +15,7 @@ from library.dataset import (
     BaseDataset,
     ImageInfo,
     glob_images,
+    split_caption_candidates,
 )
 from library.strategy_base import LatentsCachingStrategy
 from library.subset import FineTuningSubset
@@ -22,6 +23,54 @@ from library.utils import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+def build_finetuning_caption(subset: FineTuningSubset, caption, tags: Optional[str]) -> str:
+    """Combine ``caption`` and ``tags`` of a metadata entry into the caption string stored in ``ImageInfo``.
+
+    - enable_multiline_caption: ``caption`` may be a string (which may contain separator lines) or a list of strings
+      (each element is a candidate). ``tags`` is appended to each candidate.
+    - enable_wildcard: ``tags`` is appended to each non-empty line of ``caption``.
+    - otherwise: ``tags`` is appended to ``caption``.
+    """
+    if isinstance(caption, list):
+        if not subset.enable_multiline_caption:
+            raise ValueError(
+                "caption must be a string unless enable_multiline_caption is enabled"
+                + " / enable_multiline_caption が無効の場合、caption は文字列でなければなりません"
+            )
+        if not all(isinstance(c, str) for c in caption):
+            raise ValueError("all elements of caption list must be strings / caption のリストの要素はすべて文字列でなければなりません")
+        caption = f"\n{subset.multiline_caption_separator}\n".join(caption)
+
+    if caption is None:
+        caption = ""
+
+    if tags is None or len(tags) == 0:
+        return caption
+
+    if subset.enable_multiline_caption:
+        # add tags to each candidate
+        candidates = split_caption_candidates(caption, subset.multiline_caption_separator)
+        if candidates == [""]:
+            return tags
+        candidates = [f"{c}{subset.caption_separator}{tags}" for c in candidates]
+        return f"\n{subset.multiline_caption_separator}\n".join(candidates)
+
+    if subset.enable_wildcard:
+        # tags must be single line (split by caption separator)
+        tags = tags.replace("\n", subset.caption_separator)
+
+        # add tags to each line of caption
+        caption_lines = [line for line in caption.split("\n") if line.strip() != ""]
+        if caption_lines:
+            return "\n".join([f"{line}{subset.caption_separator}{tags}" for line in caption_lines])
+        return tags  # no caption lines (e.g. tags-only metadata), use tags as is
+
+    # use as is
+    if len(caption) > 0:
+        caption = caption + subset.caption_separator
+    return caption + tags
 
 
 class FineTuningDataset(BaseDataset):
@@ -155,6 +204,7 @@ class FineTuningDataset(BaseDataset):
 
             # Collect tags and sizes
             tags_list = []
+            captions = []  # for validation of multi-line caption candidates
             size_set_from_metadata = 0
             size_set_from_cache_filename = 0
             num_filtered = 0
@@ -179,32 +229,12 @@ class FineTuningDataset(BaseDataset):
                         npz_paths.remove(npz_path)  # remove to avoid matching same file (share prefix)
                         abs_path = npz_path
 
-                if caption is None:
-                    caption = ""
-
-                if subset.enable_wildcard:
-                    # tags must be single line (split by caption separator)
-                    if tags is not None:
-                        tags = tags.replace("\n", subset.caption_separator)
-
-                    # add tags to each line of caption
-                    if tags is not None:
-                        caption_lines = [line for line in caption.split("\n") if line.strip() != ""]
-                        if caption_lines:
-                            caption = "\n".join([f"{line}{subset.caption_separator}{tags}" for line in caption_lines])
-                        else:
-                            caption = tags  # no caption lines (e.g. tags-only metadata), use tags as is
-                        tags_list.append(tags)
-                else:
-                    # use as is
-                    if tags is not None and len(tags) > 0:
-                        if len(caption) > 0:
-                            caption = caption + subset.caption_separator
-                        caption = caption + tags
-                        tags_list.append(tags)
-
-                if caption is None:
-                    caption = ""
+                caption = build_finetuning_caption(subset, caption, tags)
+                if tags is not None and len(tags) > 0:
+                    if subset.enable_wildcard and not subset.enable_multiline_caption:
+                        tags = tags.replace("\n", subset.caption_separator)  # same as build_finetuning_caption
+                    tags_list.append(tags)
+                captions.append(caption)
 
                 image_info = ImageInfo(image_key, subset.num_repeats, caption, False, abs_path, subset.caption_dropout_rate)
                 image_info.resize_interpolation = (
@@ -244,6 +274,9 @@ class FineTuningDataset(BaseDataset):
             if num_filtered > 0:
                 logger.info(f"filtered {num_filtered} images by original resolution from {subset.metadata_file}")
             self.num_train_images += len(metadata) * subset.num_repeats
+
+            # validate separator lines of multi-line captions (raises ValueError if invalid)
+            self.validate_caption_candidates(subset, captions)
 
             # TODO do not record tag freq when no tag
             self.set_tag_frequency(os.path.basename(subset.metadata_file), tags_list)

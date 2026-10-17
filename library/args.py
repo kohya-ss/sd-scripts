@@ -16,6 +16,7 @@ import toml
 from huggingface_hub import hf_hub_download
 
 import library.huggingface_util as huggingface_util
+from library.subset import DEFAULT_MULTILINE_CAPTION_SEPARATOR
 from library.utils import setup_logging
 
 setup_logging()
@@ -948,6 +949,19 @@ def add_dataset_arguments(
         "--enable_wildcard",
         action="store_true",
         help="enable wildcard for caption (e.g. '{image|picture|rendition}') / captionのワイルドカードを有効にする（例：'{image|picture|rendition}'）",
+    )
+    parser.add_argument(
+        "--enable_multiline_caption",
+        action="store_true",
+        help="use multi-line captions as they are (including line breaks). Multiple caption candidates can be separated by lines starting with `--multiline_caption_separator`, and one is chosen randomly at each step"
+        + " / 複数行のキャプションを改行を含めてそのまま使う。`--multiline_caption_separator` で始まる行で複数のキャプション候補を区切ると、ステップごとにランダムに1つが選ばれる",
+    )
+    parser.add_argument(
+        "--multiline_caption_separator",
+        type=str,
+        default=DEFAULT_MULTILINE_CAPTION_SEPARATOR,
+        help="prefix of the lines which separate caption candidates when `--enable_multiline_caption` is enabled. Text after `#` on the line is a comment"
+        + " / `--enable_multiline_caption` 有効時に、キャプション候補を区切る行の先頭文字列。行内の `#` 以降はコメント",
     )
     parser.add_argument(
         "--caption_prefix",
