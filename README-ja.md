@@ -51,6 +51,10 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - Text Encoder の出力をキャッシュする場合（`--cache_text_encoder_outputs`）に、`caption_prefix` / `caption_suffix`、`secondary_separator`、複数行キャプションの 1 行目への切り詰めが適用されず、キャプションがそのままエンコードされていた問題を修正しました。[Issue #2453](https://github.com/kohya-ss/sd-scripts/issues/2453)
+        - これらのオプションを `--cache_text_encoder_outputs_to_disk` と併用している場合は、既存のキャッシュファイル（`*_te.npz` など）を削除し、処理後のキャプションで作り直してください。
+        - `enable_wildcard` はキャッシュされた出力には適用できません（キャプションはそのままエンコードされます）。この場合に警告を表示するようになりました。
+        - 独自のキャッシュ戦略を実装している場合: `TextEncoderOutputsCachingStrategy.cache_batch_outputs` に、処理後のキャプションを渡す `captions` 引数が追加されています。
     - `--lr_scheduler_type` でカスタムの学習率スケジューラを指定した場合に、sd-scripts が計算した総学習ステップ数と warmup ステップ数を、`num_training_steps` と `num_warmup_steps` としてスケジューラに渡すようにしました。[Issue #2444](https://github.com/kohya-ss/sd-scripts/issues/2444)
         - スケジューラのコンストラクタがこの名前の引数を持つ場合のみ渡されます。`--lr_scheduler_args` で明示的に指定した値が優先されます。異なる名前の引数（`total_steps` など）を使うスケジューラには影響しませんので、従来通り `--lr_scheduler_args` で指定してください。
         - `num_training_steps` を持つカスタムスケジューラを `--lr_scheduler_args` で指定せずに使っていた場合、これまではスケジューラのデフォルト値で動作していましたが、今後は実際の学習ステップ数が使われますのでご注意ください。同様に、`num_warmup_steps` を持つスケジューラには `--lr_warmup_steps` が渡されるようになります（従来はエラーになっていました）。
