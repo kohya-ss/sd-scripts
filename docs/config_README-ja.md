@@ -362,6 +362,8 @@ detailed digital art of a girl with a microphone on a stage
 
 ワイルドカード記法と組み合わせることも可能です。
 
+※ Text Encoder の出力をキャッシュする場合（`--cache_text_encoder_outputs`）、行のランダム選択とワイルドカード記法は効きません（キャプションの内容がそのままエンコードされます）。この場合は警告が表示されます。`caption_prefix` / `caption_suffix` などの決定的な処理はキャッシュ時にも適用されます。
+
 メタデータファイルでも同様に複数行キャプションを指定することができます。メタデータの .json 内には、`\n` を使って改行を表現してください。キャプションファイルが複数行からなる場合、`merge_captions_to_metadata.py` を使うと、この形式でメタデータファイルが作成されます。
 
 メタデータのタグ (`tags`) は、キャプションの各行に追加されます。

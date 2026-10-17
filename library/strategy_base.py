@@ -383,8 +383,18 @@ class TextEncoderOutputsCachingStrategy:
         raise NotImplementedError
 
     def cache_batch_outputs(
-        self, tokenize_strategy: TokenizeStrategy, models: List[Any], text_encoding_strategy: TextEncodingStrategy, batch: List
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: List,
+        captions: List[str],
     ):
+        """Encode ``captions`` and cache the outputs for ``batch`` (list of ImageInfo, same order as ``captions``).
+
+        ``captions`` are the processed captions (``BaseDataset.process_caption_for_cache``: prefix/suffix etc. applied),
+        not ``info.caption``.
+        """
         raise NotImplementedError
 
 

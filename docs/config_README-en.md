@@ -353,6 +353,8 @@ detailed digital art of a girl with a microphone on a stage
 
 It can be combined with wildcard notation.
 
+Note: when the Text Encoder outputs are cached (`--cache_text_encoder_outputs`), the random selection of a line and the wildcard notation have no effect (the caption is encoded as it is), and a warning is shown. Deterministic processing such as `caption_prefix` / `caption_suffix` is applied when caching as well.
+
 In metadata files, you can also specify multiple-line captions. In the `.json` metadata file, use `\n` to represent a line break. If the caption file consists of multiple lines, `merge_captions_to_metadata.py` will create a metadata file in this format.
 
 The tags in the metadata (`tags`) are added to each line of the caption.
