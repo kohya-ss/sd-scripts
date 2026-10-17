@@ -47,6 +47,11 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - When a custom LR scheduler is specified with `--lr_scheduler_type`, the total number of training steps and the number of warmup steps computed by sd-scripts are now passed to the scheduler as `num_training_steps` and `num_warmup_steps`. [Issue #2444](https://github.com/kohya-ss/sd-scripts/issues/2444)
+        - They are passed only when the scheduler's constructor has arguments with these exact names, and values given explicitly with `--lr_scheduler_args` take priority. Schedulers with differently named arguments (e.g. `total_steps`) are not affected; specify them with `--lr_scheduler_args` as before.
+        - Note that a custom scheduler that has `num_training_steps` but was used without specifying it in `--lr_scheduler_args` previously ran with its default value, and now uses the actual number of training steps. Similarly, `--lr_warmup_steps` is now passed to a scheduler that has `num_warmup_steps` (previously it caused an error).
+
 - **Version 0.12.0 (2026-09-24):**
     - Added support for Windows on ARM64 (e.g. NVIDIA RTX Spark PCs). [PR #2430](https://github.com/kohya-ss/sd-scripts/pull/2430), [PR #2431](https://github.com/kohya-ss/sd-scripts/pull/2431), [PR #2433](https://github.com/kohya-ss/sd-scripts/pull/2433)
         - `opencv-python` is now optional (a Pillow/NumPy fallback is used when it is missing), and `requirements.txt` selects the packages that have Windows ARM64 wheels automatically. For details, please refer to [Installing without OpenCV / Windows on ARM64](#installing-without-opencv--windows-on-arm64).
