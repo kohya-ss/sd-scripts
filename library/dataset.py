@@ -144,6 +144,54 @@ def split_train_val(
         return paths[split:], sizes[split:]
 
 
+def normalize_multiline_caption(caption: str) -> str:
+    """Normalize a multi-line caption: strip trailing whitespace of each line and remove leading/trailing blank lines.
+
+    Leading whitespace of each line and blank lines in the middle are kept, because they may be intentional
+    (indentation, paragraph breaks).
+    """
+    lines = [line.rstrip() for line in caption.split("\n")]
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
+
+
+def split_caption_candidates(caption: str, separator: str) -> List[str]:
+    """Split a multi-line caption into candidates by separator lines.
+
+    A line whose stripped content starts with ``separator`` is a separator line. Text after ``#`` on a separator line
+    is a comment. Any other non-blank text between the separator and the comment is reserved for future extensions
+    (e.g. sampling weights) and raises ``ValueError``.
+
+    Each candidate is normalized with :func:`normalize_multiline_caption`; empty candidates are dropped.
+    Returns ``[""]`` if no candidate remains.
+    """
+    assert separator, "separator must not be empty"
+
+    candidates: List[str] = []
+    current: List[str] = []
+    for line in caption.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(separator):
+            reserved = stripped[len(separator) :].split("#", 1)[0].strip()
+            if reserved:
+                raise ValueError(
+                    f"unsupported text after caption candidate separator (only `#` comments are allowed)"
+                    + f" / キャプション候補の区切り行の後ろに未対応の文字列があります（`#` によるコメントのみ指定可能です）: {line!r}"
+                )
+            candidates.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    candidates.append("\n".join(current))
+
+    candidates = [normalize_multiline_caption(c) for c in candidates]
+    candidates = [c for c in candidates if c != ""]
+    return candidates if candidates else [""]
+
+
 class ImageInfo:
     def __init__(
         self, image_key: str, num_repeats: int, caption: str, is_reg: bool, absolute_path: str, caption_dropout_rate: float = 0.0
@@ -417,6 +465,10 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_data: Dict[str, ImageInfo] = {}
         self.image_to_subset: Dict[str, Union[DreamBoothSubset, FineTuningSubset]] = {}
 
+        # True if any image has multiple caption candidates (enable_multiline_caption with separator lines).
+        # Text encoder outputs cannot be cached in that case because one candidate is chosen randomly at each step.
+        self.has_multiple_caption_candidates = False
+
         self.replacements = {}
 
         self.tokenize_strategy = None
@@ -499,7 +551,30 @@ class BaseDataset(torch.utils.data.Dataset):
     def add_replacement(self, str_from, str_to):
         self.replacements[str_from] = str_to
 
+    def validate_caption_candidates(self, subset: BaseSubset, captions: Sequence[str]):
+        """Validate separator lines of multi-line captions at loading time and record whether any image has
+        multiple candidates. Does nothing if ``enable_multiline_caption`` is disabled."""
+        if not subset.enable_multiline_caption:
+            return
+        for caption in captions:
+            candidates = split_caption_candidates(caption, subset.multiline_caption_separator)  # raises ValueError if invalid
+            if len(candidates) > 1:
+                self.has_multiple_caption_candidates = True
+
     def process_caption(self, subset: BaseSubset, caption):
+        # select one caption from candidates. this must be done before adding prefix/suffix
+        if subset.enable_multiline_caption:
+            # candidates are separated by separator lines, line breaks in each candidate are kept
+            candidates = split_caption_candidates(caption, subset.multiline_caption_separator)
+            caption = random.choice(candidates) if len(candidates) > 1 else candidates[0]
+        elif subset.enable_wildcard:
+            # if caption is multiline, random choice one line
+            if "\n" in caption:
+                caption = random.choice(caption.split("\n"))
+        else:
+            # if caption is multiline, use the first line
+            caption = caption.split("\n")[0]
+
         # caption に prefix/suffix を付ける
         if subset.caption_prefix:
             caption = subset.caption_prefix + " " + caption
@@ -519,10 +594,6 @@ class BaseDataset(torch.utils.data.Dataset):
         else:
             # process wildcards
             if subset.enable_wildcard:
-                # if caption is multiline, random choice one line
-                if "\n" in caption:
-                    caption = random.choice(caption.split("\n"))
-
                 # wildcard is like '{aaa|bbb|ccc...}'
                 # escape the curly braces like {{ or }}
                 replacer1 = "⦅"
@@ -541,11 +612,13 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 # unescape the curly braces
                 caption = caption.replace(replacer1, "{").replace(replacer2, "}")
-            else:
-                # if caption is multiline, use the first line
-                caption = caption.split("\n")[0]
 
-            if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
+            # shuffle / tag dropout / token warmup are applied only to single-line captions:
+            # with enable_multiline_caption, a caption containing line breaks is used as is
+            is_single_line = not subset.enable_multiline_caption or "\n" not in caption
+            if is_single_line and (
+                subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0
+            ):
                 fixed_tokens = []
                 flex_tokens = []
                 fixed_suffix_tokens = []
@@ -732,6 +805,12 @@ class BaseDataset(torch.utils.data.Dataset):
         return all([not subset.color_aug and not subset.random_crop for subset in self.subsets])
 
     def is_text_encoder_output_cacheable(self, cache_supports_dropout: bool = False):
+        if self.has_multiple_caption_candidates:
+            logger.error(
+                "Text Encoder outputs cannot be cached because some captions have multiple candidates (enable_multiline_caption with separator lines): one candidate is chosen randomly at each step"
+                + " / 複数のキャプション候補を持つ画像があるため（enable_multiline_caption と区切り行）、Text Encoder の出力をキャッシュできません。候補はステップごとにランダムに選ばれます"
+            )
+            return False
         return all(
             [
                 not (

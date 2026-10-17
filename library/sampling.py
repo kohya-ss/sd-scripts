@@ -237,6 +237,12 @@ def line_to_prompt_dict(line: str) -> dict:
             logger.error(f"Exception in parsing / 解析エラー: {parg}")
             logger.error(ex)
 
+    # `\n` (backslash + n) in line-format prompts is converted to a line break, for the models whose text encoders
+    # are sensitive to line breaks. .toml / .json (dict) prompts can contain real line breaks, so they are not converted
+    for key in ("prompt", "negative_prompt"):
+        if key in prompt_dict and prompt_dict[key] is not None:
+            prompt_dict[key] = prompt_dict[key].replace("\\n", "\n")
+
     return prompt_dict
 
 
@@ -321,17 +327,7 @@ def sample_images_common(
         text_encoder = accelerator.unwrap_model(text_encoder)
 
     # read prompts
-    if args.sample_prompts.endswith(".txt"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
-    elif args.sample_prompts.endswith(".toml"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            data = toml.load(f)
-        prompts = [dict(**data["prompt"], **subset) for subset in data["prompt"]["subset"]]
-    elif args.sample_prompts.endswith(".json"):
-        with open(args.sample_prompts, "r", encoding="utf-8") as f:
-            prompts = json.load(f)
+    prompts = load_prompts(args.sample_prompts)
 
     default_scheduler = get_my_scheduler(sample_sampler=args.sample_sampler, v_parameterization=args.v_parameterization)
 
@@ -349,18 +345,6 @@ def sample_images_common(
     pipeline.to(distributed_state.device)
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
-
-    # preprocess prompts
-    for i in range(len(prompts)):
-        prompt_dict = prompts[i]
-        if isinstance(prompt_dict, str):
-            prompt_dict = line_to_prompt_dict(prompt_dict)
-            prompts[i] = prompt_dict
-        assert isinstance(prompt_dict, dict)
-
-        # Adds an enumerator to the dict based on prompt position. Used later to name image files. Also cleanup of extra data in original prompt dict.
-        prompt_dict["enum"] = i
-        prompt_dict.pop("subset", None)
 
     # save random state to restore later
     rng_state = torch.get_rng_state()
