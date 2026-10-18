@@ -168,11 +168,16 @@ def load_text_encoder(
     dtype: Optional[torch.dtype] = torch.bfloat16,
     device: Union[str, torch.device] = "cpu",
     disable_mmap: bool = False,
+    lora_weights_list: Optional[List[Dict[str, torch.Tensor]]] = None,
+    lora_multipliers: Optional[List[float]] = None,
 ):
     """Load the Qwen3.5-9B text encoder (text model only, the vision tower is not loaded).
 
     Both the diffusers shards (specify the first file, `model-00001-of-00004.safetensors`) and the ComfyUI single file
     are supported. The config is always built from `configs/moss_image_qwen35_9b/config.json`.
+
+    LoRA weights for the text encoder can be merged on load. The keys must be relative to the text model without the
+    `lora_te_` prefix (e.g. `layers_0_self_attn_q_proj.lora_down.weight`): strip the prefix beforehand.
     """
     from transformers import Qwen3_5TextModel
 
@@ -185,6 +190,15 @@ def load_text_encoder(
         # non-persistent buffers (rotary inv_freq) must stay in float32 like `from_pretrained`.
         model = Qwen3_5TextModel(config)
 
+    weight_hook = None
+    list_of_lora_weight_keys = []
+    if lora_weights_list:
+        # imported here: lora_utils depends on the `networks` package, which is not importable from tools/ scripts
+        from library.lora_utils import create_lora_merge_hook
+
+        logger.info(f"Merging LoRA weights into the text encoder. multipliers: {lora_multipliers}")
+        weight_hook, list_of_lora_weight_keys, _ = create_lora_merge_hook(lora_weights_list, lora_multipliers, device)
+
     files = get_split_weight_filenames(ckpt_path) or [ckpt_path]
     sd = {}
     for file in files:
@@ -193,7 +207,15 @@ def load_text_encoder(
                 new_key = _strip_text_encoder_key(key)
                 if new_key is None:
                     continue
-                sd[new_key] = f.get_tensor(key, device=device, dtype=dtype)
+                tensor = f.get_tensor(key, device=device, dtype=dtype)
+                if weight_hook is not None:
+                    # the merge is computed in the LoRA dtype (float32): cast back to the text encoder dtype
+                    tensor = weight_hook(new_key, tensor, keep_on_calc_device=True).to(tensor.dtype)
+                sd[new_key] = tensor
+
+    for lora_weight_keys in list_of_lora_weight_keys:
+        if len(lora_weight_keys) > 0:
+            logger.warning(f"Warning: not all LoRA keys are used: {', '.join(sorted(lora_weight_keys))}")
 
     info = model.load_state_dict(sd, strict=True, assign=True)
     logger.info(f"Loaded MOSS-Image text encoder: {info}")

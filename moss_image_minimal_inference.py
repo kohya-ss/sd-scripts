@@ -15,11 +15,9 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
-from tqdm import tqdm
 
 from library import flux2_vae, moss_image_models, moss_image_train_utils, moss_image_utils
 from library.device_utils import clean_memory_on_device, synchronize_device
@@ -199,11 +197,19 @@ def load_dit_model(args: argparse.Namespace, device: torch.device) -> moss_image
 
 
 def load_text_encoder(args: argparse.Namespace, device: torch.device):
-    if args.lora_weight is not None and len(args.lora_weight) > 0:
-        te_lora = load_lora_weights(args, "lora_te_")
-        if any(len(sd) > 0 for sd in te_lora):
-            logger.warning("Text Encoder LoRA weights (lora_te_*) are not supported by this script yet and are ignored.")
-    text_encoder = moss_image_utils.load_text_encoder(args.text_encoder, dtype=torch.bfloat16, device=device)
+    lora_weights_list = load_lora_weights(args, "lora_te_")
+    if lora_weights_list is not None:
+        # the loader matches keys without a prefix, so strip "lora_te_". Files without Text Encoder LoRA give empty dicts.
+        lora_weights_list = [{k[len("lora_te_") :]: v for k, v in sd.items()} for sd in lora_weights_list]
+        if not any(len(sd) > 0 for sd in lora_weights_list):
+            lora_weights_list = None
+    text_encoder = moss_image_utils.load_text_encoder(
+        args.text_encoder,
+        dtype=torch.bfloat16,
+        device=device,
+        lora_weights_list=lora_weights_list,
+        lora_multipliers=args.lora_multiplier if lora_weights_list is not None else None,
+    )
     return text_encoder
 
 
@@ -258,30 +264,25 @@ def generate_latents(
         f"flow shift: {args.flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
     )
 
-    # Initial noise is sampled in float32 on the CPU generator (same as the official pipeline)
-    generator = torch.Generator(device="cpu").manual_seed(seed)
-    shape = (1, dit.latent_channels, height // 16, width // 16)
-    latents = randn_tensor(shape, generator=generator, device=device, dtype=torch.float32)
-
     positive, positive_mask = moss_image_utils.pad_text_embeds([prompt_embeds.to(device)])
     negative, negative_mask = moss_image_utils.pad_text_embeds([negative_embeds.to(device)])
 
-    sigmas = moss_image_train_utils.get_sampling_sigmas(args.infer_steps, args.flow_shift).to(device)
-    num_steps = len(sigmas) - 1
-    do_cfg = args.guidance_scale != 1.0
-
-    with torch.no_grad(), tqdm(total=num_steps, desc="Denoising steps") as pbar:
-        for i in range(num_steps):
-            timestep = (sigmas[i] * moss_image_train_utils.NUM_TRAIN_TIMESTEPS).expand(latents.shape[0])
-            x = latents.to(dit.dtype)
-            prediction = dit(x, timestep, positive, positive_mask).float()
-            if do_cfg:
-                uncond = dit(x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers).float()
-                prediction = uncond + args.guidance_scale * (prediction - uncond)
-            latents = moss_image_train_utils.euler_step(latents, prediction, sigmas, i)
-            pbar.update()
-
-    return latents
+    # Initial noise is sampled in float32 on the CPU generator (same as the official pipeline)
+    return moss_image_train_utils.generate_latents(
+        dit,
+        positive,
+        positive_mask,
+        negative,
+        negative_mask,
+        height,
+        width,
+        args.infer_steps,
+        args.guidance_scale,
+        args.flow_shift,
+        uncond_skip_layers,
+        seed,
+        device,
+    )
 
 
 def decode_latents(vae: flux2_vae.AutoEncoder, latents: torch.Tensor, device: torch.device) -> torch.Tensor:
