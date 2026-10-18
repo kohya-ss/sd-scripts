@@ -51,6 +51,12 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image)（OpenMOSS。Qwen3.5-9B テキストエンコーダーと FLUX.2 VAE を使う 5B の DiT）の LoRA 学習に対応しました。[PR #2458](https://github.com/kohya-ss/sd-scripts/pull/2458)、[PR #2459](https://github.com/kohya-ss/sd-scripts/pull/2459)、[PR #2460](https://github.com/kohya-ss/sd-scripts/pull/2460)、[PR #2461](https://github.com/kohya-ss/sd-scripts/pull/2461)
+        - `moss_image_train_network.py` で DiT の LoRA（LoHa / LoKr も可）と、オプションでテキストエンコーダーの LoRA を学習できます。公式の diffusers 形式の分割ファイルと、ComfyUI 向けの単一ファイルのチェックポイントを読み込めます。詳細は[ドキュメント](./docs/moss_image_train_network.md)をご覧ください。
+        - fp8 の代わりに、ベース重みの ConvRot INT8 量子化（DiT は `--convrot_int8`、テキストエンコーダーは `--convrot_int8_text_encoder`。Musubi Tuner からの移植）が使えます。ComfyUI の事前量子化済み `*_int8_convrot.safetensors` は自動判別されます。融合 int8 カーネルには `triton`（Windows では `triton-windows`）が必要です。
+        - DiT の LoRA は変換なしで ComfyUI で使用できます。LoRA を適用した推論用に `moss_image_minimal_inference.py` も用意しています。
+        - `tools/cache_latents.py` と `tools/cache_text_encoder_outputs.py` は `--moss_image` で MOSS-Image に対応しています。
+        - LoRA モジュールは新規の汎用モジュール `networks.lora_generic` です（正規表現によるモジュール選択、`network_reg_dims` / `network_reg_lrs` など `networks.lora_anima` と同じ）。今後、他のアーキテクチャの基盤にする予定です。
     - 改行を含むキャプションをそのまま使うためのサブセットオプション `enable_multiline_caption`（`--enable_multiline_caption`）を追加しました。Anima、Lumina、HunyuanImage など LLM ベースの Text Encoder を持つモデル向けです。
         - `multiline_caption_separator`（デフォルト `---===---`）で始まる行で、一つの画像に対する複数のキャプション候補を区切ることができ、ステップごとにランダムに一つが選ばれます。fine tuning 方式のメタデータファイルでは `caption` に文字列のリストも指定できます。詳細は[データセット設定のドキュメント](./docs/config_README-ja.md#改行を含むキャプションと複数のキャプション候補enable_multiline_caption--true-の場合)をご覧ください。
         - `.txt` のサンプルプロンプトファイルで、`\n`（バックスラッシュ + n）が改行に変換されるようになりました。
@@ -128,6 +134,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * **LUMINA**
 * **HunyuanImage-2.1**
 * **Anima**
+* **MOSS-Image**
 
 ### 機能
 
@@ -153,6 +160,8 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [FLUX.1学習](./docs/flux_train_network.md)
 * [LUMINA学習](./docs/lumina_train_network.md)
 * [HunyuanImage-2.1学習](./docs/hunyuan_image_train_network.md)
+* [Anima学習](./docs/anima_train_network.md)
+* [MOSS-Image学習](./docs/moss_image_train_network.md)
 * [Fine-tuning](./docs/fine_tune.md)
 * [Textual Inversion学習](./docs/train_textual_inversion.md)
 * [ControlNet-LLLite学習](./docs/train_lllite_README-ja.md) / [英語版](./docs/train_lllite_README.md)

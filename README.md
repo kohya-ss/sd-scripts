@@ -48,6 +48,12 @@ If you find this project helpful, please consider supporting its development via
 ### Change History
 
 - **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added support for LoRA training of [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image) (OpenMOSS), a 5B DiT with the Qwen3.5-9B text encoder and the FLUX.2 VAE. [PR #2458](https://github.com/kohya-ss/sd-scripts/pull/2458), [PR #2459](https://github.com/kohya-ss/sd-scripts/pull/2459), [PR #2460](https://github.com/kohya-ss/sd-scripts/pull/2460), [PR #2461](https://github.com/kohya-ss/sd-scripts/pull/2461)
+        - `moss_image_train_network.py` trains LoRA (and LoHa / LoKr) for the DiT and optionally for the text encoder. The official diffusers-format shards and the ComfyUI single-file checkpoints can be loaded. For details, please refer to [the documentation](./docs/moss_image_train_network.md).
+        - ConvRot INT8 quantization of the base weights (`--convrot_int8` for the DiT, `--convrot_int8_text_encoder` for the text encoder, ported from Musubi Tuner) is available as an alternative to fp8. The ComfyUI pre-quantized `*_int8_convrot.safetensors` files are detected automatically. The fused int8 kernels require `triton` (`triton-windows` on Windows).
+        - The DiT LoRA can be used in ComfyUI without conversion. `moss_image_minimal_inference.py` is also available for inference with LoRA.
+        - `tools/cache_latents.py` and `tools/cache_text_encoder_outputs.py` support MOSS-Image with `--moss_image`.
+        - The LoRA module is the new generic `networks.lora_generic` (regex-based module selection, `network_reg_dims` / `network_reg_lrs`, the same as `networks.lora_anima`). It is expected to be the base for other architectures in the future.
     - Added `enable_multiline_caption` subset option (`--enable_multiline_caption`) to use captions containing line breaks as they are, for models with LLM-based text encoders (Anima, Lumina, HunyuanImage, etc.).
         - Lines starting with `multiline_caption_separator` (default `---===---`) separate multiple caption candidates for one image, and one candidate is chosen randomly at each step. In metadata files for fine tuning, `caption` can also be a list of strings. For details, please refer to [the dataset config documentation](./docs/config_README-en.md#captions-with-line-breaks-and-multiple-caption-candidates-enable_multiline_caption--true).
         - In `.txt` sample prompt files, `\n` (backslash + n) is now converted to a line break.
@@ -125,6 +131,7 @@ If you find this project helpful, please consider supporting its development via
 * **LUMINA**
 * **HunyuanImage-2.1**
 * **Anima**
+* **MOSS-Image**
 
 ### Features
 
@@ -148,6 +155,8 @@ If you find this project helpful, please consider supporting its development via
 * [FLUX.1 Training](./docs/flux_train_network.md)
 * [LUMINA Training](./docs/lumina_train_network.md)
 * [HunyuanImage-2.1 Training](./docs/hunyuan_image_train_network.md)
+* [Anima Training](./docs/anima_train_network.md)
+* [MOSS-Image Training](./docs/moss_image_train_network.md)
 * [Fine-tuning](./docs/fine_tune.md)
 * [Textual Inversion Training](./docs/train_textual_inversion.md)
 * [ControlNet-LLLite Training](./docs/train_lllite_README.md) / [Japanese version](./docs/train_lllite_README-ja.md)
