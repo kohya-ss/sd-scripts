@@ -497,7 +497,8 @@ Guidelines:
 
 * **24GB GPU:** bf16 DiT with the text encoder outputs cached. Use the ConvRot INT8 text encoder (or cache the outputs with the tool beforehand) if the startup peak is a problem.
 * **16GB GPU:** ConvRot INT8 for both the DiT and the text encoder (9GB). Also bf16 DiT with `--blocks_to_swap` and the INT8 text encoder.
-* **12GB GPU / 8GB GPU:** ConvRot INT8 for both and `--blocks_to_swap` (20 to 36). The text encoder outputs must be cached. About 15GB of CPU RAM is needed for the swapped blocks and the text encoder.
+* **12GB GPU:** ConvRot INT8 for both and `--blocks_to_swap` (20 to 36). The text encoder outputs must be cached. About 15GB of CPU RAM is needed for the swapped blocks and the text encoder.
+* **8GB GPU:** Not supported at the moment. Training itself fits with ConvRot INT8 and `--blocks_to_swap 36` (5.2GB), but caching the text encoder outputs needs about 8.3GB even with the ConvRot INT8 text encoder.
 * **Text encoder LoRA:** needs about 17GB with ConvRot INT8 (DiT and text encoder), 32GB in bf16.
 * Note that on Windows the commit charge of the process is larger than the working set (up to about 38GB in the bf16 runs above), because the GPU allocations are backed by system memory. Make sure the page file is large enough.
 
