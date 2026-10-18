@@ -2,10 +2,12 @@
 # The sampler follows the official `MOSSImageScheduler` (pipeline_moss_image.py): the shifted inference grid is snapped
 # to the nearest sigma of the training grid (shift 1, 1000 steps) and integrated with Euler steps in float32.
 
+import argparse
 from typing import Optional, Sequence
 
 import torch
 
+from library import moss_image_utils
 from library.utils import setup_logging
 
 setup_logging()
@@ -15,6 +17,31 @@ logger = logging.getLogger(__name__)
 
 NUM_TRAIN_TIMESTEPS = 1000
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)  # block skipped in the negative branch of CFG by the official pipeline
+
+
+# region arguments
+
+
+def add_moss_image_model_arguments(parser: argparse.ArgumentParser):
+    """Arguments to load the MOSS-Image models (shared by the trainer and the caching tools). `--vae` is registered by
+    `add_sd_models_arguments`."""
+    parser.add_argument(
+        "--text_encoder",
+        type=str,
+        default=None,
+        help="path to the Qwen3.5-9B text encoder checkpoint: the first shard of the diffusers format (model-00001-of-00004.safetensors) or the ComfyUI single file"
+        + " / Qwen3.5-9B Text Encoder のチェックポイント。diffusers 形式なら最初の分割ファイル（model-00001-of-00004.safetensors）、ComfyUI 形式なら単一ファイル",
+    )
+    parser.add_argument(
+        "--moss_max_token_length",
+        type=int,
+        default=moss_image_utils.MAX_TOKEN_LENGTH,
+        help=f"maximum number of text tokens (including the chat template), default and maximum: {moss_image_utils.MAX_TOKEN_LENGTH}"
+        + f" / テキストトークンの最大数（chat template を含む）。デフォルトおよび最大値: {moss_image_utils.MAX_TOKEN_LENGTH}",
+    )
+
+
+# endregion
 
 
 def _sigma_grid(count: int, shift: float, total: int) -> torch.Tensor:
