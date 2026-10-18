@@ -293,6 +293,7 @@ def get_sai_model_spec_dataclass(
     lumina: str = None,
     hunyuan_image: str = None,
     anima: str = None,
+    moss_image: str = None,
     optional_metadata: dict[str, str] | None = None,
 ) -> sai_model_spec.ModelSpecMetadata:
     """
@@ -326,6 +327,8 @@ def get_sai_model_spec_dataclass(
         model_config["hunyuan_image"] = hunyuan_image
     if anima is not None:
         model_config["anima"] = anima
+    if moss_image is not None:
+        model_config["moss_image"] = moss_image
     # Use the dataclass function directly
     return sai_model_spec.build_metadata_dataclass(
         state_dict,
