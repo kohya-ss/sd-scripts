@@ -44,12 +44,30 @@ def detect_arch_config(unet, text_encoders) -> ArchConfig:
             unet_conv_target_modules=["ResnetBlock2D", "Downsample2D", "Upsample2D"],
         )
 
-    # Check Anima: look for Block class in named_modules
     module_class_names = set()
     if unet is not None:
         for module in unet.modules():
             module_class_names.add(type(module).__name__)
+    te_class_names = set()
+    for text_encoder in text_encoders or []:
+        if text_encoder is not None:
+            te_class_names.add(type(text_encoder).__name__)
 
+    # Check MOSS-Image before Anima: the main block class is `MossImageBlock`. The text embedder (input projection and
+    # the two refiner blocks, `MossImageTextEmbedder`) is trained only with train_llm_adapter / train_text_embedder.
+    # The text encoder is Qwen3.5-9B.
+    if "MossImageBlock" in module_class_names or (unet is None and "Qwen3_5TextModel" in te_class_names):
+        return ArchConfig(
+            unet_target_modules=["MossImageBlock"],
+            te_target_modules=["Qwen3_5Attention", "Qwen3_5GatedDeltaNet", "Qwen3_5MLP"],
+            unet_prefix="lora_unet",
+            te_prefixes=["lora_te"],
+            # in_proj_a / in_proj_b of the gated delta net output only num_value_heads (32) values: excluded by default
+            default_excludes=[r".*in_proj_[ab]"],
+            adapter_target_modules=["MossImageTextEmbedder"],
+        )
+
+    # Check Anima: look for Block class in named_modules
     if "Block" in module_class_names:
         return ArchConfig(
             unet_target_modules=["Block", "PatchEmbed", "TimestepEmbedding", "FinalLayer"],

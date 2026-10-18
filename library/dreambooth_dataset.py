@@ -27,6 +27,44 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+def read_caption(
+    img_path: str, caption_extension: str, enable_wildcard: bool, enable_multiline_caption: bool = False
+) -> Optional[str]:
+    """Read the caption file for an image. Returns None if no caption file is found.
+
+    - enable_multiline_caption: the whole file is returned as is (line breaks are kept, separator lines are not
+      processed here; see ``library.dataset.split_caption_candidates``).
+    - enable_wildcard: non-empty lines are stripped and joined with ``\\n`` (one line is chosen randomly later).
+    - otherwise: only the first line is used.
+    """
+    # captionの候補ファイル名を作る
+    base_name = os.path.splitext(img_path)[0]
+    base_name_face_det = base_name
+    tokens = base_name.split("_")
+    if len(tokens) >= 5:
+        base_name_face_det = "_".join(tokens[:-4])
+    cap_paths = [base_name + caption_extension, base_name_face_det + caption_extension]
+
+    caption = None
+    for cap_path in cap_paths:
+        if os.path.isfile(cap_path):
+            with open(cap_path, "rt", encoding="utf-8") as f:
+                try:
+                    lines = f.readlines()
+                except UnicodeDecodeError as e:
+                    logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
+                    raise e
+                assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
+                if enable_multiline_caption:
+                    caption = "".join(lines)  # 改行を含めてそのまま（正規化は候補分割時に行う）
+                elif enable_wildcard:
+                    caption = "\n".join([line.strip() for line in lines if line.strip() != ""])  # 空行を除く、改行で連結
+                else:
+                    caption = lines[0].strip()
+            break
+    return caption
+
+
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
 
@@ -86,32 +124,6 @@ class DreamBoothDataset(BaseDataset):
             self.max_bucket_reso = None
             self.bucket_reso_steps = None  # この情報は使われない
             self.bucket_no_upscale = False
-
-        def read_caption(img_path, caption_extension, enable_wildcard):
-            # captionの候補ファイル名を作る
-            base_name = os.path.splitext(img_path)[0]
-            base_name_face_det = base_name
-            tokens = base_name.split("_")
-            if len(tokens) >= 5:
-                base_name_face_det = "_".join(tokens[:-4])
-            cap_paths = [base_name + caption_extension, base_name_face_det + caption_extension]
-
-            caption = None
-            for cap_path in cap_paths:
-                if os.path.isfile(cap_path):
-                    with open(cap_path, "rt", encoding="utf-8") as f:
-                        try:
-                            lines = f.readlines()
-                        except UnicodeDecodeError as e:
-                            logger.error(f"illegal char in file (not UTF-8) / ファイルにUTF-8以外の文字があります: {cap_path}")
-                            raise e
-                        assert len(lines) > 0, f"caption file is empty / キャプションファイルが空です: {cap_path}"
-                        if enable_wildcard:
-                            caption = "\n".join([line.strip() for line in lines if line.strip() != ""])  # 空行を除く、改行で連結
-                        else:
-                            caption = lines[0].strip()
-                    break
-            return caption
 
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):
@@ -228,7 +240,9 @@ class DreamBoothDataset(BaseDataset):
                 captions = []
                 missing_captions = []
                 for img_path in tqdm(img_paths, desc="read caption"):
-                    cap_for_img = read_caption(img_path, subset.caption_extension, subset.enable_wildcard)
+                    cap_for_img = read_caption(
+                        img_path, subset.caption_extension, subset.enable_wildcard, subset.enable_multiline_caption
+                    )
                     if cap_for_img is None and subset.class_tokens is None:
                         logger.warning(
                             f"neither caption file nor class tokens are found. use empty caption for {img_path} / キャプションファイルもclass tokenも見つかりませんでした。空のキャプションを使用します: {img_path}"
@@ -241,6 +255,9 @@ class DreamBoothDataset(BaseDataset):
                             missing_captions.append(img_path)
                         else:
                             captions.append(cap_for_img)
+
+            # validate separator lines of multi-line captions (raises ValueError if invalid)
+            self.validate_caption_candidates(subset, captions)
 
             self.set_tag_frequency(os.path.basename(subset.image_dir), captions)  # タグ頻度を記録
 

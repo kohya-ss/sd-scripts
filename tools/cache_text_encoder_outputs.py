@@ -13,9 +13,12 @@ from library import (
     config_util,
     flux_train_utils,
     flux_utils,
+    moss_image_train_utils,
+    moss_image_utils,
     sdxl_model_util,
     strategy_base,
     strategy_flux,
+    strategy_moss_image,
     strategy_sd,
     strategy_sdxl,
 )
@@ -51,18 +54,19 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     if args.seed is not None:
         set_seed(args.seed)  # 乱数系列を初期化する
 
-    is_sd = not args.sdxl and not args.flux
+    is_sd = not args.sdxl and not args.flux and not args.moss_image
     is_sdxl = args.sdxl
     is_flux = args.flux
+    is_moss_image = args.moss_image
 
     assert (
-        is_sdxl or is_flux
-    ), "Cache text encoder outputs to disk is only supported for SDXL and FLUX models / テキストエンコーダ出力のディスクキャッシュはSDXLまたはFLUXでのみ有効です"
+        is_sdxl or is_flux or is_moss_image
+    ), "Cache text encoder outputs to disk is only supported for SDXL, FLUX and MOSS-Image models / テキストエンコーダ出力のディスクキャッシュはSDXL、FLUX、MOSS-Imageでのみ有効です"
     assert (
-        is_sdxl or args.weighted_captions is None
+        is_sdxl or not args.weighted_captions
     ), "Weighted captions are only supported for SDXL models / 重み付きキャプションはSDXLモデルでのみ有効です"
 
-    set_tokenize_strategy(is_sd, is_sdxl, is_flux, args)
+    set_tokenize_strategy(is_sd, is_sdxl, is_flux, args, is_moss_image)
 
     # データセットを準備する
     use_user_config = args.dataset_config is not None
@@ -130,6 +134,16 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         text_encoder1.to(accelerator.device, weight_dtype)
         text_encoder2.to(accelerator.device, weight_dtype)
         text_encoders = [text_encoder1, text_encoder2]
+    elif is_moss_image:
+        # the text encoder is always used in bf16
+        text_encoder = moss_image_utils.load_text_encoder(
+            args.text_encoder,
+            torch.bfloat16,
+            accelerator.device,
+            disable_mmap=args.disable_mmap_load_safetensors,
+            convrot_int8=args.convrot_int8_text_encoder,
+        )
+        text_encoders = [text_encoder]
     else:
         clip_l = flux_utils.load_clip_l(
             args.clip_l, weight_dtype, accelerator.device, disable_mmap=args.disable_mmap_load_safetensors
@@ -162,6 +176,10 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         text_encoder_outputs_caching_strategy = strategy_sdxl.SdxlTextEncoderOutputsCachingStrategy(
             args.cache_text_encoder_outputs_to_disk, None, args.skip_cache_check, is_weighted=args.weighted_captions
         )
+    elif is_moss_image:
+        text_encoder_outputs_caching_strategy = strategy_moss_image.MossImageTextEncoderOutputsCachingStrategy(
+            args.cache_text_encoder_outputs_to_disk, args.text_encoder_batch_size, args.skip_cache_check, is_partial=False
+        )
     else:
         text_encoder_outputs_caching_strategy = strategy_flux.FluxTextEncoderOutputsCachingStrategy(
             args.cache_text_encoder_outputs_to_disk,
@@ -175,6 +193,8 @@ def cache_to_disk(args: argparse.Namespace) -> None:
     # build text encoding strategy
     if is_sdxl:
         text_encoding_strategy = strategy_sdxl.SdxlTextEncodingStrategy()
+    elif is_moss_image:
+        text_encoding_strategy = strategy_moss_image.MossImageTextEncodingStrategy()
     else:
         text_encoding_strategy = strategy_flux.FluxTextEncodingStrategy(args.apply_t5_attn_mask)
     strategy_base.TextEncodingStrategy.set_strategy(text_encoding_strategy)
@@ -198,9 +218,15 @@ def setup_parser() -> argparse.ArgumentParser:
     config_util.add_config_arguments(parser)
     args_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
+    moss_image_train_utils.add_moss_image_model_arguments(parser)
 
     parser.add_argument("--sdxl", action="store_true", help="Use SDXL model / SDXLモデルを使用する")
     parser.add_argument("--flux", action="store_true", help="Use FLUX model / FLUXモデルを使用する")
+    parser.add_argument(
+        "--moss_image",
+        action="store_true",
+        help="Use MOSS-Image model (--text_encoder is the Qwen3.5-9B checkpoint) / MOSS-Imageモデルを使用する（--text_encoder は Qwen3.5-9B のチェックポイント）",
+    )
     parser.add_argument(
         "--t5xxl_dtype",
         type=str,

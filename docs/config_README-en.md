@@ -153,6 +153,8 @@ These options are related to subset configuration.
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `enable_multiline_caption` | `true` | o | o | o |
+| `multiline_caption_separator` | (not specified) | o | o | o |
 | `resize_interpolation` | (not specified) | o | o | o |
 
 * `num_repeats`
@@ -166,7 +168,11 @@ These options are related to subset configuration.
 * `secondary_separator`
     * Specifies an additional separator. The part separated by this separator is treated as one tag and is shuffled and dropped. It is then replaced by `caption_separator`. For example, if you specify `aaa;;;bbb;;;ccc`, it will be replaced by `aaa,bbb,ccc` or dropped together.
 * `enable_wildcard`
-    * Enables wildcard notation. This will be explained later.
+    * Enables wildcard notation and multi-line captions (one line is chosen randomly). This will be explained later.
+* `enable_multiline_caption`
+    * Uses captions containing line breaks as they are. Multiple caption candidates can also be defined with separator lines. This will be explained later.
+* `multiline_caption_separator`
+    * Specifies the prefix of the lines that separate caption candidates when `enable_multiline_caption` is enabled. The default is `---===---`.
 * `resize_interpolation`
     * Specifies the interpolation method used when resizing images. Normally, there is no need to specify this. The following options can be specified: `lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box`. By default (when not specified), `area` is used for downscaling, and `lanczos` is used for upscaling. If this option is specified, the same interpolation method will be used for both upscaling and downscaling. When `lanczos` or `box` is specified, PIL is used; for other options, OpenCV is used.
 
@@ -333,9 +339,11 @@ As a temporary measure, we will list common errors and their solutions. If you e
 
 ## Miscellaneous
 
-### Multi-line captions
+### Multi-line captions (random selection of one line)
 
 By setting `enable_wildcard = true`, multiple-line captions are also enabled. If the caption file consists of multiple lines, one line is randomly selected as the caption. 
+
+(By default, only the first line of the caption file is used. To use a caption containing line breaks as it is, see `enable_multiline_caption` below.)
 
 ```txt
 1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
@@ -344,6 +352,8 @@ detailed digital art of a girl with a microphone on a stage
 ```
 
 It can be combined with wildcard notation.
+
+Note: when the Text Encoder outputs are cached (`--cache_text_encoder_outputs`), the random selection of a line and the wildcard notation have no effect (the caption is encoded as it is), and a warning is shown. Deterministic processing such as `caption_prefix` / `caption_suffix` is applied when caching as well.
 
 In metadata files, you can also specify multiple-line captions. In the `.json` metadata file, use `\n` to represent a line break. If the caption file consists of multiple lines, `merge_captions_to_metadata.py` will create a metadata file in this format.
 
@@ -360,6 +370,47 @@ The tags in the metadata (`tags`) are added to each line of the caption.
 ```
 
 In this case, the actual caption will be `a cartoon of a frog with the word frog on it, open mouth, simple background ...`, `test multiline caption1, open mouth, simple background ...`, `test multiline caption2, open mouth, simple background ...`, etc.
+
+### Captions with line breaks and multiple caption candidates: `enable_multiline_caption = true`
+
+By setting `enable_multiline_caption = true`, the whole caption file is used as one caption, including line breaks. For models with LLM-based text encoders (Anima, Lumina, HunyuanImage, etc.), line breaks are tokenized as they are, so this can be used to train text in images or layouts. CLIP and T5 text encoders treat line breaks as whitespace, so it has little effect on them.
+
+In addition, lines starting with `multiline_caption_separator` (default `---===---`) separate multiple caption candidates for one image. One candidate is chosen randomly at each training step.
+
+```txt
+The image depicts a girl with long hair standing on a stage under spotlights.
+She is holding a microphone with both hands and looking at the viewer with a smile.
+---===---
+A girl with long hair sings on a stage.
+She holds a microphone and smiles.
+---===--- # tag-style candidate
+1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer
+```
+
+* Text after `#` on a separator line is a comment and ignored. Nothing else can be written between the separator and `#` (it is reserved for future extensions and causes an error).
+* For each candidate, trailing whitespace of each line and leading/trailing blank lines are removed. Leading whitespace of each line and blank lines in the middle are kept.
+* `caption_prefix` / `caption_suffix` are added before and after the chosen candidate.
+* `shuffle_caption`, `caption_tag_dropout_rate` and `token_warmup_step` are applied only when the chosen candidate does not contain line breaks (e.g. the third candidate in the example above). Candidates with line breaks are used as they are.
+* It can be combined with `enable_wildcard`. In that case only the `{a|b}` replacement is performed, and the random selection of a line is replaced by the selection of a candidate by separator lines. Do not enable `enable_wildcard` if the captions contain `{` or `}`, such as JSON.
+* If some images have multiple candidates, the Text Encoder outputs cannot be cached (`--cache_text_encoder_outputs`), because a candidate is chosen randomly.
+* If you use `cache_info = true`, delete `metadata_cache.json` and rebuild it when you change `enable_multiline_caption`.
+
+The same applies to metadata files (fine tuning method). Write a string containing separator lines in `caption`, or specify a list of strings (each element is a candidate). `tags` are appended to each candidate.
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": [
+            "The image depicts a girl with long hair standing on a stage under spotlights.\nShe is holding a microphone with both hands and looking at the viewer with a smile.",
+            "A girl with long hair sings on a stage.\nShe holds a microphone and smiles.",
+            "1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer"
+        ],
+        "tags": "upper body, indoors"
+    }
+}
+```
+
+In the prompt file for sample image generation (`--sample_prompts`), `\n` (backslash + n) in each line of a .txt file (and in string entries of a .json file) is converted to a line break. Dictionary entries of .toml / .json files can contain real line breaks, so they are not converted.
 
 ### Example of configuration file : `secondary_separator`, wildcard notation, `keep_tokens_separator`, etc.
 

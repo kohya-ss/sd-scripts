@@ -626,6 +626,8 @@ class NetworkTrainer:
                         "keep_tokens_separator": subset.keep_tokens_separator,
                         "secondary_separator": subset.secondary_separator,
                         "enable_wildcard": bool(subset.enable_wildcard),
+                        "enable_multiline_caption": bool(subset.enable_multiline_caption),
+                        "multiline_caption_separator": subset.multiline_caption_separator,
                         "caption_prefix": subset.caption_prefix,
                         "caption_suffix": subset.caption_suffix,
                         "resize_interpolation": subset.resize_interpolation,

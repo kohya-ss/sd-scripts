@@ -222,13 +222,15 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         models: List[Any],
         text_encoding_strategy: TextEncodingStrategy,
         batch: List[ImageInfo],
+        captions: List[str],
     ) -> None:
         """
         Args:
             tokenize_strategy (LuminaTokenizeStrategy): Tokenize strategy
             models (List[Any]): Text encoders
             text_encoding_strategy (LuminaTextEncodingStrategy):
-            infos (List): List of ImageInfo
+            batch (List): List of ImageInfo
+            captions (List[str]): processed captions, same order as batch
 
         Returns:
             None
@@ -236,7 +238,6 @@ class LuminaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy)
         assert isinstance(text_encoding_strategy, LuminaTextEncodingStrategy)
         assert isinstance(tokenize_strategy, LuminaTokenizeStrategy)
 
-        captions = [info.caption for info in batch]
 
         if self.is_weighted:
             tokens, attention_masks, weights_list = (

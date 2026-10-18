@@ -524,7 +524,7 @@ Caption dropout uses the `caption_dropout_rate` setting from the dataset configu
 
 **If you change the `caption_dropout_rate` setting, you must delete and regenerate the cache.**
 
-Note: Currently, only Anima supports combining `caption_dropout_rate` with text encoder output caching.
+Note: Currently, only Anima and MOSS-Image support combining `caption_dropout_rate` with text encoder output caching.
 
 <details>
 <summary>日本語</summary>
@@ -563,7 +563,7 @@ Note: Currently, only Anima supports combining `caption_dropout_rate` with text 
 
 **`caption_dropout_rate`の設定を変えた場合、キャッシュを削除し、再生成する必要があります。**
 
-※`caption_dropout_rate`をテキストエンコーダー出力キャッシュと組み合わせられるのは、今のところAnimaのみです。
+※`caption_dropout_rate`をテキストエンコーダー出力キャッシュと組み合わせられるのは、今のところAnimaとMOSS-Imageのみです。
 
 </details>
 

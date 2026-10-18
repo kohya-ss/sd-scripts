@@ -16,6 +16,7 @@ from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
 from library import anima_models, anima_utils, checkpoint_io, sampling, qwen_image_autoencoder_kl
+import library.compile_utils as compile_utils
 import library.model_io as model_io
 
 init_ipex()
@@ -144,58 +145,8 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
     )
 
-    # torch.compile (per-block compilation, Triton required). Independent of the legacy
-    # accelerate-based --torch_compile; the two cannot be used together.
-    parser.add_argument(
-        "--compile",
-        action="store_true",
-        help="Enable per-block torch.compile for the DiT (requires Triton). Cannot be used with --torch_compile."
-        + " / DiTのブロック単位でtorch.compileを有効にする（Tritonが必要）。--torch_compileとは併用できません。",
-    )
-    parser.add_argument(
-        "--compile_backend",
-        type=str,
-        default="inductor",
-        help="torch.compile backend (default: inductor) / torch.compileのバックエンド（デフォルト: inductor）",
-    )
-    parser.add_argument(
-        "--compile_mode",
-        type=str,
-        default="default",
-        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
-        help="torch.compile mode (default: default, recommended for training) / torch.compileのモード（デフォルト: default、学習に推奨）",
-    )
-    parser.add_argument(
-        "--compile_dynamic",
-        type=str,
-        default=None,
-        choices=["true", "false", "auto"],
-        help="Dynamic shapes mode for torch.compile (default: None, same as auto). On Windows, 'true' requires the Visual Studio 2022 C++ compiler."
-        + " / torch.compileの動的形状モード（デフォルト: None、autoと同じ）。Windowsで'true'を使うにはVisual Studio 2022のC++コンパイラが必要です。",
-    )
-    parser.add_argument(
-        "--compile_fullgraph",
-        action="store_true",
-        help="Enable fullgraph mode in torch.compile. Cannot be used with --split_attn."
-        + " / torch.compileでフルグラフモードを有効にする。--split_attnとは併用できません。",
-    )
-    parser.add_argument(
-        "--compile_cache_size_limit",
-        type=int,
-        default=None,
-        help="Set torch._dynamo.config.cache_size_limit (default: PyTorch default, typically 8-32, recommended: 32)"
-        + " / torch._dynamo.config.cache_size_limitを設定（デフォルト: PyTorchのデフォルト、通常8-32、推奨: 32）",
-    )
-    parser.add_argument(
-        "--cuda_allow_tf32",
-        action="store_true",
-        help="Allow TF32 precision on Ampere or newer GPUs (improves performance) / Ampere以降のGPUでTF32を許可する（パフォーマンス向上）",
-    )
-    parser.add_argument(
-        "--cuda_cudnn_benchmark",
-        action="store_true",
-        help="Enable cuDNN benchmark mode (may improve performance) / cuDNNのベンチマークモードを有効にする（パフォーマンスが向上する可能性がある）",
-    )
+    # torch.compile (per-block compilation, Triton required) and CUDA performance switches
+    compile_utils.add_compile_arguments(parser)
 
 
 def load_qwen_image_vae(args, device="cpu", disable_mmap: bool = True):

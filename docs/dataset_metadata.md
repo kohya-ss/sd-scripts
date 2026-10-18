@@ -28,7 +28,7 @@ The trainer reads, per image, at most three pieces of information:
 
 | Field | Type | Required | Purpose |
 |---|---|---|---|
-| `caption` | string | no (defaults to empty) | Training caption / conditioning text |
+| `caption` | string, or list of strings | no (defaults to empty) | Training caption / conditioning text. A list is allowed only with `enable_multiline_caption` (see §4) |
 | `tags` | string | no | Additional tags, merged into the caption (see §4) |
 | `image_size` | `[width, height]` | no (but recommended) | Bucketing without reading image files (see §5) |
 
@@ -46,7 +46,7 @@ Everything else in the file is ignored.
 
 | フィールド | 型 | 必須 | 用途 |
 |---|---|---|---|
-| `caption` | 文字列 | 任意（省略時は空文字列） | 学習キャプション／条件付けテキスト |
+| `caption` | 文字列、または文字列のリスト | 任意（省略時は空文字列） | 学習キャプション／条件付けテキスト。リストは `enable_multiline_caption` 有効時のみ（§4 参照） |
 | `tags` | 文字列 | 任意 | 追加タグ。キャプションに連結される（§4 参照） |
 | `image_size` | `[幅, 高さ]` | 任意（ただし推奨） | 画像ファイルを読まずにバケツ分けするための情報（§5 参照） |
 
@@ -109,7 +109,7 @@ Per-line fields:
 | Key | Type | Required | Notes |
 |---|---|---|---|
 | `image_path` | string | **yes** | Image path (relative or absolute, see §6) |
-| `caption` | string | no | Defaults to empty |
+| `caption` | string, or list of strings | no | Defaults to empty. A list is allowed only with `enable_multiline_caption` (see §4) |
 | `tags` | string | no | Merged into caption (see §4) |
 | `image_size` | `[width, height]` | no | Image size |
 | `width` / `height` | integer | no | Alternative to `image_size`; if both are present, `width`+`height` overrides `image_size` |
@@ -124,7 +124,7 @@ Per-line fields:
 | キー | 型 | 必須 | 備考 |
 |---|---|---|---|
 | `image_path` | 文字列 | **はい** | 画像パス（相対または絶対。§6 参照） |
-| `caption` | 文字列 | 任意 | 省略時は空文字列 |
+| `caption` | 文字列、または文字列のリスト | 任意 | 省略時は空文字列。リストは `enable_multiline_caption` 有効時のみ（§4 参照） |
 | `tags` | 文字列 | 任意 | キャプションに連結される（§4 参照） |
 | `image_size` | `[幅, 高さ]` | 任意 | 画像サイズ |
 | `width` / `height` | 整数 | 任意 | `image_size` の代替。両方が存在する場合は `width`+`height` が `image_size` を上書きする |
@@ -133,21 +133,23 @@ Per-line fields:
 
 ## 4. How `caption` and `tags` are combined / `caption` と `tags` の結合方法
 
-The trainer combines `caption` and `tags` into the final training caption. The exact behavior depends on the subset's caption options (`caption_separator`, `enable_wildcard`), which are configured in the dataset config, not in the metadata file.
+The trainer combines `caption` and `tags` into the final training caption. The exact behavior depends on the subset's caption options (`caption_separator`, `enable_wildcard`, `enable_multiline_caption`), which are configured in the dataset config, not in the metadata file.
 
 * **Default** (`enable_wildcard = false`): if `tags` is non-empty, it is appended to `caption` joined by `caption_separator` (default `,`):
-  `final = caption + caption_separator + tags`. If `caption` is empty, `tags` is used alone.
+  `final = caption + caption_separator + tags`. If `caption` is empty, `tags` is used alone. Only the first line of the result is used for training.
 * **Wildcard mode** (`enable_wildcard = true`): newlines in `tags` are first replaced by `caption_separator`; then `tags` is appended to **each non-empty line** of `caption`. This lets multi-line captions act as wildcard alternatives that all share the same tags.
+* **Multi-line mode** (`enable_multiline_caption = true`): line breaks in `caption` are kept. `caption` may be a string containing separator lines (`multiline_caption_separator`, default `---===---`), or a **list of strings** where each element is a candidate. `tags` is appended to **each candidate**, and one candidate is chosen randomly at each step. See [config_README-en.md](./config_README-en.md#captions-with-line-breaks-and-multiple-caption-candidates-enable_multiline_caption--true) for details.
 
 If you do not need the distinction, you may simply put everything in `caption` and omit `tags`.
 
 <details>
 <summary>日本語</summary>
 
-学習スクリプトは `caption` と `tags` を結合して最終的な学習キャプションを作ります。挙動はサブセットのキャプション関連オプション（`caption_separator`、`enable_wildcard`）に依存します。これらはメタデータファイルではなくデータセット設定で指定します。
+学習スクリプトは `caption` と `tags` を結合して最終的な学習キャプションを作ります。挙動はサブセットのキャプション関連オプション（`caption_separator`、`enable_wildcard`、`enable_multiline_caption`）に依存します。これらはメタデータファイルではなくデータセット設定で指定します。
 
-* **デフォルト**（`enable_wildcard = false`）: `tags` が空でなければ、`caption_separator`（既定は `,`）で連結して `caption` の後ろに付与します。`final = caption + caption_separator + tags`。`caption` が空の場合は `tags` 単独になります。
+* **デフォルト**（`enable_wildcard = false`）: `tags` が空でなければ、`caption_separator`（既定は `,`）で連結して `caption` の後ろに付与します。`final = caption + caption_separator + tags`。`caption` が空の場合は `tags` 単独になります。学習には結果の 1 行目のみが使われます。
 * **ワイルドカードモード**（`enable_wildcard = true`）: まず `tags` 内の改行を `caption_separator` に置換し、その `tags` を `caption` の**空でない各行**に付与します。これにより、複数行キャプションを「同じタグを共有するワイルドカードの選択肢」として扱えます。
+* **複数行モード**（`enable_multiline_caption = true`）: `caption` 内の改行はそのまま保持されます。`caption` には区切り行（`multiline_caption_separator`、既定は `---===---`）を含む文字列、または各要素を候補とする**文字列のリスト**を指定できます。`tags` は**各候補**の末尾に付与され、ステップごとにランダムに一つの候補が選ばれます。詳細は [config_README-ja.md](./config_README-ja.md#改行を含むキャプションと複数のキャプション候補enable_multiline_caption--true-の場合) を参照してください。
 
 この区別が不要であれば、すべてを `caption` に入れて `tags` を省略しても構いません。
 
