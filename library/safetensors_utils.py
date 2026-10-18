@@ -459,9 +459,10 @@ class TensorWeightAdapter:
             return self.original_f.get_tensor(new_key, device=device, dtype=dtype)
 
         elif new_key in self.split_key_set:
-            # split hook: split key is requested multiple times, so we cache the result
-            original_key = self.new_key_to_original_key_map[new_key]
-            if original_key not in self.tensor_cache:  # not yet split
+            # split hook: the pieces are requested one by one, so the original tensor is loaded and split once and the
+            # pieces are cached under the new keys (each piece is returned and removed from the cache)
+            if new_key not in self.tensor_cache:  # not yet split
+                original_key = self.new_key_to_original_key_map[new_key]
                 original_tensor = self.original_f.get_tensor(original_key, device=device, dtype=dtype)
                 new_keys, new_tensors = self.split_hook(original_key, original_tensor)  # apply split hook
                 for k, t in zip(new_keys, new_tensors):

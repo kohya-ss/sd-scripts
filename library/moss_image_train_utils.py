@@ -54,10 +54,45 @@ def add_moss_image_model_arguments(parser: argparse.ArgumentParser):
         help=f"maximum number of text tokens (including the chat template), default and maximum: {moss_image_utils.MAX_TOKEN_LENGTH}"
         + f" / テキストトークンの最大数（chat template を含む）。デフォルトおよび最大値: {moss_image_utils.MAX_TOKEN_LENGTH}",
     )
+    parser.add_argument(
+        "--convrot_int8_text_encoder",
+        action="store_true",
+        help="quantize the text encoder (Qwen3.5-9B) weights to ConvRot INT8 at load time (about 16GB -> 9GB). The ComfyUI"
+        " pre-quantized file (qwen3.5_9b_int8_convrot.safetensors) is detected automatically and does not need this option"
+        + " / Text Encoder（Qwen3.5-9B）の重みをロード時に ConvRot INT8 に量子化する（約 16GB → 9GB）。ComfyUI の事前量子化済みファイル"
+        + "（qwen3.5_9b_int8_convrot.safetensors）は自動判別されるのでこのオプションは不要",
+    )
+
+
+def add_convrot_int8_arguments(parser: argparse.ArgumentParser):
+    """ConvRot INT8 options for the DiT (shared by the trainer and the inference script)."""
+    parser.add_argument(
+        "--convrot_int8",
+        action="store_true",
+        help="quantize the DiT base weights (Linear layers of the main blocks) to ConvRot INT8 at load time: Hadamard rotation"
+        " + per-channel int8, fused Triton int8 GEMM in forward (requires triton / triton-windows, otherwise a slower"
+        " dequantizing fallback with the same memory saving). An alternative to fp8. The ComfyUI pre-quantized files"
+        " (*_int8_convrot.safetensors) are detected automatically and do not need this option"
+        + " / DiT のベース重み（メインブロックの Linear 層）をロード時に ConvRot INT8 に量子化する。Hadamard 回転＋チャネル毎 int8、forward は"
+        + " Triton の融合 int8 GEMM（triton / triton-windows が必要。ない場合はメモリ削減のみで遅い逆量子化フォールバック）。fp8 の代替。"
+        + "ComfyUI の事前量子化済みファイル（*_int8_convrot.safetensors）は自動判別されるのでこのオプションは不要",
+    )
+    parser.add_argument(
+        "--convrot_int8_bwd",
+        type=str,
+        default="bf16",
+        choices=["bf16", "int8"],
+        help="backward mode of the ConvRot INT8 layers (DiT and text encoder). bf16 (default): transient dequantized matmul,"
+        " most accurate. int8: reuse the fused int8 GEMM for grad_x (faster, quantizes the gradients slightly, requires triton"
+        " and CUDA)"
+        + " / ConvRot INT8 層（DiT と Text Encoder）の backward の方式。bf16（デフォルト）: 一時的に逆量子化した matmul で最も高精度。"
+        + "int8: grad_x にも融合 int8 GEMM を使う（高速だが勾配がわずかに量子化される。triton と CUDA が必要）",
+    )
 
 
 def add_moss_image_training_arguments(parser: argparse.ArgumentParser):
     """MOSS-Image specific training arguments (timestep sampling, attention, compile, sampling, checkpointing)."""
+    add_convrot_int8_arguments(parser)
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
