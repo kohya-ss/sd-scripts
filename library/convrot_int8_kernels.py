@@ -50,6 +50,17 @@ try:
 except ImportError:
     HAS_TRITON = False
 
+if HAS_TRITON:
+    # The fused kernels are CUDA only, and `triton.autotune` needs an active GPU driver when the kernels below are
+    # defined (import time): on a CPU-only machine with triton installed (e.g. CI) it raises RuntimeError
+    # ("0 active drivers"), not ImportError. Fall back to the eager implementation in that case.
+    try:
+        from triton.runtime import driver as _triton_driver
+
+        HAS_TRITON = torch.cuda.is_available() and _triton_driver.active is not None
+    except Exception:
+        HAS_TRITON = False
+
 
 # =============================================================================
 # Hadamard rotation helpers (from comfy_kitchen/tensor/int8_utils.py)
