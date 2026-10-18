@@ -206,7 +206,8 @@ class MossImageBlock(nn.Module):
         """
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
-        dtype = self.proj.q.weight.dtype
+        # compute dtype of the block: the norm weight is always floating point (the projections may be ConvRot INT8)
+        dtype = self.norm1.weight.dtype
         y = y.to(dtype)
         q = self.q_norm(self.proj.q(y).unflatten(-1, (self.heads, -1)))
         k = self.k_norm(self.proj.k(y).unflatten(-1, (self.heads, -1)))

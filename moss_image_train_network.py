@@ -11,6 +11,8 @@ from library.device_utils import init_ipex, clean_memory_on_device
 init_ipex()
 
 from library import (
+    convrot_int8_kernels,
+    convrot_int8_utils,
     flux2_vae,
     flux_train_utils,
     moss_image_models,
@@ -43,6 +45,9 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         # BatchNorm statistics of the FLUX.2 VAE, kept so that the latents can be normalized after the VAE is freed
         self.bn_running_mean: Optional[torch.Tensor] = None
         self.bn_running_var: Optional[torch.Tensor] = None
+        # effective ConvRot INT8 state after loading (pre-quantized files are detected independently of the options)
+        self.dit_convrot_int8 = False
+        self.text_encoder_convrot_int8 = False
 
     def assert_extra_args(
         self,
@@ -57,12 +62,26 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
 
         if args.fp8_base or args.fp8_base_unet:
             logger.warning(
-                "fp8_base and fp8_base_unet are not supported for MOSS-Image (int8 convrot is planned). They are disabled."
-                " / fp8_baseとfp8_base_unetはMOSS-Imageではサポートされていません（int8 convrotを予定）。無効化します。"
+                "fp8_base and fp8_base_unet are not supported for MOSS-Image: use --convrot_int8 (and --convrot_int8_text_encoder)"
+                " instead. They are disabled."
+                " / fp8_base と fp8_base_unet は MOSS-Image ではサポートされていません。代わりに --convrot_int8（と"
+                " --convrot_int8_text_encoder）を使ってください。無効化します。"
             )
             args.fp8_base = False
             args.fp8_base_unet = False
         args.fp8_scaled = False
+
+        if args.convrot_int8_bwd == "int8":
+            # the triton requirement is also checked when the layers are patched; fail early here
+            assert convrot_int8_kernels.HAS_TRITON, (
+                "--convrot_int8_bwd int8 requires triton (triton-windows on Windows)"
+                " / --convrot_int8_bwd int8 には triton（Windows では triton-windows）が必要です"
+            )
+            if not (args.convrot_int8 or args.convrot_int8_text_encoder):
+                logger.info(
+                    "--convrot_int8_bwd int8 only takes effect with a ConvRot INT8 base (--convrot_int8, --convrot_int8_text_encoder"
+                    " or a pre-quantized checkpoint)"
+                )
 
         if args.mixed_precision == "fp16":
             logger.warning(
@@ -125,9 +144,16 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         # Text encoder (Qwen3.5-9B) is always bf16 (see cast_text_encoder). Loaded to the CPU, moved to the GPU when needed.
         logger.info("Loading MOSS-Image text encoder (Qwen3.5-9B)...")
         text_encoder = moss_image_utils.load_text_encoder(
-            args.text_encoder, dtype=torch.bfloat16, device="cpu", disable_mmap=args.disable_mmap_load_safetensors
+            args.text_encoder,
+            dtype=torch.bfloat16,
+            device="cpu",
+            disable_mmap=args.disable_mmap_load_safetensors,
+            convrot_int8=args.convrot_int8_text_encoder,
+            convrot_int8_bwd=args.convrot_int8_bwd,
+            calc_device=accelerator.device,  # quantize on the GPU, keep the weights on the CPU
         )
         text_encoder.eval()
+        self.text_encoder_convrot_int8 = convrot_int8_utils.is_convrot_int8_model(text_encoder)
 
         # VAE (FLUX.2) is always float32 (see cast_vae)
         logger.info("Loading FLUX.2 VAE...")
@@ -157,7 +183,10 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             loading_device,
             weight_dtype,
             disable_mmap=args.disable_mmap_load_safetensors,
+            convrot_int8=args.convrot_int8,
+            convrot_int8_bwd=args.convrot_int8_bwd,
         )
+        self.dit_convrot_int8 = convrot_int8_utils.is_convrot_int8_model(model)
 
         # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=...); unsloth is re-applied in
         # prepare_unet_with_accelerator.
@@ -207,6 +236,11 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
 
     def cast_vae(self, args):
         return False  # the VAE stays in float32
+
+    def cast_unet(self, args):
+        # The DiT is loaded in weight_dtype by load_moss_image_model. `Module.to(dtype)` would also cast the fp32
+        # `scale_weight` buffers of the ConvRot INT8 layers, so the cast is skipped here.
+        return False
 
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: DatasetGroup, weight_dtype
@@ -410,13 +444,16 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         metadata["ss_timestep_sampling"] = args.timestep_sampling
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
+        metadata["ss_convrot_int8"] = self.dit_convrot_int8
+        metadata["ss_convrot_int8_text_encoder"] = self.text_encoder_convrot_int8
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
 
     def prepare_text_encoder_grad_ckpt_workaround(self, index, text_encoder):
-        # Set first parameter's requires_grad to True to workaround Accelerate gradient checkpointing bug
-        first_param = next(text_encoder.parameters())
+        # Set the first floating point parameter's requires_grad to True to workaround Accelerate gradient checkpointing bug.
+        # The first parameter (token embedding) is int8 with ConvRot INT8 and cannot require grad.
+        first_param = next(p for p in text_encoder.parameters() if p.is_floating_point())
         first_param.requires_grad_(True)
 
     def prepare_unet_with_accelerator(
@@ -440,8 +477,11 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         if args.compile:
             # Per-block torch.compile of the 42 main blocks. Reach the real model via unwrap_model so the underlying
             # ModuleList is mutated regardless of any DDP wrapper.
+            # ConvRot INT8 Linears are also excluded: the custom autograd.Function + autotuned Triton kernels do not compile.
             dit = accelerator.unwrap_model(model)
-            compile_utils.compile_transformer(args, dit, [dit.layers], disable_linear=self.is_swapping_blocks)
+            compile_utils.compile_transformer(
+                args, dit, [dit.layers], disable_linear=self.is_swapping_blocks or convrot_int8_utils.is_convrot_int8_model(dit)
+            )
 
         return model
 

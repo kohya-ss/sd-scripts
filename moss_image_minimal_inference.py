@@ -75,6 +75,16 @@ def parse_args() -> argparse.Namespace:
         help="attention mode",
     )
     parser.add_argument("--blocks_to_swap", type=int, default=0, help="number of DiT blocks to swap to CPU to reduce VRAM usage")
+    parser.add_argument(
+        "--convrot_int8",
+        action="store_true",
+        help="quantize the DiT base weights to ConvRot INT8 at load time (ComfyUI *_int8_convrot.safetensors files are detected automatically)",
+    )
+    parser.add_argument(
+        "--convrot_int8_text_encoder",
+        action="store_true",
+        help="quantize the text encoder weights to ConvRot INT8 at load time (the ComfyUI int8 file is detected automatically)",
+    )
     parser.add_argument("--output_type", type=str, default="images", choices=["images", "latent", "latent_images"], help="output type")
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata")
     parser.add_argument("--latent_path", type=str, nargs="*", default=None, help="path to latent for decode. no inference")
@@ -182,6 +192,7 @@ def load_dit_model(args: argparse.Namespace, device: torch.device) -> moss_image
         torch.bfloat16,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
+        convrot_int8=args.convrot_int8,
     )
     model.eval().requires_grad_(False)
 
@@ -209,6 +220,8 @@ def load_text_encoder(args: argparse.Namespace, device: torch.device):
         device=device,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier if lora_weights_list is not None else None,
+        convrot_int8=args.convrot_int8_text_encoder,
+        calc_device=torch.device("cuda") if device.type == "cpu" and torch.cuda.is_available() else None,
     )
     return text_encoder
 
