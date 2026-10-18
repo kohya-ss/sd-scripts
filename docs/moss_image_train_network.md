@@ -430,7 +430,7 @@ DiT の text embedder（Qwen3.5 の 4096 次元の hidden state を DiT の幅�
 
 When training finishes, a LoRA model file (e.g. `my_moss_lora.safetensors`) is saved in the directory specified by `output_dir`.
 
-* **ComfyUI:** The DiT LoRA can be loaded with the standard LoRA loader without conversion (ComfyUI maps the separate q / k / v keys of sd-scripts to its fused `qkv` weight). Loading of text encoder LoRA (`lora_te_*`) in ComfyUI has not been verified yet.
+* **ComfyUI:** The LoRA can be loaded with the standard LoRA loader without conversion, both for the DiT and for the text encoder (ComfyUI maps the separate q / k / v keys of sd-scripts to its fused `qkv` weight). Use a version of ComfyUI that supports MOSS-Image.
 * **`moss_image_minimal_inference.py`:** The inference script in this repository merges DiT and text encoder LoRA at load time. See [Section 9](#9-related-tools--関連ツール).
 
 <details>
@@ -438,7 +438,7 @@ When training finishes, a LoRA model file (e.g. `my_moss_lora.safetensors`) is s
 
 学習が完了すると、指定した `output_dir` に LoRA モデルファイル（例: `my_moss_lora.safetensors`）が保存されます。
 
-* **ComfyUI:** DiT の LoRA は変換なしで標準の LoRA ローダーから読み込めます（ComfyUI が sd-scripts の q / k / v 別のキーを fused な `qkv` の重みへ対応付けます）。テキストエンコーダー LoRA（`lora_te_*`）の ComfyUI での読み込みは未確認です。
+* **ComfyUI:** DiT、テキストエンコーダーとも、LoRA は変換なしで標準の LoRA ローダーから読み込めます（ComfyUI が sd-scripts の q / k / v 別のキーを fused な `qkv` の重みへ対応付けます）。MOSS-Image に対応したバージョンの ComfyUI を使用してください。
 * **`moss_image_minimal_inference.py`:** 当リポジトリの推論スクリプトは、DiT とテキストエンコーダーの LoRA をロード時にマージします。[9 節](#9-related-tools--関連ツール) を参照してください。
 
 </details>
