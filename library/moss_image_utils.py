@@ -8,7 +8,6 @@ import torch
 from accelerate import init_empty_weights
 
 from library import moss_image_models
-from library.lora_utils import load_safetensors_with_lora_and_fp8
 from library.safetensors_utils import MemoryEfficientSafeOpen, WeightTransformHooks, get_split_weight_filenames
 from library.utils import setup_logging
 
@@ -88,6 +87,9 @@ def load_moss_image_model(
         loading_device: device to load the weights to
         dit_weight_dtype: dtype of the weights. None loads the weights as is (bf16 for the official checkpoints)
     """
+    # imported here: lora_utils depends on the `networks` package, which is not importable from tools/ scripts
+    from library.lora_utils import load_safetensors_with_lora_and_fp8
+
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
