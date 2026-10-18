@@ -438,7 +438,6 @@ def _sample_image_inference(
         uncond_skip_layers,
         seed,
         accelerator.device,
-        show_progress=False,
     )
 
     # Decode latents in float32 outside autocast (the VAE is in float32)
