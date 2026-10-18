@@ -1528,8 +1528,11 @@ def debug_dataset(train_dataset, show_input_ids=False):
                     im = np.transpose(im, (1, 2, 0))  # c,H,W -> H,W,c
                     im = im[:, :, ::-1]  # RGB -> BGR (OpenCV)
 
-                    if "conditioning_images" in example or "masked_images" in example:
-                        cond_img = example["conditioning_images"][j] if "conditioning_images" in example else example["masked_images"][j]
+                    cond_imgs = example.get("conditioning_images")
+                    if cond_imgs is None:
+                        cond_imgs = example.get("masked_images")
+                    if cond_imgs is not None:
+                        cond_img = cond_imgs[j]
                         logger.info(f"conditioning image size: {cond_img.size()}")
                         cond_img = ((cond_img.numpy() + 1.0) * 127.5).astype(np.uint8)
                         cond_img = np.transpose(cond_img, (1, 2, 0))
