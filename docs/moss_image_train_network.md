@@ -148,9 +148,11 @@ accelerate launch --num_cpu_threads_per_process 1 moss_image_train_network.py \
 
 *(Write the command on one line or use `\` or `^` for line breaks.)*
 
+**Note for Windows:** With the default `--max_data_loader_n_workers` (8), the DataLoader worker processes are re-created at every epoch on Windows, which can make the training several times slower (the effect is large with small datasets). Specify a small number of workers together with `--persistent_data_loader_workers`, e.g. `--max_data_loader_n_workers 2 --persistent_data_loader_workers` (more workers do not make it faster). Note that `--persistent_data_loader_workers` cannot be combined with `--max_data_loader_n_workers 0`.
+
 The learning rate of `1e-4` is just an example. Adjust it according to your dataset and objectives. This value is for `alpha=1.0` (default). If increasing `--network_alpha`, consider lowering the learning rate.
 
-`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` reproduces the timestep distribution used in the pre-training of MOSS-Image (see [Section 7.2](#72-training-settings--学習設定)). The default (`--timestep_sampling sigmoid`) also works.
+`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` reproduces the timestep distribution used in the pre-training of MOSS-Image (see [Section 7.2](#72-training-settings--学習設定)). A simpler setting with a similar distribution is `--timestep_sampling shift --discrete_flow_shift 3.0`.
 
 Add `--convrot_int8` (and `--convrot_int8_text_encoder`) to reduce VRAM usage. See [Section 7.1](#71-vram-usage-optimization--vram-使用量の最適化).
 
@@ -163,9 +165,11 @@ Add `--convrot_int8` (and `--convrot_int8_text_encoder`) to reduce VRAM usage. S
 
 ※実際には 1 行で書くか、適切な改行文字（`\` または `^`）を使用してください。
 
+**Windows での注意:** `--max_data_loader_n_workers` のデフォルト（8）のままだと、Windows では DataLoader のワーカープロセスがエポックごとに再生成され、学習が数倍遅くなることがあります（データセットが小さいほど影響が大きい）。`--max_data_loader_n_workers 2 --persistent_data_loader_workers` のように、少ないワーカー数と `--persistent_data_loader_workers` を併せて指定してください（ワーカーを増やしても速くはなりません）。`--persistent_data_loader_workers` は `--max_data_loader_n_workers 0` とは併用できません。
+
 学習率 1e-4 はあくまで一例です。データセットや目的に応じて適切に調整してください。またこの値は alpha=1.0（デフォルト）での値です。`--network_alpha` を増やす場合は学習率を下げることを検討してください。
 
-`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` は MOSS-Image の事前学習で使われたタイムステップ分布を再現します（[7.2 節](#72-training-settings--学習設定) を参照）。デフォルトの `--timestep_sampling sigmoid` でも学習できます。
+`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` は MOSS-Image の事前学習で使われたタイムステップ分布を再現します（[7.2 節](#72-training-settings--学習設定) を参照）。より簡潔で似た分布になる設定として `--timestep_sampling shift --discrete_flow_shift 3.0` もあります。
 
 VRAM 使用量を減らすには `--convrot_int8`（および `--convrot_int8_text_encoder`）を追加してください。[7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照してください。
 
@@ -552,11 +556,13 @@ See the [flux_train_network.py guide](flux_train_network.md) for detailed descri
 --timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
 ```
 
-(With `--timestep_sampling sigma`, `--weighting_scheme logit_normal` selects the logit-normal distribution and the loss weight is 1.) The negative mean biases the samples toward the noisier half of the trajectory. The official schedule additionally truncates the distribution at 0.95 and mixes in 1% uniform samples; these details are not reproduced. This setting was used for the verification of this script. The default `sigmoid` sampling (mean 0) also works.
+(With `--timestep_sampling sigma`, `--weighting_scheme logit_normal` selects the logit-normal distribution and the loss weight is 1.) The negative mean biases the samples toward the noisier half of the trajectory. The official schedule additionally truncates the distribution at 0.95 and mixes in 1% uniform samples; these details are not reproduced. This setting was used for the verification of this script.
+
+`--timestep_sampling shift --discrete_flow_shift 3.0` gives a very similar distribution with fewer options (compare them with `--show_timesteps`, see below), so it is a good alternative. The default `sigmoid` sampling (mean 0, no shift) also trains, but its distribution is centered at t=500 and quite different from the pre-training distribution.
 
 #### Discrete Flow Shift
 
-The `--discrete_flow_shift` option (default `1.0`) applies when `--timestep_sampling` is set to `sigma` or `shift`. The training grid of MOSS-Image has no shift, so `1.0` is the natural value; the official sampler applies a shift of 5.0 at inference time only (see [Section 7.4](#74-sample-image-generation--サンプル画像生成)).
+The `--discrete_flow_shift` option (default `1.0`) applies when `--timestep_sampling` is set to `sigma` or `shift`. With `sigma` sampling, `1.0` matches the (unshifted) training grid of MOSS-Image; with `shift` sampling, `3.0` approximates the pre-training distribution as described above. The official sampler applies a shift of 5.0 at inference time only (see [Section 7.4](#74-sample-image-generation--サンプル画像生成)).
 
 #### Loss Weighting
 
@@ -601,11 +607,13 @@ Caption dropout uses the `caption_dropout_rate` setting from the dataset configu
 --timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
 ```
 
-（`--timestep_sampling sigma` の場合、`--weighting_scheme logit_normal` は logit-normal 分布の選択を意味し、loss の重みは 1 になります。）負の平均により、サンプルはノイズが多い側に偏ります。公式のスケジュールはさらに分布を 0.95 で切り詰め、1% の一様サンプルを混ぜていますが、これらは再現していません。当スクリプトの検証はこの設定で行いました。デフォルトの `sigmoid`（平均 0）でも学習できます。
+（`--timestep_sampling sigma` の場合、`--weighting_scheme logit_normal` は logit-normal 分布の選択を意味し、loss の重みは 1 になります。）負の平均により、サンプルはノイズが多い側に偏ります。公式のスケジュールはさらに分布を 0.95 で切り詰め、1% の一様サンプルを混ぜていますが、これらは再現していません。当スクリプトの検証はこの設定で行いました。
+
+`--timestep_sampling shift --discrete_flow_shift 3.0` は、より少ないオプションでこれとよく似た分布になるため（`--show_timesteps` で比較できます。下記参照）、代わりの設定として適しています。デフォルトの `sigmoid`（平均 0、シフトなし）でも学習はできますが、分布の中心が t=500 付近になり、事前学習の分布とはかなり異なります。
 
 #### 離散フローシフト
 
-`--discrete_flow_shift`（デフォルト `1.0`）は `--timestep_sampling` が `sigma` または `shift` の場合に適用されます。MOSS-Image の学習グリッドにはシフトがないため、`1.0` が自然な値です。公式のサンプラーは推論時のみシフト 5.0 を適用します（[7.4 節](#74-sample-image-generation--サンプル画像生成) を参照）。
+`--discrete_flow_shift`（デフォルト `1.0`）は `--timestep_sampling` が `sigma` または `shift` の場合に適用されます。`sigma` サンプリングでは `1.0` が MOSS-Image の（シフトなしの）学習グリッドに一致します。`shift` サンプリングでは、上記のとおり `3.0` が事前学習の分布の近似になります。公式のサンプラーは推論時のみシフト 5.0 を適用します（[7.4 節](#74-sample-image-generation--サンプル画像生成) を参照）。
 
 #### 損失の重み付け
 
