@@ -50,7 +50,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
-- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+- **Version 0.12.1 (2026-10-18):**
     - [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image)（OpenMOSS。Qwen3.5-9B テキストエンコーダーと FLUX.2 VAE を使う 5B の DiT）の LoRA 学習に対応しました。[PR #2458](https://github.com/kohya-ss/sd-scripts/pull/2458)、[PR #2459](https://github.com/kohya-ss/sd-scripts/pull/2459)、[PR #2460](https://github.com/kohya-ss/sd-scripts/pull/2460)、[PR #2461](https://github.com/kohya-ss/sd-scripts/pull/2461)
         - `moss_image_train_network.py` で DiT の LoRA（LoHa / LoKr も可）と、オプションでテキストエンコーダーの LoRA を学習できます。公式の diffusers 形式の分割ファイルと、ComfyUI 向けの単一ファイルのチェックポイントを読み込めます。詳細は[ドキュメント](./docs/moss_image_train_network.md)をご覧ください。
         - fp8 の代わりに、ベース重みの ConvRot INT8 量子化（DiT は `--convrot_int8`、テキストエンコーダーは `--convrot_int8_text_encoder`。Musubi Tuner からの移植）が使えます。ComfyUI の事前量子化済み `*_int8_convrot.safetensors` は自動判別されます。融合 int8 カーネルには `triton`（Windows では `triton-windows`）が必要です。
@@ -93,37 +93,6 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
     - SD1.x / SD2.x 用の古い画像生成スクリプト `gen_img_diffusers.py` を削除しました。しばらく前から動作しておらず（リファクタリングで削除された関数に依存していました）、実験的な CLIP / VGG16 guidance を除くすべての機能は `gen_img.py` でサポートされています。代わりに `gen_img.py` をお使いください（[gen_img_README-ja.md](./docs/gen_img_README-ja.md) をご覧ください）。ファイルは以前のリリースから取得できます。[PR #2439](https://github.com/kohya-ss/sd-scripts/pull/2439)
     - 学習中のサンプル画像生成の `--sample_sampler`、および `gen_img.py` / `sdxl_gen_img.py` の `--sampler` で、`dpmsolver` と `dpmsingle` を指定すると最近のバージョンの `diffusers` でエラーになる問題を修正しました。[PR #2438](https://github.com/kohya-ss/sd-scripts/pull/2438)
         - `lms` / `k_lms` サンプラーには `requirements.txt` に含まれない `scipy` パッケージが必要です。`scipy` が未インストールの場合、（最初のサンプル生成時ではなく）起動時に分かりやすいエラーを表示するようにしました。使用する場合は `pip install scipy` を実行してください。
-
-- **Version 0.11.1 (2026-06-16):**
-    - Anima LoRA／LLLite学習でtorch.compileサポートを追加しました。[PR #2379](https://github.com/kohya-ss/sd-scripts/pull/2379)
-        - 学習が20%ほど高速化されるようです。動作にはTritonやMSVCコンパイラが必要です。詳細は[ドキュメント](./docs/anima_torch_compile.md)をご覧ください。
-    - 2DのみのQwen-Image VAEを追加しました。[PR #2382](https://github.com/kohya-ss/sd-scripts/pull/2382)
-        - [issue #2369](https://github.com/kohya-ss/sd-scripts/issues/2369) での woct0rdho 氏の提案に基づいています。woct0rdho 氏に感謝します。
-        - `--qwen_image_vae_2d` を指定すると有効になります。重みは通常版（3D版）と同じものが使用できます。
-        - latentの事前キャッシュの高速化が期待できます（学習自体は変わりません）。詳細は[ドキュメント](./docs/anima_train_network.md#memory-and-speed--メモリ速度関連)をご覧ください。
-    - LLLiteインペインティングモデルの学習サポートを追加しました。[PR #2378](https://github.com/kohya-ss/sd-scripts/pull/2378)
-        - 詳細は[ドキュメント](./docs/anima_train_control_net_lllite.md)をご覧ください。
-    - timestep samplingの設定値のログ出力、timestepsの分布の可視化を追加しました。[PR #2384](https://github.com/kohya-ss/sd-scripts/pull/2384)
-        - 可視化により学習がどのようなタイムステップで行われるかを理解しやすくなります。
-        - 詳細は[ドキュメント](./docs/anima_train_network.md#visualizing-the-timestep-distribution)をご覧ください。
-
-- **Version 0.11.0 (2026-06-12):**
-    - コードベースの大規模な内部リファクタリングを行い、コードベースの品質と保守性を向上させました。[PR #2372](https://github.com/kohya-ss/sd-scripts/pull/2372)
-        - ユーザーの方には直接の影響が極力少なくなるよう配慮しました。詳細について、および不具合報告などは[こちらのdiscussion](https://github.com/kohya-ss/sd-scripts/discussions/2358)までお願いします。
-
-- **Version 0.10.6 (2026-06-12):**
-    - リファクタリングマージ前の安定バージョン。
-
-- **Version 0.10.5 (2026-05-08):**
-    - transformersのバージョン5以降に対応しました。[PR #2315](https://github.com/kohya-ss/sd-scripts/pull/2315) および [PR #2316](https://github.com/kohya-ss/sd-scripts/pull/2316) marcus165090-spec氏に感謝します。
-        - `requirements.txt`の`transformers`のバージョンは4.xのままですが、5.xでも動作します。何らかの理由で5.xを用いる場合はdiffusersもあわせて最新バージョンにしてください。
-    - Anima向けのControlNet-LLLite学習に対応しました。[PR #2317](https://github.com/kohya-ss/sd-scripts/pull/2317)
-        - 詳細は[ドキュメント](./docs/anima_train_control_net_lllite.md)をご覧ください。
-
-- **Version 0.10.4 (2026-05-07):**
-    - Intel GPUの互換性を向上しました。[PR #2307](https://github.com/kohya-ss/sd-scripts/pull/2307) WhitePr氏に感謝します。
-    - SD 1.5/SDXLのinpaintingモデルの学習に対応しました。[PR #2309](https://github.com/kohya-ss/sd-scripts/pull/2309) および [PR #2318](https://github.com/kohya-ss/sd-scripts/pull/2318)allanoepping氏に感謝します。
-        - 詳細は[ドキュメント](./docs/inpainting_training.md)をご覧ください。
 
 ### サポートモデル
 
