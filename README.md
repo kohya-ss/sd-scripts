@@ -48,7 +48,7 @@ If you find this project helpful, please consider supporting its development via
 ### Change History
 
 - **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
-    - The Text Encoder outputs of multiple caption candidates (`enable_multiline_caption` with separator lines) can now be cached for MOSS-Image. All candidates are encoded and stored in one cache file, and one of them is chosen randomly at each step. PR #PLACEHOLDER
+    - The Text Encoder outputs of multiple caption candidates (`enable_multiline_caption` with separator lines) can now be cached for MOSS-Image. All candidates are encoded and stored in one cache file, and one of them is chosen randomly at each step. [PR #2466](https://github.com/kohya-ss/sd-scripts/pull/2466)
         - The processed caption texts are stored in the cache files, so the cache is rebuilt automatically when captions (or `caption_prefix` / `caption_suffix`) are changed. The cache files created with version 0.12.1 are still valid for images with a single caption.
         - The cache size and the caching time are multiplied by the number of candidates. Other models still cannot cache the Text Encoder outputs when some captions have multiple candidates.
         - `tools/cache_text_encoder_outputs.py` now stops with an error for multiple caption candidates with models that do not support them (previously only the first candidate was cached silently).
