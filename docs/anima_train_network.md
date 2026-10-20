@@ -116,6 +116,7 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
   --save_model_as=safetensors \
   --network_module=networks.lora_anima \
   --network_dim=8 \
+  --network_train_unet_only \
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
