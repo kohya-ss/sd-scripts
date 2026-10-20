@@ -94,8 +94,9 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             args.cache_text_encoder_outputs = True
 
         if args.cache_text_encoder_outputs:
+            # caption dropout and multiple caption candidates are supported by MossImageTextEncoderOutputsCachingStrategy
             assert train_dataset_group.is_text_encoder_output_cacheable(
-                cache_supports_dropout=True
+                cache_supports_dropout=True, supports_multiple_caption_candidates=True
             ), "when caching Text Encoder output, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used"
 
         assert (

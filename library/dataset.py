@@ -587,26 +587,33 @@ class BaseDataset(torch.utils.data.Dataset):
             if len(candidates) > 1:
                 self.has_multiple_caption_candidates = True
 
-    def process_caption_for_cache(self, subset: BaseSubset, caption: str) -> str:
-        """Deterministic part of :meth:`process_caption`, used when caching Text Encoder outputs.
+    def process_caption_candidates_for_cache(self, subset: BaseSubset, caption: str) -> List[str]:
+        """Deterministic part of :meth:`process_caption` for every caption candidate, used when caching Text Encoder
+        outputs. Returns one or more processed captions (prefix/suffix etc. applied).
 
-        The random processing (selection of a caption candidate / line, caption dropout, wildcard replacement,
-        shuffling, tag dropout, token warmup) is not applied, because the cached outputs are shared by all steps.
-        See :meth:`is_text_encoder_output_cacheable` for which of these are rejected or warned.
+        With ``enable_multiline_caption`` all candidates separated by separator lines are returned, otherwise a single
+        caption. The random processing (caption dropout, wildcard replacement, shuffling, tag dropout, token warmup) is
+        not applied, because the cached outputs are shared by all steps. See :meth:`is_text_encoder_output_cacheable`
+        for which of these are rejected or warned.
         """
         if subset.enable_multiline_caption:
-            # multiple candidates are rejected by is_text_encoder_output_cacheable, so there is only one candidate here
-            caption = split_caption_candidates(caption, subset.multiline_caption_separator)[0]
+            candidates = split_caption_candidates(caption, subset.multiline_caption_separator)
         elif subset.enable_wildcard:
             # lines and wildcard notations are kept as they are (warned in is_text_encoder_output_cacheable)
-            pass
+            candidates = [caption]
         else:
             # if caption is multiline, use the first line
-            caption = caption.split("\n")[0]
+            candidates = [caption.split("\n")[0]]
 
-        caption = add_caption_prefix_suffix(subset, caption)
-        caption = apply_caption_replacements(subset, caption, self.replacements)
-        return caption
+        return [
+            apply_caption_replacements(subset, add_caption_prefix_suffix(subset, candidate), self.replacements)
+            for candidate in candidates
+        ]
+
+    def process_caption_for_cache(self, subset: BaseSubset, caption: str) -> str:
+        """The first (or only) processed caption candidate of :meth:`process_caption_candidates_for_cache`, for
+        caching strategies without multiple candidate support."""
+        return self.process_caption_candidates_for_cache(subset, caption)[0]
 
     def process_caption(self, subset: BaseSubset, caption):
         # select one caption from candidates. this must be done before adding prefix/suffix
@@ -834,13 +841,23 @@ class BaseDataset(torch.utils.data.Dataset):
     def is_latent_cacheable(self):
         return all([not subset.color_aug and not subset.random_crop for subset in self.subsets])
 
-    def is_text_encoder_output_cacheable(self, cache_supports_dropout: bool = False):
+    def is_text_encoder_output_cacheable(
+        self, cache_supports_dropout: bool = False, supports_multiple_caption_candidates: bool = False
+    ):
+        """``supports_multiple_caption_candidates`` is True if the caching strategy of the trainer caches the outputs of
+        all caption candidates (``TextEncoderOutputsCachingStrategy.supports_multiple_caption_candidates``). It is passed
+        as a flag because this is called before the strategy is set."""
         if self.has_multiple_caption_candidates:
-            logger.error(
-                "Text Encoder outputs cannot be cached because some captions have multiple candidates (enable_multiline_caption with separator lines): one candidate is chosen randomly at each step"
-                + " / 複数のキャプション候補を持つ画像があるため（enable_multiline_caption と区切り行）、Text Encoder の出力をキャッシュできません。候補はステップごとにランダムに選ばれます"
+            if not supports_multiple_caption_candidates:
+                logger.error(
+                    "Text Encoder outputs cannot be cached because some captions have multiple candidates (enable_multiline_caption with separator lines): one candidate is chosen randomly at each step"
+                    + " / 複数のキャプション候補を持つ画像があるため（enable_multiline_caption と区切り行）、Text Encoder の出力をキャッシュできません。候補はステップごとにランダムに選ばれます"
+                )
+                return False
+            logger.info(
+                "some captions have multiple candidates: the Text Encoder outputs of all candidates are cached, one of them is chosen randomly at each step"
+                + " / 複数のキャプション候補を持つ画像があります。全候補の Text Encoder 出力をキャッシュし、ステップごとにランダムに選びます"
             )
-            return False
         if any(subset.enable_wildcard for subset in self.subsets):
             logger.warning(
                 "enable_wildcard has no effect when caching Text Encoder outputs: the caption is encoded as is (all lines joined, `{a|b}` not replaced)"
@@ -978,9 +995,18 @@ class BaseDataset(torch.utils.data.Dataset):
         logger.info("caching Text Encoder outputs with caching strategy.")
         image_infos = list(self.image_data.values())
 
+        multi_candidates = caching_strategy.supports_multiple_caption_candidates
+        if self.has_multiple_caption_candidates and not multi_candidates:
+            # trainers check this in is_text_encoder_output_cacheable, but tools/cache_text_encoder_outputs.py does not
+            raise ValueError(
+                "Text Encoder outputs cannot be cached because some captions have multiple candidates (enable_multiline_caption with separator lines) and this model does not support caching multiple candidates"
+                + " / 複数のキャプション候補を持つ画像があり（enable_multiline_caption と区切り行）、このモデルは複数候補のキャッシュに対応していないため、Text Encoder の出力をキャッシュできません"
+            )
+
         # split by resolution
         batches = []
         batch = []
+        batch_num_captions = 0  # number of caption candidates in the batch (an image may have multiple candidates)
 
         # support multiple-gpus
         num_processes = accelerator.num_processes
@@ -988,6 +1014,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
         logger.info("checking cache validity...")
         for i, info in enumerate(tqdm(image_infos)):
+            # apply the deterministic caption processing (prefix/suffix etc.), the random processing is not applicable
+            captions = self.process_caption_candidates_for_cache(self.image_to_subset[info.image_key], info.caption)
+
             # check disk cache exists and size of text encoder outputs
             if caching_strategy.cache_to_disk:
                 te_out_npz = caching_strategy.get_outputs_npz_path(info.absolute_path)
@@ -998,16 +1027,21 @@ class BaseDataset(torch.utils.data.Dataset):
                 if i % num_processes != process_index:
                     continue
 
-                cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz)
+                if multi_candidates:
+                    cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz, captions)
+                else:
+                    cache_available = caching_strategy.is_disk_cached_outputs_expected(te_out_npz)
                 if cache_available:  # do not add to batch
                     continue
 
-            batch.append(info)
+            batch.append((info, captions))
+            batch_num_captions += len(captions)
 
-            # if number of data in batch is enough, flush the batch
-            if len(batch) >= batch_size:
+            # if number of captions in batch is enough, flush the batch
+            if batch_num_captions >= batch_size:
                 batches.append(batch)
                 batch = []
+                batch_num_captions = 0
 
         if len(batch) > 0:
             batches.append(batch)
@@ -1019,9 +1053,14 @@ class BaseDataset(torch.utils.data.Dataset):
         # iterate batches
         logger.info("caching Text Encoder outputs...")
         for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            # apply the deterministic caption processing (prefix/suffix etc.), the random processing is not applicable
-            captions = [self.process_caption_for_cache(self.image_to_subset[info.image_key], info.caption) for info in batch]
-            caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, batch, captions)
+            infos = [info for info, _ in batch]
+            captions_list = [captions for _, captions in batch]
+            if multi_candidates:
+                caching_strategy.cache_batch_outputs_multi(tokenize_strategy, models, text_encoding_strategy, infos, captions_list)
+            else:
+                # each image has exactly one candidate here (checked above)
+                captions = [captions[0] for captions in captions_list]
+                caching_strategy.cache_batch_outputs(tokenize_strategy, models, text_encoding_strategy, infos, captions)
 
     def get_image_size(self, image_path):
         if image_path.endswith(".jxl") or image_path.endswith(".JXL"):
@@ -1257,14 +1296,29 @@ class BaseDataset(torch.utils.data.Dataset):
             text_encoder_outputs = None
             input_ids = None
 
-            if image_info.text_encoder_outputs is not None:
-                # cached
-                text_encoder_outputs = image_info.text_encoder_outputs
-            elif image_info.text_encoder_outputs_npz is not None:
-                # on disk
-                text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
-                    image_info.text_encoder_outputs_npz
-                )
+            if image_info.text_encoder_outputs is not None or image_info.text_encoder_outputs_npz is not None:
+                # cached (in memory or on disk): choose one caption candidate at each step, same as process_caption.
+                # the number of candidates matches the cache (checked when caching, see is_disk_cached_outputs_expected)
+                cached_captions = self.process_caption_candidates_for_cache(subset, image_info.caption)
+                candidate_index = random.randrange(len(cached_captions)) if len(cached_captions) > 1 else 0
+                caption = cached_captions[candidate_index]  # same as the cached outputs
+
+                if image_info.text_encoder_outputs is not None:
+                    # in memory: a list of outputs per candidate if the strategy supports multiple candidates
+                    if self.text_encoder_output_caching_strategy.supports_multiple_caption_candidates:
+                        text_encoder_outputs = image_info.text_encoder_outputs[candidate_index]
+                    else:
+                        text_encoder_outputs = image_info.text_encoder_outputs
+                else:
+                    # on disk
+                    if self.text_encoder_output_caching_strategy.supports_multiple_caption_candidates:
+                        text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
+                            image_info.text_encoder_outputs_npz, candidate_index
+                        )
+                    else:
+                        text_encoder_outputs = self.text_encoder_output_caching_strategy.load_outputs_npz(
+                            image_info.text_encoder_outputs_npz
+                        )
             else:
                 tokenization_required = True
             text_encoder_outputs_list.append(text_encoder_outputs)
@@ -1272,8 +1326,6 @@ class BaseDataset(torch.utils.data.Dataset):
             if tokenization_required:
                 caption = self.process_caption(subset, image_info.caption)
                 input_ids = [ids[0] for ids in self.tokenize_strategy.tokenize(caption)]  # remove batch dimension
-            else:
-                caption = self.process_caption_for_cache(subset, image_info.caption)  # same as the cached outputs
 
             input_ids_list.append(input_ids)
             captions.append(caption)
@@ -1447,8 +1499,15 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
 
-    def is_text_encoder_output_cacheable(self, cache_supports_dropout: bool = False) -> bool:
-        return all([dataset.is_text_encoder_output_cacheable(cache_supports_dropout) for dataset in self.datasets])
+    def is_text_encoder_output_cacheable(
+        self, cache_supports_dropout: bool = False, supports_multiple_caption_candidates: bool = False
+    ) -> bool:
+        return all(
+            [
+                dataset.is_text_encoder_output_cacheable(cache_supports_dropout, supports_multiple_caption_candidates)
+                for dataset in self.datasets
+            ]
+        )
 
     def set_current_strategies(self):
         for dataset in self.datasets:

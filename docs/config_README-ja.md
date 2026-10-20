@@ -401,7 +401,7 @@ She holds a microphone and smiles.
 * `caption_prefix` / `caption_suffix` は選ばれた候補の前後に付きます。
 * `shuffle_caption`、`caption_tag_dropout_rate`、`token_warmup_step` は、選ばれた候補に改行が含まれない場合（上の例の 3 番目の候補など）のみ適用されます。改行を含む候補はそのまま使われます。
 * `enable_wildcard` と併用できます。その場合 `{a|b}` の置換のみが行われ、行ごとのランダム選択は区切り行による候補の選択に置き換わります。キャプションに `{` や `}` を含む JSON などを書く場合は `enable_wildcard` を有効にしないでください。
-* 複数の候補を持つ画像がある場合、候補がランダムに選ばれるため、Text Encoder の出力のキャッシュ（`--cache_text_encoder_outputs`）は使えません。
+* 複数の候補を持つ画像がある場合、Text Encoder の出力のキャッシュ（`--cache_text_encoder_outputs`）は、複数候補のキャッシュに対応したモデル（現在は MOSS-Image）でのみ使えます。全候補をエンコードして一つのキャッシュファイルに保存し、ステップごとにランダムに一つを選ぶため、キャッシュのサイズとキャッシュ時間は候補数倍になります。他のモデルでは、候補がランダムに選ばれるため Text Encoder の出力をキャッシュできません。
 * `cache_info = true` を使っている場合、`enable_multiline_caption` を切り替えたときは `metadata_cache.json` を削除して作り直してください。
 
 メタデータファイル（fine tuning 方式）でも同様です。`caption` に区切り行を含む文字列を書くか、文字列のリストを指定します（リストの各要素が候補になります）。`tags` は各候補の末尾に付与されます。

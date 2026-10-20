@@ -50,6 +50,12 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - MOSS-Image で、複数のキャプション候補（`enable_multiline_caption` と区切り行）を持つ画像でも Text Encoder の出力をキャッシュできるようになりました。全候補をエンコードして一つのキャッシュファイルに保存し、ステップごとにランダムに一つを選びます。[PR #2466](https://github.com/kohya-ss/sd-scripts/pull/2466)
+        - 処理済みのキャプション文字列もキャッシュファイルに保存されるため、キャプション（や `caption_prefix` / `caption_suffix`）を変更すると自動的にキャッシュが作り直されます。バージョン 0.12.1 で作成したキャッシュファイルは、候補が一つの画像ではそのまま使えます。
+        - キャッシュのサイズとキャッシュ時間は候補数倍になります。他のモデルでは、複数候補を持つ画像があると引き続き Text Encoder 出力をキャッシュできません。
+        - `tools/cache_text_encoder_outputs.py` は、複数候補に対応していないモデルで複数候補があるとエラーで停止するようになりました（以前は先頭の候補だけを黙ってキャッシュしていました）。
+
 - **Version 0.12.1 (2026-10-18):**
     - [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image)（OpenMOSS。Qwen3.5-9B テキストエンコーダーと FLUX.2 VAE を使う 5B の DiT）の LoRA 学習に対応しました。[PR #2458](https://github.com/kohya-ss/sd-scripts/pull/2458)、[PR #2459](https://github.com/kohya-ss/sd-scripts/pull/2459)、[PR #2460](https://github.com/kohya-ss/sd-scripts/pull/2460)、[PR #2461](https://github.com/kohya-ss/sd-scripts/pull/2461)
         - `moss_image_train_network.py` で DiT の LoRA（LoHa / LoKr も可）と、オプションでテキストエンコーダーの LoRA を学習できます。公式の diffusers 形式の分割ファイルと、ComfyUI 向けの単一ファイルのチェックポイントを読み込めます。詳細は[ドキュメント](./docs/moss_image_train_network.md)をご覧ください。
