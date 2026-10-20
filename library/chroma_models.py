@@ -718,11 +718,12 @@ class Chroma(Flux):
             double_mod = [img_mod, txt_mod]
             del img_mod, txt_mod
 
-            img, txt = block(img=img, txt=txt, pe=pe, distill_vec=double_mod, txt_seq_len=txt_seq_len)
+            # img and txt must be positional: the block swap backward hooks fire after the block's backward only for positional inputs
+            img, txt = block(img, txt, pe=pe, distill_vec=double_mod, txt_seq_len=txt_seq_len)
             del double_mod
 
             if self.blocks_to_swap:
-                self.offloader_double.submit_move_blocks(self.double_blocks, i)
+                self.offloader_double.submit_move_blocks_forward(self.double_blocks, i)
 
         img = torch.cat((img, txt), 1)
         del txt
@@ -736,7 +737,7 @@ class Chroma(Flux):
             del single_mod
 
             if self.blocks_to_swap:
-                self.offloader_single.submit_move_blocks(self.single_blocks, i)
+                self.offloader_single.submit_move_blocks_forward(self.single_blocks, i)
 
         img = img[:, :-max_txt_len, ...]
         final_mod = mod_vectors_dict["final_layer.adaLN_modulation.1"]

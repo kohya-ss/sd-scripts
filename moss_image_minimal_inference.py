@@ -21,6 +21,7 @@ from safetensors.torch import load_file, save_file
 
 from library import flux2_vae, moss_image_models, moss_image_train_utils, moss_image_utils
 from library.device_utils import clean_memory_on_device, synchronize_device
+from library.custom_offloading_utils import BlockSwapConfig
 from library.utils import setup_logging
 
 setup_logging()
@@ -197,7 +198,7 @@ def load_dit_model(args: argparse.Namespace, device: torch.device) -> moss_image
     model.eval().requires_grad_(False)
 
     if args.blocks_to_swap > 0:
-        model.enable_block_swap(args.blocks_to_swap, device, supports_backward=False)
+        model.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(device, supports_backward=False))
         model.move_to_device_except_swap_blocks(device)
         model.prepare_block_swap_before_forward()
     else:

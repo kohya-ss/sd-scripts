@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from library import utils
 from library.device_utils import clean_memory_on_device, init_ipex
+from library.custom_offloading_utils import BlockSwapConfig
 
 init_ipex()
 
@@ -312,8 +313,13 @@ def train(args):
     if is_swapping_blocks:
         # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
         # This idea is based on 2kpr's great work. Thank you!
+        if args.block_swap_h2d_only:
+            raise ValueError(
+                "--block_swap_h2d_only is not supported for ControlNet training"
+                " / --block_swap_h2d_only はControlNet学習ではサポートされていません"
+            )
         logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-        flux.enable_block_swap(args.blocks_to_swap, accelerator.device)
+        flux.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(accelerator.device, supports_backward=True))
         flux.move_to_device_except_swap_blocks(accelerator.device)  # reduce peak memory usage
         # ControlNet only has two blocks, so we can keep it on GPU
         # controlnet.enable_block_swap(args.blocks_to_swap, accelerator.device)

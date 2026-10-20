@@ -730,6 +730,31 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         " / 順伝播および逆伝播中にスワップするブロックの数を設定します。"
         "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
     )
+    parser.add_argument(
+        "--block_swap_h2d_only",
+        action="store_true",
+        help="(experimental, frozen-base / LoRA training only) use H2D-only block swap:"
+        " keep a CPU master copy of streamed weights and only copy Host->Device, never back. Removes the D2H transfer."
+        " Requires --gradient_checkpointing. Not supported for SD3."
+        " / (実験的、ベース凍結＝LoRA学習専用) H2DのみのブロックスワップでD2H転送を行わない。--gradient_checkpointing が必須。SD3では使用不可。",
+    )
+    parser.add_argument(
+        "--block_swap_ring_size",
+        type=int,
+        default=2,
+        help="(used with --block_swap_h2d_only) number of GPU ring buffers for streamed blocks. 2 = double buffering"
+        " (one computed on, one prefetched); 1 = minimal memory but no transfer/compute overlap."
+        " / (--block_swap_h2d_only用) ストリーミング用GPUリングバッファ数。2でダブルバッファ、1で最小メモリ(オーバーラップなし)。",
+    )
+    parser.add_argument(
+        "--use_pinned_memory_for_block_swap",
+        action="store_true",
+        help="(used with --block_swap_h2d_only) keep the CPU master copies of the streamed weights in pinned memory for faster"
+        " Host->Device copies. Uses more shared GPU memory on Windows. Without this, the transfers are staged through a small"
+        " pinned buffer pool on a worker thread."
+        " / (--block_swap_h2d_only用) ストリーミングする重みのCPUマスターコピーをピン留めメモリに置き、Host->Device転送を高速化する。"
+        "Windowsでは共有GPUメモリを多く使用する。指定しない場合は小さなピン留めバッファを介してワーカースレッドで転送する。",
+    )
 
 
 def get_sanitized_config_or_none(args: argparse.Namespace):
