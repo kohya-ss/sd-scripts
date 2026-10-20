@@ -50,6 +50,8 @@ The classic block swap *exchanges* a block: as a block is consumed it is copied 
 
 With less transfer time, many models can achieve complete overlap of compute and transfer. In Musubi Tuner, LoRA training of Qwen-Image on an RTX 3090 with 40 swapped blocks runs at about 14 seconds/sample with the classic block swap and about 11 seconds/sample with H2D-only, a roughly 25% speedup.
 
+In sd-scripts, LoRA training of MOSS-Image (bf16, 1024x1024, batch size 1, `--blocks_to_swap 36`) on an RTX 3090 (PCIe Gen3 x4) runs at about 11.7 seconds/step with the classic block swap and about 9.4 seconds/step with H2D-only (`--use_pinned_memory_for_block_swap`), a roughly 20% speedup, with about 7GB of VRAM. The transfer (about 2.3 seconds per pass) is completely hidden behind the computation, so the step time no longer depends on the number of swapped blocks.
+
 Note that on Max-Q devices and similar, power limits may cause H2D-only to run slower than no block swap at all, even with compute-transfer overlap.
 
 **Supported scripts:** `flux_train_network.py` (FLUX.1 and Chroma), `lumina_train_network.py`, `hunyuan_image_train_network.py`, `anima_train_network.py` and `moss_image_train_network.py`. **SD3 is not supported** (`sd3_train_network.py` stops with an error), because the joint blocks of SD3 / SD3.5 are not uniform and cannot share the ring buffer. The full fine-tuning scripts (`flux_train.py`, `sd3_train.py`, `anima_train.py`, `flux_train_control_net.py`) also reject the option. The inference scripts are not affected.
@@ -75,6 +77,8 @@ H2Dのみのブロックスワップ（`--block_swap_h2d_only`）は、**ベー�
 従来のブロックスワップはブロックを*入れ替え*ます。あるブロックを使い終わるとCPUへ書き戻し（Device→Host、「D2H」）、同時に次のブロックを転送（Host→Device、「H2D」）します。ベースの重みが凍結されている場合、CPU側には既に同一のコピーがあるため、D2Hは完全に無駄です。H2D-onlyは、ストリーミングする全重みの恒久的なマスターコピーをCPUに保持し、常にHost→Deviceのみコピーすることで、D2H転送を完全に排除します。また、ブロックの重みをひとつの連続したバッファにまとめ、1回のコピーで転送します。これにより学習スループットが向上することがあり、その効果は`--fp8_base` / `--fp8_scaled` / `--convrot_int8`使用時に最も大きくなります（重みが小さくなり転送データ量が減るため）。
 
 転送時間が減るため多くのモデルで計算と転送は完全にオーバーラップ可能となります。Musubi Tunerでは、RTX 3090におけるQwen-ImageのLoRA学習で、40ブロックをスワップする構成で、通常のブロックスワップは約14秒／サンプルですが、H2D-onlyは約11秒／サンプルと約25%の速度向上が見られます。
+
+sd-scriptsでは、RTX 3090（PCIe Gen3 x4）におけるMOSS-ImageのLoRA学習（bf16、1024x1024、バッチサイズ1、`--blocks_to_swap 36`）で、通常のブロックスワップは約11.7秒／ステップですが、H2D-only（`--use_pinned_memory_for_block_swap`指定）は約9.4秒／ステップと約20%の速度向上が見られ、VRAM使用量は約7GBでした。転送（1パスあたり約2.3秒）は計算に完全に隠れるため、ステップ時間はスワップするブロック数に依存しなくなります。
 
 なお、計算と転送が完全にオーバーラップする場合でも、Max-Qデバイスなどでは電力制限により、ブロックスワップ未使用時よりも速度が低下することがあります。
 
