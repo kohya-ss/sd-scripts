@@ -50,7 +50,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
-- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+- **Version 0.12.2 (2026-10-20):**
     - LoRA 学習向けに、H2D-only block swap（`--block_swap_h2d_only`）を追加しました（Musubi Tuner からの移植）。凍結されたベースモデルの重みを CPU に置いたまま Host→Device 方向にのみコピーすることで、従来の block swap にあった Device→Host の転送が不要になり、学習速度が向上します。FLUX.1 / Chroma、Lumina Image 2.0、HunyuanImage-2.1、Anima、MOSS-Image で使用できます（SD3 は対象外）。`--gradient_checkpointing` が必須です。詳細は[ドキュメント](./docs/block_swap.md)をご覧ください。[PR #2467](https://github.com/kohya-ss/sd-scripts/pull/2467)
         - `--block_swap_ring_size`（デフォルト 2）でストリーミングするブロック用の GPU バッファ数を指定できます。`--use_pinned_memory_for_block_swap` を指定すると CPU 側のコピーを pinned メモリに置き、転送が高速になります。
         - 開発者向け: 各モデルの `enable_block_swap` はデバイスの代わりに `BlockSwapConfig` を受け取るようになりました。また offloader の `submit_move_blocks` は Musubi Tuner と同じ `submit_move_blocks_forward` に改名されています。
