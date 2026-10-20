@@ -169,7 +169,7 @@ class HYImageDiffusionTransformer(nn.Module):
 
         print("HunyuanImage-2.1: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device, supports_backward: bool = False):
+    def enable_block_swap(self, num_blocks: int, config: custom_offloading_utils.BlockSwapConfig):
         self.blocks_to_swap = num_blocks
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
@@ -179,15 +179,15 @@ class HYImageDiffusionTransformer(nn.Module):
             f"Requested {double_blocks_to_swap} double blocks and {single_blocks_to_swap} single blocks."
         )
 
-        self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, device, supports_backward=supports_backward
+        self.offloader_double = custom_offloading_utils.create_offloader(
+            "double", self.double_blocks, self.num_double_blocks, double_blocks_to_swap, config
         )
-        self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, single_blocks_to_swap, device, supports_backward=supports_backward
+        self.offloader_single = custom_offloading_utils.create_offloader(
+            "single", self.single_blocks, self.num_single_blocks, single_blocks_to_swap, config
         )
-        # , debug=True
         print(
             f"HunyuanImage-2.1: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
+            f" Supports backward: {config.supports_backward}. H2D-only: {config.h2d_only}"
         )
 
     def switch_block_swap_for_inference(self):
@@ -363,7 +363,7 @@ class HYImageDiffusionTransformer(nn.Module):
                 self.offloader_double.wait_for_block(index)
             img, txt = block(img, txt, vec, freqs_cis, attn_params)
             if self.blocks_to_swap:
-                self.offloader_double.submit_move_blocks(self.double_blocks, index)
+                self.offloader_double.submit_move_blocks_forward(self.double_blocks, index)
 
         # Concatenate image and text tokens for joint processing
         x = torch.cat((img, txt), 1)
@@ -374,7 +374,7 @@ class HYImageDiffusionTransformer(nn.Module):
                 self.offloader_single.wait_for_block(index)
             x = block(x, vec, freqs_cis, attn_params)
             if self.blocks_to_swap:
-                self.offloader_single.submit_move_blocks(self.single_blocks, index)
+                self.offloader_single.submit_move_blocks_forward(self.single_blocks, index)
 
         x = x.to(input_device)
         vec = vec.to(input_device)

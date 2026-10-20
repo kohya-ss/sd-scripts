@@ -392,7 +392,7 @@ She holds a microphone and smiles.
 * `caption_prefix` / `caption_suffix` are added before and after the chosen candidate.
 * `shuffle_caption`, `caption_tag_dropout_rate` and `token_warmup_step` are applied only when the chosen candidate does not contain line breaks (e.g. the third candidate in the example above). Candidates with line breaks are used as they are.
 * It can be combined with `enable_wildcard`. In that case only the `{a|b}` replacement is performed, and the random selection of a line is replaced by the selection of a candidate by separator lines. Do not enable `enable_wildcard` if the captions contain `{` or `}`, such as JSON.
-* If some images have multiple candidates, the Text Encoder outputs cannot be cached (`--cache_text_encoder_outputs`), because a candidate is chosen randomly.
+* If some images have multiple candidates, the Text Encoder outputs can be cached (`--cache_text_encoder_outputs`) only with models that support caching multiple candidates (currently MOSS-Image). All candidates are encoded and stored in one cache file, and one of them is chosen randomly at each step, so the cache size and the caching time are multiplied by the number of candidates. With other models, the Text Encoder outputs cannot be cached because a candidate is chosen randomly.
 * If you use `cache_info = true`, delete `metadata_cache.json` and rebuild it when you change `enable_multiline_caption`.
 
 The same applies to metadata files (fine tuning method). Write a string containing separator lines in `caption`, or specify a list of strings (each element is a candidate). `tags` are appended to each candidate.

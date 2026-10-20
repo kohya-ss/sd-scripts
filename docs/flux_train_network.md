@@ -231,6 +231,7 @@ The script adds FLUX.1 specific arguments. For common arguments (like `--output_
 * `--blocks_to_swap=<integer>` **[Experimental Feature]**
   - Setting to reduce VRAM usage by swapping parts of the model (Transformer blocks) between CPU and GPU. Specify the number of blocks to swap as an integer (e.g., `18`). Larger values reduce VRAM usage but decrease training speed. Adjust according to your GPU's VRAM capacity. Can be used with `gradient_checkpointing`.
   - Cannot be used with `--cpu_offload_checkpointing`.
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--cache_text_encoder_outputs`
   - Caches the outputs of CLIP-L and T5-XXL. This reduces memory usage.
 * `--cache_latents`, `--cache_latents_to_disk`

@@ -158,7 +158,9 @@ def test_text_encoder_outputs_caching_roundtrip(tmp_path, cache_to_disk):
             outputs = caching_strategy.load_outputs_npz(info.text_encoder_outputs_npz)
             assert info.text_encoder_outputs is None
         else:
-            outputs = info.text_encoder_outputs
+            # in memory: one tuple per caption candidate
+            assert isinstance(info.text_encoder_outputs, list) and len(info.text_encoder_outputs) == 1
+            outputs = info.text_encoder_outputs[0]
         prompt_embeds, attn_mask, uncond_embeds, uncond_mask, rate = outputs
         length = int(expected_mask[i].sum())
         assert prompt_embeds.dtype == np.float32 and prompt_embeds.shape == (length, 8)  # trimmed, no padding
@@ -176,6 +178,104 @@ def test_text_encoder_outputs_caching_roundtrip(tmp_path, cache_to_disk):
     first = caching_strategy._uncond_embeds
     caching_strategy.cache_batch_outputs(tokenize_strategy, [text_encoder], encoding_strategy, infos[:1], captions[:1])
     assert caching_strategy._uncond_embeds is first
+
+
+def make_info(tmp_path, caching_strategy, name, caption, rate=0.0):
+    image_path = str(tmp_path / f"{name}.png")
+    return SimpleNamespace(
+        absolute_path=image_path,
+        caption=caption,
+        caption_dropout_rate=rate,
+        text_encoder_outputs_npz=caching_strategy.get_outputs_npz_path(image_path),
+        text_encoder_outputs=None,
+    )
+
+
+@pytest.mark.parametrize("cache_to_disk", [True, False])
+def test_text_encoder_outputs_caching_multiple_candidates(tmp_path, cache_to_disk):
+    tokenize_strategy = make_tokenize_strategy()
+    encoding_strategy = MossImageTextEncodingStrategy()
+    text_encoder = FakeTextEncoder()
+    caching_strategy = MossImageTextEncoderOutputsCachingStrategy(cache_to_disk, 4, False)
+    assert caching_strategy.supports_multiple_caption_candidates
+
+    captions_list = [["a cat", "a photo of\na cat", "cat, animal"], ["a dog"]]
+    infos = [make_info(tmp_path, caching_strategy, f"img{i}", "raw", rate=0.1 * i) for i in range(len(captions_list))]
+
+    caching_strategy.cache_batch_outputs_multi(tokenize_strategy, [text_encoder], encoding_strategy, infos, captions_list)
+
+    flat_captions = [c for captions in captions_list for c in captions]
+    tokens = tokenize_strategy.tokenize(flat_captions)
+    expected_embeds, expected_mask = encoding_strategy.encode_tokens(tokenize_strategy, [text_encoder], tokens)
+
+    offset = 0
+    for i, (info, captions) in enumerate(zip(infos, captions_list)):
+        if cache_to_disk:
+            npz = np.load(info.text_encoder_outputs_npz)
+            assert int(npz["num_candidates"]) == len(captions)
+            assert [str(npz[f"caption_{k}"]) for k in range(len(captions))] == captions
+            assert "prompt_embeds" not in npz  # the new format always uses the _{k} keys
+            # valid only for the same candidates
+            assert caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, captions)
+            assert caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz)  # no caption check
+            assert not caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, captions[:1] * 2)
+            assert not caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, captions + ["x"])
+            assert not caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, captions[:-1] + ["x"])
+        else:
+            assert len(info.text_encoder_outputs) == len(captions)
+
+        for k in range(len(captions)):
+            if cache_to_disk:
+                outputs = caching_strategy.load_outputs_npz(info.text_encoder_outputs_npz, k)
+            else:
+                outputs = info.text_encoder_outputs[k]
+            prompt_embeds, attn_mask, uncond_embeds, uncond_mask, rate = outputs
+            length = int(expected_mask[offset + k].sum())
+            assert prompt_embeds.shape == (length, 8)
+            assert torch.equal(torch.from_numpy(prompt_embeds), expected_embeds[offset + k, :length].float())
+            assert attn_mask.shape == (length,) and attn_mask.all()
+            assert float(rate) == pytest.approx(0.1 * i)
+        offset += len(captions)
+
+        if cache_to_disk:
+            with pytest.raises(ValueError, match="skip_cache_check"):
+                caching_strategy.load_outputs_npz(info.text_encoder_outputs_npz, len(captions))
+
+
+def test_text_encoder_outputs_caching_skip_check_ignores_captions(tmp_path):
+    tokenize_strategy = make_tokenize_strategy()
+    encoding_strategy = MossImageTextEncodingStrategy()
+    text_encoder = FakeTextEncoder()
+    caching_strategy = MossImageTextEncoderOutputsCachingStrategy(True, 4, skip_disk_cache_validity_check=True)
+    info = make_info(tmp_path, caching_strategy, "img", "raw")
+    assert not caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, ["a"])  # no file yet
+    caching_strategy.cache_batch_outputs_multi(tokenize_strategy, [text_encoder], encoding_strategy, [info], [["a"]])
+    assert caching_strategy.is_disk_cached_outputs_expected(info.text_encoder_outputs_npz, ["changed", "captions"])
+
+
+def test_text_encoder_outputs_previous_format_is_accepted_for_single_candidate(tmp_path):
+    caching_strategy = MossImageTextEncoderOutputsCachingStrategy(True, 4, False)
+    npz_path = str(tmp_path / "img_moss_te.npz")
+    embeds = bf16_to_uint16(torch.randn(3, 8).to(torch.bfloat16))
+    uncond = bf16_to_uint16(torch.randn(2, 8).to(torch.bfloat16))
+    np.savez(
+        npz_path,
+        prompt_embeds=embeds,
+        attn_mask=np.ones(3, dtype=np.int32),
+        uncond_embeds=uncond,
+        uncond_mask=np.ones(2, dtype=np.int32),
+        caption_dropout_rate=np.array(0.0, dtype=np.float32),
+    )
+
+    assert caching_strategy.is_disk_cached_outputs_expected(npz_path)
+    assert caching_strategy.is_disk_cached_outputs_expected(npz_path, ["any text"])  # the text cannot be checked
+    assert not caching_strategy.is_disk_cached_outputs_expected(npz_path, ["a", "b"])  # must be re-cached
+
+    outputs = caching_strategy.load_outputs_npz(npz_path)
+    assert np.array_equal(outputs[0], uint16_to_float32(embeds))
+    assert np.array_equal(outputs[2], uint16_to_float32(uncond))
+    with pytest.raises(ValueError, match="1 caption candidate"):
+        caching_strategy.load_outputs_npz(npz_path, 1)
 
 
 class FakeVAE(torch.nn.Module):

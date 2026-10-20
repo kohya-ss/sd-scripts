@@ -373,13 +373,29 @@ class TextEncoderOutputsCachingStrategy:
     def is_weighted(self):
         return self._is_weighted
 
+    @property
+    def supports_multiple_caption_candidates(self) -> bool:
+        """True if the strategy can cache the outputs of all caption candidates of an image
+        (``enable_multiline_caption`` with separator lines) and return one of them by ``candidate_index``.
+
+        Such a strategy must implement :meth:`cache_batch_outputs_multi`, accept ``captions`` in
+        :meth:`is_disk_cached_outputs_expected` and ``candidate_index`` in :meth:`load_outputs_npz`, and store the
+        in-memory outputs (``info.text_encoder_outputs``) as a list with one element per candidate.
+        """
+        return False
+
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
         raise NotImplementedError
 
-    def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+    def load_outputs_npz(self, npz_path: str, candidate_index: int = 0) -> List[np.ndarray]:
+        """Load the cached outputs. ``candidate_index`` selects the caption candidate; it is always 0 unless
+        :attr:`supports_multiple_caption_candidates` is True."""
         raise NotImplementedError
 
-    def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
+    def is_disk_cached_outputs_expected(self, npz_path: str, captions: Optional[List[str]] = None) -> bool:
+        """Check whether the cache file exists and is valid. ``captions`` are the processed caption candidates of the
+        image (see :meth:`cache_batch_outputs_multi`); a strategy with :attr:`supports_multiple_caption_candidates`
+        uses them to check that the number of candidates and their texts match the cache. Other strategies ignore it."""
         raise NotImplementedError
 
     def cache_batch_outputs(
@@ -394,6 +410,22 @@ class TextEncoderOutputsCachingStrategy:
 
         ``captions`` are the processed captions (``BaseDataset.process_caption_for_cache``: prefix/suffix etc. applied),
         not ``info.caption``.
+        """
+        raise NotImplementedError
+
+    def cache_batch_outputs_multi(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        batch: List,
+        captions_list: List[List[str]],
+    ):
+        """Encode all caption candidates and cache the outputs for ``batch`` (list of ImageInfo).
+
+        ``captions_list[i]`` is the list of processed caption candidates of ``batch[i]``
+        (``BaseDataset.process_caption_candidates_for_cache``), with one or more elements.
+        Only strategies with :attr:`supports_multiple_caption_candidates` implement this.
         """
         raise NotImplementedError
 

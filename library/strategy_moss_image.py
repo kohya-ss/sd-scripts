@@ -115,7 +115,19 @@ class MossImageTextEncodingStrategy(TextEncodingStrategy):
 
 class MossImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
     """Caches the text encoder outputs as bf16 bits (uint16) without padding, together with the unconditional
-    embeddings (the encoding of "") so that caption dropout works without the text encoder."""
+    embeddings (the encoding of "") so that caption dropout works without the text encoder.
+
+    All caption candidates of an image (``enable_multiline_caption`` with separator lines) are cached in one file:
+
+    - ``num_candidates``: int32 scalar
+    - ``prompt_embeds_{k}`` uint16 [L_k, C], ``attn_mask_{k}`` int32 [L_k], ``caption_{k}`` str (the processed caption)
+      for k in range(num_candidates)
+    - ``uncond_embeds`` uint16 [L_u, C], ``uncond_mask`` int32 [L_u], ``caption_dropout_rate`` float32 scalar
+
+    The caption texts are used to detect changed captions (the file is re-cached) and for debugging.
+    Files of the previous format (sd-scripts 0.12.1: ``prompt_embeds`` / ``attn_mask`` without ``num_candidates``)
+    are still accepted for images with a single candidate.
+    """
 
     MOSS_IMAGE_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX = "_moss_te.npz"
 
@@ -125,10 +137,16 @@ class MossImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrate
         super().__init__(cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial)
         self._uncond_embeds: Optional[torch.Tensor] = None  # [L_u, C] bf16 on CPU
 
+    @property
+    def supports_multiple_caption_candidates(self) -> bool:
+        return True
+
     def get_outputs_npz_path(self, image_abs_path: str) -> str:
         return os.path.splitext(image_abs_path)[0] + self.MOSS_IMAGE_TEXT_ENCODER_OUTPUTS_NPZ_SUFFIX
 
-    def is_disk_cached_outputs_expected(self, npz_path: str) -> bool:
+    def is_disk_cached_outputs_expected(self, npz_path: str, captions: Optional[List[str]] = None) -> bool:
+        """``captions`` are the processed caption candidates of the image. If given, the cache is valid only if the number
+        of candidates and their texts match (not checked with ``skip_disk_cache_validity_check``)."""
         if not self.cache_to_disk:
             return False
         if not os.path.exists(npz_path):
@@ -138,8 +156,24 @@ class MossImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrate
 
         try:
             npz = np.load(npz_path)
-            for key in ["prompt_embeds", "attn_mask", "uncond_embeds", "uncond_mask", "caption_dropout_rate"]:
+            for key in ["uncond_embeds", "uncond_mask", "caption_dropout_rate"]:
                 if key not in npz:
+                    return False
+
+            if "num_candidates" not in npz:
+                # previous format: a single candidate without the caption text
+                if "prompt_embeds" not in npz or "attn_mask" not in npz:
+                    return False
+                return captions is None or len(captions) == 1
+
+            num_candidates = int(npz["num_candidates"])
+            if captions is not None and num_candidates != len(captions):
+                return False
+            for k in range(num_candidates):
+                for key in [f"prompt_embeds_{k}", f"attn_mask_{k}", f"caption_{k}"]:
+                    if key not in npz:
+                        return False
+                if captions is not None and str(npz[f"caption_{k}"]) != captions[k]:
                     return False
         except Exception as e:
             logger.error(f"Error loading file: {npz_path}")
@@ -147,13 +181,28 @@ class MossImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrate
 
         return True
 
-    def load_outputs_npz(self, npz_path: str) -> List[np.ndarray]:
+    def load_outputs_npz(self, npz_path: str, candidate_index: int = 0) -> List[np.ndarray]:
         """Returns [prompt_embeds float32 [L, C], attn_mask int32 [L], uncond_embeds float32 [L_u, C], uncond_mask int32 [L_u],
-        caption_dropout_rate float32 scalar]. The collate function right-pads the variable length arrays with zeros."""
+        caption_dropout_rate float32 scalar] of the caption candidate ``candidate_index``.
+        The collate function right-pads the variable length arrays with zeros."""
         data = np.load(npz_path)
+        if "num_candidates" in data:
+            num_candidates = int(data["num_candidates"])
+            embeds_key, mask_key = f"prompt_embeds_{candidate_index}", f"attn_mask_{candidate_index}"
+        else:
+            # previous format: a single candidate
+            num_candidates = 1
+            embeds_key, mask_key = "prompt_embeds", "attn_mask"
+        if candidate_index >= num_candidates:
+            raise ValueError(
+                f"The cached Text Encoder outputs have {num_candidates} caption candidate(s), but candidate {candidate_index} is requested: {npz_path}."
+                " The caption may have been changed after caching. Remove --skip_cache_check to re-cache the changed captions."
+                f" / キャッシュされた Text Encoder 出力のキャプション候補は {num_candidates} 個ですが、候補 {candidate_index} が要求されました: {npz_path}。"
+                "キャッシュ後にキャプションが変更された可能性があります。--skip_cache_check を外すと変更されたキャプションが再キャッシュされます。"
+            )
         return [
-            uint16_to_float32(data["prompt_embeds"]),
-            data["attn_mask"],
+            uint16_to_float32(data[embeds_key]),
+            data[mask_key],
             uint16_to_float32(data["uncond_embeds"]),
             data["uncond_mask"],
             data["caption_dropout_rate"],
@@ -179,38 +228,61 @@ class MossImageTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrate
         infos: List,
         captions: List[str],
     ):
+        self.cache_batch_outputs_multi(tokenize_strategy, models, text_encoding_strategy, infos, [[c] for c in captions])
+
+    def cache_batch_outputs_multi(
+        self,
+        tokenize_strategy: TokenizeStrategy,
+        models: List[Any],
+        text_encoding_strategy: TextEncodingStrategy,
+        infos: List,
+        captions_list: List[List[str]],
+    ):
         uncond_embeds = self.get_uncond_embeds(tokenize_strategy, models, text_encoding_strategy)
         uncond_np = bf16_to_uint16(uncond_embeds)
         uncond_mask_np = np.ones(uncond_embeds.shape[0], dtype=np.int32)
 
-        tokens = tokenize_strategy.tokenize(captions)
+        # encode all candidates of the batch at once (the text encoder runs one caption at a time anyway)
+        flat_captions = [caption for captions in captions_list for caption in captions]
+        tokens = tokenize_strategy.tokenize(flat_captions)
         with torch.no_grad():
             prompt_embeds, attn_mask = text_encoding_strategy.encode_tokens(tokenize_strategy, models, tokens)
 
-        for i, info in enumerate(infos):
-            length = int(attn_mask[i].sum().item())
-            embeds_i = bf16_to_uint16(prompt_embeds[i, :length])  # trimmed, no padding
-            mask_i = np.ones(length, dtype=np.int32)
+        offset = 0
+        for info, captions in zip(infos, captions_list):
+            embeds_list = []
+            mask_list = []
+            for k in range(len(captions)):
+                length = int(attn_mask[offset + k].sum().item())
+                embeds_list.append(bf16_to_uint16(prompt_embeds[offset + k, :length]))  # trimmed, no padding
+                mask_list.append(np.ones(length, dtype=np.int32))
+            offset += len(captions)
             caption_dropout_rate = np.array(info.caption_dropout_rate, dtype=np.float32)
 
             if self.cache_to_disk:
-                np.savez(
-                    info.text_encoder_outputs_npz,
-                    prompt_embeds=embeds_i,
-                    attn_mask=mask_i,
-                    uncond_embeds=uncond_np,
-                    uncond_mask=uncond_mask_np,
-                    caption_dropout_rate=caption_dropout_rate,
-                )
+                arrays = {
+                    "num_candidates": np.array(len(captions), dtype=np.int32),
+                    "uncond_embeds": uncond_np,
+                    "uncond_mask": uncond_mask_np,
+                    "caption_dropout_rate": caption_dropout_rate,
+                }
+                for k, (embeds_k, mask_k, caption_k) in enumerate(zip(embeds_list, mask_list, captions)):
+                    arrays[f"prompt_embeds_{k}"] = embeds_k
+                    arrays[f"attn_mask_{k}"] = mask_k
+                    arrays[f"caption_{k}"] = np.array(caption_k)
+                np.savez(info.text_encoder_outputs_npz, **arrays)
             else:
-                # keep the same format as load_outputs_npz (float32)
-                info.text_encoder_outputs = (
-                    uint16_to_float32(embeds_i),
-                    mask_i,
-                    uint16_to_float32(uncond_np),
-                    uncond_mask_np,
-                    caption_dropout_rate,
-                )
+                # keep the same format as load_outputs_npz (float32), one tuple per candidate
+                info.text_encoder_outputs = [
+                    (
+                        uint16_to_float32(embeds_k),
+                        mask_k,
+                        uint16_to_float32(uncond_np),
+                        uncond_mask_np,
+                        caption_dropout_rate,
+                    )
+                    for embeds_k, mask_k in zip(embeds_list, mask_list)
+                ]
 
 
 class MossImageLatentsCachingStrategy(LatentsCachingStrategy):

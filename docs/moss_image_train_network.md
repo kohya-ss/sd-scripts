@@ -48,6 +48,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 * **LoRA:** Uses the generic LoRA module `networks.lora_generic` with regex-based module selection and per-module rank/learning rate control (`network_reg_dims`, `network_reg_lrs`). Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
 * **Text Encoder:** The text encoder is run one sample at a time without padding (the Qwen3.5 Gated DeltaNet layers are sensitive to padding), the same as the official pipeline. Captions can contain line breaks (`enable_multiline_caption`).
 * **Caption dropout with cached text encoder outputs:** The unconditional embedding is stored in every cache file, so `caption_dropout_rate` works together with `--cache_text_encoder_outputs`.
+* **Multiple caption candidates with cached text encoder outputs:** The outputs of all caption candidates of an image (`enable_multiline_caption` with separator lines) are stored in one cache file, and one of them is chosen randomly at each step. See [Section 3](#3-preparation--準備).
 
 <details>
 <summary>日本語</summary>
@@ -62,6 +63,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 * **LoRA:** 汎用 LoRA モジュール `networks.lora_generic` を使用し、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を行います。モジュールの除外/包含は `exclude_patterns` と `include_patterns` で制御します。
 * **テキストエンコーダー:** 公式パイプラインと同様に、パディングなしで 1 サンプルずつ実行します（Qwen3.5 の Gated DeltaNet 層はパディングの影響を受けます）。キャプションには改行を含められます（`enable_multiline_caption`）。
 * **キャッシュ時のキャプションドロップアウト:** 各キャッシュファイルに unconditional の埋め込みも保存するため、`caption_dropout_rate` を `--cache_text_encoder_outputs` と併用できます。
+* **キャッシュ時の複数キャプション候補:** 画像の全キャプション候補（`enable_multiline_caption` と区切り行）の出力を一つのキャッシュファイルに保存し、ステップごとにランダムに一つを選びます。[3 節](#3-preparation--準備)を参照してください。
 
 </details>
 
@@ -85,6 +87,7 @@ The following files are required before starting training:
 
 * The bucket resolutions must be multiples of 16 (`bucket_reso_steps` of 16, 32, 64, ... The default 64 is fine).
 * MOSS-Image is trained with long natural-language captions written by an LLM. `enable_multiline_caption = true` in the dataset config lets you use captions that contain line breaks as they are. See [the dataset config documentation](./config_README-en.md#captions-with-line-breaks-and-multiple-caption-candidates-enable_multiline_caption--true).
+* Multiple caption candidates for one image (separator lines with `enable_multiline_caption`, e.g. an original caption and recaptions of different lengths, as in the official training) can be used together with `--cache_text_encoder_outputs`: all candidates are encoded and stored in one cache file, and one of them is chosen randomly at each step. The cache size and the caching time are multiplied by the number of candidates.
 
 <details>
 <summary>日本語</summary>
@@ -107,6 +110,7 @@ The following files are required before starting training:
 
 * bucket の解像度は 16 の倍数である必要があります（`bucket_reso_steps` は 16、32、64 など。デフォルトの 64 で問題ありません）。
 * MOSS-Image は LLM が書いた長い自然文のキャプションで学習されています。データセット設定で `enable_multiline_caption = true` を指定すると、改行を含むキャプションをそのまま使用できます。[データセット設定のドキュメント](./config_README-ja.md) を参照してください。
+* 一つの画像に対する複数のキャプション候補（`enable_multiline_caption` の区切り行。公式の学習のように元のキャプションと長さの異なる再キャプションを用意する場合など）は、`--cache_text_encoder_outputs` と併用できます。全候補をエンコードして一つのキャッシュファイルに保存し、ステップごとにランダムに一つを選びます。キャッシュのサイズとキャッシュ時間は候補数倍になります。
 
 </details>
 
@@ -220,10 +224,12 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - Backward mode of the ConvRot INT8 layers. Default `bf16` (most accurate). `int8` reuses the fused int8 GEMM for the input gradient (requires triton and CUDA); it has no measurable benefit with gradient checkpointing.
 * `--blocks_to_swap=<integer>`
   - Number of DiT blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum **40** (42 blocks - 2). Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Enables `--gradient_checkpointing`. Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk`
   - Cache the Qwen3.5-9B outputs. Strongly recommended when not training text encoder LoRA: the text encoder is removed from the GPU after caching. The cache files are `<image>_moss_te.npz` and contain the unconditional embedding as well, so `caption_dropout_rate` can be used. Requires `--network_train_unet_only`.
+  - The outputs of all caption candidates of an image are stored in one file (`num_candidates`, `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}` for each candidate `k`). The processed caption texts (`caption_prefix` / `caption_suffix` applied) are stored as well, and the file is re-cached when the number of candidates or the texts differ from the current captions, unless `--skip_cache_check` is specified. The files created with version 0.12.1 (without `num_candidates`) are still valid for images with a single candidate.
 * `--text_encoder_batch_size=<integer>`
   - Number of captions processed per call when caching text encoder outputs. The text encoder itself always runs one caption at a time (no padding), so this only affects the loop granularity.
 * `--cache_latents`, `--cache_latents_to_disk`
@@ -268,8 +274,9 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--convrot_int8_text_encoder` - テキストエンコーダーの重みをロード時に ConvRot INT8 に量子化します（約 16GB → 8GB）。ComfyUI の `qwen3.5_9b_int8_convrot.safetensors` には不要です。
 * `--convrot_int8_bwd` - ConvRot INT8 層の backward の方式。デフォルト `bf16`（最も高精度）。`int8` は入力勾配にも融合 int8 GEMM を使います（triton と CUDA が必要）。gradient checkpointing 使用時には速度差はほぼありません。
 * `--blocks_to_swap` - DiT のブロックを CPU と GPU でスワップして VRAM を節約。最大 **40**（42 ブロック − 2）。`--cpu_offload_checkpointing` および `--unsloth_offload_checkpointing` とは併用できません。
+  - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションを CPU RAM にオフロード。`--gradient_checkpointing` を有効にします。`--cpu_offload_checkpointing` および `--blocks_to_swap` とは併用できません。
-* `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。
+* `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。
 * `--cache_latents`, `--cache_latents_to_disk` - FLUX.2 VAE の出力をキャッシュします。キャッシュファイルは `<image>_<W>x<H>_moss.npz` で、VAE の生の出力（32 チャンネル、1/8 解像度）を保存します。DiT 向けの patchify と正規化は学習時に行います。
 * `--compile` 他 - ブロック単位の `torch.compile` で学習を高速化します。詳細は [Anima 向け torch.compile ガイド](anima_torch_compile.md) を参照してください（オプションは共通です）。ConvRot INT8 使用時は、量子化された Linear 層は自動的にコンパイル対象から除外されます。

@@ -969,7 +969,7 @@ class Flux(nn.Module):
 
         print("FLUX: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, config: custom_offloading_utils.BlockSwapConfig):
         self.blocks_to_swap = num_blocks
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
@@ -979,14 +979,15 @@ class Flux(nn.Module):
             f"Requested {double_blocks_to_swap} double blocks and {single_blocks_to_swap} single blocks."
         )
 
-        self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, device  # , debug=True
+        self.offloader_double = custom_offloading_utils.create_offloader(
+            "double", self.double_blocks, self.num_double_blocks, double_blocks_to_swap, config
         )
-        self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks, single_blocks_to_swap, device  # , debug=True
+        self.offloader_single = custom_offloading_utils.create_offloader(
+            "single", self.single_blocks, self.num_single_blocks, single_blocks_to_swap, config
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
+            f" H2D-only: {config.h2d_only}"
         )
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
@@ -1048,7 +1049,7 @@ class Flux(nn.Module):
 
         if not self.blocks_to_swap:
             for block_idx, block in enumerate(self.double_blocks):
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img, txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 if block_controlnet_hidden_states is not None and controlnet_depth > 0:
                     img = img + block_controlnet_hidden_states[block_idx % controlnet_depth]
 
@@ -1058,14 +1059,17 @@ class Flux(nn.Module):
                 if block_controlnet_single_hidden_states is not None and controlnet_single_depth > 0:
                     img = img + block_controlnet_single_hidden_states[block_idx % controlnet_single_depth]
         else:
+            # NOTE: img and txt must be passed positionally. The block swap offloader relies on full backward hooks, which
+            # PyTorch fires only after the block's backward if a *positional* input requires grad; with keyword-only tensor
+            # inputs the hook fires before the block's backward, and the H2D-only offloader would evict the block too early.
             for block_idx, block in enumerate(self.double_blocks):
                 self.offloader_double.wait_for_block(block_idx)
 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img, txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 if block_controlnet_hidden_states is not None and controlnet_depth > 0:
                     img = img + block_controlnet_hidden_states[block_idx % controlnet_depth]
 
-                self.offloader_double.submit_move_blocks(self.double_blocks, block_idx)
+                self.offloader_double.submit_move_blocks_forward(self.double_blocks, block_idx)
 
             img = torch.cat((txt, img), 1)
 
@@ -1076,7 +1080,7 @@ class Flux(nn.Module):
                 if block_controlnet_single_hidden_states is not None and controlnet_single_depth > 0:
                     img = img + block_controlnet_single_hidden_states[block_idx % controlnet_single_depth]
 
-                self.offloader_single.submit_move_blocks(self.single_blocks, block_idx)
+                self.offloader_single.submit_move_blocks_forward(self.single_blocks, block_idx)
 
         img = img[:, txt.shape[1] :, ...]
 
@@ -1215,7 +1219,7 @@ class ControlNetFlux(nn.Module):
 
         print("FLUX: Gradient checkpointing disabled.")
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, config: custom_offloading_utils.BlockSwapConfig):
         self.blocks_to_swap = num_blocks
         double_blocks_to_swap = num_blocks // 2
         single_blocks_to_swap = (num_blocks - double_blocks_to_swap) * 2
@@ -1225,14 +1229,15 @@ class ControlNetFlux(nn.Module):
             f"Requested {double_blocks_to_swap} double blocks and {single_blocks_to_swap} single blocks."
         )
 
-        self.offloader_double = custom_offloading_utils.ModelOffloader(
-            self.double_blocks, double_blocks_to_swap, device  # , debug=True
+        self.offloader_double = custom_offloading_utils.create_offloader(
+            "double", self.double_blocks, self.num_double_blocks, double_blocks_to_swap, config
         )
-        self.offloader_single = custom_offloading_utils.ModelOffloader(
-            self.single_blocks,  single_blocks_to_swap, device  # , debug=True
+        self.offloader_single = custom_offloading_utils.create_offloader(
+            "single", self.single_blocks, self.num_single_blocks, single_blocks_to_swap, config
         )
         print(
             f"FLUX: Block swap enabled. Swapping {num_blocks} blocks, double blocks: {double_blocks_to_swap}, single blocks: {single_blocks_to_swap}."
+            f" H2D-only: {config.h2d_only}"
         )
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
@@ -1291,7 +1296,7 @@ class ControlNetFlux(nn.Module):
         block_single_samples = ()
         if not self.blocks_to_swap:
             for block in self.double_blocks:
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img, txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 block_samples = block_samples + (img,)
 
             img = torch.cat((txt, img), 1)
@@ -1299,13 +1304,16 @@ class ControlNetFlux(nn.Module):
                 img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 block_single_samples = block_single_samples + (img,)
         else:
+            # NOTE: img and txt must be passed positionally. The block swap offloader relies on full backward hooks, which
+            # PyTorch fires only after the block's backward if a *positional* input requires grad; with keyword-only tensor
+            # inputs the hook fires before the block's backward, and the H2D-only offloader would evict the block too early.
             for block_idx, block in enumerate(self.double_blocks):
                 self.offloader_double.wait_for_block(block_idx)
 
-                img, txt = block(img=img, txt=txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
+                img, txt = block(img, txt, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 block_samples = block_samples + (img,)
 
-                self.offloader_double.submit_move_blocks(self.double_blocks, block_idx)
+                self.offloader_double.submit_move_blocks_forward(self.double_blocks, block_idx)
 
             img = torch.cat((txt, img), 1)
 
@@ -1315,7 +1323,7 @@ class ControlNetFlux(nn.Module):
                 img = block(img, vec=vec, pe=pe, txt_attention_mask=txt_attention_mask)
                 block_single_samples = block_single_samples + (img,)
 
-                self.offloader_single.submit_move_blocks(self.single_blocks, block_idx)
+                self.offloader_single.submit_move_blocks_forward(self.single_blocks, block_idx)
 
         controlnet_block_samples = ()
         controlnet_single_block_samples = ()

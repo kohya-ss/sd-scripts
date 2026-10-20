@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.custom_offloading_utils import BlockSwapConfig
 
 init_ipex()
 
@@ -94,8 +95,9 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             args.cache_text_encoder_outputs = True
 
         if args.cache_text_encoder_outputs:
+            # caption dropout and multiple caption candidates are supported by MossImageTextEncoderOutputsCachingStrategy
             assert train_dataset_group.is_text_encoder_output_cacheable(
-                cache_supports_dropout=True
+                cache_supports_dropout=True, supports_multiple_caption_candidates=True
             ), "when caching Text Encoder output, shuffle_caption, token_warmup_step or caption_tag_dropout_rate cannot be used"
 
         assert (
@@ -193,8 +195,14 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         self._use_unsloth_offload_checkpointing = args.unsloth_offload_checkpointing
 
         if self.is_swapping_blocks:
-            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
+            # The base weights are frozen in LoRA training. Freeze them here, before enabling block swap, for the H2D-only offloader.
+            model.requires_grad_(False)
+            swap_config = BlockSwapConfig.from_args(args, accelerator.device, supports_backward=True)
+            logger.info(
+                f"enable block swap: blocks_to_swap={args.blocks_to_swap}, H2D-only: {swap_config.h2d_only}, "
+                f"use pinned memory: {swap_config.use_pinned_memory}"
+            )
+            model.enable_block_swap(args.blocks_to_swap, swap_config)
 
         return model, text_encoders
 
