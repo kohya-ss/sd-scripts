@@ -542,10 +542,23 @@ def train(args):
     )
 
     if args.max_train_epochs is not None:
-        args.max_train_steps = args.max_train_epochs * math.ceil(
+        _epoch_derived_max_steps = args.max_train_epochs * math.ceil(
             len(train_dataloader) / accelerator.num_processes / args.gradient_accumulation_steps
         )
-        accelerator.print(f"override steps. steps for {args.max_train_epochs} epochs: {args.max_train_steps}")
+        if args.max_train_steps is not None and args.max_train_steps < _epoch_derived_max_steps:
+            accelerator.print(
+                f"warning: both --max_train_epochs={args.max_train_epochs} (=> {_epoch_derived_max_steps} steps) and"
+                f" --max_train_steps={args.max_train_steps} were provided; honoring the smaller cap"
+                f" (max_train_steps={args.max_train_steps}). Remove --max_train_steps to use the full"
+                f" {_epoch_derived_max_steps} epoch-derived steps."
+                f" / --max_train_epochs と --max_train_steps の両方が指定されました。小さい方"
+                f" (max_train_steps={args.max_train_steps}) を採用します。"
+            )
+        else:
+            args.max_train_steps = _epoch_derived_max_steps
+            accelerator.print(
+                f"override steps. steps for {args.max_train_epochs} epochs is / 指定エポックまでのステップ数: {args.max_train_steps}"
+            )
 
     train_dataset_group.set_max_train_steps(args.max_train_steps)
     lr_scheduler = optimizer_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
