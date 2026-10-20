@@ -1166,15 +1166,18 @@ class Anima(nn.Module):
         )
         return x_B_C_Tt_Hp_Wp
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, config: custom_offloading_utils.BlockSwapConfig):
         self.blocks_to_swap = num_blocks
 
         assert (
             self.blocks_to_swap <= self.num_blocks - 2
         ), f"Cannot swap more than {self.num_blocks - 2} blocks. Requested: {self.blocks_to_swap} blocks."
 
-        self.offloader = custom_offloading_utils.ModelOffloader(self.blocks, self.blocks_to_swap, device)
-        logger.info(f"Anima: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {device}.")
+        self.offloader = custom_offloading_utils.create_offloader("block", self.blocks, self.num_blocks, self.blocks_to_swap, config)
+        logger.info(
+            f"Anima: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {config.device}."
+            f" H2D-only: {config.h2d_only}"
+        )
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         # Move all modules to device except blocks (which are managed by offloader)
@@ -1268,7 +1271,7 @@ class Anima(nn.Module):
             x_B_T_H_W_D = block(x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32, **block_kwargs)
 
             if self.blocks_to_swap:
-                self.offloader.submit_move_blocks(self.blocks, block_idx)
+                self.offloader.submit_move_blocks_forward(self.blocks, block_idx)
 
         x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D, t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D, use_fp32=use_fp32)
         x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)

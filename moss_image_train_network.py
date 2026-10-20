@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.custom_offloading_utils import BlockSwapConfig
 
 init_ipex()
 
@@ -194,8 +195,14 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         self._use_unsloth_offload_checkpointing = args.unsloth_offload_checkpointing
 
         if self.is_swapping_blocks:
-            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
+            # The base weights are frozen in LoRA training. Freeze them here, before enabling block swap, for the H2D-only offloader.
+            model.requires_grad_(False)
+            swap_config = BlockSwapConfig.from_args(args, accelerator.device, supports_backward=True)
+            logger.info(
+                f"enable block swap: blocks_to_swap={args.blocks_to_swap}, H2D-only: {swap_config.h2d_only}, "
+                f"use pinned memory: {swap_config.use_pinned_memory}"
+            )
+            model.enable_block_swap(args.blocks_to_swap, swap_config)
 
         return model, text_encoders
 

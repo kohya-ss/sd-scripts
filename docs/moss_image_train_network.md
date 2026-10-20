@@ -224,6 +224,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - Backward mode of the ConvRot INT8 layers. Default `bf16` (most accurate). `int8` reuses the fused int8 GEMM for the input gradient (requires triton and CUDA); it has no measurable benefit with gradient checkpointing.
 * `--blocks_to_swap=<integer>`
   - Number of DiT blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum **40** (42 blocks - 2). Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Enables `--gradient_checkpointing`. Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk`
@@ -273,6 +274,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--convrot_int8_text_encoder` - テキストエンコーダーの重みをロード時に ConvRot INT8 に量子化します（約 16GB → 8GB）。ComfyUI の `qwen3.5_9b_int8_convrot.safetensors` には不要です。
 * `--convrot_int8_bwd` - ConvRot INT8 層の backward の方式。デフォルト `bf16`（最も高精度）。`int8` は入力勾配にも融合 int8 GEMM を使います（triton と CUDA が必要）。gradient checkpointing 使用時には速度差はほぼありません。
 * `--blocks_to_swap` - DiT のブロックを CPU と GPU でスワップして VRAM を節約。最大 **40**（42 ブロック − 2）。`--cpu_offload_checkpointing` および `--unsloth_offload_checkpointing` とは併用できません。
+  - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションを CPU RAM にオフロード。`--gradient_checkpointing` を有効にします。`--cpu_offload_checkpointing` および `--blocks_to_swap` とは併用できません。
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。

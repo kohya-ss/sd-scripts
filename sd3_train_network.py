@@ -7,6 +7,7 @@ from typing import Any, Optional, Union
 import torch
 from accelerate import Accelerator
 from library import sd3_models, strategy_sd3, utils
+from library.custom_offloading_utils import BlockSwapConfig
 from library.device_utils import init_ipex, clean_memory_on_device
 from library.safetensors_utils import load_safetensors
 
@@ -110,8 +111,13 @@ class Sd3NetworkTrainer(train_network.NetworkTrainer):
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
         if self.is_swapping_blocks:
             # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
+            # H2D-only block swap is not supported for SD3: the joint blocks are not homogeneous (see sd3_models.enable_block_swap).
+            if args.block_swap_h2d_only:
+                raise ValueError(
+                    "--block_swap_h2d_only is not supported for SD3 / SD3では--block_swap_h2d_onlyはサポートされていません"
+                )
             logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            mmdit.enable_block_swap(args.blocks_to_swap, accelerator.device)
+            mmdit.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(accelerator.device, supports_backward=True))
 
         clip_l = sd3_utils.load_clip_l(
             args.clip_l, weight_dtype, "cpu", disable_mmap=args.disable_mmap_load_safetensors, state_dict=state_dict
