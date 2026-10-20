@@ -1,5 +1,6 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 from dataclasses import dataclass
 import gc
 import os
@@ -473,7 +474,12 @@ class _StagedCopier:
         if free_ev is not None:
             free_ev.synchronize()  # CPU(worker) waits until the prior H2D released this buffer -- off main thread
 
-        staging.copy_(src_flat)  # pageable -> pinned, plain CPU memcpy
+        # pageable -> pinned host memcpy. Not `staging.copy_(src_flat)`: torch parallelizes a large CPU copy over all
+        # intra-op threads and the OpenMP workers keep spinning afterwards, so the repeated per-block copies kept
+        # nearly every core busy (46 of 64 cores on average in a MOSS-Image run). A single-threaded memmove
+        # (about 18 GB/s here) is still faster than the PCIe DMA that consumes the buffer, releases the GIL and
+        # does not touch the OpenMP pool.
+        ctypes.memmove(staging.data_ptr(), src_flat.data_ptr(), src_flat.numel())
 
         ev_a = ev_b = None
         with torch.cuda.stream(self.copy_stream):
