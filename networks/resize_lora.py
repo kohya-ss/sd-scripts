@@ -191,6 +191,10 @@ def rank_resize(S, rank, dynamic_method, dynamic_param, scale=1):
         new_rank = rank
         new_alpha = float(scale * new_rank)
 
+    if new_rank > len(S):  # cap rank at number of available singular values (e.g. matrices with a size-1 dimension)
+        new_rank = len(S)
+        new_alpha = float(scale * new_rank)
+
     # Calculate resize info
     s_sum = torch.sum(torch.abs(S))
     s_rank = torch.sum(torch.abs(S[:new_rank]))
