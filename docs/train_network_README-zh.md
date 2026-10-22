@@ -116,8 +116,8 @@ LoRA的模型将会被保存在通过`--output_dir`选项指定的文件夹中�
 --network_args "conv_dim=4"
 ```
 
-DyLoRA是在这篇论文中提出的[DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](​https://arxiv.org/abs/2210.07558)，
-[其官方实现可在这里找到](​https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA)。
+DyLoRA是在这篇论文中提出的[DyLoRA: Parameter Efficient Tuning of Pre-trained Models using Dynamic Search-Free Low-Rank Adaptation](https://arxiv.org/abs/2210.07558)，
+[其官方实现可在这里找到](https://github.com/huawei-noah/KD-NLP/tree/main/DyLoRA)。
 
 根据论文，LoRA的rank并不是越高越好，而是需要根据模型、数据集、任务等因素来寻找合适的rank。使用DyLoRA，可以同时在指定的维度(rank)下学习多种rank的LoRA，从而省去了寻找最佳rank的麻烦。
 
