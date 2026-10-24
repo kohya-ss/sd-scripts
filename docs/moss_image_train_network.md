@@ -236,7 +236,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--cache_latents`, `--cache_latents_to_disk`
   - Cache the FLUX.2 VAE outputs. The cache files are `<image>_<W>x<H>_moss.npz` and hold the raw VAE output (32 channels, 1/8 resolution); the patchify and normalization for the DiT are applied at training time.
 * `--compile` and related options
-  - Speed up training with per-block `torch.compile`. See the [torch.compile for Anima guide](anima_torch_compile.md) for details (the options are shared). With ConvRot INT8, the quantized Linear layers are excluded from compilation automatically.
+  - Speed up training with per-block `torch.compile`. See the [torch.compile for Anima guide](anima_torch_compile.md) for details (the options are shared). The ConvRot INT8 Linear layers are compiled as well (the fused kernel is a custom op), so `--compile` speeds up INT8 training too.
 
 #### Incompatible or Unsupported Options / 非互換・非サポートの引数
 
@@ -281,7 +281,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。
 * `--cache_latents`, `--cache_latents_to_disk` - FLUX.2 VAE の出力をキャッシュします。キャッシュファイルは `<image>_<W>x<H>_moss.npz` で、VAE の生の出力（32 チャンネル、1/8 解像度）を保存します。DiT 向けの patchify と正規化は学習時に行います。
-* `--compile` 他 - ブロック単位の `torch.compile` で学習を高速化します。詳細は [Anima 向け torch.compile ガイド](anima_torch_compile.md) を参照してください（オプションは共通です）。ConvRot INT8 使用時は、量子化された Linear 層は自動的にコンパイル対象から除外されます。
+* `--compile` 他 - ブロック単位の `torch.compile` で学習を高速化します。詳細は [Anima 向け torch.compile ガイド](anima_torch_compile.md) を参照してください（オプションは共通です）。ConvRot INT8 の Linear 層もコンパイル対象になる（融合カーネルは custom op）ため、INT8 学習でも `--compile` で高速化できます。
 
 #### 非互換・非サポートの引数
 
@@ -469,7 +469,7 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
 - `--convrot_int8_bwd int8` (opt-in) also routes the input gradient through the fused int8 GEMM: slightly quantized gradients, no measurable step-time gain under gradient checkpointing. The default `bf16` dequantizes transiently and is the most accurate.
 - **Quality:** The output of the int8 DiT differs from bf16 by about PSNR 27dB on generated images (same composition and details). The text encoder outputs differ by about 5% relative error. The loss curves of LoRA training match bf16.
 - **Speed:** On an RTX PRO 6000 Blackwell, LoRA training speed is about the same as bf16 (1.41 vs 1.45 s/step at 1024x1024, batch size 1, gradient checkpointing). On GPUs without fp8 support (RTX 30 series and older) a true int8 GEMM is faster than bf16. The first 20 steps or so are slower because of the Triton autotuning.
-- Composes with `--blocks_to_swap`, `--gradient_checkpointing` and `--compile` (the quantized Linear layers are excluded from compilation automatically).
+- Composes with `--blocks_to_swap`, `--gradient_checkpointing` and `--compile` (the quantized Linear layers are compiled too; with `--blocks_to_swap` all Linear layers are excluded from compilation as usual).
 - **LoRA merge at inference:** Merging LoRA into a pre-quantized checkpoint is rejected by `moss_image_minimal_inference.py`. Use the bf16 checkpoint with `--convrot_int8` instead (the LoRA is merged first, then quantized). For training this does not matter, since the LoRA is a separate module.
 
 #### Key VRAM Reduction Options / 主要な VRAM 削減オプション
@@ -527,7 +527,7 @@ MOSS-Image は大きなモデルです。bf16 で DiT が約 10.2GB、テキス�
 - `--convrot_int8_bwd int8`（opt-in）を指定すると、入力勾配も融合 int8 GEMM を通ります。勾配がわずかに量子化され、gradient checkpointing 使用時には速度差はほぼありません。デフォルトの `bf16` は一時的に逆量子化する方式で、最も高精度です。
 - **品質:** int8 の DiT の出力は、生成画像で bf16 と PSNR 約 27dB の差です（構図・細部は同じ）。テキストエンコーダーの出力は相対誤差約 5% です。LoRA 学習の loss curve は bf16 と一致します。
 - **速度:** RTX PRO 6000 Blackwell では LoRA 学習の速度は bf16 とほぼ同じです（1024x1024、batch size 1、gradient checkpointing で 1.41 vs 1.45 s/step）。fp8 非対応の GPU（RTX 30 シリーズ以前）では、真の int8 GEMM が bf16 より高速になります。最初の 20 ステップほどは Triton の autotune のため遅くなります。
-- `--blocks_to_swap`、`--gradient_checkpointing`、`--compile` と併用できます（量子化された Linear 層は自動的にコンパイル対象から除外されます）。
+- `--blocks_to_swap`、`--gradient_checkpointing`、`--compile` と併用できます（量子化された Linear 層もコンパイルされます。`--blocks_to_swap` 併用時は従来どおり全 Linear 層がコンパイル対象外になります）。
 - **推論時の LoRA マージ:** 事前量子化済みチェックポイントへの LoRA マージは `moss_image_minimal_inference.py` でエラーになります。bf16 のチェックポイントに `--convrot_int8` を付けて使用してください（LoRA をマージしてから量子化します）。学習では LoRA は別モジュールなので関係ありません。
 
 #### 主要な VRAM 削減オプション
