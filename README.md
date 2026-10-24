@@ -47,6 +47,10 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added `--timestep_sampling truncated_logit_normal` for FLUX.1, Anima, HunyuanImage-2.1 and MOSS-Image training: the logit-normal distribution (`--logit_mean` / `--logit_std`) on the discrete training grid, truncated at `--timestep_cutoff` (default 0.95) and rescaled, with a `--timestep_uniform_ratio` (default 0.01) share of uniform samples. With `--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0`, this reproduces the timestep schedule of the MOSS-Image pre-training exactly (previously the truncation and the uniform samples were not reproduced). PR_PLACEHOLDER
+        - The per-subset `timestep_sampling.offset` now also applies to `truncated_logit_normal` and to `sigma` with `--weighting_scheme logit_normal` (a positive offset biases toward higher noise, as in the other modes). See [the documentation](./docs/timestep_sampling_offset.md).
+
 - **Version 0.12.2 (2026-10-20):**
     - Added H2D-only block swap (`--block_swap_h2d_only`) for LoRA training, ported from Musubi Tuner. The frozen base weights are kept on the CPU and only copied Host→Device, which removes the Device→Host transfer of the classic block swap and improves the training speed. Supported for FLUX.1 / Chroma, Lumina Image 2.0, HunyuanImage-2.1, Anima and MOSS-Image (not for SD3). `--gradient_checkpointing` is required. For details, please refer to [the documentation](./docs/block_swap.md). [PR #2467](https://github.com/kohya-ss/sd-scripts/pull/2467)
         - `--block_swap_ring_size` (default 2) sets the number of GPU buffers for the streamed blocks, and `--use_pinned_memory_for_block_swap` keeps the CPU copies in pinned memory for faster transfers.

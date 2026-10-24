@@ -4,7 +4,7 @@
 
 For flow-matching models, the noise level (timestep) at which each sample is trained materially affects the final result. The `timestep_sampling.offset` custom attribute shifts the flow-matching timestep sampling distribution per dataset subset toward higher- or lower-noise regions.
 
-It is applied as an offset to the pre-sigmoid normal sample of the logit-normal (sigmoid / shift / flux_shift) schedule. Default `0.0` (or omitted) leaves sampling unchanged.
+It is applied as an offset to the pre-sigmoid normal sample of the logit-normal (sigmoid / shift / flux_shift, and sigma / truncated_logit_normal, see [Scope](#scope)) schedule. Default `0.0` (or omitted) leaves sampling unchanged.
 
 - **Negative** value → biases toward lower-noise timesteps (detail-focused steps)
 - **Positive** value → biases toward higher-noise timesteps (structure-focused steps)
@@ -52,9 +52,10 @@ The offset is applied before the sigmoid transform, so the effect on the final s
 
 ## Scope
 
-- Applies to `sigmoid`, `shift`, and `flux_shift` timestep sampling modes.
-- `uniform` and `sigma` (density-based) modes are not affected.
-- Currently consumed by `anima_train_network.py` and `flux_train_network.py`. Other trainers (SD3, Lumina, etc.) do not read this attribute; setting it for those trainers is a no-op.
+- Applies to `sigmoid`, `shift`, `flux_shift` and `truncated_logit_normal` timestep sampling modes, and to `sigma` with `--weighting_scheme logit_normal`.
+- `uniform` and `sigma` with the other weighting schemes are not affected.
+- In `sigma` and `truncated_logit_normal`, the normal sample is the logit of `1 - sigma` (this is the convention of `--logit_mean`: a negative mean biases toward higher noise), so the offset is **subtracted** from it. The direction is therefore the same as in the other modes: a positive offset biases toward higher noise. Equivalently, the offset acts as `logit_mean - offset` for the subset.
+- Currently consumed by `anima_train_network.py`, `flux_train_network.py` and `moss_image_train_network.py`. Other trainers (SD3, Lumina, etc.) do not read this attribute; setting it for those trainers is a no-op.
 - The offset is applied only during **training**. Validation uses unbiased sampling for comparable loss metrics.
 
 ## Understanding the offset

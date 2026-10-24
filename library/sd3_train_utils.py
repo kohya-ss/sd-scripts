@@ -876,17 +876,27 @@ def get_sigmas(noise_scheduler, timesteps, device, n_dim=4, dtype=torch.float32)
 
 
 def compute_density_for_timestep_sampling(
-    weighting_scheme: str, batch_size: int, logit_mean: float = None, logit_std: float = None, mode_scale: float = None
+    weighting_scheme: str,
+    batch_size: int,
+    logit_mean: float = None,
+    logit_std: float = None,
+    mode_scale: float = None,
+    logit_offset: Optional[torch.Tensor] = None,
 ):
     """Compute the density for sampling the timesteps when doing SD3 training.
 
     Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
 
     SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
+
+    ``logit_offset`` ([batch_size], CPU) is added to the normal sample of the ``logit_normal`` scheme before the
+    sigmoid (per-sample shift of ``logit_mean``). It is ignored by the other schemes.
     """
     if weighting_scheme == "logit_normal":
         # See 3.1 in the SD3 paper ($rf/lognorm(0.00,1.00)$).
         u = torch.normal(mean=logit_mean, std=logit_std, size=(batch_size,), device="cpu")
+        if logit_offset is not None:
+            u = u + logit_offset.to(device=u.device, dtype=u.dtype)
         u = torch.nn.functional.sigmoid(u)
     elif weighting_scheme == "mode":
         u = torch.rand(size=(batch_size,), device="cpu")

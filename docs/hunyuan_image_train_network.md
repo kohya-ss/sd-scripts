@@ -175,7 +175,7 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 * `--model_prediction_type=<choice>`
   - Specifies what the model predicts. Choose from `raw`, `additive`, `sigma_scaled`. Default and recommended is `raw`.
 * `--timestep_sampling=<choice>`
-  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`. Default is `sigma`.
+  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`. Default is `sigma`.
 * `--sigmoid_scale=<float>`
   - Scale factor when `timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default is `1.0`.
 
@@ -287,6 +287,7 @@ The `--timestep_sampling` option specifies how timesteps (0-1) are sampled:
 - `sigmoid`: Sigmoid of normal distribution random
 - `shift`: Sigmoid value of normal distribution random with shift.
 - `flux_shift`: Shift sigmoid value of normal distribution random according to resolution.
+- `truncated_logit_normal`: Logit-normal distribution on the discrete training grid, truncated at `--timestep_cutoff` and rescaled, with a `--timestep_uniform_ratio` share of uniform samples. See the [FLUX.1 guide](flux_train_network.md#timestep-sampling-methods).
 
 #### Model Prediction Processing
 

@@ -97,18 +97,20 @@ def add_moss_image_training_arguments(parser: argparse.ArgumentParser):
         "--discrete_flow_shift",
         type=float,
         default=1.0,
-        help="Timestep distribution shift for rectified flow training, used by --timestep_sampling sigma / shift (default: 1.0, the training grid of MOSS-Image)"
-        + " / rectified flow 学習のタイムステップ分布のシフト。--timestep_sampling sigma / shift で使われる（デフォルト: 1.0、MOSS-Image の学習グリッド）",
+        help="Timestep distribution shift for rectified flow training, used by --timestep_sampling sigma / shift / truncated_logit_normal"
+        + " (default: 1.0, the training grid of MOSS-Image)"
+        + " / rectified flow 学習のタイムステップ分布のシフト。--timestep_sampling sigma / shift / truncated_logit_normal で使われる"
+        + "（デフォルト: 1.0、MOSS-Image の学習グリッド）",
     )
     parser.add_argument(
         "--timestep_sampling",
         type=str,
         default="sigmoid",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "truncated_logit_normal"],
         help="Timestep sampling method (default: sigmoid (logit normal)). The pre-training distribution of MOSS-Image is reproduced by"
-        + " `--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0`"
+        + " `--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0`"
         + " / タイムステップのサンプリング方法（デフォルト: sigmoid（logit normal））。MOSS-Image の事前学習の分布は"
-        + " `--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` で再現できる",
+        + " `--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` で再現できる",
     )
     parser.add_argument(
         "--sigmoid_scale",
