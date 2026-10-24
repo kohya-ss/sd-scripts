@@ -3,6 +3,7 @@
 import os
 from typing import Dict, List, Optional, Union
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from accelerate.utils import set_module_tensor_to_device  # kept for potential future use
 from accelerate import init_empty_weights
@@ -64,6 +65,10 @@ def load_anima_model(
     loading_device = torch.device(loading_device)
 
     # We currently support fixed DiT config for Anima models
+    # Detect block.39 from the checkpoint
+    with safe_open(dit_path, framework="pt") as f:
+        is_2_9b = any(k.endswith("blocks.39.mlp.layer1.weight") for k in f.keys())  # 2.9B has 40 blocks
+
     dit_config = {
         "max_img_h": 512,
         "max_img_w": 512,
@@ -82,7 +87,7 @@ def load_anima_model(
         "max_fps": 30,
         "use_adaln_lora": True,
         "adaln_lora_dim": 256,
-        "num_blocks": 28,
+        "num_blocks": 40 if is_2_9b else 28,
         "num_heads": 16,
         "extra_per_block_abs_pos_emb": False,
         "rope_h_extrapolation_ratio": 4.0,
