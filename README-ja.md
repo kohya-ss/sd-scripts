@@ -51,7 +51,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
-    - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。PR_PLACEHOLDER
+    - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。[PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
         - サブセットごとの `timestep_sampling.offset` が `truncated_logit_normal` と、`--weighting_scheme logit_normal` の `sigma` にも適用されるようになりました（他のモードと同様に、正のオフセットはノイズが多い側に偏らせます）。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
 
 - **Version 0.12.2 (2026-10-20):**
