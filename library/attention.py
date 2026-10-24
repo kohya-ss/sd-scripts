@@ -159,7 +159,10 @@ def attention(
         # pad on sequence length dimension
         pad_fn = lambda x, pad_to: torch.nn.functional.pad(x, (0, 0, 0, 0, 0, pad_to - x.shape[-3]), value=0)
 
-    # Process each batch element with its valid sequence lengths
+    # Process each batch element with its valid sequence lengths.
+    # Note: the list comprehensions below capture q/k/v, which makes them closure cells on Python < 3.12 (PEP 709
+    # inlines comprehensions since 3.12). `del q, k, v` would then compile to DELETE_DEREF, which dynamo does not
+    # support (graph break in every compiled block), so the references are released with `q = k = v = None` instead.
     if attn_params.split_attn:
         if attn_params.seqlens is None:
             # If no seqlens provided, assume all tokens are valid
@@ -184,11 +187,11 @@ def attention(
                 v[i] = None
                 x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, H, L, D
             x = torch.cat(x, dim=0)
-            del q, k, v
+            q = k = v = None
 
         else:
             x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_params.attention_mask, dropout_p=drop_rate)
-            del q, k, v
+            q = k = v = None
 
     elif attn_params.attn_mode == "xformers":
         if attn_params.split_attn:
@@ -200,11 +203,11 @@ def attention(
                 v[i] = None
                 x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, L, H, D
             x = torch.cat(x, dim=0)
-            del q, k, v
+            q = k = v = None
 
         else:
             x = xops.memory_efficient_attention(q, k, v, attn_bias=attn_params.attention_mask, p=drop_rate)
-            del q, k, v
+            q = k = v = None
 
     elif attn_params.attn_mode == "sageattn":
         if attn_params.split_attn:
@@ -217,10 +220,10 @@ def attention(
                 v[i] = None
                 x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, H, L, D
             x = torch.cat(x, dim=0)
-            del q, k, v
+            q = k = v = None
         elif attn_params.cu_seqlens is None:  # all tokens are valid
             x = sageattn(q, k, v)  # B, L, H, D. No dropout support
-            del q, k, v
+            q = k = v = None
         else:
             # Reshape to [(bxs), a, d]
             batch_size, seqlen = q.shape[0], q.shape[1]
@@ -232,7 +235,7 @@ def attention(
             x = sageattn_varlen(
                 q, k, v, attn_params.cu_seqlens, attn_params.cu_seqlens, attn_params.max_seqlen, attn_params.max_seqlen
             )
-            del q, k, v
+            q = k = v = None
 
             # Reshape x with shape [(bxs), a, d] to [b, s, a, d]
             x = x.view(batch_size, seqlen, x.shape[-2], x.shape[-1])  # B, L, H, D
@@ -248,10 +251,10 @@ def attention(
                 v[i] = None
                 x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, L, H, D
             x = torch.cat(x, dim=0)
-            del q, k, v
+            q = k = v = None
         elif attn_params.cu_seqlens is None:  # all tokens are valid
             x = flash_attn_func(q, k, v, drop_rate)  # B, L, H, D
-            del q, k, v
+            q = k = v = None
         else:
             # Reshape to [(bxs), a, d]
             batch_size, seqlen = q.shape[0], q.shape[1]
@@ -263,7 +266,7 @@ def attention(
             x = flash_attn_varlen_func(
                 q, k, v, attn_params.cu_seqlens, attn_params.cu_seqlens, attn_params.max_seqlen, attn_params.max_seqlen, drop_rate
             )
-            del q, k, v
+            q = k = v = None
 
             # Reshape x with shape [(bxs), a, d] to [b, s, a, d]
             x = x.view(batch_size, seqlen, x.shape[-2], x.shape[-1])  # B, L, H, D
