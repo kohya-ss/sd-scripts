@@ -159,6 +159,14 @@ def test_forward_autocast_casts_fp32_input_like_f_linear():
     assert _relerr(out, ref) < 2e-2
 
 
+def test_backward_eager_cpu_without_rotation_is_plain_dequant_matmul():
+    """convrot=False backward (weight in the original basis): grad_x = g @ (scale * W)."""
+    wq, ws, _, _ = _make_quantized_linear("cpu", torch.float32)
+    g = torch.randn(3, M, N)
+    out = utils.convrot_int8_linear_backward(g, wq, ws, GS, False, "bf16")
+    assert _relerr(out, g @ (wq.float() * ws)) < 1e-6
+
+
 def test_int8_backward_on_cpu_raises_a_clear_cuda_error():
     wq, ws, _, _ = _make_quantized_linear("cpu", torch.float32)
     x = torch.randn(M, K, requires_grad=True)
@@ -195,6 +203,22 @@ def test_grad_x_cuda_matches_dequant_reference(bwd_mode, tol):
     x_ref = x.detach().clone().requires_grad_(True)
     F.linear(x_ref, w_deq).backward(g)
     assert _relerr(x.grad, x_ref.grad) < tol
+
+
+@requires_cuda
+@requires_triton
+@pytest.mark.parametrize(("groupsize", "rows"), [(256, N), (64, N), (256, 70), (16, 40)])
+def test_triton_dequantize_rotate_weight_matches_eager(groupsize, rows):
+    """Fused dequant + rotate-back (backward weight path): odd row counts exercise the row mask, 16 the smallest tl.dot."""
+    torch.manual_seed(0)
+    w = torch.randn(rows, 2 * groupsize, device="cuda", dtype=torch.bfloat16) * 0.02
+    wq, ws = kernels.quantize_int8_convrot_weight(w, groupsize)
+    ref = kernels.dequantize_int8_convrot_weight(wq, ws, groupsize)  # fp32
+    out = kernels.triton_dequantize_rotate_weight(wq, ws, groupsize, torch.bfloat16)
+    assert out.dtype == torch.bfloat16 and out.shape == w.shape
+    assert _relerr(out, ref) < 5e-3  # bf16 rounding of the dequantized values before the Hadamard dot
+    eager = kernels._rotate_weight(wq * ws.to(torch.bfloat16), kernels._build_hadamard(groupsize, "cuda", torch.bfloat16), groupsize)
+    assert _relerr(eager, ref) < 5e-3 and _relerr(out, eager) < 5e-3  # the eager fallback rounds the same way
 
 
 @requires_cuda

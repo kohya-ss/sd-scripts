@@ -37,8 +37,10 @@ from library.convrot_int8_kernels import (
     HAS_TRITON,
     _build_hadamard,
     _rotate_activation,
+    _rotate_weight,
     int8_linear,
     quantize_int8_convrot_weight,
+    triton_dequantize_rotate_weight,
 )
 from library.device_utils import clean_memory_on_device
 from library.safetensors_utils import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks
@@ -403,7 +405,7 @@ def convrot_int8_linear(
     if convrot:
         h = _build_hadamard(groupsize, device=x.device, dtype=x.dtype)
         x = _rotate_activation(x, h, groupsize)
-    w_rot = wq.to(x.dtype) * w_scale.reshape(-1, 1).to(x.dtype)
+    w_rot = wq * w_scale.reshape(-1, 1).to(x.dtype)  # int8 x dtype promotion: one elementwise kernel
     return F.linear(x, w_rot, bias)
 
 
@@ -431,10 +433,18 @@ def convrot_int8_linear_backward(
     convrot: bool,
     bwd_mode: str,
 ) -> torch.Tensor:
-    """grad_x of ``convrot_int8_linear``: ``rotate(g @ W_rot)`` (R = block-diagonal Hadamard, W = W_rot R).
+    """grad_x of ``convrot_int8_linear``: ``g @ W`` with ``W = W_rot R`` (R = block-diagonal Hadamard).
 
     A custom op as well: AOTAutograd traces the registered backward with fake tensors, and the cached Hadamard constant of
     ``_build_hadamard`` must not leak into that trace. The GEMM is an extern kernel either way, so nothing is lost.
+
+    ``bwd_mode="bf16"``: the weight is dequantized *and* rotated back to the original basis in one memory-bound Triton pass
+    (transient ``W`` in the gradient dtype, 2 bytes/param), then a single cuBLAS GEMM. Rotating the weight instead of the
+    ``[M, K]`` output removes a pass over the activations and one bf16 rounding. A fused bf16 x int8 GEMM was measured to be
+    slower than this on RTX PRO 6000 (the in-loop int8 -> bf16 conversion of the weight tile is repeated M / block_m times).
+
+    ``bwd_mode="int8"``: g (with the weight scale folded in) is quantized row-wise and multiplied with the INT8 weight by
+    the fused Triton GEMM in the rotated basis, then the output is rotated.
     """
     gs = groupsize
     g2d = grad_out.reshape(-1, grad_out.shape[-1])  # [M, N]
@@ -445,15 +455,24 @@ def convrot_int8_linear_backward(
         # epilogue in one pipeline). transient int8 transpose of wq: [K, N], ~1 byte/param, freed after mm
         g_scaled = g2d * w_scale.reshape(1, -1).to(g2d.dtype)
         one = torch.ones(1, device=g2d.device, dtype=torch.float32)
-        gx_rot = int8_linear(g_scaled, wq.t().contiguous(), one, None, grad_out.dtype, False, gs)
+        gx = int8_linear(g_scaled, wq.t().contiguous(), one, None, grad_out.dtype, False, gs)
+        if convrot:
+            h = _build_hadamard(gs, device=gx.device, dtype=gx.dtype)
+            gx = _rotate_activation(gx, h, gs)
     else:
-        # transient bf16 dequant of the rotated weight (stays in rotated basis)
-        w_rot = wq.to(grad_out.dtype) * w_scale.reshape(-1, 1).to(grad_out.dtype)
-        gx_rot = g2d @ w_rot  # [M, K]
-    if convrot:
-        h = _build_hadamard(gs, device=gx_rot.device, dtype=gx_rot.dtype)
-        gx_rot = _rotate_activation(gx_rot, h, gs)
-    return gx_rot.reshape(*grad_out.shape[:-1], wq.shape[1])
+        w = _dequantize_weight(wq, w_scale, gs, grad_out.dtype, rotate_back=convrot)  # transient [N, K]
+        gx = g2d @ w  # [M, K]
+    return gx.reshape(*grad_out.shape[:-1], wq.shape[1])
+
+
+def _dequantize_weight(wq: torch.Tensor, w_scale: torch.Tensor, groupsize: int, dtype: torch.dtype, rotate_back: bool) -> torch.Tensor:
+    """Transient dequantized weight in ``dtype``: ``scale * W_rot``, rotated back to the original basis if ``rotate_back``."""
+    if not rotate_back:
+        return wq * w_scale.reshape(-1, 1).to(dtype)  # int8 x dtype promotion: one elementwise kernel
+    if HAS_TRITON and wq.is_cuda and groupsize >= 16:
+        return triton_dequantize_rotate_weight(wq, w_scale, groupsize, dtype)
+    h = _build_hadamard(groupsize, device=wq.device, dtype=dtype)
+    return _rotate_weight(wq * w_scale.reshape(-1, 1).to(dtype), h, groupsize)
 
 
 @convrot_int8_linear_backward.register_fake
