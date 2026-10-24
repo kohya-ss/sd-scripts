@@ -50,6 +50,10 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。[PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
+        - サブセットごとの `timestep_sampling.offset` が `truncated_logit_normal` と、`--weighting_scheme logit_normal` の `sigma` にも適用されるようになりました（他のモードと同様に、正のオフセットはノイズが多い側に偏らせます）。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
+
 - **Version 0.12.2 (2026-10-20):**
     - LoRA 学習向けに、H2D-only block swap（`--block_swap_h2d_only`）を追加しました（Musubi Tuner からの移植）。凍結されたベースモデルの重みを CPU に置いたまま Host→Device 方向にのみコピーすることで、従来の block swap にあった Device→Host の転送が不要になり、学習速度が向上します。FLUX.1 / Chroma、Lumina Image 2.0、HunyuanImage-2.1、Anima、MOSS-Image で使用できます（SD3 は対象外）。`--gradient_checkpointing` が必須です。詳細は[ドキュメント](./docs/block_swap.md)をご覧ください。[PR #2467](https://github.com/kohya-ss/sd-scripts/pull/2467)
         - `--block_swap_ring_size`（デフォルト 2）でストリーミングするブロック用の GPU バッファ数を指定できます。`--use_pinned_memory_for_block_swap` を指定すると CPU 側のコピーを pinned メモリに置き、転送が高速になります。

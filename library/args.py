@@ -682,6 +682,24 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         help="std to use when using the `'logit_normal'` weighting scheme / `'logit_normal'`重み付けスキームを使用する場合のstd",
     )
     parser.add_argument(
+        "--timestep_cutoff",
+        type=float,
+        default=0.95,
+        help="truncate the sigma distribution at this value and rescale it to (0, 1]. Only used when `--timestep_sampling` is"
+        " `truncated_logit_normal`. Default is 0.95 (MOSS-Image pre-training)"
+        " / sigma の分布をこの値で切り詰めて (0, 1] にリスケールする。`--timestep_sampling` が `truncated_logit_normal` の場合のみ有効。"
+        "デフォルトは 0.95（MOSS-Image の事前学習の値）",
+    )
+    parser.add_argument(
+        "--timestep_uniform_ratio",
+        type=float,
+        default=0.01,
+        help="ratio of the samples drawn uniformly from the timestep grid. Only used when `--timestep_sampling` is"
+        " `truncated_logit_normal`. Default is 0.01 (MOSS-Image pre-training)"
+        " / タイムステップのグリッドから一様にサンプリングする割合。`--timestep_sampling` が `truncated_logit_normal` の場合のみ有効。"
+        "デフォルトは 0.01（MOSS-Image の事前学習の値）",
+    )
+    parser.add_argument(
         "--mode_scale",
         type=float,
         default=1.29,
