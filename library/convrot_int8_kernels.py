@@ -194,6 +194,26 @@ def dequantize_int8_convrot_weight(q: torch.Tensor, scale: torch.Tensor, group_s
 
 if HAS_TRITON:
 
+    # Launch configs of the INT8 GEMM autotuner (the best one is picked per (m, n, k) at the first call). The first six
+    # are the upstream comfy_kitchen list, tuned on Ada (sm_89); on Ampere GeForce (sm_86, 6 MB L2) their block_k=32 tiles
+    # reach only ~40% of the cuBLASLt INT8 throughput. The block_k=128 configs were found by exhaustive tuning on an
+    # RTX 3090 and roughly double its throughput; 128x128x64 (3 stages, 4 warps) is the best config on Blackwell (sm_120)
+    # and competitive on Ada. Configs that do not fit the shared memory of a GPU are skipped by the autotuner.
+    _INT8_GEMM_CONFIGS = [
+        triton.Config({"block_m": 128, "block_n": 256, "block_k": 64, "group_size_m": 8}, num_stages=3, num_warps=8),
+        triton.Config({"block_m": 64, "block_n": 256, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
+        triton.Config({"block_m": 128, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
+        triton.Config({"block_m": 128, "block_n": 64, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
+        triton.Config({"block_m": 64, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
+        triton.Config({"block_m": 128, "block_n": 32, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
+        # Ampere (sm_86) winners
+        triton.Config({"block_m": 64, "block_n": 128, "block_k": 128, "group_size_m": 8}, num_stages=3, num_warps=4),
+        triton.Config({"block_m": 128, "block_n": 128, "block_k": 128, "group_size_m": 8}, num_stages=3, num_warps=8),
+        triton.Config({"block_m": 128, "block_n": 64, "block_k": 128, "group_size_m": 8}, num_stages=3, num_warps=4),
+        # Blackwell (sm_120) winner, also good on Ada
+        triton.Config({"block_m": 128, "block_n": 128, "block_k": 64, "group_size_m": 8}, num_stages=3, num_warps=4),
+    ]
+
     @triton.jit
     def _quantize_rowwise_kernel(
         x_ptr,  # Input pointer (FP16/BF16)
@@ -270,17 +290,7 @@ if HAS_TRITON:
         )
         return y, s
 
-    @triton.autotune(
-        configs=[
-            triton.Config({"block_m": 128, "block_n": 256, "block_k": 64, "group_size_m": 8}, num_stages=3, num_warps=8),
-            triton.Config({"block_m": 64, "block_n": 256, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 64, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 64, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 32, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-        ],
-        key=["m", "n", "k"],
-    )
+    @triton.autotune(configs=_INT8_GEMM_CONFIGS, key=["m", "n", "k"])
     @triton.jit
     def _int8_matmul_dequant_kernel(
         # Pointers
@@ -366,17 +376,7 @@ if HAS_TRITON:
         c_mask = (offs_am[:, None] < m) & (offs_bn[None, :] < n)
         tl.store(c_ptrs, c, mask=c_mask)
 
-    @triton.autotune(
-        configs=[
-            triton.Config({"block_m": 128, "block_n": 256, "block_k": 64, "group_size_m": 8}, num_stages=3, num_warps=8),
-            triton.Config({"block_m": 64, "block_n": 256, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 64, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 64, "block_n": 128, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-            triton.Config({"block_m": 128, "block_n": 32, "block_k": 32, "group_size_m": 8}, num_stages=4, num_warps=4),
-        ],
-        key=["m", "n", "k"],
-    )
+    @triton.autotune(configs=_INT8_GEMM_CONFIGS, key=["m", "n", "k"])
     @triton.jit
     def _int8_matmul_dequant_per_row_kernel(
         # Pointers
