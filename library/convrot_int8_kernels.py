@@ -22,6 +22,8 @@
 # Modifications (Musubi Tuner, ported to sd-scripts as is): triton made an optional import
 # (eager fallback when unavailable), stochastic rounding removed, unused formats
 # (fp8/nvfp4/mxfp8) dropped, helpers inlined to make the file self-contained.
+# sd-scripts addition: `triton_dequantize_rotate_weight` (fused dequantization + rotation back of the
+# INT8 weight, used by the backward of the frozen INT8 Linear).
 
 """ConvRot INT8 kernels: block-diagonal Hadamard rotation + row-wise INT8 quantization.
 
@@ -552,6 +554,62 @@ if HAS_TRITON:
 
         return output.reshape(*orig_shape[:-1], n)
 
+    # =========================================================================
+    # sd-scripts addition: fused dequantization + rotation back to the original basis of the INT8 weight
+    # (grad_x of the frozen INT8 Linear: W = (scale * W_rot) @ H per group, then grad_x = g @ W with cuBLAS)
+    # =========================================================================
+
+    @triton.jit
+    def _dequant_rotate_weight_kernel(
+        w_ptr,  # int8 [n_rows, n_cols], rotated basis
+        s_ptr,  # fp32 [n_rows] per-row scale
+        h_ptr,  # [GSZ, GSZ] Hadamard in the output dtype
+        out_ptr,  # [n_rows, n_cols] output dtype
+        n_rows,
+        n_cols,
+        BLOCK_R: tl.constexpr,
+        GSZ: tl.constexpr,
+        CH: tl.constexpr,
+    ):
+        """out[r, g*GSZ:(g+1)*GSZ] = (w[r, g*GSZ:(g+1)*GSZ] * s[r]) @ H for a tile of BLOCK_R rows and one group g.
+
+        H is consumed in column chunks of CH to bound shared memory (GSZ=256 in bf16 is 128 KB as a whole).
+        """
+        pid_r = tl.program_id(0)
+        pid_g = tl.program_id(1)
+        rows = pid_r * BLOCK_R + tl.arange(0, BLOCK_R)
+        row_mask = rows < n_rows
+        rows_i64 = rows.to(tl.int64)  # row * n_cols can exceed int32 for the token embedding (248k x 4096)
+        cols = pid_g * GSZ + tl.arange(0, GSZ)
+        w = tl.load(w_ptr + rows_i64[:, None] * n_cols + cols[None, :], mask=row_mask[:, None], other=0)
+        s = tl.load(s_ptr + rows, mask=row_mask, other=0.0)
+        w_deq = (w.to(tl.float32) * s[:, None]).to(out_ptr.dtype.element_ty)
+        for j in tl.static_range(GSZ // CH):
+            h_cols = j * CH + tl.arange(0, CH)
+            h = tl.load(h_ptr + tl.arange(0, GSZ)[:, None] * GSZ + h_cols[None, :])
+            out = tl.dot(w_deq, h)
+            out_offs = rows_i64[:, None] * n_cols + (pid_g * GSZ + h_cols)[None, :]
+            tl.store(out_ptr + out_offs, out.to(out_ptr.dtype.element_ty), mask=row_mask[:, None])
+
+    def triton_dequantize_rotate_weight(q: torch.Tensor, scale: torch.Tensor, group_size: int, dtype: torch.dtype) -> torch.Tensor:
+        """Dequantize an INT8 ConvRot weight [N, K] and rotate it back to the original basis in one memory-bound pass.
+
+        Same result as ``dequantize_int8_convrot_weight(...).to(dtype)`` up to the rounding of ``dtype`` (the dequantized
+        values are rounded to ``dtype`` before the Hadamard dot, which accumulates in fp32). Requires ``group_size >= 16``
+        (``tl.dot`` minimum); callers fall back to the eager implementation otherwise.
+        """
+        n, k = q.shape
+        q = q.contiguous()
+        h = _build_hadamard(group_size, device=q.device, dtype=dtype).contiguous()
+        out = torch.empty((n, k), device=q.device, dtype=dtype)
+        block_r = 64
+        grid = (triton.cdiv(n, block_r), k // group_size)
+        _dequant_rotate_weight_kernel[grid](
+            q, scale.reshape(-1).to(torch.float32).contiguous(), h, out, n, k, BLOCK_R=block_r, GSZ=group_size, CH=min(group_size, 64)
+        )
+        return out
+
 else:
     triton_quantize_rowwise = None
     int8_linear = None
+    triton_dequantize_rotate_weight = None
