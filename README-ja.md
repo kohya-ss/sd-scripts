@@ -50,6 +50,13 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **Version 0.12.3 (2026-10-26):**
+    - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。[PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
+        - サブセットごとの `timestep_sampling.offset` が `truncated_logit_normal` と、`--weighting_scheme logit_normal` の `sigma` にも適用されるようになりました（他のモードと同様に、正のオフセットはノイズが多い側に偏らせます）。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
+    - MOSS-Image で、ConvRot INT8 の Linear 層も `--compile` の対象になりました。融合 Triton カーネルを `torch.library` のカスタム op として登録したため、コンパイルされたブロックが量子化済みの Linear 層ごとに分断されなくなり、`--convrot_int8` の学習でも `--compile` で高速化されます。[PR #2473](https://github.com/kohya-ss/sd-scripts/pull/2473)
+        - INT8 Linear 層の backward も高速化しました。GEMM の後で活性化を回転する代わりに、重みの逆量子化と逆回転を一つのカーネルで行います。[PR #2474](https://github.com/kohya-ss/sd-scripts/pull/2474)
+        - INT8 GEMM の autotune 設定に、Ampere（RTX 30xx）GPU 向けのタイル（従来の設定ではハードウェアの INT8 性能の約 40% しか出ていませんでした）と、Blackwell（RTX 50xx / RTX PRO）向けの設定を追加しました。[PR #2475](https://github.com/kohya-ss/sd-scripts/pull/2475)
+
 - **Version 0.12.2 (2026-10-20):**
     - LoRA 学習向けに、H2D-only block swap（`--block_swap_h2d_only`）を追加しました（Musubi Tuner からの移植）。凍結されたベースモデルの重みを CPU に置いたまま Host→Device 方向にのみコピーすることで、従来の block swap にあった Device→Host の転送が不要になり、学習速度が向上します。FLUX.1 / Chroma、Lumina Image 2.0、HunyuanImage-2.1、Anima、MOSS-Image で使用できます（SD3 は対象外）。`--gradient_checkpointing` が必須です。詳細は[ドキュメント](./docs/block_swap.md)をご覧ください。[PR #2467](https://github.com/kohya-ss/sd-scripts/pull/2467)
         - `--block_swap_ring_size`（デフォルト 2）でストリーミングするブロック用の GPU バッファ数を指定できます。`--use_pinned_memory_for_block_swap` を指定すると CPU 側のコピーを pinned メモリに置き、転送が高速になります。

@@ -25,6 +25,15 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA r
 requires_triton = pytest.mark.skipif(not kernels.HAS_TRITON, reason="triton required")
 
 
+def _apply(x, wq, ws, b, groupsize, bwd_mode):
+    """Direct call of the custom op, with the autocast cast of the patched forward."""
+    if torch.is_autocast_enabled(x.device.type):
+        cast_dtype = torch.get_autocast_dtype(x.device.type)
+        x = x.to(cast_dtype)
+        b = b.to(cast_dtype) if b is not None else None
+    return utils.convrot_int8_linear(x, wq, ws, b, groupsize, True, bwd_mode)
+
+
 def _relerr(a, b):
     return ((a.float() - b.float()).norm() / b.float().norm()).item()
 
@@ -104,7 +113,7 @@ def test_quantize_weight_convrot_row_chunking_is_exact(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# autograd function: eager fallback (CPU)
+# custom op: eager fallback (CPU)
 # ---------------------------------------------------------------------------
 
 
@@ -121,7 +130,7 @@ def _make_quantized_linear(device, dtype, seed=0, bias=False):
 def test_forward_eager_cpu_matches_dequant_reference(bias):
     wq, ws, w_deq, b = _make_quantized_linear("cpu", torch.float32, bias=bias)
     x = torch.randn(M, K)
-    out = utils.ConvRotInt8LinearFn.apply(x, wq, ws, b, GS, "bf16")
+    out = _apply(x, wq, ws, b, GS, "bf16")
     ref = F.linear(x, w_deq, b)
     assert _relerr(out, ref) < 1e-5
 
@@ -130,7 +139,7 @@ def test_backward_eager_cpu_matches_dequant_reference():
     wq, ws, w_deq, b = _make_quantized_linear("cpu", torch.float32, bias=True)
     b.requires_grad_(True)
     x = torch.randn(2, M, K, requires_grad=True)
-    out = utils.ConvRotInt8LinearFn.apply(x, wq, ws, b, GS, "bf16")
+    out = _apply(x, wq, ws, b, GS, "bf16")
     g = torch.randn_like(out)
     out.backward(g)
     x_ref = x.detach().clone().requires_grad_(True)
@@ -144,21 +153,29 @@ def test_forward_autocast_casts_fp32_input_like_f_linear():
     wq, ws, w_deq, _ = _make_quantized_linear("cpu", torch.bfloat16)
     x = torch.randn(M, K)  # fp32 input, as after an fp32 modulation
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        out = utils.ConvRotInt8LinearFn.apply(x, wq, ws, None, GS, "bf16")
+        out = _apply(x, wq, ws, None, GS, "bf16")
         ref = F.linear(x, w_deq)
     assert out.dtype == torch.bfloat16 == ref.dtype
     assert _relerr(out, ref) < 2e-2
+
+
+def test_backward_eager_cpu_without_rotation_is_plain_dequant_matmul():
+    """convrot=False backward (weight in the original basis): grad_x = g @ (scale * W)."""
+    wq, ws, _, _ = _make_quantized_linear("cpu", torch.float32)
+    g = torch.randn(3, M, N)
+    out = utils.convrot_int8_linear_backward(g, wq, ws, GS, False, "bf16")
+    assert _relerr(out, g @ (wq.float() * ws)) < 1e-6
 
 
 def test_int8_backward_on_cpu_raises_a_clear_cuda_error():
     wq, ws, _, _ = _make_quantized_linear("cpu", torch.float32)
     x = torch.randn(M, K, requires_grad=True)
     with pytest.raises(RuntimeError, match=r"int8.*CUDA"):
-        utils.ConvRotInt8LinearFn.apply(x, wq, ws, None, GS, "int8").sum().backward()
+        _apply(x, wq, ws, None, GS, "int8").sum().backward()
 
 
 # ---------------------------------------------------------------------------
-# autograd function: fused Triton kernels (CUDA)
+# custom op: fused Triton kernels (CUDA)
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +185,7 @@ def test_int8_backward_on_cpu_raises_a_clear_cuda_error():
 def test_forward_triton_matches_dequant_reference(bias):
     wq, ws, w_deq, b = _make_quantized_linear("cuda", torch.bfloat16, bias=bias)
     x = torch.randn(M, K, device="cuda", dtype=torch.bfloat16)
-    out = utils.ConvRotInt8LinearFn.apply(x, wq, ws, b, GS, "bf16")
+    out = _apply(x, wq, ws, b, GS, "bf16")
     ref = F.linear(x, w_deq, b)
     assert out.dtype == torch.bfloat16
     assert _relerr(out, ref) < 2e-2  # dynamic per-row int8 activation quantization
@@ -180,7 +197,7 @@ def test_forward_triton_matches_dequant_reference(bias):
 def test_grad_x_cuda_matches_dequant_reference(bwd_mode, tol):
     wq, ws, w_deq, _ = _make_quantized_linear("cuda", torch.bfloat16)
     x = torch.randn(2, M, K, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    out = utils.ConvRotInt8LinearFn.apply(x, wq, ws, None, GS, bwd_mode)
+    out = _apply(x, wq, ws, None, GS, bwd_mode)
     g = torch.randn_like(out)
     out.backward(g)
     x_ref = x.detach().clone().requires_grad_(True)
@@ -190,13 +207,118 @@ def test_grad_x_cuda_matches_dequant_reference(bwd_mode, tol):
 
 @requires_cuda
 @requires_triton
+@pytest.mark.parametrize(("groupsize", "rows"), [(256, N), (64, N), (256, 70), (16, 40)])
+def test_triton_dequantize_rotate_weight_matches_eager(groupsize, rows):
+    """Fused dequant + rotate-back (backward weight path): odd row counts exercise the row mask, 16 the smallest tl.dot."""
+    torch.manual_seed(0)
+    w = torch.randn(rows, 2 * groupsize, device="cuda", dtype=torch.bfloat16) * 0.02
+    wq, ws = kernels.quantize_int8_convrot_weight(w, groupsize)
+    ref = kernels.dequantize_int8_convrot_weight(wq, ws, groupsize)  # fp32
+    out = kernels.triton_dequantize_rotate_weight(wq, ws, groupsize, torch.bfloat16)
+    assert out.dtype == torch.bfloat16 and out.shape == w.shape
+    assert _relerr(out, ref) < 5e-3  # bf16 rounding of the dequantized values before the Hadamard dot
+    eager = kernels._rotate_weight(wq * ws.to(torch.bfloat16), kernels._build_hadamard(groupsize, "cuda", torch.bfloat16), groupsize)
+    assert _relerr(eager, ref) < 5e-3 and _relerr(out, eager) < 5e-3  # the eager fallback rounds the same way
+
+
+@requires_cuda
+@requires_triton
 def test_triton_and_eager_forward_parity(monkeypatch):
     wq, ws, w_deq, _ = _make_quantized_linear("cuda", torch.bfloat16)
     x = torch.randn(M, K, device="cuda", dtype=torch.bfloat16)
-    out_triton = utils.ConvRotInt8LinearFn.apply(x, wq, ws, None, GS, "bf16")
+    out_triton = _apply(x, wq, ws, None, GS, "bf16")
     monkeypatch.setattr(utils, "HAS_TRITON", False)
-    out_eager = utils.ConvRotInt8LinearFn.apply(x, wq, ws, None, GS, "bf16")
+    out_eager = _apply(x, wq, ws, None, GS, "bf16")
     assert _relerr(out_triton, out_eager) < 2e-2
+
+
+# ---------------------------------------------------------------------------
+# custom op: torch.compile (the patched Linear must be an opaque node, not a graph break)
+# ---------------------------------------------------------------------------
+
+
+class _CompiledBlock(nn.Module):
+    """A frozen (patched) Linear with a trainable bias, a LoRA-like side branch and a norm: the shape of a DiT block."""
+
+    def __init__(self):
+        super().__init__()
+        self.lin = nn.Linear(K, N, bias=True)
+        self.lora = nn.Linear(K, N, bias=False)
+        self.norm = nn.LayerNorm(N)
+
+    def forward(self, x):
+        return self.norm(self.lin(x) + self.lora(x)) * 2
+
+
+def _make_patched_block(device, dtype, bwd_mode="bf16"):
+    """Returns (patched int8 block, reference bf16/fp32 block with the dequantized weight)."""
+    wq, ws, w_deq, b = _make_quantized_linear(device, dtype, bias=True)
+    ref = _CompiledBlock().to(device=device, dtype=dtype)
+    with torch.no_grad():
+        ref.lin.weight.copy_(w_deq)
+        ref.lin.bias.copy_(b)
+    block = _CompiledBlock().to(device=device, dtype=dtype)
+    block.load_state_dict(ref.state_dict())
+    sd = {"lin.weight": wq, "lin.scale_weight": ws}
+    utils.apply_convrot_int8_monkey_patch(block, sd, bwd_mode=bwd_mode, groupsize_map={"lin": GS})
+    block.lin.weight.requires_grad_(False)
+    block.lin.load_state_dict({"weight": wq, "scale_weight": ws, "bias": b.clone()}, assign=True)
+    block.lin.bias.requires_grad_(True)
+    return block, ref
+
+
+def _run_fwd_bwd(module, x):
+    x = x.detach().clone().requires_grad_(True)
+    out = module(x)
+    # a linear loss: the squared norm of a LayerNorm output is constant, its input gradient would be rounding noise
+    (out.float() * torch.linspace(-1.0, 1.0, out.shape[-1], device=out.device)).sum().backward()
+    return out, x.grad, module.lin.bias.grad.clone(), module.lora.weight.grad.clone()
+
+
+def test_compiled_block_with_patched_linear_has_no_graph_breaks():
+    torch._dynamo.reset()
+    block, _ = _make_patched_block("cpu", torch.float32)
+    explanation = torch._dynamo.explain(block)(torch.randn(M, K, requires_grad=True))
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+
+
+def test_compiled_block_aot_eager_matches_eager_forward_and_backward():
+    torch._dynamo.reset()
+    block, ref = _make_patched_block("cpu", torch.float32)
+    compiled = torch.compile(block, backend="aot_eager", fullgraph=True)
+    for m in (M, M + 8):  # second shape: recompile / dynamic shapes through the fake impl
+        x = torch.randn(2, m, K)
+        out_c, gx_c, gb_c, gl_c = _run_fwd_bwd(compiled, x)
+        block.zero_grad()
+        out_e, gx_e, gb_e, gl_e = _run_fwd_bwd(block, x)
+        block.zero_grad()
+        out_r, gx_r, gb_r, gl_r = _run_fwd_bwd(ref, x)
+        ref.zero_grad()
+        assert _relerr(out_c, out_e) < 1e-6 and _relerr(gx_c, gx_e) < 1e-6
+        assert _relerr(gb_c, gb_e) < 1e-6 and _relerr(gl_c, gl_e) < 1e-6
+        assert _relerr(out_c, out_r) < 1e-5 and _relerr(gx_c, gx_r) < 1e-5 and _relerr(gb_c, gb_r) < 1e-5
+
+
+@requires_cuda
+@requires_triton
+@pytest.mark.parametrize("bwd_mode", ["bf16", "int8"])
+def test_compiled_block_inductor_cuda_matches_eager(bwd_mode):
+    torch._dynamo.reset()
+    block, ref = _make_patched_block("cuda", torch.bfloat16, bwd_mode=bwd_mode)
+    compiled = torch.compile(block, fullgraph=True)
+    for m in (M, M + 8):
+        x = torch.randn(2, m, K, device="cuda", dtype=torch.bfloat16)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            out_c, gx_c, gb_c, _ = _run_fwd_bwd(compiled, x)
+            block.zero_grad()
+            out_e, gx_e, gb_e, _ = _run_fwd_bwd(block, x)
+            block.zero_grad()
+            out_r, gx_r, gb_r, _ = _run_fwd_bwd(ref, x)
+            ref.zero_grad()
+        assert out_c.dtype == out_e.dtype
+        # same kernels either side: only bf16 rounding of fused glue differs
+        assert _relerr(out_c, out_e) < 5e-3 and _relerr(gx_c, gx_e) < 5e-3 and _relerr(gb_c, gb_e) < 5e-3
+        assert _relerr(out_c, out_r) < 5e-2 and _relerr(gx_c, gx_r) < 5e-2  # int8 activation quantization noise
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +671,8 @@ def test_inference_parser_has_convrot_options(monkeypatch):
     assert args.convrot_int8 and not args.convrot_int8_text_encoder
 
 
-def test_moss_image_block_forward_with_int8_projections_matches_float():
-    """Regression: the block must not cast its activations to the (int8) projection weight dtype."""
+def _tiny_moss_image_pair():
+    """(reference float model, same model with the main-block Linears patched to ConvRot INT8), both in eval mode."""
     from library import moss_image_models
 
     torch.manual_seed(0)
@@ -571,6 +693,25 @@ def test_moss_image_block_forward_with_int8_projections_matches_float():
     utils.apply_convrot_int8_monkey_patch(model, sd, groupsize_map=groupsize_map)
     model.requires_grad_(False)
     model.load_state_dict(sd, strict=True, assign=True)
+    return ref, model
+
+
+def test_moss_image_block_with_int8_projections_compiles_without_graph_breaks():
+    """The trainer compiles the main blocks with the INT8 Linears included (only block swapping excludes Linears)."""
+    _, model = _tiny_moss_image_pair()
+    captured = []
+    handle = model.layers[0].register_forward_pre_hook(lambda module, args: captured.append(args))
+    with torch.no_grad():
+        model(torch.randn(2, 8, 4, 6), torch.tensor([300.0, 800.0]), torch.randn(2, 5, 24), torch.ones(2, 5, dtype=torch.int32))
+    handle.remove()
+    torch._dynamo.reset()
+    explanation = torch._dynamo.explain(model.layers[0])(*captured[0])
+    assert explanation.graph_break_count == 0, explanation.break_reasons
+
+
+def test_moss_image_block_forward_with_int8_projections_matches_float():
+    """Regression: the block must not cast its activations to the (int8) projection weight dtype."""
+    ref, model = _tiny_moss_image_pair()
 
     x = torch.randn(2, 8, 4, 6)
     t = torch.tensor([300.0, 800.0])

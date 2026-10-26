@@ -657,10 +657,12 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "truncated_logit_normal"],
         default="sigma",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and FLUX.1 shifting."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト。",
+        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid, FLUX.1 shifting"
+        " and truncated logit-normal on the training grid (--logit_mean / --logit_std / --timestep_cutoff / --timestep_uniform_ratio)."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト、"
+        "学習グリッド上の切り詰めた logit-normal（--logit_mean / --logit_std / --timestep_cutoff / --timestep_uniform_ratio）。",
     )
     parser.add_argument(
         "--sigmoid_scale",

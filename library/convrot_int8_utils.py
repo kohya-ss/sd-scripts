@@ -6,13 +6,14 @@ Mirrors the structure of fp8_optimization_utils.py: quantize target Linear weigh
 (in the rotated basis) under the original ``.weight`` key and the per-channel scale under a sibling ``.scale_weight``
 key, then monkey-patch the matching ``nn.Linear`` modules' ``forward``.
 
-Unlike the fp8 path, the forward goes through a custom ``torch.autograd.Function``: the fused Triton kernel (rotation +
-dynamic row-wise INT8 quantization + INT8 GEMM with dequantization epilogue) has no autograd support, and the base weight
-is frozen so only grad_x is needed in backward: grad_x = rotate(g @ W_rot).
+Unlike the fp8 path, the forward goes through a ``torch.library`` custom op with a registered backward: the fused Triton
+kernel (rotation + dynamic row-wise INT8 quantization + INT8 GEMM with dequantization epilogue) has no autograd support,
+and the base weight is frozen so only grad_x is needed in backward: grad_x = rotate(g @ W_rot). As a custom op the
+patched Linear is an opaque node for torch.compile (no graph break), so compiled blocks keep their fusion across it.
 
 Keeping the module an ``nn.Linear`` (patched forward, INT8 ``.weight``) is load-bearing: LoRA targets modules by class
-name "Linear", block swap streams ``module.weight.data`` of Linear-named modules, and compile exclusion also keys on the
-class name.
+name "Linear", block swap streams ``module.weight.data`` of Linear-named modules, and the block swap compile exclusion
+also keys on the class name.
 
 ComfyUI pre-quantized checkpoints (``.weight`` int8 + ``.weight_scale`` fp32 [N, 1] + ``.comfy_quant`` JSON spec) are
 loaded as they are. ComfyUI also quantizes ``nn.Embedding`` weights (token embeddings of the text encoders) with the same
@@ -36,8 +37,10 @@ from library.convrot_int8_kernels import (
     HAS_TRITON,
     _build_hadamard,
     _rotate_activation,
+    _rotate_weight,
     int8_linear,
     quantize_int8_convrot_weight,
+    triton_dequantize_rotate_weight,
 )
 from library.device_utils import clean_memory_on_device
 from library.safetensors_utils import MemoryEfficientSafeOpen, TensorWeightAdapter, WeightTransformHooks
@@ -368,65 +371,137 @@ class ConvRotInt8Quantizer:
 # region forward / backward
 
 
-class ConvRotInt8LinearFn(torch.autograd.Function):
-    @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
-    def forward(ctx, x, wq, w_scale, bias, groupsize, bwd_mode):
-        # x: [..., K] bf16/fp16, wq: [N, K] int8 (rotated basis), w_scale: [N, 1] fp32
-        # F.linear casts its inputs to the autocast dtype under autocast; the fused kernel bypasses F.linear, so replicate
-        # that here (fp32 modulation outputs are promoted to fp32 otherwise).
-        if torch.is_autocast_enabled(x.device.type):
-            cast_dtype = torch.get_autocast_dtype(x.device.type)
-            x = x.to(cast_dtype)
-            if bias is not None:
-                bias = bias.to(cast_dtype)
-        if HAS_TRITON and x.is_cuda:
-            out = int8_linear(x, wq, w_scale.reshape(-1), bias, x.dtype, True, groupsize)
-        else:
-            # eager fallback: rotation + transient dequantized matmul, no activation quantization
-            h = _build_hadamard(groupsize, device=x.device, dtype=x.dtype)
-            x_rot = _rotate_activation(x, h, groupsize)
-            w_rot = wq.to(x.dtype) * w_scale.reshape(-1, 1).to(x.dtype)
-            out = F.linear(x_rot, w_rot, bias)
-        # wq/w_scale are live buffers, so saving them adds no activation memory; x is not saved (base is frozen, no
-        # grad_weight needed)
-        ctx.save_for_backward(wq, w_scale)
-        ctx.groupsize = groupsize
-        ctx.bwd_mode = bwd_mode
-        ctx.bias_needs_grad = bias is not None and bias.requires_grad
-        return out
+@torch.library.custom_op("sd_scripts::convrot_int8_linear", mutates_args=())
+def convrot_int8_linear(
+    x: torch.Tensor,
+    wq: torch.Tensor,
+    w_scale: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    groupsize: int,
+    convrot: bool,
+    bwd_mode: str,
+) -> torch.Tensor:
+    """INT8 GEMM ``x @ W_rot^T * scale + bias`` with an optional online ConvRot rotation of ``x``, as a custom op.
 
-    @staticmethod
-    @torch.amp.custom_bwd(device_type="cuda")
-    def backward(ctx, grad_out):
-        wq, w_scale = ctx.saved_tensors
-        gs = ctx.groupsize
-        g2d = grad_out.reshape(-1, grad_out.shape[-1])  # [M, N]
+    Registering the fused Triton path as a ``torch.library`` custom op (instead of calling the kernels from a
+    ``torch.autograd.Function``) lets dynamo treat the whole thing as one opaque node: the patched Linear no longer causes
+    a graph break, so the surrounding norm / modulation / rotation glue of a compiled block gets fused across it.
 
-        grad_x = None
-        if ctx.needs_input_grad[0]:
-            # grad_x = g @ W = g @ (W_rot R) = rotate(g @ W_rot), R = block-diag Hadamard
-            if ctx.bwd_mode == "int8":
-                if not g2d.is_cuda:
-                    raise RuntimeError("ConvRot INT8 backward mode 'int8' requires CUDA tensors")
-                # fold per-channel weight scale into g, then reuse the fused Triton GEMM (row-wise quant of g + int8 GEMM +
-                # dequant epilogue in one pipeline). transient int8 transpose of wq: [K, N], ~1 byte/param, freed after mm
-                g_scaled = g2d * w_scale.reshape(1, -1).to(g2d.dtype)
-                one = torch.ones(1, device=g2d.device, dtype=torch.float32)
-                gx_rot = int8_linear(g_scaled, wq.t().contiguous(), one, None, grad_out.dtype, False, gs)
-            else:
-                # transient bf16 dequant of the rotated weight (stays in rotated basis)
-                w_rot = wq.to(grad_out.dtype) * w_scale.reshape(-1, 1).to(grad_out.dtype)
-                gx_rot = g2d @ w_rot  # [M, K]
-            h = _build_hadamard(gs, device=gx_rot.device, dtype=gx_rot.dtype)
-            grad_x = _rotate_activation(gx_rot, h, gs).reshape(*grad_out.shape[:-1], wq.shape[1])
+    Args:
+        x: [..., K] bf16/fp16/fp32 activations (already cast to the autocast dtype by the caller).
+        wq: [N, K] int8 weight in the rotated basis.
+        w_scale: fp32 weight scale, [N, 1] / [N] per-channel or a single element (tensorwise).
+        bias: optional [N] bias in the dtype of ``x``.
+        groupsize: ConvRot group size (power of 4).
+        convrot: apply the online Hadamard rotation to ``x`` before quantization (False for the int8 backward GEMM).
+        bwd_mode: "bf16" or "int8"; only read by the registered backward.
 
-        grad_bias = g2d.sum(dim=0) if ctx.bias_needs_grad else None
-        return grad_x, None, None, grad_bias, None, None
+    Returns:
+        [..., N] in the dtype of ``x``.
+    """
+    if HAS_TRITON and x.is_cuda:
+        return int8_linear(x, wq, w_scale.reshape(-1), bias, x.dtype, convrot, groupsize)
+    # eager fallback: rotation + transient dequantized matmul, no activation quantization
+    if convrot:
+        h = _build_hadamard(groupsize, device=x.device, dtype=x.dtype)
+        x = _rotate_activation(x, h, groupsize)
+    w_rot = wq * w_scale.reshape(-1, 1).to(x.dtype)  # int8 x dtype promotion: one elementwise kernel
+    return F.linear(x, w_rot, bias)
+
+
+@convrot_int8_linear.register_fake
+def _convrot_int8_linear_fake(x, wq, w_scale, bias, groupsize, convrot, bwd_mode):
+    return x.new_empty(*x.shape[:-1], wq.shape[0])
+
+
+def _convrot_int8_linear_setup_context(ctx, inputs, output):
+    _x, wq, w_scale, _bias, groupsize, convrot, bwd_mode = inputs
+    # wq/w_scale are live buffers, so saving them adds no activation memory; x is not saved (base is frozen, no
+    # grad_weight needed)
+    ctx.save_for_backward(wq, w_scale)
+    ctx.groupsize = groupsize
+    ctx.convrot = convrot
+    ctx.bwd_mode = bwd_mode
+
+
+@torch.library.custom_op("sd_scripts::convrot_int8_linear_backward", mutates_args=())
+def convrot_int8_linear_backward(
+    grad_out: torch.Tensor,
+    wq: torch.Tensor,
+    w_scale: torch.Tensor,
+    groupsize: int,
+    convrot: bool,
+    bwd_mode: str,
+) -> torch.Tensor:
+    """grad_x of ``convrot_int8_linear``: ``g @ W`` with ``W = W_rot R`` (R = block-diagonal Hadamard).
+
+    A custom op as well: AOTAutograd traces the registered backward with fake tensors, and the cached Hadamard constant of
+    ``_build_hadamard`` must not leak into that trace. The GEMM is an extern kernel either way, so nothing is lost.
+
+    ``bwd_mode="bf16"``: the weight is dequantized *and* rotated back to the original basis in one memory-bound Triton pass
+    (transient ``W`` in the gradient dtype, 2 bytes/param), then a single cuBLAS GEMM. Rotating the weight instead of the
+    ``[M, K]`` output removes a pass over the activations and one bf16 rounding. A fused bf16 x int8 GEMM was measured to be
+    slower than this on RTX PRO 6000 (the in-loop int8 -> bf16 conversion of the weight tile is repeated M / block_m times).
+
+    ``bwd_mode="int8"``: g (with the weight scale folded in) is quantized row-wise and multiplied with the INT8 weight by
+    the fused Triton GEMM in the rotated basis, then the output is rotated.
+    """
+    gs = groupsize
+    g2d = grad_out.reshape(-1, grad_out.shape[-1])  # [M, N]
+    if bwd_mode == "int8":
+        if not g2d.is_cuda:
+            raise RuntimeError("ConvRot INT8 backward mode 'int8' requires CUDA tensors")
+        # fold per-channel weight scale into g, then reuse the fused Triton GEMM (row-wise quant of g + int8 GEMM + dequant
+        # epilogue in one pipeline). transient int8 transpose of wq: [K, N], ~1 byte/param, freed after mm
+        g_scaled = g2d * w_scale.reshape(1, -1).to(g2d.dtype)
+        one = torch.ones(1, device=g2d.device, dtype=torch.float32)
+        gx = int8_linear(g_scaled, wq.t().contiguous(), one, None, grad_out.dtype, False, gs)
+        if convrot:
+            h = _build_hadamard(gs, device=gx.device, dtype=gx.dtype)
+            gx = _rotate_activation(gx, h, gs)
+    else:
+        w = _dequantize_weight(wq, w_scale, gs, grad_out.dtype, rotate_back=convrot)  # transient [N, K]
+        gx = g2d @ w  # [M, K]
+    return gx.reshape(*grad_out.shape[:-1], wq.shape[1])
+
+
+def _dequantize_weight(wq: torch.Tensor, w_scale: torch.Tensor, groupsize: int, dtype: torch.dtype, rotate_back: bool) -> torch.Tensor:
+    """Transient dequantized weight in ``dtype``: ``scale * W_rot``, rotated back to the original basis if ``rotate_back``."""
+    if not rotate_back:
+        return wq * w_scale.reshape(-1, 1).to(dtype)  # int8 x dtype promotion: one elementwise kernel
+    if HAS_TRITON and wq.is_cuda and groupsize >= 16:
+        return triton_dequantize_rotate_weight(wq, w_scale, groupsize, dtype)
+    h = _build_hadamard(groupsize, device=wq.device, dtype=dtype)
+    return _rotate_weight(wq * w_scale.reshape(-1, 1).to(dtype), h, groupsize)
+
+
+@convrot_int8_linear_backward.register_fake
+def _convrot_int8_linear_backward_fake(grad_out, wq, w_scale, groupsize, convrot, bwd_mode):
+    return grad_out.new_empty(*grad_out.shape[:-1], wq.shape[1])
+
+
+def _convrot_int8_linear_backward(ctx, grad_out):
+    wq, w_scale = ctx.saved_tensors
+    grad_x = None
+    if ctx.needs_input_grad[0]:
+        grad_x = convrot_int8_linear_backward(grad_out, wq, w_scale, ctx.groupsize, ctx.convrot, ctx.bwd_mode)
+    grad_bias = grad_out.reshape(-1, grad_out.shape[-1]).sum(dim=0) if ctx.needs_input_grad[3] else None
+    return grad_x, None, None, grad_bias, None, None, None
+
+
+convrot_int8_linear.register_autograd(_convrot_int8_linear_backward, setup_context=_convrot_int8_linear_setup_context)
 
 
 def convrot_int8_linear_forward_patch(self: nn.Linear, x):
-    return ConvRotInt8LinearFn.apply(x, self.weight, self.scale_weight, self.bias, self._convrot_groupsize, self._convrot_bwd_mode)
+    # F.linear casts its inputs to the autocast dtype under autocast; the custom op bypasses F.linear, so replicate that
+    # here (fp32 modulation outputs are promoted to fp32 otherwise). Done outside the op so dynamo traces the cast.
+    bias = self.bias
+    if torch.is_autocast_enabled(x.device.type):
+        cast_dtype = torch.get_autocast_dtype(x.device.type)
+        x = x.to(cast_dtype)
+        if bias is not None:
+            bias = bias.to(cast_dtype)
+    return convrot_int8_linear(x, self.weight, self.scale_weight, bias, self._convrot_groupsize, True, self._convrot_bwd_mode)
 
 
 def convrot_int8_embedding_forward_patch(self: nn.Embedding, input: torch.Tensor) -> torch.Tensor:

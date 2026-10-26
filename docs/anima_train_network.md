@@ -47,7 +47,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **Model structure:** Uses a MiniTrainDIT (Transformer based) instead of U-Net. Employs a single text encoder (Qwen3-0.6B), an LLM Adapter that bridges Qwen3 embeddings to T5-compatible cross-attention space, and a Qwen-Image VAE (16-channel latent space with 8x spatial downscale).
 * **Arguments:** Uses the common `--pretrained_model_name_or_path` for the DiT model path, `--qwen3` for the Qwen3 text encoder, and `--vae` for the Qwen-Image VAE. The LLM adapter and T5 tokenizer can be specified separately with `--llm_adapter_path` and `--t5_tokenizer_path`.
 * **Incompatible arguments:** Stable Diffusion v1/v2 options such as `--v2`, `--v_parameterization` and `--clip_skip` are not used. `--fp8_base` is not supported.
-* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`).
+* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`).
 * **LoRA:** Uses regex-based module selection and per-module rank/learning rate control (`network_reg_dims`, `network_reg_lrs`) instead of per-component arguments. Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
 
 <details>
@@ -59,7 +59,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **モデル構造:** U-Netの代わりにMiniTrainDIT (Transformerベース) を使用します。テキストエンコーダーとしてQwen3-0.6B、Qwen3埋め込みをT5互換のクロスアテンション空間に変換するLLM Adapter、およびQwen-Image VAE (16チャンネル潜在空間、8倍空間ダウンスケール) を使用します。
 * **引数:** DiTモデルのパスには共通引数`--pretrained_model_name_or_path`を、Qwen3テキストエンコーダーには`--qwen3`を、Qwen-Image VAEには`--vae`を使用します。LLM AdapterとT5トークナイザーはそれぞれ`--llm_adapter_path`、`--t5_tokenizer_path`で個別に指定できます。
 * **一部引数の非互換性:** Stable Diffusion v1/v2向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）は使用されません。`--fp8_base`はサポートされていません。
-* **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`）を使用します。
+* **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`、`truncated_logit_normal`）を使用します。
 * **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します。
 </details>
 
@@ -180,9 +180,9 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Anima Training Parameters / Anima 学習パラメータ
 
 * `--timestep_sampling=<choice>`
-  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
+  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`, `truncated_logit_normal`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
 * `--discrete_flow_shift=<float>`
-  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`. This value is used when `--timestep_sampling` is set to **`shift`**. The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
+  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`. This value is used when `--timestep_sampling` is set to **`shift`** (and to `sigma` / `truncated_logit_normal` through the shifted training grid). The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
 * `--sigmoid_scale=<float>`
   - Scale factor when `--timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default `1.0`.
 * `--qwen3_max_token_length=<integer>`
@@ -255,8 +255,8 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 
 #### Anima 学習パラメータ
 
-* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift`から選択。FLUX学習と同じオプションです。各方法の詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
-* `--discrete_flow_shift` - Rectified Flow学習のタイムステップ分布シフト。デフォルト`1.0`。`--timestep_sampling`が`shift`の場合に使用されます。
+* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift`、`truncated_logit_normal`から選択。FLUX学習と同じオプションです。各方法の詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
+* `--discrete_flow_shift` - Rectified Flow学習のタイムステップ分布シフト。デフォルト`1.0`。`--timestep_sampling`が`shift`の場合（および`sigma` / `truncated_logit_normal`ではシフトされた学習グリッドを通じて）使用されます。
 * `--sigmoid_scale` - `sigmoid`、`shift`、`flux_shift`タイムステップサンプリングのスケール係数。デフォルト`1.0`。
 * `--qwen3_max_token_length` - Qwen3トークナイザーの最大トークン長。デフォルト`512`。
 * `--t5_max_token_length` - T5トークナイザーの最大トークン長。デフォルト`512`。
@@ -487,6 +487,7 @@ The `--timestep_sampling` option specifies how timesteps are sampled. The availa
 - `sigmoid` (default): Sample from Normal(0,1), multiply by `sigmoid_scale`, apply sigmoid. Good general-purpose option.
 - `shift`: Like `sigmoid`, but applies the discrete flow shift formula: `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
 - `flux_shift`: Resolution-dependent shift used in FLUX training.
+- `truncated_logit_normal`: Logit-normal distribution (`--logit_mean` / `--logit_std`) on the discrete training grid, truncated at `--timestep_cutoff` and rescaled, with a `--timestep_uniform_ratio` share of uniform samples (the schedule of the MOSS-Image pre-training).
 
 See the [flux_train_network.py guide](flux_train_network.md) for detailed descriptions.
 
@@ -541,6 +542,7 @@ Note: Currently, only Anima and MOSS-Image support combining `caption_dropout_ra
 - `sigmoid`（デフォルト）: 正規分布からサンプリングし、sigmoidを適用。汎用的なオプション。
 - `shift`: `sigmoid`と同様だが、離散フローシフトの式を適用。
 - `flux_shift`: FLUX学習で使用される解像度依存のシフト。
+- `truncated_logit_normal`: 離散的な学習グリッド上のlogit-normal分布（`--logit_mean` / `--logit_std`）を`--timestep_cutoff`で切り詰めてリスケールし、`--timestep_uniform_ratio`の割合で一様サンプルを混ぜたもの（MOSS-Imageの事前学習のスケジュール）。
 
 詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
 

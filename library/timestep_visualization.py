@@ -26,6 +26,16 @@ CONSOLE_WIDTH = 64
 N_TIMESTEPS_PER_LINE = 25
 
 
+def timesteps_to_bin_indices(timesteps: np.ndarray, num_train_timesteps: int) -> np.ndarray:
+    """Map (possibly non-integer) timesteps to histogram bins ``[0, num_train_timesteps - 1]`` by rounding.
+
+    The scheduler's timestep grid is computed in float32 (``sigma * num_train_timesteps``), so grid points such as
+    250.99998 occur; truncation would count them in the bin below and leave the bin of 251 empty, which shows up as
+    spikes and gaps in the histogram. Rounding to the nearest integer avoids this.
+    """
+    return np.clip(np.rint(timesteps).astype(np.int64), 0, num_train_timesteps - 1)
+
+
 def show_timestep_distribution(
     mode: str,
     sample_timesteps: Callable[[int], torch.Tensor],
@@ -56,8 +66,7 @@ def show_timestep_distribution(
     sampled_timesteps = np.zeros(num_train_timesteps, dtype=np.float64)
     for _ in tqdm(range(max(1, n_try // batch_size)), desc="sampling timesteps"):
         timesteps = sample_timesteps(batch_size).detach().flatten().float().cpu().numpy()
-        indices = np.clip(timesteps.astype(np.int64), 0, num_train_timesteps - 1)
-        np.add.at(sampled_timesteps, indices, 1.0)
+        np.add.at(sampled_timesteps, timesteps_to_bin_indices(timesteps, num_train_timesteps), 1.0)
 
     # --- compute the loss weighting per timestep ---
     sampled_weighting = np.ones(num_train_timesteps, dtype=np.float64)

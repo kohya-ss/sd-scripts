@@ -485,11 +485,10 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         if args.compile:
             # Per-block torch.compile of the 42 main blocks. Reach the real model via unwrap_model so the underlying
             # ModuleList is mutated regardless of any DDP wrapper.
-            # ConvRot INT8 Linears are also excluded: the custom autograd.Function + autotuned Triton kernels do not compile.
+            # ConvRot INT8 Linears compile as well: the fused Triton path is a torch.library custom op (opaque node, no
+            # graph break), so only block swapping needs the Linear exclusion.
             dit = accelerator.unwrap_model(model)
-            compile_utils.compile_transformer(
-                args, dit, [dit.layers], disable_linear=self.is_swapping_blocks or convrot_int8_utils.is_convrot_int8_model(dit)
-            )
+            compile_utils.compile_transformer(args, dit, [dit.layers], disable_linear=self.is_swapping_blocks)
 
         return model
 

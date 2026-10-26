@@ -216,9 +216,11 @@ The script adds FLUX.1 specific arguments. For common arguments (like `--output_
   - FLUX.1 dev version is distilled with specific guidance scale values, but for training, specify `1.0` to disable guidance scale. Default is `3.5`, so be sure to specify this. Usually ignored for schnell version.
   - Chroma requires `--guidance_scale=0.0` to disable guidance scale.
 * `--timestep_sampling=<choice>`
-  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`. Default is `sigma`. Recommended is `flux_shift`. For Chroma models, `sigmoid` is recommended.
+  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`. Default is `sigma`. Recommended is `flux_shift`. For Chroma models, `sigmoid` is recommended.
 * `--sigmoid_scale=<float>`
   - Scale factor when `timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default and recommended value is `1.0`.
+* `--timestep_cutoff=<float>` / `--timestep_uniform_ratio=<float>`
+  - Parameters of `truncated_logit_normal` timestep sampling (see below). Defaults `0.95` and `0.01` (the values of the MOSS-Image pre-training).
 * `--model_prediction_type=<choice>`
   - Specifies what the model predicts. Choose from `raw` (use prediction as-is), `additive` (add to noise input), `sigma_scaled` (apply sigma scaling). Default is `sigma_scaled`. Recommended is `raw`.
 * `--discrete_flow_shift=<float>`
@@ -335,8 +337,9 @@ The `--timestep_sampling` option specifies how timesteps (0-1) are sampled:
 - `sigmoid`: Sigmoid of normal distribution random (similar to x-flux, AI-toolkit)
 - `shift`: Sigmoid value of normal distribution random with shift. The `--discrete_flow_shift` setting is used to shift the sigmoid value.
 - `flux_shift`: Shift sigmoid value of normal distribution random according to resolution (similar to FLUX.1 dev inference).
+- `truncated_logit_normal`: Logit-normal distribution on the discrete training grid, like `sigma` with `--weighting_scheme logit_normal` (`sigma = sigmoid(-N(logit_mean, logit_std))`, a negative `--logit_mean` biases toward higher noise), but truncated at `sigma <= --timestep_cutoff` and rescaled to cover (0, 1], with a `--timestep_uniform_ratio` share of samples drawn uniformly from the grid. This is the timestep schedule of the MOSS-Image pre-training (`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` with the default cutoff and ratio). The loss weight is 1 regardless of `--weighting_scheme`.
 
-`--discrete_flow_shift` only applies when `--timestep_sampling` is set to `shift`.
+`--discrete_flow_shift` applies when `--timestep_sampling` is set to `shift` (explicitly) or to `sigma` / `truncated_logit_normal` (through the shifted training grid).
 
 #### Visualizing the Timestep Distribution
 

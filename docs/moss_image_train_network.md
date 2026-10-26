@@ -44,7 +44,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 * **Model structure:** Uses a single-stream DiT instead of U-Net. Employs a single text encoder (Qwen3.5-9B) and the FLUX.2 VAE. The text encoder is bf16 and the VAE is fp32 regardless of `--mixed_precision`.
 * **Arguments:** Uses the common `--pretrained_model_name_or_path` for the DiT model path, `--text_encoder` for the Qwen3.5-9B text encoder, and `--vae` for the FLUX.2 VAE.
 * **Incompatible arguments:** Stable Diffusion v1/v2 options such as `--v2`, `--v_parameterization` and `--clip_skip` are not used. `--fp8_base` / `--fp8_base_unet` are not supported; use ConvRot INT8 (`--convrot_int8`) instead.
-* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX / Anima training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`). The pre-training distribution of MOSS-Image can be reproduced with existing options (see [Section 7.2](#72-training-settings--学習設定)).
+* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX / Anima training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`). The pre-training distribution of MOSS-Image can be reproduced with `truncated_logit_normal` (see [Section 7.2](#72-training-settings--学習設定)).
 * **LoRA:** Uses the generic LoRA module `networks.lora_generic` with regex-based module selection and per-module rank/learning rate control (`network_reg_dims`, `network_reg_lrs`). Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
 * **Text Encoder:** The text encoder is run one sample at a time without padding (the Qwen3.5 Gated DeltaNet layers are sensitive to padding), the same as the official pipeline. Captions can contain line breaks (`enable_multiline_caption`).
 * **Caption dropout with cached text encoder outputs:** The unconditional embedding is stored in every cache file, so `caption_dropout_rate` works together with `--cache_text_encoder_outputs`.
@@ -59,7 +59,7 @@ This guide assumes you already understand the basics of LoRA training. For commo
 * **モデル構造:** U-Net の代わりに single-stream DiT を使用します。テキストエンコーダーは Qwen3.5-9B の 1 つ、VAE は FLUX.2 VAE です。`--mixed_precision` の指定に関係なく、テキストエンコーダーは bf16、VAE は fp32 で動作します。
 * **引数:** DiT モデルのパスには共通引数 `--pretrained_model_name_or_path` を、Qwen3.5-9B テキストエンコーダーには `--text_encoder` を、FLUX.2 VAE には `--vae` を使用します。
 * **一部引数の非互換性:** Stable Diffusion v1/v2 向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）は使用されません。`--fp8_base` / `--fp8_base_unet` はサポートされません。代わりに ConvRot INT8（`--convrot_int8`）を使用してください。
-* **タイムステップサンプリング:** FLUX / Anima 学習と同じ `--timestep_sampling` オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`）を使用します。MOSS-Image の事前学習の分布は既存オプションの組み合わせで再現できます（[7.2 節](#72-training-settings--学習設定) を参照）。
+* **タイムステップサンプリング:** FLUX / Anima 学習と同じ `--timestep_sampling` オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`、`truncated_logit_normal`）を使用します。MOSS-Image の事前学習の分布は `truncated_logit_normal` で再現できます（[7.2 節](#72-training-settings--学習設定) を参照）。
 * **LoRA:** 汎用 LoRA モジュール `networks.lora_generic` を使用し、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を行います。モジュールの除外/包含は `exclude_patterns` と `include_patterns` で制御します。
 * **テキストエンコーダー:** 公式パイプラインと同様に、パディングなしで 1 サンプルずつ実行します（Qwen3.5 の Gated DeltaNet 層はパディングの影響を受けます）。キャプションには改行を含められます（`enable_multiline_caption`）。
 * **キャッシュ時のキャプションドロップアウト:** 各キャッシュファイルに unconditional の埋め込みも保存するため、`caption_dropout_rate` を `--cache_text_encoder_outputs` と併用できます。
@@ -135,8 +135,7 @@ accelerate launch --num_cpu_threads_per_process 1 moss_image_train_network.py \
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
-  --timestep_sampling="sigma" \
-  --weighting_scheme="logit_normal" \
+  --timestep_sampling="truncated_logit_normal" \
   --logit_mean=-1.09 \
   --logit_std=0.95 \
   --discrete_flow_shift=1.0 \
@@ -156,7 +155,7 @@ accelerate launch --num_cpu_threads_per_process 1 moss_image_train_network.py \
 
 The learning rate of `1e-4` is just an example. Adjust it according to your dataset and objectives. This value is for `alpha=1.0` (default). If increasing `--network_alpha`, consider lowering the learning rate.
 
-`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` reproduces the timestep distribution used in the pre-training of MOSS-Image (see [Section 7.2](#72-training-settings--学習設定)). A simpler setting with a similar distribution is `--timestep_sampling shift --discrete_flow_shift 3.0`.
+`--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` reproduces the timestep distribution used in the pre-training of MOSS-Image (see [Section 7.2](#72-training-settings--学習設定)). A simpler setting with a similar distribution is `--timestep_sampling shift --discrete_flow_shift 3.0`.
 
 Add `--convrot_int8` (and `--convrot_int8_text_encoder`) to reduce VRAM usage. See [Section 7.1](#71-vram-usage-optimization--vram-使用量の最適化).
 
@@ -173,7 +172,7 @@ Add `--convrot_int8` (and `--convrot_int8_text_encoder`) to reduce VRAM usage. S
 
 学習率 1e-4 はあくまで一例です。データセットや目的に応じて適切に調整してください。またこの値は alpha=1.0（デフォルト）での値です。`--network_alpha` を増やす場合は学習率を下げることを検討してください。
 
-`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` は MOSS-Image の事前学習で使われたタイムステップ分布を再現します（[7.2 節](#72-training-settings--学習設定) を参照）。より簡潔で似た分布になる設定として `--timestep_sampling shift --discrete_flow_shift 3.0` もあります。
+`--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` は MOSS-Image の事前学習で使われたタイムステップ分布を再現します（[7.2 節](#72-training-settings--学習設定) を参照）。より簡潔で似た分布になる設定として `--timestep_sampling shift --discrete_flow_shift 3.0` もあります。
 
 VRAM 使用量を減らすには `--convrot_int8`（および `--convrot_int8_text_encoder`）を追加してください。[7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照してください。
 
@@ -202,11 +201,13 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### MOSS-Image Training Parameters / MOSS-Image 学習パラメータ
 
 * `--timestep_sampling=<choice>`
-  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
+  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`, `truncated_logit_normal`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
 * `--discrete_flow_shift=<float>`
-  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`, which is the training grid of MOSS-Image. This value is used when `--timestep_sampling` is set to `sigma` or `shift`.
+  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`, which is the training grid of MOSS-Image. This value is used when `--timestep_sampling` is set to `sigma`, `shift` or `truncated_logit_normal`.
 * `--sigmoid_scale=<float>`
   - Scale factor when `--timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default `1.0`.
+* `--timestep_cutoff=<float>` / `--timestep_uniform_ratio=<float>`
+  - Parameters of `truncated_logit_normal` timestep sampling. Defaults `0.95` and `0.01`, the values of the MOSS-Image pre-training.
 * `--attn_mode=<choice>`
   - Attention implementation to use. Choose from `torch` (default), `xformers`, `flash`, `sageattn`. `xformers` requires `--split_attn`. `sageattn` does not support training (inference only). This option overrides `--xformers`.
 * `--split_attn`
@@ -235,7 +236,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--cache_latents`, `--cache_latents_to_disk`
   - Cache the FLUX.2 VAE outputs. The cache files are `<image>_<W>x<H>_moss.npz` and hold the raw VAE output (32 channels, 1/8 resolution); the patchify and normalization for the DiT are applied at training time.
 * `--compile` and related options
-  - Speed up training with per-block `torch.compile`. See the [torch.compile for Anima guide](anima_torch_compile.md) for details (the options are shared). With ConvRot INT8, the quantized Linear layers are excluded from compilation automatically.
+  - Speed up training with per-block `torch.compile`. See the [torch.compile for Anima guide](anima_torch_compile.md) for details (the options are shared). The ConvRot INT8 Linear layers are compiled as well (the fused kernel is a custom op), so `--compile` speeds up INT8 training too.
 
 #### Incompatible or Unsupported Options / 非互換・非サポートの引数
 
@@ -261,9 +262,10 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 
 #### MOSS-Image 学習パラメータ
 
-* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift` から選択。FLUX 学習と同じオプションです。各方法の詳細は [flux_train_network.py のガイド](flux_train_network.md) を参照してください。
-* `--discrete_flow_shift` - Rectified Flow 学習のタイムステップ分布シフト。デフォルト `1.0`（MOSS-Image の学習グリッド）。`--timestep_sampling` が `sigma` または `shift` の場合に使用されます。
+* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift`、`truncated_logit_normal` から選択。FLUX 学習と同じオプションです。各方法の詳細は [flux_train_network.py のガイド](flux_train_network.md) を参照してください。
+* `--discrete_flow_shift` - Rectified Flow 学習のタイムステップ分布シフト。デフォルト `1.0`（MOSS-Image の学習グリッド）。`--timestep_sampling` が `sigma`、`shift`、`truncated_logit_normal` の場合に使用されます。
 * `--sigmoid_scale` - `sigmoid`、`shift`、`flux_shift` タイムステップサンプリングのスケール係数。デフォルト `1.0`。
+* `--timestep_cutoff` / `--timestep_uniform_ratio` - `truncated_logit_normal` タイムステップサンプリングのパラメータ。デフォルトは `0.95` と `0.01`（MOSS-Image の事前学習の値）。
 * `--attn_mode` - 使用する Attention の実装。`torch`（デフォルト）、`xformers`、`flash`、`sageattn` から選択。`xformers` は `--split_attn` の指定が必要です。`sageattn` は学習をサポートしていません（推論のみ）。
 * `--split_attn` - メモリ使用量を減らすために attention 時にバッチを分割します。`--attn_mode xformers` 使用時に必要です。
 * `--sample_uncond_skip_layers` - サンプル画像生成で、CFG の negative（unconditional）側で飛ばす DiT ブロックのインデックス（カンマ区切り）。デフォルト `22`（公式パイプラインの設定）。空文字列で無効。[7.4 節](#74-sample-image-generation--サンプル画像生成) を参照。
@@ -279,7 +281,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。
 * `--cache_latents`, `--cache_latents_to_disk` - FLUX.2 VAE の出力をキャッシュします。キャッシュファイルは `<image>_<W>x<H>_moss.npz` で、VAE の生の出力（32 チャンネル、1/8 解像度）を保存します。DiT 向けの patchify と正規化は学習時に行います。
-* `--compile` 他 - ブロック単位の `torch.compile` で学習を高速化します。詳細は [Anima 向け torch.compile ガイド](anima_torch_compile.md) を参照してください（オプションは共通です）。ConvRot INT8 使用時は、量子化された Linear 層は自動的にコンパイル対象から除外されます。
+* `--compile` 他 - ブロック単位の `torch.compile` で学習を高速化します。詳細は [Anima 向け torch.compile ガイド](anima_torch_compile.md) を参照してください（オプションは共通です）。ConvRot INT8 の Linear 層もコンパイル対象になる（融合カーネルは custom op）ため、INT8 学習でも `--compile` で高速化できます。
 
 #### 非互換・非サポートの引数
 
@@ -467,7 +469,7 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
 - `--convrot_int8_bwd int8` (opt-in) also routes the input gradient through the fused int8 GEMM: slightly quantized gradients, no measurable step-time gain under gradient checkpointing. The default `bf16` dequantizes transiently and is the most accurate.
 - **Quality:** The output of the int8 DiT differs from bf16 by about PSNR 27dB on generated images (same composition and details). The text encoder outputs differ by about 5% relative error. The loss curves of LoRA training match bf16.
 - **Speed:** On an RTX PRO 6000 Blackwell, LoRA training speed is about the same as bf16 (1.41 vs 1.45 s/step at 1024x1024, batch size 1, gradient checkpointing). On GPUs without fp8 support (RTX 30 series and older) a true int8 GEMM is faster than bf16. The first 20 steps or so are slower because of the Triton autotuning.
-- Composes with `--blocks_to_swap`, `--gradient_checkpointing` and `--compile` (the quantized Linear layers are excluded from compilation automatically).
+- Composes with `--blocks_to_swap`, `--gradient_checkpointing` and `--compile` (the quantized Linear layers are compiled too; with `--blocks_to_swap` all Linear layers are excluded from compilation as usual).
 - **LoRA merge at inference:** Merging LoRA into a pre-quantized checkpoint is rejected by `moss_image_minimal_inference.py`. Use the bf16 checkpoint with `--convrot_int8` instead (the LoRA is merged first, then quantized). For training this does not matter, since the LoRA is a separate module.
 
 #### Key VRAM Reduction Options / 主要な VRAM 削減オプション
@@ -525,7 +527,7 @@ MOSS-Image は大きなモデルです。bf16 で DiT が約 10.2GB、テキス�
 - `--convrot_int8_bwd int8`（opt-in）を指定すると、入力勾配も融合 int8 GEMM を通ります。勾配がわずかに量子化され、gradient checkpointing 使用時には速度差はほぼありません。デフォルトの `bf16` は一時的に逆量子化する方式で、最も高精度です。
 - **品質:** int8 の DiT の出力は、生成画像で bf16 と PSNR 約 27dB の差です（構図・細部は同じ）。テキストエンコーダーの出力は相対誤差約 5% です。LoRA 学習の loss curve は bf16 と一致します。
 - **速度:** RTX PRO 6000 Blackwell では LoRA 学習の速度は bf16 とほぼ同じです（1024x1024、batch size 1、gradient checkpointing で 1.41 vs 1.45 s/step）。fp8 非対応の GPU（RTX 30 シリーズ以前）では、真の int8 GEMM が bf16 より高速になります。最初の 20 ステップほどは Triton の autotune のため遅くなります。
-- `--blocks_to_swap`、`--gradient_checkpointing`、`--compile` と併用できます（量子化された Linear 層は自動的にコンパイル対象から除外されます）。
+- `--blocks_to_swap`、`--gradient_checkpointing`、`--compile` と併用できます（量子化された Linear 層もコンパイルされます。`--blocks_to_swap` 併用時は従来どおり全 Linear 層がコンパイル対象外になります）。
 - **推論時の LoRA マージ:** 事前量子化済みチェックポイントへの LoRA マージは `moss_image_minimal_inference.py` でエラーになります。bf16 のチェックポイントに `--convrot_int8` を付けて使用してください（LoRA をマージしてから量子化します）。学習では LoRA は別モジュールなので関係ありません。
 
 #### 主要な VRAM 削減オプション
@@ -555,22 +557,23 @@ The `--timestep_sampling` option specifies how timesteps are sampled. The availa
 - `sigmoid` (default): Sample from Normal(0,1), multiply by `sigmoid_scale`, apply sigmoid. Good general-purpose option.
 - `shift`: Like `sigmoid`, but applies the discrete flow shift formula: `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
 - `flux_shift`: Resolution-dependent shift used in FLUX training.
+- `truncated_logit_normal`: Like `sigma` with the logit-normal distribution, but truncated at `sigma <= --timestep_cutoff` and rescaled to cover (0, 1], with a `--timestep_uniform_ratio` share of samples drawn uniformly from the grid. The loss weight is 1.
 
 See the [flux_train_network.py guide](flux_train_network.md) for detailed descriptions.
 
-**Reproducing the pre-training distribution of MOSS-Image:** According to the technical report, the final stage of the pre-training sampled the timesteps from a logit-normal distribution (mean -1.09, std 0.95) on the 1000-step grid without shift, and the loss was not weighted by timestep. This is reproduced by:
+**Reproducing the pre-training distribution of MOSS-Image:** According to the technical report, the final stage of the pre-training sampled the timesteps from a logit-normal distribution (mean -1.09, std 0.95) on the 1000-step grid without shift, truncated at sigma 0.95 (and rescaled to the full range) with 1% uniform samples mixed in, and the loss was not weighted by timestep. This is reproduced by:
 
 ```
---timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
+--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
 ```
 
-(With `--timestep_sampling sigma`, `--weighting_scheme logit_normal` selects the logit-normal distribution and the loss weight is 1.) The negative mean biases the samples toward the noisier half of the trajectory. The official schedule additionally truncates the distribution at 0.95 and mixes in 1% uniform samples; these details are not reproduced. This setting was used for the verification of this script.
+(`--timestep_cutoff` and `--timestep_uniform_ratio` default to the official values 0.95 and 0.01.) The negative mean biases the samples toward the noisier half of the trajectory. `--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` gives the same distribution without the truncation and the uniform samples; the verification of this script was done with this setting.
 
 `--timestep_sampling shift --discrete_flow_shift 3.0` gives a very similar distribution with fewer options (compare them with `--show_timesteps`, see below), so it is a good alternative. The default `sigmoid` sampling (mean 0, no shift) also trains, but its distribution is centered at t=500 and quite different from the pre-training distribution.
 
 #### Discrete Flow Shift
 
-The `--discrete_flow_shift` option (default `1.0`) applies when `--timestep_sampling` is set to `sigma` or `shift`. With `sigma` sampling, `1.0` matches the (unshifted) training grid of MOSS-Image; with `shift` sampling, `3.0` approximates the pre-training distribution as described above. The official sampler applies a shift of 5.0 at inference time only (see [Section 7.4](#74-sample-image-generation--サンプル画像生成)).
+The `--discrete_flow_shift` option (default `1.0`) applies when `--timestep_sampling` is set to `sigma`, `shift` or `truncated_logit_normal`. With `sigma` / `truncated_logit_normal` sampling, `1.0` matches the (unshifted) training grid of MOSS-Image; with `shift` sampling, `3.0` approximates the pre-training distribution as described above. The official sampler applies a shift of 5.0 at inference time only (see [Section 7.4](#74-sample-image-generation--サンプル画像生成)).
 
 #### Loss Weighting
 
@@ -606,22 +609,23 @@ Caption dropout uses the `caption_dropout_rate` setting from the dataset configu
 - `sigmoid`（デフォルト）: 正規分布からサンプリングし、sigmoid を適用。汎用的なオプション。
 - `shift`: `sigmoid` と同様だが、離散フローシフトの式を適用。
 - `flux_shift`: FLUX 学習で使用される解像度依存のシフト。
+- `truncated_logit_normal`: logit-normal 分布を使う `sigma` と同様ですが、`sigma <= --timestep_cutoff` で切り詰めて (0, 1] にリスケールし、`--timestep_uniform_ratio` の割合でグリッドから一様にサンプリングしたものを混ぜます。loss の重みは 1 です。
 
 詳細は [flux_train_network.py のガイド](flux_train_network.md) を参照してください。
 
-**MOSS-Image の事前学習の分布の再現:** テクニカルレポートによると、事前学習の最終段階では、シフトなしの 1000 ステップのグリッド上で logit-normal 分布（平均 -1.09、標準偏差 0.95）からタイムステップをサンプリングし、loss のタイムステップによる重み付けは行っていません。これは次の指定で再現できます。
+**MOSS-Image の事前学習の分布の再現:** テクニカルレポートによると、事前学習の最終段階では、シフトなしの 1000 ステップのグリッド上で logit-normal 分布（平均 -1.09、標準偏差 0.95）を sigma 0.95 で切り詰めて（全範囲にリスケールし）1% の一様サンプルを混ぜたものからタイムステップをサンプリングし、loss のタイムステップによる重み付けは行っていません。これは次の指定で再現できます。
 
 ```
---timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
+--timestep_sampling truncated_logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0
 ```
 
-（`--timestep_sampling sigma` の場合、`--weighting_scheme logit_normal` は logit-normal 分布の選択を意味し、loss の重みは 1 になります。）負の平均により、サンプルはノイズが多い側に偏ります。公式のスケジュールはさらに分布を 0.95 で切り詰め、1% の一様サンプルを混ぜていますが、これらは再現していません。当スクリプトの検証はこの設定で行いました。
+（`--timestep_cutoff` と `--timestep_uniform_ratio` のデフォルトは公式の値 0.95 と 0.01 です。）負の平均により、サンプルはノイズが多い側に偏ります。`--timestep_sampling sigma --weighting_scheme logit_normal --logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` は、切り詰めと一様サンプルを除いた同じ分布になります。当スクリプトの検証はこちらの設定で行いました。
 
 `--timestep_sampling shift --discrete_flow_shift 3.0` は、より少ないオプションでこれとよく似た分布になるため（`--show_timesteps` で比較できます。下記参照）、代わりの設定として適しています。デフォルトの `sigmoid`（平均 0、シフトなし）でも学習はできますが、分布の中心が t=500 付近になり、事前学習の分布とはかなり異なります。
 
 #### 離散フローシフト
 
-`--discrete_flow_shift`（デフォルト `1.0`）は `--timestep_sampling` が `sigma` または `shift` の場合に適用されます。`sigma` サンプリングでは `1.0` が MOSS-Image の（シフトなしの）学習グリッドに一致します。`shift` サンプリングでは、上記のとおり `3.0` が事前学習の分布の近似になります。公式のサンプラーは推論時のみシフト 5.0 を適用します（[7.4 節](#74-sample-image-generation--サンプル画像生成) を参照）。
+`--discrete_flow_shift`（デフォルト `1.0`）は `--timestep_sampling` が `sigma`、`shift`、`truncated_logit_normal` の場合に適用されます。`sigma` / `truncated_logit_normal` サンプリングでは `1.0` が MOSS-Image の（シフトなしの）学習グリッドに一致します。`shift` サンプリングでは、上記のとおり `3.0` が事前学習の分布の近似になります。公式のサンプラーは推論時のみシフト 5.0 を適用します（[7.4 節](#74-sample-image-generation--サンプル画像生成) を参照）。
 
 #### 損失の重み付け
 

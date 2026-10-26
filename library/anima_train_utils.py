@@ -104,7 +104,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--timestep_sampling",
         type=str,
         default="sigmoid",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "truncated_logit_normal"],
         help="Timestep sampling method (default: sigmoid (logit normal))",
     )
     parser.add_argument(
