@@ -347,6 +347,94 @@ def load_text_encoder(
     return model
 
 
+TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR = "_moss_text_encoder_block_swap_handles"
+TEXT_ENCODER_DEVICE_ATTR = "_moss_text_encoder_device"
+
+
+def enable_text_encoder_block_swap(
+    text_encoder, blocks_to_swap: int, device: Union[str, torch.device]
+) -> None:
+    """Keep the last `blocks_to_swap` layers of the text encoder on the CPU and move each of them to `device` only while
+    it is executed (layer-wise offload, no prefetch).
+
+    The token embedding, the final norm, the rotary embedding buffers and the remaining layers stay on `device`. The
+    token embedding in particular must stay on the device: it is the first parameter and the device is derived from it.
+
+    This is a plain hook-based implementation and does not modify the Hugging Face model. It does not overlap the
+    transfers with the computation: the cost is dominated by the transfers and barely depends on the prompt length (a
+    few seconds per prompt with the bf16 text encoder on a small GPU). Use `disable_text_encoder_block_swap` to restore
+    the full CPU model.
+
+    Args:
+        text_encoder: Qwen3.5-9B text model (`Qwen3_5TextModel`)
+        blocks_to_swap: number of trailing layers to stream. `1 <= blocks_to_swap < num_layers`.
+        device: device used for the execution of the layers
+    """
+    if getattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, None) is not None:
+        logger.info("text encoder block swap is already enabled")
+        return
+    layers = text_encoder.layers
+    num_layers = len(layers)
+    if not 0 < blocks_to_swap < num_layers:
+        raise ValueError(
+            f"text_encoder_blocks_to_swap must be between 1 and {num_layers - 1} (the text encoder has {num_layers} layers),"
+            f" but got {blocks_to_swap}"
+        )
+
+    device = torch.device(device)
+    first_swapped = num_layers - blocks_to_swap
+    swapped_layers = list(layers[first_swapped:])
+
+    # free the GPU first if the swapped layers happen to be there already, then move everything else
+    for layer in swapped_layers:
+        layer.to("cpu")
+    for name, module in text_encoder.named_children():
+        if name != "layers":
+            module.to(device)
+    for layer in layers[:first_swapped]:
+        layer.to(device)
+
+    def move_to_device(module, args, device=device):
+        module.to(device)
+
+    def move_to_cpu(module, args, output):
+        module.to("cpu")
+
+    handles = []
+    for layer in swapped_layers:
+        handles.append(layer.register_forward_pre_hook(move_to_device))
+        handles.append(layer.register_forward_hook(move_to_cpu))
+
+    setattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, handles)
+    setattr(text_encoder, TEXT_ENCODER_DEVICE_ATTR, device)
+    logger.info(
+        f"Enabled text encoder block swap: {blocks_to_swap}/{num_layers} layers are streamed to {device}, "
+        f"the token embedding and {first_swapped} layers stay on the device"
+    )
+
+
+def disable_text_encoder_block_swap(text_encoder, device: Union[str, torch.device] = "cpu") -> None:
+    """Remove the hooks installed by `enable_text_encoder_block_swap` and move the whole text encoder to `device`."""
+    handles = getattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, None)
+    if handles is None:
+        return
+    for handle in handles:
+        handle.remove()
+    delattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR)
+    delattr(text_encoder, TEXT_ENCODER_DEVICE_ATTR)
+    text_encoder.to(device)
+    logger.info(f"Disabled text encoder block swap, moved the text encoder to {device}")
+
+
+def get_text_encoder_device(text_encoder) -> torch.device:
+    """Device the text encoder input must be sent to. With block swap this is the device of the streamed layers (the
+    first parameter may be on the CPU without it)."""
+    device = getattr(text_encoder, TEXT_ENCODER_DEVICE_ATTR, None)
+    if device is not None:
+        return device
+    return next(text_encoder.parameters()).device
+
+
 def load_tokenizer(tokenizer_cache_dir: Optional[str] = None):
     """Load the Qwen3.5 tokenizer.
 
@@ -384,7 +472,7 @@ def encode_tokens(text_encoder, input_ids_list: List[torch.Tensor], device: Opti
     Returns a list of `last_hidden_state` tensors [L_i, hidden_size] in the text encoder dtype.
     """
     if device is None:
-        device = next(text_encoder.parameters()).device
+        device = get_text_encoder_device(text_encoder)
     outputs = []
     for input_ids in input_ids_list:
         input_ids = input_ids.reshape(1, -1).to(device)

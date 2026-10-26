@@ -343,3 +343,57 @@ def test_latents_caching_roundtrip(tmp_path):
         expected = vae.encode(pixels)[0]
         assert torch.allclose(torch.from_numpy(latents), expected, atol=1e-5)
         assert torch.allclose(torch.from_numpy(flipped), vae.encode(torch.flip(pixels, dims=[3]))[0], atol=1e-5)
+
+
+class TinyTextEncoderWithLayers(torch.nn.Module):
+    """Minimal Qwen3_5TextModel-like module: embed_tokens + layers + norm + a rotary buffer."""
+
+    def __init__(self, num_layers=4, dim=8):
+        super().__init__()
+        self.embed_tokens = torch.nn.Embedding(16, dim)
+        self.layers = torch.nn.ModuleList([torch.nn.Linear(dim, dim) for _ in range(num_layers)])
+        self.norm = torch.nn.LayerNorm(dim)
+        self.rotary_emb = torch.nn.Module()
+        self.rotary_emb.register_buffer("inv_freq", torch.ones(2))
+
+    def forward(self, input_ids):
+        x = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            x = layer(x)
+        return self.norm(x)
+
+
+def test_text_encoder_block_swap_range():
+    model = TinyTextEncoderWithLayers()
+    with pytest.raises(ValueError, match="between 1 and 3"):
+        moss_image_utils.enable_text_encoder_block_swap(model, 0, "cpu")
+    with pytest.raises(ValueError, match="between 1 and 3"):
+        moss_image_utils.enable_text_encoder_block_swap(model, 4, "cpu")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_text_encoder_block_swap_moves_layers_and_keeps_outputs():
+    torch.manual_seed(0)
+    model = TinyTextEncoderWithLayers().eval()
+    input_ids = torch.randint(0, 16, (1, 5))
+    with torch.no_grad():
+        expected = model(input_ids)
+
+    moss_image_utils.enable_text_encoder_block_swap(model, 2, "cuda")
+    assert moss_image_utils.get_text_encoder_device(model).type == "cuda"
+    assert model.embed_tokens.weight.device.type == "cuda"
+    assert model.rotary_emb.inv_freq.device.type == "cuda"
+    assert model.layers[1].weight.device.type == "cuda"
+    assert model.layers[2].weight.device.type == "cpu"
+
+    with torch.no_grad():
+        output = model(input_ids.to("cuda"))
+    assert torch.allclose(output.cpu().float(), expected.float())
+    # the streamed layers go back to the CPU after the forward
+    assert model.layers[2].weight.device.type == "cpu"
+
+    # enabling twice is a no-op, disabling restores the CPU model
+    moss_image_utils.enable_text_encoder_block_swap(model, 2, "cuda")
+    moss_image_utils.disable_text_encoder_block_swap(model)
+    assert all(p.device.type == "cpu" for p in model.parameters())
+    assert moss_image_utils.get_text_encoder_device(model).type == "cpu"
