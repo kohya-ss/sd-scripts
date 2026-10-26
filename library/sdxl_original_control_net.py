@@ -233,7 +233,7 @@ if __name__ == "__main__":
     # import transformers
     # optimizer = transformers.optimization.Adafactor(unet.parameters(), relative_step=True)  # working at 22.2GB with torch2
 
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     logger.info("start training")
     steps = 10
@@ -250,7 +250,7 @@ if __name__ == "__main__":
         vector = torch.randn(batch_size, sdxl_original_unet.ADM_IN_CHANNELS).cuda()
         cond_img = torch.rand(batch_size, 3, 1024, 1024).cuda()
 
-        with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
             input_resi_add, mid_add = control_net(x, t, txt, vector, cond_img)
             output = unet(x, t, txt, vector, input_resi_add, mid_add)
             target = torch.randn_like(output)

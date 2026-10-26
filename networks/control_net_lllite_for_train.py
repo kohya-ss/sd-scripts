@@ -468,7 +468,7 @@ if __name__ == "__main__":
 
     optimizer = bitsandbytes.adam.Adam8bit(params, 1e-3)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     logger.info("start training")
     steps = 10
@@ -484,7 +484,7 @@ if __name__ == "__main__":
         ctx = torch.randn(batch_size, 77, 2048).cuda()
         y = torch.randn(batch_size, sdxl_original_unet.ADM_IN_CHANNELS).cuda()
 
-        with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+        with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
             output = unet(x, t, ctx, y, conditioning_image)
             target = torch.randn_like(output)
             loss = torch.nn.functional.mse_loss(output, target)
