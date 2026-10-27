@@ -379,8 +379,8 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             noisy_model_input.requires_grad_(True)
             prompt_embeds.requires_grad_(True)
 
-        with torch.set_grad_enabled(is_train), accelerator.autocast():
-            model_pred = dit(noisy_model_input, timesteps, prompt_embeds, attn_mask)
+        # Call the model: subclasses may override call_dit (e.g. to add reference tokens for editing)
+        model_pred = self.call_dit(args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, is_train)
 
         # Rectified flow target: v = noise - x0
         target = noise - latents
@@ -389,6 +389,21 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         weighting = flux_train_utils.compute_loss_weighting_for_sd3(args.weighting_scheme, sigmas)
 
         return model_pred, target, timesteps, weighting
+
+    def call_dit(
+        self,
+        args,
+        accelerator,
+        dit: moss_image_models.MossImage,
+        batch,
+        noisy_model_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        attn_mask: torch.Tensor,
+        is_train: bool,
+    ) -> torch.Tensor:
+        with torch.set_grad_enabled(is_train), accelerator.autocast():
+            return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask)
 
     def process_batch(
         self,

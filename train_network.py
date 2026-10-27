@@ -496,6 +496,16 @@ class NetworkTrainer:
     def cast_unet(self, args):
         return True  # default for other than HunyuanImage
 
+    def use_controlnet_dataset(self, args) -> bool:
+        # ControlNet dataset (conditioning images) is enabled for masked loss by default.
+        # Subclasses may override to always enable it (e.g. reference-conditioned editing training).
+        return args.masked_loss
+
+    def cache_conditioning_latents_if_needed(self, args, accelerator, vae, vae_dtype, dataset_group):
+        # Hook for trainers which use the conditioning images of the ControlNet dataset as reference images: called
+        # after the latents caching for the train / validation dataset group. Default: do nothing.
+        pass
+
     def _build_metadata(
         self,
         args,
@@ -923,7 +933,7 @@ class NetworkTrainer:
 
         # データセットを準備する
         if args.dataset_class is None:
-            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, args.masked_loss, True))
+            blueprint_generator = BlueprintGenerator(ConfigSanitizer(True, True, self.use_controlnet_dataset(args), True))
             if use_user_config:
                 logger.info(f"Loading dataset config from {args.dataset_config}")
                 user_config = config_util.load_user_config(args.dataset_config)
@@ -1030,6 +1040,11 @@ class NetworkTrainer:
             clean_memory_on_device(accelerator.device)
 
             accelerator.wait_for_everyone()
+
+        # cache the conditioning (reference) latents if the trainer uses them (no-op by default)
+        self.cache_conditioning_latents_if_needed(args, accelerator, vae, vae_dtype, train_dataset_group)
+        if val_dataset_group is not None:
+            self.cache_conditioning_latents_if_needed(args, accelerator, vae, vae_dtype, val_dataset_group)
 
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
         # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu

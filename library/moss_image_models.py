@@ -10,7 +10,7 @@
 # - Gradient checkpointing (optionally with CPU / unsloth offloading), block swapping and per-block torch.compile hooks.
 
 import math
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -253,6 +253,10 @@ class MossImageRoPE(nn.Module):
 
     Text tokens: (0, j, 0, 0) for j in [0, L). Image tokens: (0, L, h - (H-1)/2, w - (W-1)/2) where L is the number of
     valid text tokens of the sample. The sequence order is [image, text].
+
+    Reference image tokens (editing, optional): (r, L, h - (Hr-1)/2, w - (Wr-1)/2) with `ref_r` as the r coordinate, placed
+    between the image and the text tokens. The r axis is always 0 in the base model, so `ref_r != 0` gives the reference
+    tokens a relative offset on an otherwise unused axis (the same idea as the index offset of FLUX.1 Kontext).
     """
 
     def __init__(self, head_dim: int, base: float):
@@ -268,33 +272,54 @@ class MossImageRoPE(nn.Module):
         exponent = torch.arange(self.num_bands, device="cpu", dtype=torch.float32) / self.num_bands
         return (1 / (self.base**exponent)).to(device)
 
-    def forward(self, height: int, width: int, text_length: int, text_lens: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _image_coords(height: int, width: int, r: float, text_lens: torch.Tensor) -> torch.Tensor:
+        """Coordinates (r, L, h - (H-1)/2, w - (W-1)/2) of an image token grid: [B, H*W, 4] float32"""
+        device = text_lens.device
+        batch = text_lens.shape[0]
+        h, w = torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device), indexing="ij")
+        image = torch.stack((torch.zeros_like(h), torch.zeros_like(h), h, w), -1).flatten(0, 1).float()  # [N, 4]
+        image[:, 0] = r
+        image[:, 2] -= (height - 1) / 2
+        image[:, 3] -= (width - 1) / 2
+        image = image.unsqueeze(0).repeat(batch, 1, 1)  # [B, N, 4]
+        image[:, :, 1] = text_lens.to(torch.float32)[:, None]  # f axis = true text length of the sample
+        return image
+
+    def forward(
+        self,
+        height: int,
+        width: int,
+        text_length: int,
+        text_lens: torch.Tensor,
+        ref_size: Optional[Tuple[int, int]] = None,
+        ref_r: float = 1.0,
+    ) -> torch.Tensor:
         """
         Args:
             height, width: image token grid size
             text_length: padded text length L_max
             text_lens: [B] number of valid text tokens per sample (int tensor)
+            ref_size: (height, width) of the reference image token grid, if reference tokens follow the image tokens
+            ref_r: r coordinate of the reference tokens
         Returns:
-            [B, H*W + L_max, head_dim] float32 (first half sin, second half cos)
+            [B, H*W (+ Hr*Wr) + L_max, head_dim] float32 (first half sin, second half cos)
         """
         device = text_lens.device
         if self.bands.dtype != torch.float32 or self.bands.device != device:
             self.bands = self._default_bands(device)
 
         batch = text_lens.shape[0]
-        h, w = torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device), indexing="ij")
-        image = torch.stack((torch.zeros_like(h), torch.zeros_like(h), h, w), -1).flatten(0, 1).float()  # [N, 4]
-        image[:, 2] -= (height - 1) / 2
-        image[:, 3] -= (width - 1) / 2
-        image = image.unsqueeze(0).repeat(batch, 1, 1)  # [B, N, 4]
-        image[:, :, 1] = text_lens.to(torch.float32)[:, None]  # f axis = true text length of the sample
+        coords = [self._image_coords(height, width, 0.0, text_lens)]
+        if ref_size is not None:
+            coords.append(self._image_coords(ref_size[0], ref_size[1], ref_r, text_lens))
 
         text = torch.zeros(text_length, 4, device=device, dtype=torch.float32)
         text[:, 1] = torch.arange(text_length, device=device)
-        text = text.unsqueeze(0).expand(batch, -1, -1)  # [B, L, 4]
+        coords.append(text.unsqueeze(0).expand(batch, -1, -1))  # [B, L, 4]
 
-        phase = torch.cat((image, text), 1).unsqueeze(-1) * self.bands  # [B, N + L, 4, num_bands]
-        return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2)  # [B, N + L, head_dim]
+        phase = torch.cat(coords, 1).unsqueeze(-1) * self.bands  # [B, N (+ Nr) + L, 4, num_bands]
+        return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2)  # [B, N (+ Nr) + L, head_dim]
 
 
 # endregion
@@ -440,6 +465,8 @@ class MossImage(nn.Module):
         context: torch.Tensor,
         context_mask: Optional[torch.Tensor] = None,
         skip_layers: Optional[Sequence[int]] = None,
+        ref: Optional[torch.Tensor] = None,
+        ref_rope_r: float = 1.0,
     ) -> torch.Tensor:
         """
         Args:
@@ -448,6 +475,11 @@ class MossImage(nn.Module):
             context: [B, L, text_dim] right-padded text encoder hidden states
             context_mask: [B, L] 1 for valid tokens. None means all tokens are valid.
             skip_layers: indices of the main blocks to skip (used for the unconditional branch of CFG)
+            ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x) for reference-conditioned
+                editing. The reference tokens are embedded like the image tokens and concatenated to the sequence
+                ([image, reference, text]) with the r coordinate of the RoPE set to `ref_rope_r`. They share the (per
+                sample) modulation of the noisy image and attend bidirectionally. Only the image tokens are output.
+            ref_rope_r: r coordinate of the reference tokens in the RoPE (0 = same positions as the image tokens)
         Returns:
             [B, latent_channels, H, W]
         """
@@ -456,6 +488,8 @@ class MossImage(nn.Module):
             raise ValueError(f"x must be [B, {self.latent_channels}, H, W], got {tuple(x.shape)}")
         if context.ndim != 3 or context.shape[0] != batch:
             raise ValueError("context must be [B, L, text_dim] with the same batch size as x")
+        if ref is not None and (ref.ndim != 4 or ref.shape[0] != batch or ref.shape[1] != self.latent_channels):
+            raise ValueError(f"ref must be [B, {self.latent_channels}, Hr, Wr] with the same batch size as x, got {tuple(ref.shape)}")
         if context_mask is None:
             context_mask = torch.ones(context.shape[:2], dtype=torch.int32, device=x.device)
         context_mask = context_mask.to(torch.int32)
@@ -466,18 +500,28 @@ class MossImage(nn.Module):
 
         mod, head = self.get_time_modulation(timesteps, batch)
 
-        img_len = height * width
+        img_len = height * width  # number of output (noisy image) tokens
         text_len = context.shape[1]
         video = x.flatten(2).transpose(1, 2).to(self.video_embedder.weight.dtype).contiguous()  # [B, N, C]
         video = self.video_embedder(video)
-        rope = self.rope(height, width, text_len, text_lens).to(video.dtype)  # [B, N + L, head_dim]
+
+        ref_size = None
+        seq_img_len = img_len  # image + reference tokens (all valid, the attention mask applies to the text only)
+        if ref is not None:
+            ref_size = (ref.shape[2], ref.shape[3])
+            ref_tokens = ref.flatten(2).transpose(1, 2).to(self.video_embedder.weight.dtype).contiguous()  # [B, Nr, C]
+            video = torch.cat((video, self.video_embedder(ref_tokens)), 1)  # [B, N + Nr, D]
+            seq_img_len += ref_tokens.shape[1]
+            del ref_tokens
+
+        rope = self.rope(height, width, text_len, text_lens, ref_size, ref_rope_r).to(video.dtype)  # [B, N (+ Nr) + L, head_dim]
 
         txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, context_mask)
-        text = self.text_embedder(context, rope[:, img_len:], txt_attn_params)
+        text = self.text_embedder(context, rope[:, seq_img_len:], txt_attn_params)
         hidden = torch.cat((video, text), 1)
         del video, text
 
-        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, img_len, context_mask)
+        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, seq_img_len, context_mask)
 
         for layer_index, layer in enumerate(self.layers):
             if self.blocks_to_swap:

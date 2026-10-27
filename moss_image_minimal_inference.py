@@ -4,6 +4,9 @@
 #   python moss_image_minimal_inference.py --dit path/to/diffusion_pytorch_model-00001-of-00003.safetensors \
 #       --text_encoder path/to/model-00001-of-00004.safetensors --vae path/to/flux2-vae.safetensors \
 #       --prompt "A cat" --image_size 1024 1024 --seed 42 --save_path output
+#
+# Reference-conditioned editing (LoRA trained with moss_image_train_network_edit.py): add `--ref_image path/to/ref.png`
+# (or `--ri path` per prompt line) and the `--ref_rope_r` value used for the training (default 1.0).
 
 import argparse
 import copy
@@ -63,6 +66,30 @@ def parse_args() -> argparse.Namespace:
         default="22",
         help="comma separated DiT block indices skipped in the negative (unconditional) branch of CFG. Default is 22 (official). Empty string disables",
     )
+    parser.add_argument(
+        "--ref_image",
+        type=str,
+        default=None,
+        help="reference image for reference-conditioned editing LoRA (resized to the image size), `--ri` in prompt lines",
+    )
+    parser.add_argument(
+        "--ref_rope_r",
+        type=float,
+        default=1.0,
+        help="r coordinate of the reference tokens in the RoPE, must match the training (--ref_rope_r, metadata ss_ref_rope_r). Default 1.0",
+    )
+    parser.add_argument(
+        "--ref_mask_fill",
+        type=int,
+        default=None,
+        help="gray level (0-255) to fill the alpha region of the reference image (or the --ref_mask region) with, as in the training",
+    )
+    parser.add_argument(
+        "--ref_mask",
+        type=str,
+        default=None,
+        help="grayscale mask image of the region of the reference image to fill (255 = fill), `--rm` in prompt lines. Needs --ref_mask_fill",
+    )
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated images")
     parser.add_argument("--seed", type=int, default=None, help="Seed for generation")
 
@@ -113,7 +140,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_prompt_line(line: str) -> Dict[str, Any]:
-    """Parse a prompt line (`prompt --w 1024 --h 1024 --s 50 --l 3.0 --fs 5.0 --d 42 --n negative`)"""
+    """Parse a prompt line (`prompt --w 1024 --h 1024 --s 50 --l 3.0 --fs 5.0 --d 42 --ri ref.png --n negative`)"""
     parts = line.split(" --")
     overrides = {"prompt": parts[0].strip()}
     for part in parts[1:]:
@@ -134,6 +161,10 @@ def parse_prompt_line(line: str) -> Dict[str, Any]:
             overrides["guidance_scale"] = float(value)
         elif option == "fs":
             overrides["flow_shift"] = float(value)
+        elif option == "ri":
+            overrides["ref_image"] = value
+        elif option == "rm":
+            overrides["ref_mask"] = value
         elif option == "n":
             overrides["negative_prompt"] = value
     return overrides
@@ -262,6 +293,18 @@ def prepare_text_inputs(args: argparse.Namespace, tokenizer, text_encoder, devic
     return conds_cache[prompt], conds_cache[negative_prompt]
 
 
+def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncoder], device: torch.device) -> Optional[torch.Tensor]:
+    """Encode `args.ref_image` (if any) to normalized, patchified latents [1, 128, H/16, W/16] with the VAE (fp32)."""
+    if args.ref_image is None:
+        return None
+    assert vae is not None, "VAE is required to encode the reference image"
+    height, width = check_inputs(args)
+    logger.info(f"Encoding reference image: {args.ref_image} (resized to {width}x{height})")
+    return moss_image_train_utils.encode_reference_image(
+        vae, args.ref_image, width, height, device, args.ref_mask_fill, args.ref_mask
+    )
+
+
 def generate_latents(
     args: argparse.Namespace,
     dit: moss_image_models.MossImage,
@@ -269,6 +312,7 @@ def generate_latents(
     negative_embeds: torch.Tensor,
     device: torch.device,
     seed: int,
+    ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32)."""
     height, width = check_inputs(args)
@@ -276,6 +320,7 @@ def generate_latents(
     logger.info(
         f"Image size: {height}x{width} (HxW), steps: {args.infer_steps}, guidance: {args.guidance_scale}, "
         f"flow shift: {args.flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
+        + ("" if ref is None else f", reference image: {args.ref_image} (rope r: {args.ref_rope_r})")
     )
 
     positive, positive_mask = moss_image_utils.pad_text_embeds([prompt_embeds.to(device)])
@@ -296,6 +341,8 @@ def generate_latents(
         uncond_skip_layers,
         seed,
         device,
+        ref=ref,
+        ref_rope_r=args.ref_rope_r,
     )
 
 
@@ -334,6 +381,13 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
             "flow_shift": f"{args.flow_shift}",
             "uncond_skip_layers": f"{args.uncond_skip_layers}",
         }
+        if args.ref_image is not None:
+            metadata["ref_image"] = f"{args.ref_image}"
+            metadata["ref_rope_r"] = f"{args.ref_rope_r}"
+            if args.ref_mask_fill is not None:
+                metadata["ref_mask_fill"] = f"{args.ref_mask_fill}"
+            if args.ref_mask is not None:
+                metadata["ref_mask"] = f"{args.ref_mask}"
     save_file({"latent": latent.contiguous()}, latent_path, metadata=metadata)
     logger.info(f"Latent saved to: {latent_path}")
     return latent_path
@@ -384,16 +438,20 @@ def generate_single(args: argparse.Namespace):
     gc.collect()
     clean_memory_on_device(device)
 
+    # VAE: needed before the DiT for the reference image, otherwise only for decoding
+    vae = load_vae(args, "cpu") if args.output_type != "latent" or args.ref_image is not None else None
+    ref = encode_reference(args, vae, device)
+    clean_memory_on_device(device)
+
     # 2. DiT
     dit = load_dit_model(args, device)
-    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed)
+    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref)
     del dit
     gc.collect()
     clean_memory_on_device(device)
     synchronize_device(device)
 
-    # 3. VAE
-    vae = load_vae(args, "cpu") if args.output_type != "latent" else None
+    # 3. VAE decode
     save_output(args, vae, latents, device)
 
 
@@ -422,19 +480,24 @@ def generate_batch(args: argparse.Namespace):
     gc.collect()
     clean_memory_on_device(device)
 
+    # VAE: needed before the DiT for the reference images, otherwise only for decoding
+    needs_ref = any(a.ref_image is not None for a in all_args)
+    vae = load_vae(args, "cpu") if args.output_type != "latent" or needs_ref else None
+    all_refs = [encode_reference(a, vae, device) for a in all_args]
+    clean_memory_on_device(device)
+
     # 2. generate all latents
     dit = load_dit_model(all_args[0], device)
     all_latents = []
-    for i, (prompt_args, (prompt_embeds, negative_embeds)) in enumerate(zip(all_args, all_embeds)):
+    for i, (prompt_args, (prompt_embeds, negative_embeds), ref) in enumerate(zip(all_args, all_embeds, all_refs)):
         logger.info(f"Generating {i + 1}/{len(all_args)}: {prompt_args.prompt}")
-        all_latents.append(generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed))
+        all_latents.append(generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref))
     del dit
     gc.collect()
     clean_memory_on_device(device)
     synchronize_device(device)
 
     # 3. decode
-    vae = load_vae(args, "cpu") if args.output_type != "latent" else None
     for prompt_args, latents in zip(all_args, all_latents):
         save_output(prompt_args, vae, latents, device)
 
@@ -445,7 +508,7 @@ def generate_interactive(args: argparse.Namespace):
     tokenizer = moss_image_utils.load_tokenizer(args.tokenizer_cache_dir)
     text_encoder = load_text_encoder(args, text_encoder_device)
     dit = load_dit_model(args, device)
-    vae = load_vae(args, "cpu") if args.output_type != "latent" else None
+    vae = load_vae(args, "cpu")  # also for the reference images (`--ri`)
     conds_cache = {}
 
     print("Interactive mode. Enter prompts (Ctrl+D or Ctrl+Z (Windows) to exit):")
@@ -470,7 +533,8 @@ def generate_interactive(args: argparse.Namespace):
                 check_inputs(prompt_args)
                 prompt_args.seed = prompt_args.seed if prompt_args.seed is not None else random.randint(0, 2**32 - 1)
                 prompt_embeds, negative_embeds = prepare_text_inputs(prompt_args, tokenizer, text_encoder, text_encoder_device, conds_cache)
-                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed)
+                ref = encode_reference(prompt_args, vae, device)
+                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref)
                 save_output(prompt_args, vae, latents, device)
                 if vae is not None:
                     vae.to("cpu")

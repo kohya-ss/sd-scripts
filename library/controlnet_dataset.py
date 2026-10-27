@@ -5,20 +5,25 @@ imports the abstract :class:`~library.dataset.BaseDataset` and its
 :class:`~library.subset.ControlNetSubset` configuration class.
 """
 
+import hashlib
 import logging
 import os
 from typing import Any, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 from accelerate import Accelerator
+from tqdm import tqdm
 
 from library.dataset import (
     IMAGE_TRANSFORMS,
     BaseDataset,
+    ImageInfo,
     glob_images,
     load_image,
 )
 from library.dreambooth_dataset import DreamBoothDataset
+from library.strategy_base import LatentsCachingStrategy
 from library.subset import ControlNetSubset, DreamBoothSubset
 from library.utils import resize_image, setup_logging, trim_and_resize_if_required
 
@@ -161,6 +166,30 @@ class ControlNetDataset(BaseDataset):
 
         self.conditioning_image_transforms = IMAGE_TRANSFORMS
 
+        # conditioning latents cache (reference-conditioned training): None (serve pixels), "memory" or "disk"
+        self.cond_latents_cache_mode: Optional[str] = None
+        self.cond_latents_caching_strategy: Optional[LatentsCachingStrategy] = None
+        # gray level (0-255) to fill the alpha region (alpha >= 128, e.g. the inpainting hole) of RGBA conditioning images with,
+        # set by the trainer. None: the alpha channel is dropped
+        self.cond_alpha_fill: Optional[int] = None
+        self._warned_cond_alpha_missing = False
+
+    def load_cond_image(self, path: str) -> np.ndarray:
+        """Load a conditioning image as RGB uint8 [H, W, 3]. With `cond_alpha_fill`, the alpha region of an RGBA image is
+        filled with the gray level (255 = fill, as the inpainting masks of the LLLite trainer)."""
+        if self.cond_alpha_fill is None:
+            return load_image(path)
+        img = load_image(path, alpha=True)
+        alpha = img[:, :, 3:4]
+        if not self._warned_cond_alpha_missing and np.all(alpha == 255):
+            logger.warning(
+                f"conditioning image has no alpha channel (or the alpha is all 255): the whole image is filled with the gray level."
+                f" This warning is shown once / 条件画像にアルファチャンネルがないか全て 255 です。画像全体がグレーで塗られます: {path}"
+            )
+            self._warned_cond_alpha_missing = True
+        fill = np.full_like(img[:, :, :3], self.cond_alpha_fill)
+        return np.where(alpha >= 128, fill, img[:, :, :3])
+
     def set_current_strategies(self):
         return self.dreambooth_dataset_delegate.set_current_strategies()
 
@@ -175,6 +204,95 @@ class ControlNetDataset(BaseDataset):
     def new_cache_text_encoder_outputs(self, models: List[Any], is_main_process: bool):
         return self.dreambooth_dataset_delegate.new_cache_text_encoder_outputs(models, is_main_process)
 
+    def get_cond_latents_npz_path(self, caching_strategy: LatentsCachingStrategy, info: ImageInfo, cache_dir: Optional[str]) -> str:
+        """npz path of the cached conditioning latents: next to the conditioning image by default, or in `cache_dir` with a
+        short hash of the conditioning image path as prefix (conditioning directories of different subsets may share file names)."""
+        npz_path = caching_strategy.get_latents_npz_path(info.cond_img_path, info.image_size)
+        if cache_dir is None:
+            return npz_path
+        digest = hashlib.sha1(os.path.normcase(info.cond_img_path).encode("utf-8")).hexdigest()[:8]
+        return os.path.join(cache_dir, f"{digest}_{os.path.basename(npz_path)}")
+
+    def new_cache_conditioning_latents(
+        self, model: Any, accelerator: Accelerator, caching_strategy: LatentsCachingStrategy, cache_dir: Optional[str] = None
+    ):
+        r"""
+        Cache the VAE latents of the conditioning images (for trainers which use them as reference images), with the same
+        VAE / npz handling as the latents of the training images: `caching_strategy` decides memory or disk and does the
+        encoding. The conditioning image gets the same resize / center crop as its training image (random_crop is not
+        supported by this dataset, so the result is deterministic), and the flipped latents are cached too when flip_aug
+        is enabled. After this call `__getitem__` returns `conditioning_latents` [B, C, h, w] instead of `conditioning_images`.
+        """
+        logger.info("caching conditioning (reference) latents" + ("" if cache_dir is None else f" to {cache_dir}"))
+        self.cond_latents_cache_mode = "disk" if caching_strategy.cache_to_disk else "memory"
+        self.cond_latents_caching_strategy = caching_strategy
+        if cache_dir is not None and caching_strategy.cache_to_disk:
+            os.makedirs(cache_dir, exist_ok=True)
+
+        image_infos = list(self.image_data.values())
+        image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
+
+        num_processes = accelerator.num_processes
+        process_index = accelerator.process_index
+
+        def make_proxy(info: ImageInfo) -> ImageInfo:
+            # a proxy ImageInfo of the conditioning image so that the caching strategy can be reused as is: same
+            # bucket / resized size as the training image (the sizes are checked in __getitem__ for the pixel path)
+            proxy = ImageInfo(info.image_key, 1, "", False, info.cond_img_path)
+            proxy.image_size = info.image_size
+            proxy.resized_size = info.resized_size
+            proxy.bucket_reso = info.bucket_reso
+            proxy.resize_interpolation = info.resize_interpolation
+            proxy.latents_npz = info.cond_latents_npz
+            cond_img = self.load_cond_image(info.cond_img_path)
+            if cond_img.shape[0] != info.image_size[1] or cond_img.shape[1] != info.image_size[0]:
+                if self.dreambooth_dataset_delegate.enable_bucket:
+                    raise ValueError(
+                        f"size of conditioning image is not match / 画像サイズが合いません: {info.cond_img_path} {cond_img.shape[1]}x{cond_img.shape[0]}"
+                        f" vs {info.absolute_path} {info.image_size[0]}x{info.image_size[1]}"
+                    )
+                cond_img = resize_image(
+                    cond_img, cond_img.shape[0], cond_img.shape[1], info.image_size[0], info.image_size[1], self.resize_interpolation
+                )
+            proxy.image = cond_img
+            return proxy
+
+        def submit_batch(batch: List[Tuple[ImageInfo, ImageInfo]], flip_aug: bool):
+            proxies = [proxy for _, proxy in batch]
+            caching_strategy.cache_batch_latents(model, proxies, flip_aug, False, False)
+            for info, proxy in batch:
+                proxy.image = None
+                if self.cond_latents_cache_mode == "memory":
+                    info.cond_latents = proxy.latents
+                    info.cond_latents_flipped = proxy.latents_flipped
+
+        batch: List[Tuple[ImageInfo, ImageInfo]] = []
+        current_condition = None  # (bucket_reso, flip_aug)
+        for i, info in enumerate(tqdm(image_infos)):
+            subset = self.dreambooth_dataset_delegate.image_to_subset[info.image_key]
+
+            if caching_strategy.cache_to_disk:
+                info.cond_latents_npz = self.get_cond_latents_npz_path(caching_strategy, info, cache_dir)
+                if i % num_processes != process_index:  # each process caches different latents
+                    continue
+                if caching_strategy.is_disk_cached_latents_expected(info.bucket_reso, info.cond_latents_npz, subset.flip_aug, False):
+                    continue
+
+            condition = (info.bucket_reso, subset.flip_aug)
+            if len(batch) > 0 and current_condition != condition:
+                submit_batch(batch, current_condition[1])
+                batch = []
+
+            batch.append((info, make_proxy(info)))
+            current_condition = condition
+
+            if len(batch) >= caching_strategy.batch_size:
+                submit_batch(batch, current_condition[1])
+                batch = []
+
+        if len(batch) > 0:
+            submit_batch(batch, current_condition[1])
+
     def __len__(self):
         return self.dreambooth_dataset_delegate.__len__()
 
@@ -187,6 +305,10 @@ class ControlNetDataset(BaseDataset):
         bucket_batch_size = self.dreambooth_dataset_delegate.buckets_indices[index].bucket_batch_size
         image_index = self.dreambooth_dataset_delegate.buckets_indices[index].batch_index * bucket_batch_size
 
+        if self.cond_latents_cache_mode is not None:
+            example["conditioning_latents"] = self._get_cached_conditioning_latents(bucket, image_index, bucket_batch_size, example)
+            return example
+
         conditioning_images = []
 
         for i, image_key in enumerate(bucket[image_index : image_index + bucket_batch_size]):
@@ -196,7 +318,7 @@ class ControlNetDataset(BaseDataset):
             original_size_hw = example["original_sizes_hw"][i]
             crop_top_left = example["crop_top_lefts"][i]
             flipped = example["flippeds"][i]
-            cond_img = load_image(image_info.cond_img_path)
+            cond_img = self.load_cond_image(image_info.cond_img_path)
 
             if self.dreambooth_dataset_delegate.enable_bucket:
                 assert (
@@ -234,3 +356,28 @@ class ControlNetDataset(BaseDataset):
         example["conditioning_images"] = torch.stack(conditioning_images).to(memory_format=torch.contiguous_format).float()
 
         return example
+
+    def _get_cached_conditioning_latents(self, bucket, image_index: int, bucket_batch_size: int, example) -> torch.Tensor:
+        conditioning_latents = []
+        for i, image_key in enumerate(bucket[image_index : image_index + bucket_batch_size]):
+            image_info = self.dreambooth_dataset_delegate.image_data[image_key]
+            flipped = example["flippeds"][i]
+
+            if self.cond_latents_cache_mode == "memory":
+                latents = image_info.cond_latents_flipped if flipped else image_info.cond_latents
+                assert latents is not None, (
+                    f"conditioning latents are not cached / 条件画像のlatentがキャッシュされていません: {image_info.cond_img_path}"
+                )
+            else:
+                latents, _, _, flipped_latents, _ = self.cond_latents_caching_strategy.load_latents_from_disk(
+                    image_info.cond_latents_npz, image_info.bucket_reso
+                )
+                if flipped:
+                    assert flipped_latents is not None, (
+                        f"flipped conditioning latents are not cached / 反転した条件画像のlatentがキャッシュされていません: {image_info.cond_latents_npz}"
+                    )
+                    latents = flipped_latents
+                latents = torch.FloatTensor(latents)
+            conditioning_latents.append(latents)
+
+        return torch.stack(conditioning_latents).to(memory_format=torch.contiguous_format).float()

@@ -257,11 +257,14 @@ def generate_latents(
     seed: Optional[int],
     device: torch.device,
     show_progress: bool = True,
+    ref: Optional[torch.Tensor] = None,
+    ref_rope_r: float = 1.0,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32).
 
     The initial noise is drawn on a CPU generator in float32 and CFG / Euler updates are done in float32 like the official
-    pipeline. CFG is applied when `guidance_scale != 1` and the negative embeddings are given.
+    pipeline. CFG is applied when `guidance_scale != 1` and the negative embeddings are given. `ref` (normalized, patchified
+    reference latents [1, 128, Hr/16, Wr/16]) is given to both the conditional and the unconditional branch.
     """
     generator = torch.Generator(device="cpu")
     if seed is not None:
@@ -279,18 +282,65 @@ def generate_latents(
     sigmas = get_sampling_sigmas(steps, flow_shift).to(device)
     num_steps = len(sigmas) - 1
 
+    if ref is not None:
+        ref = ref.to(device, dtype=dit.dtype)
     with torch.no_grad(), tqdm(total=num_steps, desc="Denoising steps", disable=not show_progress) as pbar:
         for i in range(num_steps):
             timestep = (sigmas[i] * NUM_TRAIN_TIMESTEPS).expand(latents.shape[0])
             x = latents.to(dit.dtype)
-            prediction = dit(x, timestep, positive, positive_mask).float()
+            prediction = dit(x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r).float()
             if do_cfg:
-                uncond = dit(x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers).float()
+                uncond = dit(
+                    x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers, ref=ref, ref_rope_r=ref_rope_r
+                ).float()
                 prediction = uncond + guidance_scale * (prediction - uncond)
             latents = euler_step(latents, prediction, sigmas, i)
             pbar.update()
 
     return latents
+
+
+def load_reference_pixels(
+    image_path: str, width: int, height: int, alpha_fill: Optional[int] = None, mask_path: Optional[str] = None
+) -> torch.Tensor:
+    """Load a reference image resized to (width, height) as pixels [1, 3, H, W] in -1..1 (float32). With `alpha_fill`, the
+    region where the alpha channel of the image (or the grayscale `mask_path` image, if given) is >= 128 is filled with
+    the gray level (inpainting hole, 255 = fill), the same as `cond_alpha_fill` of the ControlNet dataset in training."""
+    image = Image.open(image_path)
+    rgb = np.array(image.convert("RGB").resize((width, height), Image.LANCZOS), dtype=np.float32)
+    if alpha_fill is not None:
+        if mask_path is not None:
+            alpha = Image.open(mask_path).convert("L")
+        elif image.mode in ("RGBA", "LA") or "transparency" in image.info:
+            alpha = image.convert("RGBA").getchannel("A")
+        else:
+            logger.warning(f"reference image has no alpha channel and no mask is given: nothing is filled: {image_path}")
+            alpha = None
+        if alpha is not None:
+            alpha = np.array(alpha.resize((width, height), Image.NEAREST), dtype=np.float32)[..., None]
+            rgb = np.where(alpha >= 128, float(alpha_fill), rgb)
+    return torch.from_numpy(rgb / 127.5 - 1.0).permute(2, 0, 1).unsqueeze(0)
+
+
+def encode_reference_image(
+    vae: flux2_vae.AutoEncoder,
+    image_path: str,
+    width: int,
+    height: int,
+    device: torch.device,
+    alpha_fill: Optional[int] = None,
+    mask_path: Optional[str] = None,
+) -> torch.Tensor:
+    """Load a reference image (see `load_reference_pixels`), resize it to (width, height) and encode it to normalized,
+    patchified latents [1, 128, H/16, W/16] (float32). The VAE is moved to `device` for the encoding and back afterwards."""
+    pixels = load_reference_pixels(image_path, width, height, alpha_fill, mask_path)
+
+    org_vae_device = vae.device
+    vae.to(device)
+    with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
+        ref = vae.encode_for_dit(pixels.to(device, dtype=vae.dtype)).float()
+    vae.to(org_vae_device)
+    return ref
 
 
 # endregion
@@ -313,7 +363,9 @@ def sample_images(
     prompt_replacement=None,
 ):
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
-    uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`."""
+    uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
+    (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (mask of the region to fill
+    with the gray level of `--ref_mask_fill`, 255 = fill; without it the alpha channel of the reference image is used)."""
     if steps == 0:
         if not args.sample_at_first:
             return
@@ -419,6 +471,10 @@ def _sample_image_inference(
     seed = prompt_dict.get("seed")
     flow_shift = float(prompt_dict.get("flow_shift", DEFAULT_SAMPLE_FLOW_SHIFT))
     uncond_skip_layers = parse_skip_layers(args.sample_uncond_skip_layers)
+    ref_image_path = prompt_dict.get("controlnet_image")  # `--cn`: reference image (editing)
+    ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional mask of the region to fill (255 = fill)
+    ref_rope_r = float(getattr(args, "ref_rope_r", 1.0))
+    ref_mask_fill = getattr(args, "ref_mask_fill", None)
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -435,6 +491,7 @@ def _sample_image_inference(
     logger.info(
         f"  prompt: {prompt}, negative: {negative_prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, "
         f"flow_shift: {flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
+        + ("" if ref_image_path is None else f", reference image: {ref_image_path} (rope r: {ref_rope_r})")
     )
 
     # Encode prompt: [prompt_embeds [1, L, C], attn_mask [1, L]]
@@ -460,6 +517,11 @@ def _sample_image_inference(
         else:
             negative_embeds, negative_mask = neg_encoded[0], neg_encoded[1]
 
+    # Encode the reference image (resized to the sample size) with the VAE in float32 outside autocast
+    ref = None
+    if ref_image_path is not None:
+        ref = encode_reference_image(vae, ref_image_path, width, height, accelerator.device, ref_mask_fill, ref_mask_path)
+
     clean_memory_on_device(accelerator.device)
     latents = generate_latents(
         dit,
@@ -475,6 +537,8 @@ def _sample_image_inference(
         uncond_skip_layers,
         seed,
         accelerator.device,
+        ref=ref,
+        ref_rope_r=ref_rope_r,
     )
 
     # Decode latents in float32 outside autocast (the VAE is in float32)
