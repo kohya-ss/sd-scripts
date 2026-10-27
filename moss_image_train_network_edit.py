@@ -20,6 +20,13 @@
 # model (the inference has to compute them without the LoRA). --ref_kv_blocks restricts the blocks which see the
 # reference (all by default).
 #
+# --ref_gate (Step C, with --ref_mode kv): a learned gate table g[block, timestep band] decides how much each block attends to
+# the reference K/V in each band (library/moss_image_ref_gate.py). The table is trained with the LoRA (own learning rate
+# --ref_gate_lr) and saved into the LoRA file (keys `ref_gate.*`). --ref_gate_budget K adds a hinge penalty so that at most
+# about K blocks per band stay open; --ref_gate_balanced_timesteps samples the timesteps uniformly over the bands.
+# Second stage: --ref_gate_binarize loads the table from --network_weights, keeps the top K blocks per band (frozen) and
+# fine-tunes the LoRA with the static gates (the same gates are used at inference: closed blocks skip the reference).
+#
 # Inpainting-like tasks (--ref_mask_source alpha | random): the hole of the reference is given by the alpha channel of the
 # RGBA reference image (255 = hole) or cut randomly at every step (library.mask_generator). The hole is applied in the
 # latent space by default (--ref_mask_space latent): the clean reference latents (cacheable) are blended with a constant
@@ -34,7 +41,8 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 
-from library import moss_image_models, strategy_base, strategy_moss_image
+from library import flux_train_utils, moss_image_models, moss_image_ref_gate, strategy_base, strategy_moss_image
+from library.moss_image_ref_gate import ReferenceGate
 import library.args as args_util
 from library.controlnet_dataset import ControlNetDataset
 from library.dataset import DatasetGroup, MinimalDataset
@@ -57,6 +65,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         self.network = None  # set in post_process_network, used to disable the LoRA during the reference forward
         self.ref_kv_blocks = None
         self._uncond_embeds = None  # cached embeddings of the empty prompt [1, L, C] and mask [1, L] (CPU)
+        self.ref_gate: Optional[ReferenceGate] = None  # learned reference gate table (Step C)
 
     def use_controlnet_dataset(self, args) -> bool:
         return True  # conditioning images are the reference images
@@ -89,6 +98,23 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             if self.ref_kv_blocks is not None:
                 logger.info(f"reference K/V is used in blocks: {sorted(self.ref_kv_blocks)}")
 
+        if args.ref_gate or args.ref_gate_binarize:
+            assert args.ref_mode == "kv", "ref_gate requires ref_mode kv / ref_gate には ref_mode kv が必要です"
+            assert self.ref_kv_blocks is None, (
+                "ref_gate and ref_kv_blocks cannot be used together (the gate decides the blocks)"
+                " / ref_gate と ref_kv_blocks は併用できません（block は gate が決めます）"
+            )
+            assert args.attn_mode != "sageattn" or args.ref_gate_binarize, (
+                "the continuous reference gate (bias dimension, head_dim 136) is not supported by sageattn"
+                " / 連続 gate（bias 次元、head_dim 136）は sageattn では使えません"
+            )
+            if args.ref_gate_binarize:
+                assert args.network_weights is not None and args.ref_gate_budget is not None, (
+                    "ref_gate_binarize needs network_weights (a LoRA file with the trained gate table) and ref_gate_budget"
+                    " / ref_gate_binarize には network_weights（gate 表を含む LoRA ファイル）と ref_gate_budget が必要です"
+                )
+            args.ref_gate = True
+
         if args.ref_mask_source == "random" and args.ref_mask_space == "pixel":
             assert not args.cache_ref_latents, (
                 "ref_mask_source random with ref_mask_space pixel generates a new reference image at every step and cannot be"
@@ -114,6 +140,25 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
         super().post_process_network(args, accelerator, network, text_encoders, unet)
         self.network = network
+
+        if args.ref_gate:
+            num_blocks = len(accelerator.unwrap_model(unet).layers)
+            band_edges = moss_image_ref_gate.parse_band_edges(args.ref_gate_bands)
+            # the binarized table is a frozen buffer; the learned table is a parameter with its own learning rate.
+            # Both are saved into the LoRA file as `ref_gate.*` and loaded from --network_weights by network.load_weights
+            self.ref_gate = ReferenceGate(num_blocks, band_edges, args.ref_gate_init, trainable=not args.ref_gate_binarize)
+            network.add_extra_trainable_module("ref_gate", self.ref_gate, args.ref_gate_lr)
+            logger.info(
+                f"reference gate: {num_blocks} blocks x {self.ref_gate.num_bands} bands {self.ref_gate.band_ranges()}, "
+                f"init logit {args.ref_gate_init}, budget {args.ref_gate_budget}, binarize: {args.ref_gate_binarize}"
+            )
+
+    def prepare_ref_gate_after_load(self, args):
+        """--ref_gate_binarize: the table loaded from --network_weights is binarized (top budget blocks per band)"""
+        if self.ref_gate is not None and args.ref_gate_binarize and not self.ref_gate.is_binarized():
+            self.ref_gate.binarize_(args.ref_gate_budget)
+            logger.info("reference gate binarized:")
+            print(self.ref_gate.table_string())  # print: the rich log handler would wrap the table
 
     @contextlib.contextmanager
     def lora_disabled(self):
@@ -221,7 +266,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                 batch, text_encoders, text_encoding_strategy, tokenize_strategy, accelerator.device, weight_dtype
             )
 
-        return super().process_batch(
+        loss = super().process_batch(
             batch,
             text_encoders,
             unet,
@@ -238,6 +283,44 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             train_text_encoder,
             train_unet,
         )
+
+        # budget penalty of the learned reference gate (training only, not for the binarized table)
+        if is_train and self.ref_gate is not None and self.ref_gate.trainable and args.ref_gate_budget is not None:
+            loss = loss + args.ref_gate_budget_weight * self.ref_gate.budget_penalty(args.ref_gate_budget).to(loss.device)
+        return loss
+
+    def get_noise_pred_and_target(
+        self, args, accelerator, noise_scheduler, latents, batch, text_encoder_conds, unet, network, weight_dtype, train_unet, is_train=True
+    ):
+        if not (self.ref_gate is not None and args.ref_gate_balanced_timesteps and is_train):
+            return super().get_noise_pred_and_target(
+                args, accelerator, noise_scheduler, latents, batch, text_encoder_conds, unet, network, weight_dtype, train_unet, is_train
+            )
+
+        # Band balanced timestep sampling: a band is drawn uniformly, then sigma uniformly inside the band (the training
+        # distribution of MOSS-Image is high-noise heavy and would starve the low noise bands of the gate table)
+        dit: moss_image_models.MossImage = unet
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+        ranges = torch.tensor(self.ref_gate.band_ranges(), device=accelerator.device) / 1000.0  # [bands, 2] (low, high] in sigma
+        band = torch.randint(0, ranges.shape[0], (bsz,), device=accelerator.device)
+        low, high = ranges[band, 0], ranges[band, 1]
+        sigmas = (low + torch.rand(bsz, device=accelerator.device) * (high - low)).clamp(min=1e-3)
+        timesteps = sigmas * moss_image_train_utils.NUM_TRAIN_TIMESTEPS  # float32
+        sigmas_b = sigmas.view(-1, 1, 1, 1)
+        noisy_model_input = (1.0 - sigmas_b) * latents + sigmas_b * noise
+
+        prompt_embeds, attn_mask = text_encoder_conds[:2]
+        prompt_embeds = prompt_embeds.to(accelerator.device, dtype=weight_dtype)
+        attn_mask = attn_mask.to(accelerator.device)
+        if args.gradient_checkpointing:
+            noisy_model_input.requires_grad_(True)
+            prompt_embeds.requires_grad_(True)
+
+        model_pred = self.call_dit(args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, is_train)
+        target = noise - latents
+        weighting = flux_train_utils.compute_loss_weighting_for_sd3(args.weighting_scheme, sigmas_b)
+        return model_pred, target, timesteps, weighting
 
     def call_dit(
         self,
@@ -275,13 +358,22 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                     self.lora_disabled if args.ref_kv_lora == "off" else None,
                     enable_grad=is_train and args.ref_kv_lora == "on",
                 )
+            ref_gate = None
+            if self.ref_gate is not None:
+                # learned gate: per-sample log gates of the band of each timestep (bias path), binarized tables resolve to
+                # plain concatenation / skipping of the reference per block
+                ref_kv, ref_gate = moss_image_ref_gate.resolve_block_gates(ref_kv, self.ref_gate.log_gates(timesteps))
             with torch.set_grad_enabled(is_train), accelerator.autocast():
-                return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv)
+                return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv, ref_gate=ref_gate)
 
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref=ref, ref_rope_r=args.ref_rope_r)
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+        if self.ref_gate is not None:
+            self.prepare_ref_gate_after_load(args)  # binarize once the weights are loaded (first call is before training)
+            logger.info(f"reference gate table (step {global_step}):")
+            print(self.ref_gate.table_string())
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]  # compatibility
         te = self.get_models_for_text_encoding(args, accelerator, text_encoders)
         te = te[0] if te is not None else None
@@ -300,7 +392,13 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             text_encoding_strategy,
             self.sample_prompts_te_outputs,
             ref_kv_context=self.lora_disabled if args.ref_kv_lora == "off" else None,
+            ref_gate=self.ref_gate,
         )
+
+    def on_step_start(self, args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train: bool = True):
+        if self.ref_gate is not None:
+            self.prepare_ref_gate_after_load(args)
+        return super().on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train)
 
     def update_metadata(self, metadata, args):
         super().update_metadata(metadata, args)
@@ -308,6 +406,11 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         metadata["ss_ref_timestep"] = args.ref_timestep
         metadata["ss_ref_kv_blocks"] = args.ref_kv_blocks
         metadata["ss_ref_kv_lora"] = args.ref_kv_lora
+        metadata["ss_ref_gate"] = bool(args.ref_gate)
+        if args.ref_gate:
+            metadata["ss_ref_gate_bands"] = args.ref_gate_bands
+            metadata["ss_ref_gate_budget"] = args.ref_gate_budget
+            metadata["ss_ref_gate_binarize"] = bool(args.ref_gate_binarize)
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
         metadata["ss_cache_ref_latents"] = bool(args.cache_ref_latents)
@@ -376,6 +479,55 @@ def add_moss_image_edit_arguments(parser: argparse.ArgumentParser):
         help="comma separated indices of the DiT blocks which attend to the reference K/V for --ref_mode kv (default: all 42"
         " blocks). The reference forward stops after the last one"
         " / --ref_mode kv で参照 K/V に注意を向ける DiT block の番号（カンマ区切り、デフォルト: 全 42 block）。参照 forward は最後の block で止まる",
+    )
+    parser.add_argument(
+        "--ref_gate",
+        action="store_true",
+        help="learn a reference gate table g[block, timestep band] (--ref_mode kv): how much each block attends to the reference"
+        " K/V in each band (additive bias log g on the reference keys, head_dim padded to 136 in training). Trained with the"
+        " LoRA, saved into the LoRA file (ref_gate.*)"
+        " / 参照 gate 表 g[block, timestep 帯] を学習する（--ref_mode kv）。各 block が各帯で参照 K/V にどれだけ注意を向けるか"
+        "（参照キーの logit に log g を加算、学習時は head_dim を 136 にパディング）。LoRA と一緒に学習され LoRA ファイルに保存される（ref_gate.*）",
+    )
+    parser.add_argument(
+        "--ref_gate_bands",
+        type=str,
+        default=moss_image_ref_gate.DEFAULT_BAND_EDGES,
+        help="upper boundaries of the timestep bands (sigma * 1000, descending, comma separated). Default"
+        f" {moss_image_ref_gate.DEFAULT_BAND_EDGES}: bands (1000,950] (950,850] (850,700] (700,500] (500,0]"
+        " / timestep 帯の境界（sigma × 1000、降順、カンマ区切り）",
+    )
+    parser.add_argument(
+        "--ref_gate_init", type=float, default=2.0, help="initial logit of the gate table (default 2.0, g = 0.88) / gate 表の初期 logit"
+    )
+    parser.add_argument(
+        "--ref_gate_lr", type=float, default=1e-2, help="learning rate of the gate table (default 1e-2) / gate 表の学習率（デフォルト 1e-2）"
+    )
+    parser.add_argument(
+        "--ref_gate_budget",
+        type=int,
+        default=None,
+        help="target number of open blocks per band: hinge penalty relu(sum_blocks g - budget) per band (default: no penalty)."
+        " Also the top-k of --ref_gate_binarize"
+        " / 帯ごとの開いた block 数の目標。帯ごとに relu(Σ_block g − budget) の罰則（デフォルト: 罰則なし）。--ref_gate_binarize の top-k にも使う",
+    )
+    parser.add_argument(
+        "--ref_gate_budget_weight", type=float, default=0.1, help="weight of the budget penalty (default 0.1) / 予算罰則の重み（デフォルト 0.1）"
+    )
+    parser.add_argument(
+        "--ref_gate_balanced_timesteps",
+        action="store_true",
+        help="sample the training timesteps uniformly over the gate bands (a band, then sigma uniformly inside it) instead of"
+        " --timestep_sampling, so that the low noise bands of the table are trained"
+        " / 学習の timestep を --timestep_sampling の代わりに gate の帯ごとに均等に引く（帯を選んでから帯内で sigma を一様に）",
+    )
+    parser.add_argument(
+        "--ref_gate_binarize",
+        action="store_true",
+        help="second stage: load the gate table from --network_weights, keep the top --ref_gate_budget blocks per band (frozen"
+        " 0 / 1 gates, closed blocks skip the reference) and fine-tune the LoRA"
+        " / 第 2 段階: --network_weights から gate 表を読み、帯ごとに上位 --ref_gate_budget 個の block を残して 0/1 に固定し"
+        "（閉じた block は参照を見ない）、LoRA を再学習する",
     )
     parser.add_argument(
         "--ref_dropout_rate",

@@ -97,6 +97,41 @@ def moss_attention(
     return attention(qkv, attn_params=attn_params)
 
 
+def gated_reference_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    ref_start: int,
+    ref_len: int,
+    log_gate: torch.Tensor,
+    attn_params: AttentionParams,
+) -> torch.Tensor:
+    """Attention with a per-sample additive bias log(g) on the logits of the reference keys (learned reference gate).
+
+    The bias is realized exactly with an extra head dimension, so it works with any attention kernel and is differentiable
+    w.r.t. the gate: the head dim D is padded to D' (multiple of 8). q' = [q * sqrt(D'/D), 1, 0...], k' = [k, b, 0...] with
+    b = log(g) * sqrt(D') for the reference keys and 0 elsewhere, v' = [v, 0...]. The kernel computes softmax(q'k' / sqrt(D'))
+    = softmax(qk / sqrt(D) + log g) and the output is cut back to D. g = 1 (b = 0) is the plain concatenation.
+
+    Args:
+        q: [B, Lq, H, D]; k, v: [B, Lk, H, D] with the reference keys at [ref_start, ref_start + ref_len)
+        log_gate: [B] log gate per sample (float)
+    Returns:
+        [B, Lq, H * D]
+    """
+    batch, _, heads, dim = q.shape
+    padded = ((dim + 1 + 7) // 8) * 8
+    extra = padded - dim
+    q2 = torch.nn.functional.pad(q * math.sqrt(padded / dim), (0, extra))
+    q2[..., dim] = 1.0
+    bias = torch.zeros(batch, k.shape[1], 1, extra, dtype=k.dtype, device=k.device)
+    bias[:, ref_start : ref_start + ref_len, 0, 0] = (log_gate.to(torch.float32) * math.sqrt(padded)).to(k.dtype)[:, None]
+    k2 = torch.cat((k, bias.expand(-1, -1, heads, -1)), -1)
+    v2 = torch.nn.functional.pad(v, (0, extra))
+    out = attention([q2, k2, v2], attn_params=attn_params)  # [B, Lq, H * D']
+    return out.unflatten(-1, (heads, padded))[..., :dim].reshape(batch, out.shape[1], heads * dim)
+
+
 class MossImageTextBlock(nn.Module):
     """Transformer block of the text refiner (no modulation, fused qkv, separate ffn_up / ffn_gate, with bias)."""
 
@@ -203,6 +238,7 @@ class MossImageBlock(nn.Module):
         ref_k: Optional[torch.Tensor] = None,
         ref_v: Optional[torch.Tensor] = None,
         return_kv: bool = False,
+        ref_gate: Optional[torch.Tensor] = None,
     ):
         """
         Args:
@@ -213,6 +249,7 @@ class MossImageBlock(nn.Module):
             ref_k, ref_v: [B, Nr, heads, head_dim] cached reference keys / values (after qk-norm and RoPE) of this block,
                 inserted after the image tokens on the key / value side (one-way reference: the reference is not updated)
             return_kv: also return the keys / values (after qk-norm and RoPE) of this block, [B, N + L, heads, head_dim]
+            ref_gate: [B] per-sample log gate of the reference keys (learned gate, see gated_reference_attention). None = 1.
         Returns:
             [B, N + L, D], or the flat tuple (output, k, v) with return_kv (flat so that it passes through the checkpointing
             autograd functions)
@@ -234,7 +271,13 @@ class MossImageBlock(nn.Module):
             n = attn_params.img_len if attn_params.img_len is not None else k.shape[1]
             k = torch.cat((k[:, :n], ref_k.to(k.dtype), k[:, n:]), 1)
             v = torch.cat((v[:, :n], ref_v.to(v.dtype), v[:, n:]), 1)
-        x = x + self.proj.o(attention([q, k, v], attn_params=attn_params)) * gate_a[:, None]
+            if ref_gate is not None:
+                attn_out = gated_reference_attention(q, k, v, n, ref_k.shape[1], ref_gate, attn_params)
+            else:
+                attn_out = attention([q, k, v], attn_params=attn_params)
+        else:
+            attn_out = attention([q, k, v], attn_params=attn_params)
+        x = x + self.proj.o(attn_out) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self.proj.ffn_up_gate(y.to(dtype)).chunk(2, -1)
         del y
@@ -250,8 +293,9 @@ class MossImageBlock(nn.Module):
         ref_k: Optional[torch.Tensor] = None,
         ref_v: Optional[torch.Tensor] = None,
         return_kv: bool = False,
+        ref_gate: Optional[torch.Tensor] = None,
     ):
-        return _checkpointed_forward(self, self._forward, x, rope, modulation, attn_params, ref_k, ref_v, return_kv)
+        return _checkpointed_forward(self, self._forward, x, rope, modulation, attn_params, ref_k, ref_v, return_kv, ref_gate)
 
 
 def _checkpointed_forward(module: nn.Module, forward_fn, *args):
@@ -594,6 +638,7 @@ class MossImage(nn.Module):
         ref: Optional[torch.Tensor] = None,
         ref_rope_r: float = 1.0,
         ref_kv: Optional[Sequence[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+        ref_gate: Optional[Sequence[Optional[torch.Tensor]]] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -610,11 +655,15 @@ class MossImage(nn.Module):
             ref_kv: per-block cached reference keys / values from `forward_ref_kv` (one-way reference): the image and
                 text tokens additionally attend to them, the reference itself is not updated. None entries skip the
                 reference in that block. Not with `ref`.
+            ref_gate: per-block [B] log gates of the reference keys (learned reference gate, bias path of the attention);
+                None entries (or None) mean gate 1 (plain concatenation). See moss_image_ref_gate.resolve_block_gates.
         Returns:
             [B, latent_channels, H, W]
         """
         if ref is not None and ref_kv is not None:
             raise ValueError("ref and ref_kv cannot be used together")
+        if ref_gate is not None and (ref_kv is None or len(ref_gate) != len(ref_kv)):
+            raise ValueError("ref_gate needs ref_kv with the same number of entries")
         kv_extra_len = 0
         if ref_kv is not None:
             if len(ref_kv) != len(self.layers):
@@ -643,7 +692,8 @@ class MossImage(nn.Module):
                 kv = ref_kv[layer_index] if ref_kv is not None else None
                 if kv_extra_len > 0:
                     if kv is not None:
-                        hidden = layer(hidden, rope, mod, attn_params, kv[0], kv[1])
+                        gate = ref_gate[layer_index] if ref_gate is not None else None
+                        hidden = layer(hidden, rope, mod, attn_params, kv[0], kv[1], False, gate)
                     else:
                         hidden = layer(hidden, rope, mod, attn_params_plain)
                 else:

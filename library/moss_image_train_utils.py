@@ -15,7 +15,8 @@ from accelerate import Accelerator, PartialState
 from PIL import Image
 from tqdm import tqdm
 
-from library import device_utils, flux2_vae, flux_train_utils, moss_image_models, moss_image_utils, sampling
+from library import device_utils, flux2_vae, flux_train_utils, moss_image_models, moss_image_ref_gate, moss_image_utils, sampling
+from library.moss_image_ref_gate import ReferenceGate
 from library.device_utils import clean_memory_on_device, synchronize_device
 import library.compile_utils as compile_utils
 from library.utils import setup_logging
@@ -261,13 +262,16 @@ def generate_latents(
     ref: Optional[torch.Tensor] = None,
     ref_rope_r: float = 1.0,
     ref_kv: Optional[list] = None,
+    ref_gate: Optional["ReferenceGate"] = None,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32).
 
     The initial noise is drawn on a CPU generator in float32 and CFG / Euler updates are done in float32 like the official
     pipeline. CFG is applied when `guidance_scale != 1` and the negative embeddings are given. `ref` (normalized, patchified
     reference latents [1, 128, Hr/16, Wr/16], sequence concatenation) or `ref_kv` (cached reference K/V from
-    `compute_reference_kv`, one-way reference) is given to both the conditional and the unconditional branch.
+    `compute_reference_kv`, one-way reference) is given to both the conditional and the unconditional branch. With a
+    `ref_gate` (learned reference gate table) the reference K/V of each block are gated per step according to the
+    timestep band (binarized tables skip the closed blocks, continuous tables use the bias path of the attention).
     """
     generator = torch.Generator(device="cpu")
     if seed is not None:
@@ -291,10 +295,23 @@ def generate_latents(
         for i in range(num_steps):
             timestep = (sigmas[i] * NUM_TRAIN_TIMESTEPS).expand(latents.shape[0])
             x = latents.to(dit.dtype)
-            prediction = dit(x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r, ref_kv=ref_kv).float()
+            step_kv, step_gate = ref_kv, None
+            if ref_kv is not None and ref_gate is not None:
+                step_kv, step_gate = moss_image_ref_gate.resolve_block_gates(ref_kv, ref_gate.log_gates(timestep))
+            prediction = dit(
+                x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r, ref_kv=step_kv, ref_gate=step_gate
+            ).float()
             if do_cfg:
                 uncond = dit(
-                    x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers, ref=ref, ref_rope_r=ref_rope_r, ref_kv=ref_kv
+                    x,
+                    timestep,
+                    negative,
+                    negative_mask,
+                    skip_layers=uncond_skip_layers,
+                    ref=ref,
+                    ref_rope_r=ref_rope_r,
+                    ref_kv=step_kv,
+                    ref_gate=step_gate,
                 ).float()
                 prediction = uncond + guidance_scale * (prediction - uncond)
             latents = euler_step(latents, prediction, sigmas, i)
@@ -422,6 +439,7 @@ def sample_images(
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
     ref_kv_context: Optional[Callable[[], ContextManager]] = None,
+    ref_gate: Optional["ReferenceGate"] = None,
 ):
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
     uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
@@ -483,6 +501,7 @@ def sample_images(
             sample_prompts_te_outputs,
             prompt_replacement,
             ref_kv_context,
+            ref_gate,
         )
 
     if distributed_state.num_processes <= 1:
@@ -524,6 +543,7 @@ def _sample_image_inference(
     sample_prompts_te_outputs,
     prompt_replacement,
     ref_kv_context=None,
+    ref_gate=None,
 ):
     """Generate a single sample image."""
     prompt = prompt_dict.get("prompt", "")
@@ -636,6 +656,7 @@ def _sample_image_inference(
         ref=ref,
         ref_rope_r=ref_rope_r,
         ref_kv=ref_kv,
+        ref_gate=ref_gate if ref_kv is not None else None,
     )
     del ref_kv
 

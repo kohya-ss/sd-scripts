@@ -25,7 +25,7 @@ from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from library import flux2_vae, moss_image_models, moss_image_train_utils, moss_image_utils
+from library import flux2_vae, moss_image_models, moss_image_ref_gate, moss_image_train_utils, moss_image_utils
 from library.device_utils import clean_memory_on_device, synchronize_device
 from library.custom_offloading_utils import BlockSwapConfig
 from library.utils import setup_logging
@@ -90,6 +90,13 @@ def parse_args() -> argparse.Namespace:
         " (metadata ss_ref_mode). Default concat",
     )
     parser.add_argument("--ref_timestep", type=float, default=0.0, help="timestep (sigma * 1000) of the reference forward for --ref_mode kv")
+    parser.add_argument(
+        "--ref_gate_continuous",
+        action="store_true",
+        help="use the learned reference gate table of the LoRA (ref_gate.* keys) as it is (continuous gates, bias path, not with"
+        " sageattn). Default: binarized (gate > 0.5 opens the block; closed blocks skip the reference)",
+    )
+    parser.add_argument("--no_ref_gate", action="store_true", help="ignore the reference gate table of the LoRA (all blocks open)")
     parser.add_argument(
         "--ref_kv_without_lora",
         action="store_true",
@@ -346,6 +353,28 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
     )
 
 
+def load_reference_gate(args: argparse.Namespace, num_blocks: int) -> Optional[moss_image_ref_gate.ReferenceGate]:
+    """The reference gate table (`ref_gate.logits` / `ref_gate.band_edges`) of the first LoRA file which has one, binarized
+    (gate > 0.5) unless --ref_gate_continuous."""
+    if args.no_ref_gate or args.ref_mode != "kv" or not args.lora_weight:
+        return None
+    for lora_weight in args.lora_weight:
+        with safe_open(lora_weight, "pt") as f:
+            if "ref_gate.logits" not in f.keys():
+                continue
+            logits = f.get_tensor("ref_gate.logits").float()
+            edges = f.get_tensor("ref_gate.band_edges").float().tolist()
+        gate = moss_image_ref_gate.ReferenceGate(num_blocks, edges, trainable=False)
+        gate.logits.copy_(logits)
+        if not args.ref_gate_continuous and not gate.is_binarized():
+            with torch.no_grad():
+                gate.logits.copy_(torch.where(logits > 0, moss_image_ref_gate.BINARIZED_LOGIT, -moss_image_ref_gate.BINARIZED_LOGIT))
+        logger.info(f"reference gate table from {lora_weight} ({'continuous' if args.ref_gate_continuous else 'binarized'}):")
+        print(gate.table_string())
+        return gate
+    return None
+
+
 def compute_reference_kv(
     args: argparse.Namespace, dit: moss_image_models.MossImage, ref: Optional[torch.Tensor], uncond_embeds: torch.Tensor, device: torch.device
 ) -> Optional[list]:
@@ -375,6 +404,7 @@ def generate_latents(
     seed: int,
     ref: Optional[torch.Tensor] = None,
     ref_kv: Optional[list] = None,
+    ref_gate: Optional[moss_image_ref_gate.ReferenceGate] = None,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32)."""
     if ref_kv is not None:
@@ -409,6 +439,7 @@ def generate_latents(
         ref=ref,
         ref_rope_r=args.ref_rope_r,
         ref_kv=ref_kv,
+        ref_gate=ref_gate,
     )
 
 
@@ -527,7 +558,8 @@ def generate_single(args: argparse.Namespace):
     dit = load_dit_model(args, device)
     if ref_kv is None:
         ref_kv = compute_reference_kv(args, dit, ref, uncond_embeds, device)
-    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref, ref_kv)
+    ref_gate = load_reference_gate(args, len(dit.layers))
+    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref, ref_kv, ref_gate)
     del dit
     gc.collect()
     clean_memory_on_device(device)
@@ -583,10 +615,13 @@ def generate_batch(args: argparse.Namespace):
         all_ref_kvs = [compute_reference_kv(a, dit, r, uncond_embeds, device) for a, r in zip(all_args, all_refs)]
 
     # 2. generate all latents
+    ref_gate = load_reference_gate(args, len(dit.layers))
     all_latents = []
     for i, (prompt_args, (prompt_embeds, negative_embeds), ref, ref_kv) in enumerate(zip(all_args, all_embeds, all_refs, all_ref_kvs)):
         logger.info(f"Generating {i + 1}/{len(all_args)}: {prompt_args.prompt}")
-        all_latents.append(generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv))
+        all_latents.append(
+            generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv, ref_gate)
+        )
     del dit
     gc.collect()
     clean_memory_on_device(device)
@@ -606,6 +641,7 @@ def generate_interactive(args: argparse.Namespace):
     text_encoder = load_text_encoder(args, text_encoder_device)
     dit = load_dit_model(args, device)
     vae = load_vae(args, "cpu")  # also for the reference images (`--ri`)
+    ref_gate = load_reference_gate(args, len(dit.layers))
     conds_cache = {}
 
     print("Interactive mode. Enter prompts (Ctrl+D or Ctrl+Z (Windows) to exit):")
@@ -632,7 +668,7 @@ def generate_interactive(args: argparse.Namespace):
                 prompt_embeds, negative_embeds = prepare_text_inputs(prompt_args, tokenizer, text_encoder, text_encoder_device, conds_cache)
                 ref = encode_reference(prompt_args, vae, device)
                 ref_kv = compute_reference_kv(prompt_args, dit, ref, conds_cache.get(""), device)
-                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv)
+                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv, ref_gate)
                 save_output(prompt_args, vae, latents, device)
                 if vae is not None:
                     vae.to("cpu")

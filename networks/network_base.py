@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Type, Union
 
 import torch
+import torch.nn as nn
 from library.sdxl_original_unet import InferSdxlUNet2DConditionModel
 from library.utils import setup_logging
 
@@ -380,6 +381,28 @@ class AdditionalNetwork(torch.nn.Module):
         logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
+    def add_extra_trainable_module(self, name: str, module: nn.Module, lr: Optional[float] = None):
+        """Register an extra module which is trained together with the LoRA (own learning rate, `default_lr` if None),
+        saved into and loaded from the LoRA file with the state dict prefix `name.` (e.g. the reference gate table of the
+        MOSS-Image editing). Call before the optimizer is created (post_process_network of the trainer)."""
+        self.add_module(name, module)
+        if not hasattr(self, "extra_trainable_modules"):
+            self.extra_trainable_modules = []
+        self.extra_trainable_modules.append((name, lr))
+
+    def _extra_trainable_param_groups(self, default_lr):
+        groups, descriptions = [], []
+        for name, lr in getattr(self, "extra_trainable_modules", []):
+            params = [p for p in getattr(self, name).parameters() if p.requires_grad]
+            if len(params) == 0:
+                continue
+            group = {"params": params}
+            if lr is not None or default_lr is not None:
+                group["lr"] = lr if lr is not None else default_lr
+            groups.append(group)
+            descriptions.append(name)
+        return groups, descriptions
+
     def prepare_optimizer_params_with_multiple_te_lrs(self, text_encoder_lr, unet_lr, default_lr):
         if text_encoder_lr is None or (isinstance(text_encoder_lr, list) and len(text_encoder_lr) == 0):
             text_encoder_lr = [default_lr]
@@ -479,6 +502,10 @@ class AdditionalNetwork(torch.nn.Module):
             )
             all_params.extend(params)
             lr_descriptions.extend(["unet" + (" " + d if d else "") for d in descriptions])
+
+        extra_params, extra_descriptions = self._extra_trainable_param_groups(default_lr)
+        all_params.extend(extra_params)
+        lr_descriptions.extend(extra_descriptions)
 
         return all_params, lr_descriptions
 

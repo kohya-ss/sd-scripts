@@ -209,6 +209,14 @@ def make_args(**overrides):
         ref_timestep=0.0,
         ref_kv_blocks=None,
         ref_kv_lora="on",
+        ref_gate=False,
+        ref_gate_bands="950,850,700,500",
+        ref_gate_init=2.0,
+        ref_gate_lr=1e-2,
+        ref_gate_budget=None,
+        ref_gate_budget_weight=0.1,
+        ref_gate_balanced_timesteps=False,
+        ref_gate_binarize=False,
     )
     args.update(overrides)
     return argparse.Namespace(**args)
@@ -232,6 +240,9 @@ def test_setup_parser_edit_defaults():
     assert args.ref_timestep == 0.0
     assert args.ref_kv_blocks is None
     assert args.ref_kv_lora == "on"
+    assert args.ref_gate is False and args.ref_gate_binarize is False
+    assert args.ref_gate_bands == "950,850,700,500" and args.ref_gate_init == 2.0 and args.ref_gate_lr == 1e-2
+    assert args.ref_gate_budget is None and args.ref_gate_budget_weight == 0.1 and args.ref_gate_balanced_timesteps is False
 
 
 def test_random_reference_masks():
@@ -804,7 +815,7 @@ def test_edit_trainer_kv_mode_call_dit():
 
     trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
     network = FakeNetwork()
-    trainer.post_process_network(None, None, network, None, None)
+    trainer.post_process_network(make_args(), None, network, None, None)
 
     dit = make_dit()
     accelerator = FakeAccelerator()
@@ -859,6 +870,253 @@ def test_edit_trainer_kv_mode_call_dit():
     args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="on")
     out_val = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=False)
     assert not out_val.requires_grad
+
+
+# endregion
+
+
+# region learned reference gate (Step C)
+
+from library import moss_image_ref_gate
+from library.moss_image_ref_gate import ReferenceGate, resolve_block_gates
+
+
+def test_reference_gate_bands_and_table():
+    assert moss_image_ref_gate.parse_band_edges(None) == [950.0, 850.0, 700.0, 500.0]
+    assert moss_image_ref_gate.parse_band_edges("500, 850") == [850.0, 500.0]
+    with pytest.raises(ValueError):
+        moss_image_ref_gate.parse_band_edges("1000,500")
+
+    gate = ReferenceGate(3, [950, 850, 700, 500], init_logit=2.0)
+    assert gate.num_bands == 5 and gate.trainable
+    assert gate.band_ranges() == [(950.0, 1000.0), (850.0, 950.0), (700.0, 850.0), (500.0, 700.0), (0.0, 500.0)]
+    t = torch.tensor([1000.0, 951.0, 950.0, 860.0, 700.0, 10.0])
+    assert gate.band_index(t).tolist() == [0, 0, 1, 1, 3, 4]
+    log_g = gate.log_gates(t)
+    assert log_g.shape == (6, 3)
+    torch.testing.assert_close(log_g.exp(), torch.full((6, 3), torch.sigmoid(torch.tensor(2.0)).item()))
+
+    # budget penalty: 3 blocks * sigmoid(2) = 2.64 open per band
+    torch.testing.assert_close(gate.budget_penalty(2.0), torch.tensor(3 * torch.sigmoid(torch.tensor(2.0)).item() - 2.0))
+    assert gate.budget_penalty(3.0) == 0.0
+    assert "block" in gate.table_string()
+
+    # binarize: top-k per band, frozen values, state dict keeps the table and the band edges
+    with torch.no_grad():
+        gate.logits.copy_(torch.tensor([[3.0, -1.0, 0.0, 0.5, 0.2], [1.0, 2.0, 0.0, -0.5, 0.1], [-2.0, 1.0, 5.0, 0.0, 0.3]]))
+    assert not gate.is_binarized()
+    gate.binarize_(1)
+    assert gate.is_binarized()
+    assert [gate.open_blocks(b) for b in range(5)] == [[0], [1], [2], [0], [2]]
+    assert set(gate.state_dict().keys()) == {"band_edges", "logits"}
+
+    frozen = ReferenceGate(3, [950, 850, 700, 500], trainable=False)
+    assert not frozen.trainable and len(list(frozen.parameters())) == 0
+    frozen.load_state_dict(gate.state_dict())
+    assert frozen.is_binarized() and frozen.open_blocks(2) == [2]
+
+
+def test_resolve_block_gates():
+    kvs = [(torch.zeros(2, 3, 1, 4), torch.zeros(2, 3, 1, 4)) for _ in range(4)]
+    kvs[3] = None
+    big = moss_image_ref_gate.BINARIZED_LOGIT
+    logits = torch.tensor([[big, -big, 1.0, big], [big, -big, -big, big]])  # [B, blocks]
+    log_g = torch.nn.functional.logsigmoid(logits)
+    out_kv, out_gates = resolve_block_gates(kvs, log_g)
+    assert out_kv[0] is kvs[0] and out_gates[0] is None  # all open: plain concatenation
+    assert out_kv[1] is None and out_gates[1] is None  # all closed: skipped
+    assert out_kv[2] is kvs[2] and out_gates[2] is not None  # mixed: bias path with per-sample log gates
+    torch.testing.assert_close(out_gates[2], log_g[:, 2].clamp(min=moss_image_ref_gate.OFF_LOG_GATE))
+    assert out_kv[3] is None and out_gates[3] is None
+    # no bias path needed at all -> None
+    _, gates_none = resolve_block_gates(kvs[:1], log_g[:, :1])
+    assert gates_none is None
+    # None log gates: pass through
+    same_kv, none_gates = resolve_block_gates(kvs, None)
+    assert same_kv == kvs and none_gates is None
+
+
+@pytest.mark.parametrize("split_attn", [False, True])
+def test_gated_reference_attention_matches_manual_and_limits(split_attn):
+    torch.manual_seed(0)
+    batch, img_len, extra, text_len, heads, dim = 2, 6, 5, 7, 2, 8
+    lens = [4, 7]
+    mask = torch.zeros(batch, text_len, dtype=torch.int32)
+    for i, l in enumerate(lens):
+        mask[i, :l] = 1
+    q = torch.randn(batch, img_len + text_len, heads, dim)
+    k = torch.randn(batch, img_len + extra + text_len, heads, dim)
+    v = torch.randn(batch, img_len + extra + text_len, heads, dim)
+    params = AttentionParams.create_attention_params_from_mask("torch", split_attn, img_len, mask, img_len + extra)
+    q_valid = [img_len + l for l in lens]
+    k_valid = [img_len + extra + l for l in lens]
+
+    def manual(log_g):
+        out = torch.zeros(batch, q.shape[1], heads, dim)
+        for i in range(batch):
+            qi = q[i, : q_valid[i]].transpose(0, 1)
+            ki = k[i, : k_valid[i]].transpose(0, 1)
+            vi = v[i, : k_valid[i]].transpose(0, 1)
+            logits = qi @ ki.transpose(1, 2) * dim**-0.5
+            logits[:, :, img_len : img_len + extra] += log_g[i]
+            out[i, : q_valid[i]] = (torch.softmax(logits, -1) @ vi).transpose(0, 1)
+        return out.flatten(2)
+
+    def assert_valid_close(actual, expected):
+        for i, n in enumerate(q_valid):
+            torch.testing.assert_close(actual[i, :n], expected[i, :n], atol=1e-5, rtol=1e-5)
+
+    log_g = torch.tensor([-0.7, -2.3])
+    out = moss_image_models.gated_reference_attention(q, k, v, img_len, extra, log_g, params)
+    assert out.shape == (batch, q.shape[1], heads * dim)
+    assert_valid_close(out, manual(log_g))
+
+    # g = 1: identical to the plain concatenation
+    out1 = moss_image_models.gated_reference_attention(q, k, v, img_len, extra, torch.zeros(batch), params)
+    assert_valid_close(out1, attention([q, k, v], attn_params=params))
+
+    # g -> 0: identical to the attention without the reference keys
+    out0 = moss_image_models.gated_reference_attention(
+        q, k, v, img_len, extra, torch.full((batch,), moss_image_ref_gate.OFF_LOG_GATE), params
+    )
+    params0 = AttentionParams.create_attention_params_from_mask("torch", split_attn, img_len, mask)
+    k0 = torch.cat([k[:, :img_len], k[:, img_len + extra :]], 1)
+    v0 = torch.cat([v[:, :img_len], v[:, img_len + extra :]], 1)
+    assert_valid_close(out0, attention([q, k0, v0], attn_params=params0))
+
+    # differentiable w.r.t. the gate
+    log_g_grad = log_g.clone().requires_grad_(True)
+    moss_image_models.gated_reference_attention(q, k, v, img_len, extra, log_g_grad, params)[:, :img_len].sum().backward()
+    assert log_g_grad.grad is not None and torch.all(log_g_grad.grad != 0)
+
+
+def test_forward_with_gated_ref_kv():
+    model = make_dit()
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask)
+        plain = model(x, timesteps, context, mask, ref_kv=kvs)
+        base = model(x, timesteps, context, mask)
+    gates_one = [torch.zeros(2) for _ in kvs]
+    gates_off = [torch.full((2,), moss_image_ref_gate.OFF_LOG_GATE) for _ in kvs]
+    with torch.no_grad():
+        out_one = model(x, timesteps, context, mask, ref_kv=kvs, ref_gate=gates_one)
+        out_off = model(x, timesteps, context, mask, ref_kv=kvs, ref_gate=gates_off)
+        out_mixed = model(x, timesteps, context, mask, ref_kv=kvs, ref_gate=[torch.tensor([0.0, -1.0])] + [None] * (len(kvs) - 1))
+    torch.testing.assert_close(out_one, plain, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(out_off, base, atol=1e-5, rtol=1e-5)
+    assert not torch.allclose(out_mixed, plain)
+    with pytest.raises(ValueError):
+        model(x, timesteps, context, mask, ref_kv=kvs, ref_gate=gates_one[:1])
+
+    # the table drives the per-block gates; its logits get gradients through the bias path
+    gate = ReferenceGate(len(kvs), [950, 850, 700, 500], init_logit=1.0)
+    kv_r, g_r = resolve_block_gates(kvs, gate.log_gates(timesteps))
+    out = model(x, timesteps, context, mask, ref_kv=kv_r, ref_gate=g_r)
+    out.square().sum().backward()
+    assert gate.logits.grad is not None
+    bands = gate.band_index(timesteps).tolist()
+    assert torch.all(gate.logits.grad[:, bands] != 0)
+    other = [b for b in range(gate.num_bands) if b not in bands]
+    assert torch.all(gate.logits.grad[:, other] == 0)
+
+
+def test_network_extra_trainable_module_saved_and_loaded(tmp_path):
+    from networks import lora_generic
+
+    dit = make_dit()
+    network = lora_generic.create_network(1.0, 4, 1.0, None, [None], dit)
+    gate = ReferenceGate(3, [950, 850, 700, 500], init_logit=2.0)
+    network.add_extra_trainable_module("ref_gate", gate, 1e-2)
+    network.apply_to([None], dit, False, True)
+
+    params, descriptions = network.prepare_optimizer_params_with_multiple_te_lrs(None, 1e-4, 1e-4)
+    assert descriptions[-1] == "ref_gate" and params[-1]["lr"] == 1e-2
+    assert any(p is gate.logits for p in params[-1]["params"])
+    assert any(p is gate.logits for p in network.get_trainable_params())
+
+    with torch.no_grad():
+        gate.logits.fill_(0.5)
+    path = str(tmp_path / "lora.safetensors")
+    network.save_weights(path, torch.float32, {})
+    from safetensors.torch import load_file
+
+    sd = load_file(path)
+    assert "ref_gate.logits" in sd and "ref_gate.band_edges" in sd
+    assert sd["ref_gate.band_edges"].tolist() == [950.0, 850.0, 700.0, 500.0]
+
+    network2 = lora_generic.create_network(1.0, 4, 1.0, None, [None], make_dit())
+    gate2 = ReferenceGate(3, [950, 850, 700, 500], init_logit=0.0, trainable=False)
+    network2.add_extra_trainable_module("ref_gate", gate2, None)
+    network2.load_weights(path)
+    torch.testing.assert_close(gate2.logits, torch.full((3, 5), 0.5))
+    # the frozen table adds no optimizer group
+    _, descriptions2 = network2.prepare_optimizer_params_with_multiple_te_lrs(None, 1e-4, 1e-4)
+    assert "ref_gate" not in descriptions2
+
+
+def test_edit_trainer_balanced_timesteps():
+    import moss_image_train_network_edit
+    from library import sd3_train_utils
+
+    trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+    trainer.ref_gate = ReferenceGate(SMALL_CONFIG["num_layers"], [950, 850, 700, 500])
+    dit = make_dit()
+    accelerator = FakeAccelerator()
+    noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=1.0)
+    args = make_args(ref_mode="kv", ref_gate=True, ref_gate_balanced_timesteps=True)
+
+    torch.manual_seed(0)
+    bsz = 64
+    latents = torch.randn(bsz, SMALL_CONFIG["latent_channels"], 3, 5)
+    ref = torch.randn(bsz, SMALL_CONFIG["latent_channels"], 3, 5)
+    context = torch.randn(bsz, 5, SMALL_CONFIG["text_dim"])
+    mask = torch.ones(bsz, 5, dtype=torch.int32)
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
+    batch = {"ref_latents": ref, "ref_uncond_embeds": uncond, "ref_uncond_mask": uncond_mask}
+
+    model_pred, target, timesteps, weighting = trainer.get_noise_pred_and_target(
+        args, accelerator, noise_scheduler, latents, batch, [context, mask, torch.zeros(bsz)], dit, None, torch.float32, True, is_train=True
+    )
+    assert model_pred.shape == latents.shape and timesteps.shape == (bsz,) and timesteps.dtype == torch.float32
+    assert torch.all(timesteps > 0) and torch.all(timesteps <= 1000)
+    bands = trainer.ref_gate.band_index(timesteps)
+    assert set(bands.tolist()) == set(range(5))  # every band is drawn (64 draws over 5 bands)
+    # v = noise - x0 target: the noisy input follows (1 - sigma) x0 + sigma noise
+    noise = target + latents
+    assert torch.all(weighting == 1.0)
+
+    # validation keeps the normal sampling
+    out_val = trainer.get_noise_pred_and_target(
+        args, accelerator, noise_scheduler, latents[:2], {k: v[:2] if k == "ref_latents" else v for k, v in batch.items()},
+        [context[:2], mask[:2], torch.zeros(2)], dit, None, torch.float32, True, is_train=False,
+    )
+    assert out_val[0].shape == latents[:2].shape
+
+
+def test_generate_latents_with_gate_table():
+    dit = make_dit()
+    ref = torch.randn(1, SMALL_CONFIG["latent_channels"], 3, 5)
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
+    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask)
+    embeds = torch.randn(1, 5, SMALL_CONFIG["text_dim"])
+    mask = torch.ones(1, 5, dtype=torch.int32)
+    common = dict(height=48, width=80, steps=4, flow_shift=5.0, uncond_skip_layers=(1,), seed=42, device=torch.device("cpu"))
+
+    plain = moss_image_train_utils.generate_latents(dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, **common)
+    gate = ReferenceGate(SMALL_CONFIG["num_layers"], [950, 850, 700, 500], init_logit=moss_image_ref_gate.BINARIZED_LOGIT, trainable=False)
+    all_open = moss_image_train_utils.generate_latents(
+        dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, ref_gate=gate, **common
+    )
+    torch.testing.assert_close(all_open, plain)
+    with torch.no_grad():
+        gate.logits.fill_(0.0)  # continuous g = 0.5 everywhere: bias path
+    half = moss_image_train_utils.generate_latents(
+        dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, ref_gate=gate, **common
+    )
+    assert not torch.allclose(half, plain)
 
 
 # endregion
