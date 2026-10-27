@@ -278,7 +278,9 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
                 sample_prompts_te_outputs = {}
                 with torch.no_grad():
                     for prompt_dict in prompts:
-                        for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", "")]:
+                        # the empty prompt is always cached: the default negative prompt and the reference forward of the
+                        # editing trainer (--ref_mode kv) need it
+                        for p in [prompt_dict.get("prompt", ""), prompt_dict.get("negative_prompt", ""), ""]:
                             if p not in sample_prompts_te_outputs:
                                 logger.info(f"  cache TE outputs for: {p}")
                                 tokens = tokenize_strategy.tokenize(p)

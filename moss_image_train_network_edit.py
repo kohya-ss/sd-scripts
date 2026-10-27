@@ -370,6 +370,11 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref=ref, ref_rope_r=args.ref_rope_r)
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+        if args.ref_mode == "kv" and self.sample_prompts_te_outputs is not None and "" not in self.sample_prompts_te_outputs:
+            # the reference forward needs the empty prompt: take it from the cached outputs of the batches if the sample
+            # prompt cache does not have it (older caches)
+            if self._uncond_embeds is not None:
+                self.sample_prompts_te_outputs[""] = list(self._uncond_embeds)
         if self.ref_gate is not None:
             self.prepare_ref_gate_after_load(args)  # binarize once the weights are loaded (first call is before training)
             logger.info(f"reference gate table (step {global_step}):")

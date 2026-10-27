@@ -623,7 +623,10 @@ def _sample_image_inference(
     if ref is not None and ref_mode == "kv":
         uncond = encode_prompt("")
         if uncond is None:
-            logger.warning("Cannot encode the empty prompt for the reference forward, skipping sample")
+            logger.warning(
+                "Cannot encode the empty prompt for the reference forward (not in the cached sample prompt outputs and no text"
+                " encoder), skipping sample"
+            )
             return
         with accelerator.autocast():
             ref_kv = compute_reference_kv(
