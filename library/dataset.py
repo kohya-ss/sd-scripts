@@ -244,6 +244,7 @@ class ImageInfo:
         self.cond_latents: Optional[torch.Tensor] = None
         self.cond_latents_flipped: Optional[torch.Tensor] = None
         self.cond_latents_npz: Optional[str] = None
+        self.cond_mask: Optional[torch.Tensor] = None  # alpha (hole) mask of the conditioning image [H, W], flipped at runtime
         self.image: Optional[Image.Image] = None  # optional, original PIL Image
         self.text_encoder_outputs_npz: Optional[str] = None  # filename. set in cache_text_encoder_outputs
 

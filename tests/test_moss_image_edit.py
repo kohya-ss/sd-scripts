@@ -11,7 +11,7 @@ import pytest
 import torch
 from PIL import Image
 
-from library import config_util, moss_image_models, moss_image_train_utils, strategy_base
+from library import config_util, flux2_vae, moss_image_models, moss_image_train_utils, strategy_base
 from library.controlnet_dataset import ControlNetDataset
 from library.subset import ControlNetSubset
 
@@ -220,24 +220,55 @@ def test_setup_parser_edit_defaults():
     assert args.cache_ref_latents is False
     assert args.cache_ref_latents_to_disk is False
     assert args.ref_latents_cache_dir is None
-    assert args.ref_mask_fill is None
-    assert args.ref_random_mask is False
+    assert args.ref_mask_source == "none"
+    assert args.ref_mask_space == "latent"
+    assert args.ref_mask_fill_pixel == 128
+    assert args.ref_mask_fill_latent == 0.0
 
 
-def test_apply_random_reference_masks():
+def test_random_reference_masks():
     import moss_image_train_network_edit
+
+    masks = moss_image_train_network_edit.generate_random_reference_masks(2, 64, 96)
+    assert masks.shape == (2, 64, 96) and masks.dtype == torch.float32
+    for i in range(2):
+        assert set(masks[i].unique().tolist()) == {0.0, 1.0}
+        assert 0 < masks[i].mean() < 1
 
     torch.manual_seed(0)
     images = torch.rand(2, 3, 64, 96) * 2 - 1
-    masked = moss_image_train_network_edit.apply_random_reference_masks(images, 128)
+    masked = moss_image_train_network_edit.apply_random_reference_masks_pixel(images, 128)
     assert masked.shape == images.shape
     value = 128 / 127.5 - 1.0
     for i in range(2):
         changed = (masked[i] != images[i]).any(0)  # [H, W]
         assert changed.any() and not changed.all()
         assert torch.all(masked[i][:, changed] == value)
-        assert torch.all(masked[i][:, ~changed] == images[i][:, ~changed])
     assert not torch.equal(images, masked)  # the input is not modified in place
+
+
+def test_latent_mask_blend_has_sub_token_precision():
+    torch.manual_seed(0)
+    # pixel mask [B, H, W] covering exactly one 8px latent cell (the top-left cell of the second token) plus a half-covered cell
+    mask = torch.zeros(1, 64, 96)
+    mask[0, 0:8, 16:24] = 1.0  # one full latent cell -> m = 1
+    mask[0, 32:36, 0:8] = 1.0  # half of a cell -> m = 0.5
+    m = moss_image_train_utils.downsample_mask_to_latents(mask)
+    assert m.shape == (1, 1, 8, 12)
+    assert m[0, 0, 0, 2] == 1.0 and m[0, 0, 4, 0] == 0.5 and m.sum() == 1.5
+
+    ref = torch.randn(1, 128, 4, 6)  # normalized, patchified latents of a 64x96 image
+    fill = 0.0
+    out = moss_image_train_utils.apply_reference_latent_mask(ref, m, fill)
+    assert out.shape == ref.shape
+    # per latent cell: unpatchify and compare with the 1/8 resolution blend
+    ref_cells = flux2_vae.unpatchify_latents(ref)  # [1, 32, 8, 12]
+    out_cells = flux2_vae.unpatchify_latents(out)
+    expected = ref_cells * (1 - m) + fill * m
+    torch.testing.assert_close(out_cells, expected)
+    assert torch.all(out_cells[0, :, 0, 2] == fill)  # the masked cell is filled
+    assert torch.all(out_cells[0, :, 0, 3] == ref_cells[0, :, 0, 3])  # the other cell of the same token is untouched
+    torch.testing.assert_close(out_cells[0, :, 4, 0], 0.5 * ref_cells[0, :, 4, 0])  # the half covered cell is blended
 
 
 def test_edit_trainer_call_dit_and_reference_dropout():
@@ -277,7 +308,7 @@ def test_edit_trainer_call_dit_and_reference_dropout():
     assert model_pred.shape == x.shape and target.shape == x.shape
 
 
-def test_load_reference_pixels_alpha_and_mask_fill(tmp_path):
+def test_load_reference_pixels_with_alpha_or_mask(tmp_path):
     rgb = np.zeros((32, 48, 3), dtype=np.uint8)
     rgb[..., 0] = 200
     alpha = np.zeros((32, 48), dtype=np.uint8)
@@ -286,25 +317,25 @@ def test_load_reference_pixels_alpha_and_mask_fill(tmp_path):
     Image.fromarray(rgb).save(tmp_path / "ref_rgb.png")
     Image.fromarray(alpha).save(tmp_path / "mask.png")
 
-    # no fill: the alpha channel is ignored
-    pixels = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref.png"), 48, 32)
-    assert pixels.shape == (1, 3, 32, 48)
+    # default: the alpha channel is ignored, no mask
+    pixels, mask = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref.png"), 48, 32)
+    assert pixels.shape == (1, 3, 32, 48) and mask is None
     torch.testing.assert_close(pixels[0, 0], torch.full((32, 48), 200 / 127.5 - 1.0))
 
-    # alpha fill
-    filled = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref.png"), 48, 32, alpha_fill=128)
-    gray = torch.full((3,), 128 / 127.5 - 1.0)
-    torch.testing.assert_close(filled[0, :, 8:16, 8:24], gray[:, None, None].expand(3, 8, 16))
-    torch.testing.assert_close(filled[0, :, :8], pixels[0, :, :8])
+    # mask from the alpha channel (pixels unchanged)
+    pixels2, mask = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref.png"), 48, 32, mask_from_alpha=True)
+    torch.testing.assert_close(pixels2, pixels)
+    assert mask.shape == (1, 32, 48)
+    assert torch.all(mask[0, 8:16, 8:24] == 1.0) and mask.sum() == 8 * 16
 
-    # mask file instead of the alpha channel, with a resize
-    masked = moss_image_train_utils.load_reference_pixels(
-        str(tmp_path / "ref_rgb.png"), 96, 64, alpha_fill=0, mask_path=str(tmp_path / "mask.png")
-    )
-    assert masked.shape == (1, 3, 64, 96)
-    torch.testing.assert_close(masked[0, :, 16:32, 16:48], torch.full((3, 16, 32), -1.0))
-    torch.testing.assert_close(masked[0, 0, :16], torch.full((16, 96), 200 / 127.5 - 1.0))
-    torch.testing.assert_close(masked[0, 1:, :16], torch.full((2, 16, 96), -1.0))
+    # mask file, with a resize
+    pixels3, mask = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref_rgb.png"), 96, 64, mask_path=str(tmp_path / "mask.png"))
+    assert pixels3.shape == (1, 3, 64, 96) and mask.shape == (1, 64, 96)
+    assert torch.all(mask[0, 18:30, 18:46] == 1.0) and torch.all(mask[0, :14] == 0.0)
+
+    # no alpha and no mask: warning, mask None
+    _, mask = moss_image_train_utils.load_reference_pixels(str(tmp_path / "ref_rgb.png"), 48, 32, mask_from_alpha=True)
+    assert mask is None
 
 
 # endregion
@@ -519,6 +550,52 @@ def test_controlnet_dataset_cond_alpha_fill(tmp_path):
     dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), strategy)
     cached = dataset[0]["conditioning_latents"]
     torch.testing.assert_close(cached, vae.encode(cond_filled), atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("cache_to_disk", [False, True])
+def test_controlnet_dataset_cond_load_alpha_returns_masks(tmp_path, cache_to_disk):
+    dataset = make_controlnet_dataset(tmp_path, flip_aug=True, rgba_cond=True)
+    dataset.cond_load_alpha = True
+
+    def check(example):
+        images_or_latents = example["conditioning_images"] if "conditioning_images" in example else example["conditioning_latents"]
+        masks = example["conditioning_masks"]
+        h, w = example["images"].shape[-2:]
+        assert masks.shape == (images_or_latents.shape[0], h, w)
+        for j, flipped in enumerate(example["flippeds"]):
+            m = masks[j]
+            assert set(m.unique().tolist()) <= {0.0, 1.0} and 0 < m.mean() < 1
+            # the hole block is at rows 1/4..1/2 and columns 1/4..1/2 of the source, mirrored when flipped
+            cols = slice(w // 4, w // 2) if not flipped else slice(w - w // 2, w - w // 4)
+            assert torch.all(m[h // 4 : h // 2, cols] == 1.0)
+            assert torch.all(m[: h // 4] == 0.0)
+        return masks
+
+    # pixel path: RGB images + masks from the alpha channel
+    import random
+
+    random.seed(1)
+    pixel_masks = {}
+    for i in range(len(dataset)):
+        example = dataset[i]
+        assert example["conditioning_images"].shape[1] == 3
+        check(example)
+
+    # cached path: masks are cached with the latents (npz alpha_mask key on disk) and flipped with them
+    vae = FakeVAE()
+    strategy = FakeLatentsCachingStrategy(cache_to_disk, batch_size=2, skip_disk_cache_validity_check=False)
+    dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), strategy)
+    if cache_to_disk:
+        for info in dataset.image_data.values():
+            assert any(k.startswith("alpha_mask") for k in np.load(info.cond_latents_npz).files)
+    seen = set()
+    for _ in range(6):
+        for i in range(len(dataset)):
+            example = dataset[i]
+            assert "conditioning_images" not in example
+            check(example)
+            seen.update(bool(f) for f in example["flippeds"])
+    assert seen == {True, False}
 
 
 # endregion

@@ -6,7 +6,7 @@ import argparse
 import gc
 import os
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -300,26 +300,44 @@ def generate_latents(
     return latents
 
 
+# region reference image (editing)
+
+
+def downsample_mask_to_latents(mask: torch.Tensor) -> torch.Tensor:
+    """Pixel resolution hole mask [B, H, W] (1 = hole) -> smooth latent resolution mask [B, 1, H/8, W/8] (area average)"""
+    return torch.nn.functional.avg_pool2d(mask[:, None].float(), flux2_vae.LATENT_SCALE_FACTOR)
+
+
+def apply_reference_latent_mask(ref: torch.Tensor, mask_latents: torch.Tensor, fill: float) -> torch.Tensor:
+    """Blend the normalized, patchified reference latents [B, 128, h, w] with the fill value using the latent resolution
+    mask [B, 1, 2h, 2w]: `ref * (1 - m) + fill * m` per latent cell. The mask is patchified like the latents (the 4 cells of a
+    token keep their own mask value: sub-token precision at the hole boundary)."""
+    mask = flux2_vae.patchify_latents(mask_latents.to(ref.dtype).expand(-1, ref.shape[1] // 4, -1, -1))  # [B, 128, h, w]
+    return ref * (1 - mask) + fill * mask
+
+
 def load_reference_pixels(
-    image_path: str, width: int, height: int, alpha_fill: Optional[int] = None, mask_path: Optional[str] = None
-) -> torch.Tensor:
-    """Load a reference image resized to (width, height) as pixels [1, 3, H, W] in -1..1 (float32). With `alpha_fill`, the
-    region where the alpha channel of the image (or the grayscale `mask_path` image, if given) is >= 128 is filled with
-    the gray level (inpainting hole, 255 = fill), the same as `cond_alpha_fill` of the ControlNet dataset in training."""
+    image_path: str, width: int, height: int, mask_path: Optional[str] = None, mask_from_alpha: bool = False
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """Load a reference image resized to (width, height) as pixels [1, 3, H, W] in -1..1 (float32), and the hole mask
+    [1, H, W] (1 = hole) from the grayscale `mask_path` image (255 = hole) or, with `mask_from_alpha`, from the alpha channel
+    of the image (alpha 255 = hole). The mask is None if neither is given."""
     image = Image.open(image_path)
     rgb = np.array(image.convert("RGB").resize((width, height), Image.LANCZOS), dtype=np.float32)
-    if alpha_fill is not None:
-        if mask_path is not None:
-            alpha = Image.open(mask_path).convert("L")
-        elif image.mode in ("RGBA", "LA") or "transparency" in image.info:
+    pixels = torch.from_numpy(rgb / 127.5 - 1.0).permute(2, 0, 1).unsqueeze(0)
+
+    alpha = None
+    if mask_path is not None:
+        alpha = Image.open(mask_path).convert("L")
+    elif mask_from_alpha:
+        if image.mode in ("RGBA", "LA") or "transparency" in image.info:
             alpha = image.convert("RGBA").getchannel("A")
         else:
-            logger.warning(f"reference image has no alpha channel and no mask is given: nothing is filled: {image_path}")
-            alpha = None
-        if alpha is not None:
-            alpha = np.array(alpha.resize((width, height), Image.NEAREST), dtype=np.float32)[..., None]
-            rgb = np.where(alpha >= 128, float(alpha_fill), rgb)
-    return torch.from_numpy(rgb / 127.5 - 1.0).permute(2, 0, 1).unsqueeze(0)
+            logger.warning(f"reference image has no alpha channel: no hole mask is applied: {image_path}")
+    if alpha is None:
+        return pixels, None
+    mask = np.array(alpha.resize((width, height), Image.BILINEAR), dtype=np.float32) / 255.0
+    return pixels, torch.from_numpy(mask).unsqueeze(0)
 
 
 def encode_reference_image(
@@ -328,19 +346,32 @@ def encode_reference_image(
     width: int,
     height: int,
     device: torch.device,
-    alpha_fill: Optional[int] = None,
     mask_path: Optional[str] = None,
+    mask_from_alpha: bool = False,
+    mask_space: str = "latent",
+    fill_pixel: int = 128,
+    fill_latent: float = 0.0,
 ) -> torch.Tensor:
     """Load a reference image (see `load_reference_pixels`), resize it to (width, height) and encode it to normalized,
-    patchified latents [1, 128, H/16, W/16] (float32). The VAE is moved to `device` for the encoding and back afterwards."""
-    pixels = load_reference_pixels(image_path, width, height, alpha_fill, mask_path)
+    patchified latents [1, 128, H/16, W/16] (float32). The hole mask (if any) is applied like in training: `mask_space`
+    latent blends the latents with `fill_latent` using the smooth downsampled mask, pixel fills the pixels with the gray
+    level `fill_pixel` before the VAE. The VAE is moved to `device` for the encoding and back afterwards."""
+    pixels, mask = load_reference_pixels(image_path, width, height, mask_path, mask_from_alpha)
+    if mask is not None and mask_space == "pixel":
+        pixels = torch.where(mask[:, None] >= 0.5, torch.full_like(pixels, fill_pixel / 127.5 - 1.0), pixels)
 
     org_vae_device = vae.device
     vae.to(device)
     with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
         ref = vae.encode_for_dit(pixels.to(device, dtype=vae.dtype)).float()
     vae.to(org_vae_device)
+
+    if mask is not None and mask_space == "latent":
+        ref = apply_reference_latent_mask(ref, downsample_mask_to_latents(mask.to(device)), fill_latent)
     return ref
+
+
+# endregion
 
 
 # endregion
@@ -364,8 +395,8 @@ def sample_images(
 ):
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
     uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
-    (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (mask of the region to fill
-    with the gray level of `--ref_mask_fill`, 255 = fill; without it the alpha channel of the reference image is used)."""
+    (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (hole mask, 255 = hole; with
+    `--ref_mask_source alpha` the alpha channel of the reference image is used instead)."""
     if steps == 0:
         if not args.sample_at_first:
             return
@@ -472,9 +503,9 @@ def _sample_image_inference(
     flow_shift = float(prompt_dict.get("flow_shift", DEFAULT_SAMPLE_FLOW_SHIFT))
     uncond_skip_layers = parse_skip_layers(args.sample_uncond_skip_layers)
     ref_image_path = prompt_dict.get("controlnet_image")  # `--cn`: reference image (editing)
-    ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional mask of the region to fill (255 = fill)
+    ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional hole mask (255 = hole)
     ref_rope_r = float(getattr(args, "ref_rope_r", 1.0))
-    ref_mask_fill = getattr(args, "ref_mask_fill", None)
+    ref_mask_from_alpha = getattr(args, "ref_mask_source", "none") == "alpha"
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -520,7 +551,18 @@ def _sample_image_inference(
     # Encode the reference image (resized to the sample size) with the VAE in float32 outside autocast
     ref = None
     if ref_image_path is not None:
-        ref = encode_reference_image(vae, ref_image_path, width, height, accelerator.device, ref_mask_fill, ref_mask_path)
+        ref = encode_reference_image(
+            vae,
+            ref_image_path,
+            width,
+            height,
+            accelerator.device,
+            ref_mask_path,
+            ref_mask_from_alpha,
+            getattr(args, "ref_mask_space", "latent"),
+            getattr(args, "ref_mask_fill_pixel", 128),
+            getattr(args, "ref_mask_fill_latent", 0.0),
+        )
 
     clean_memory_on_device(accelerator.device)
     latents = generate_latents(

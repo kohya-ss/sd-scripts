@@ -79,16 +79,24 @@ def parse_args() -> argparse.Namespace:
         help="r coordinate of the reference tokens in the RoPE, must match the training (--ref_rope_r, metadata ss_ref_rope_r). Default 1.0",
     )
     parser.add_argument(
-        "--ref_mask_fill",
-        type=int,
-        default=None,
-        help="gray level (0-255) to fill the alpha region of the reference image (or the --ref_mask region) with, as in the training",
-    )
-    parser.add_argument(
         "--ref_mask",
         type=str,
         default=None,
-        help="grayscale mask image of the region of the reference image to fill (255 = fill), `--rm` in prompt lines. Needs --ref_mask_fill",
+        help="grayscale hole mask image of the reference image (255 = hole), `--rm` in prompt lines (inpainting-like LoRA)",
+    )
+    parser.add_argument(
+        "--ref_mask_from_alpha", action="store_true", help="use the alpha channel of the reference image as the hole mask (255 = hole)"
+    )
+    parser.add_argument(
+        "--ref_mask_space",
+        type=str,
+        default="latent",
+        choices=["latent", "pixel"],
+        help="how the hole is applied, must match the training (--ref_mask_space, metadata ss_ref_mask_space). Default latent",
+    )
+    parser.add_argument("--ref_mask_fill_pixel", type=int, default=128, help="gray level of the hole for --ref_mask_space pixel (default 128)")
+    parser.add_argument(
+        "--ref_mask_fill_latent", type=float, default=0.0, help="fill value of the hole in the normalized latent space for --ref_mask_space latent (default 0.0)"
     )
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated images")
     parser.add_argument("--seed", type=int, default=None, help="Seed for generation")
@@ -301,7 +309,16 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
     height, width = check_inputs(args)
     logger.info(f"Encoding reference image: {args.ref_image} (resized to {width}x{height})")
     return moss_image_train_utils.encode_reference_image(
-        vae, args.ref_image, width, height, device, args.ref_mask_fill, args.ref_mask
+        vae,
+        args.ref_image,
+        width,
+        height,
+        device,
+        args.ref_mask,
+        args.ref_mask_from_alpha,
+        args.ref_mask_space,
+        args.ref_mask_fill_pixel,
+        args.ref_mask_fill_latent,
     )
 
 
@@ -384,10 +401,10 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
         if args.ref_image is not None:
             metadata["ref_image"] = f"{args.ref_image}"
             metadata["ref_rope_r"] = f"{args.ref_rope_r}"
-            if args.ref_mask_fill is not None:
-                metadata["ref_mask_fill"] = f"{args.ref_mask_fill}"
-            if args.ref_mask is not None:
-                metadata["ref_mask"] = f"{args.ref_mask}"
+            if args.ref_mask is not None or args.ref_mask_from_alpha:
+                metadata["ref_mask"] = f"{args.ref_mask}" if args.ref_mask is not None else "alpha"
+                metadata["ref_mask_space"] = f"{args.ref_mask_space}"
+                metadata["ref_mask_fill"] = f"{args.ref_mask_fill_pixel if args.ref_mask_space == 'pixel' else args.ref_mask_fill_latent}"
     save_file({"latent": latent.contiguous()}, latent_path, metadata=metadata)
     logger.info(f"Latent saved to: {latent_path}")
     return latent_path

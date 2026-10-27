@@ -172,21 +172,32 @@ class ControlNetDataset(BaseDataset):
         # gray level (0-255) to fill the alpha region (alpha >= 128, e.g. the inpainting hole) of RGBA conditioning images with,
         # set by the trainer. None: the alpha channel is dropped
         self.cond_alpha_fill: Optional[int] = None
+        # return the alpha channel of the conditioning images as a mask (`conditioning_masks` [B, H, W], 1 = alpha 255 = hole)
+        # with the images / latents, set by the trainer (hole applied in the latent space)
+        self.cond_load_alpha: bool = False
         self._warned_cond_alpha_missing = False
 
+    def _check_cond_alpha(self, alpha: np.ndarray, path: str):
+        if not self._warned_cond_alpha_missing and np.all(alpha == 255):
+            logger.warning(
+                f"conditioning image has no alpha channel (or the alpha is all 255): the whole image is treated as the hole."
+                f" This warning is shown once / 条件画像にアルファチャンネルがないか全て 255 です。画像全体が穴として扱われます: {path}"
+            )
+            self._warned_cond_alpha_missing = True
+
     def load_cond_image(self, path: str) -> np.ndarray:
-        """Load a conditioning image as RGB uint8 [H, W, 3]. With `cond_alpha_fill`, the alpha region of an RGBA image is
-        filled with the gray level (255 = fill, as the inpainting masks of the LLLite trainer)."""
+        """Load a conditioning image as uint8 [H, W, 3] (RGB), or [H, W, 4] (RGBA) with `cond_load_alpha`. With `cond_alpha_fill`,
+        the alpha region of an RGBA image is filled with the gray level (255 = fill, as the inpainting masks of the LLLite trainer)
+        and RGB is returned."""
+        if self.cond_load_alpha:
+            img = load_image(path, alpha=True)
+            self._check_cond_alpha(img[:, :, 3], path)
+            return img
         if self.cond_alpha_fill is None:
             return load_image(path)
         img = load_image(path, alpha=True)
         alpha = img[:, :, 3:4]
-        if not self._warned_cond_alpha_missing and np.all(alpha == 255):
-            logger.warning(
-                f"conditioning image has no alpha channel (or the alpha is all 255): the whole image is filled with the gray level."
-                f" This warning is shown once / 条件画像にアルファチャンネルがないか全て 255 です。画像全体がグレーで塗られます: {path}"
-            )
-            self._warned_cond_alpha_missing = True
+        self._check_cond_alpha(alpha, path)
         fill = np.full_like(img[:, :, :3], self.cond_alpha_fill)
         return np.where(alpha >= 128, fill, img[:, :, :3])
 
@@ -259,12 +270,14 @@ class ControlNetDataset(BaseDataset):
 
         def submit_batch(batch: List[Tuple[ImageInfo, ImageInfo]], flip_aug: bool):
             proxies = [proxy for _, proxy in batch]
-            caching_strategy.cache_batch_latents(model, proxies, flip_aug, False, False)
+            # with cond_load_alpha the alpha channel is cached as the alpha mask of the latents (same npz key as the targets)
+            caching_strategy.cache_batch_latents(model, proxies, flip_aug, self.cond_load_alpha, False)
             for info, proxy in batch:
                 proxy.image = None
                 if self.cond_latents_cache_mode == "memory":
                     info.cond_latents = proxy.latents
                     info.cond_latents_flipped = proxy.latents_flipped
+                    info.cond_mask = proxy.alpha_mask
 
         batch: List[Tuple[ImageInfo, ImageInfo]] = []
         current_condition = None  # (bucket_reso, flip_aug)
@@ -275,7 +288,9 @@ class ControlNetDataset(BaseDataset):
                 info.cond_latents_npz = self.get_cond_latents_npz_path(caching_strategy, info, cache_dir)
                 if i % num_processes != process_index:  # each process caches different latents
                     continue
-                if caching_strategy.is_disk_cached_latents_expected(info.bucket_reso, info.cond_latents_npz, subset.flip_aug, False):
+                if caching_strategy.is_disk_cached_latents_expected(
+                    info.bucket_reso, info.cond_latents_npz, subset.flip_aug, self.cond_load_alpha
+                ):
                     continue
 
             condition = (info.bucket_reso, subset.flip_aug)
@@ -306,10 +321,14 @@ class ControlNetDataset(BaseDataset):
         image_index = self.dreambooth_dataset_delegate.buckets_indices[index].batch_index * bucket_batch_size
 
         if self.cond_latents_cache_mode is not None:
-            example["conditioning_latents"] = self._get_cached_conditioning_latents(bucket, image_index, bucket_batch_size, example)
+            latents, masks = self._get_cached_conditioning_latents(bucket, image_index, bucket_batch_size, example)
+            example["conditioning_latents"] = latents
+            if masks is not None:
+                example["conditioning_masks"] = masks
             return example
 
         conditioning_images = []
+        conditioning_masks = []
 
         for i, image_key in enumerate(bucket[image_index : image_index + bucket_batch_size]):
             image_info = self.dreambooth_dataset_delegate.image_data[image_key]
@@ -350,15 +369,25 @@ class ControlNetDataset(BaseDataset):
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
 
+            if self.cond_load_alpha:
+                conditioning_masks.append(torch.from_numpy(cond_img[:, :, 3].astype(np.float32) / 255.0))  # [H, W], 1 = hole
+                cond_img = cond_img[:, :, :3]
+
             cond_img = self.conditioning_image_transforms(cond_img)
             conditioning_images.append(cond_img)
 
         example["conditioning_images"] = torch.stack(conditioning_images).to(memory_format=torch.contiguous_format).float()
+        if self.cond_load_alpha:
+            example["conditioning_masks"] = torch.stack(conditioning_masks)
 
         return example
 
-    def _get_cached_conditioning_latents(self, bucket, image_index: int, bucket_batch_size: int, example) -> torch.Tensor:
+    def _get_cached_conditioning_latents(
+        self, bucket, image_index: int, bucket_batch_size: int, example
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Returns the cached conditioning latents [B, C, h, w] and, with cond_load_alpha, the hole masks [B, H, W] (pixel resolution)"""
         conditioning_latents = []
+        conditioning_masks = []
         for i, image_key in enumerate(bucket[image_index : image_index + bucket_batch_size]):
             image_info = self.dreambooth_dataset_delegate.image_data[image_key]
             flipped = example["flippeds"][i]
@@ -368,8 +397,11 @@ class ControlNetDataset(BaseDataset):
                 assert latents is not None, (
                     f"conditioning latents are not cached / 条件画像のlatentがキャッシュされていません: {image_info.cond_img_path}"
                 )
+                mask = image_info.cond_mask
+                if mask is not None and flipped:
+                    mask = torch.flip(mask, [1])
             else:
-                latents, _, _, flipped_latents, _ = self.cond_latents_caching_strategy.load_latents_from_disk(
+                latents, _, _, flipped_latents, mask = self.cond_latents_caching_strategy.load_latents_from_disk(
                     image_info.cond_latents_npz, image_info.bucket_reso
                 )
                 if flipped:
@@ -377,7 +409,17 @@ class ControlNetDataset(BaseDataset):
                         f"flipped conditioning latents are not cached / 反転した条件画像のlatentがキャッシュされていません: {image_info.cond_latents_npz}"
                     )
                     latents = flipped_latents
+                    mask = None if mask is None else mask[:, ::-1].copy()
                 latents = torch.FloatTensor(latents)
+                mask = None if mask is None else torch.FloatTensor(mask)
             conditioning_latents.append(latents)
+            if self.cond_load_alpha:
+                assert mask is not None, (
+                    f"conditioning mask (alpha) is not cached, re-cache the reference latents / 条件画像のマスク（アルファ）が"
+                    f"キャッシュされていません。参照 latent を再キャッシュしてください: {image_info.cond_img_path}"
+                )
+                conditioning_masks.append(mask)
 
-        return torch.stack(conditioning_latents).to(memory_format=torch.contiguous_format).float()
+        latents = torch.stack(conditioning_latents).to(memory_format=torch.contiguous_format).float()
+        masks = torch.stack(conditioning_masks) if self.cond_load_alpha else None
+        return latents, masks
