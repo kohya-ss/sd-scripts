@@ -377,8 +377,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                 self.sample_prompts_te_outputs[""] = list(self._uncond_embeds)
         if self.ref_gate is not None:
             self.prepare_ref_gate_after_load(args)  # binarize once the weights are loaded (first call is before training)
-            logger.info(f"reference gate table (step {global_step}):")
-            print(self.ref_gate.table_string())
+            if moss_image_train_utils.should_sample_images(args, epoch, global_step):
+                logger.info(f"reference gate table (step {global_step}):")
+                print(self.ref_gate.table_string())
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]  # compatibility
         te = self.get_models_for_text_encoding(args, accelerator, text_encoders)
         te = te[0] if te is not None else None

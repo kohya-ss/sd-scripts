@@ -426,6 +426,17 @@ def encode_reference_image(
 # region sample images during training
 
 
+def should_sample_images(args: argparse.Namespace, epoch, steps) -> bool:
+    """Whether sample images are generated at this point of the training (--sample_at_first, --sample_every_n_steps / epochs)"""
+    if steps == 0:
+        return bool(args.sample_at_first)
+    if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
+        return False
+    if args.sample_every_n_epochs is not None:
+        return epoch is not None and epoch % args.sample_every_n_epochs == 0
+    return steps % args.sample_every_n_steps == 0 and epoch is None
+
+
 def sample_images(
     accelerator: Accelerator,
     args: argparse.Namespace,
@@ -446,18 +457,8 @@ def sample_images(
     (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (hole mask, 255 = hole; with
     `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_kv_context` (optional) wraps the
     reference forward of the KV cache editing (`--ref_mode kv`), e.g. to disable the LoRA for `--ref_kv_lora off`."""
-    if steps == 0:
-        if not args.sample_at_first:
-            return
-    else:
-        if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
-            return
-        if args.sample_every_n_epochs is not None:
-            if epoch is None or epoch % args.sample_every_n_epochs != 0:
-                return
-        else:
-            if steps % args.sample_every_n_steps != 0 or epoch is not None:
-                return
+    if not should_sample_images(args, epoch, steps):
+        return
 
     logger.info(f"Generating sample images at step {steps}")
     if not os.path.isfile(args.sample_prompts) and sample_prompts_te_outputs is None:
