@@ -415,7 +415,11 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         metadata["ss_ref_gate"] = bool(args.ref_gate)
         if args.ref_gate:
             metadata["ss_ref_gate_bands"] = args.ref_gate_bands
+            metadata["ss_ref_gate_init"] = args.ref_gate_init
+            metadata["ss_ref_gate_lr"] = args.ref_gate_lr
             metadata["ss_ref_gate_budget"] = args.ref_gate_budget
+            metadata["ss_ref_gate_budget_weight"] = args.ref_gate_budget_weight
+            metadata["ss_ref_gate_balanced_timesteps"] = bool(args.ref_gate_balanced_timesteps)
             metadata["ss_ref_gate_binarize"] = bool(args.ref_gate_binarize)
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
