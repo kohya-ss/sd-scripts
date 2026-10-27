@@ -11,6 +11,12 @@
 # images / captions are the edited targets (the caption describes the target image). The reference latents can be
 # cached like the target latents (--cache_ref_latents / --cache_ref_latents_to_disk / --ref_latents_cache_dir).
 #
+# --ref_mode kv (one-way reference with cached K/V): instead of concatenating the reference tokens, the clean reference is
+# run through the DiT once per step (empty prompt, --ref_timestep, LoRA off, no grad) and the image / text tokens of the
+# generation additionally attend to the per-block reference keys / values. The reference itself is not updated, so the
+# FFN cost of the reference tokens is saved, and at inference the reference K/V are computed once and shared by all steps.
+# --ref_kv_blocks restricts the blocks which see the reference (all by default).
+#
 # Inpainting-like tasks (--ref_mask_source alpha | random): the hole of the reference is given by the alpha channel of the
 # RGBA reference image (255 = hole) or cut randomly at every step (library.mask_generator). The hole is applied in the
 # latent space by default (--ref_mask_space latent): the clean reference latents (cacheable) are blended with a constant
@@ -18,13 +24,14 @@
 # to the boundary. --ref_mask_space pixel fills the hole with a gray level before the VAE instead (LLLite style).
 
 import argparse
+import contextlib
 from typing import Optional, Union
 
 import numpy as np
 import torch
 from accelerate import Accelerator
 
-from library import moss_image_models, strategy_moss_image
+from library import moss_image_models, strategy_base, strategy_moss_image
 import library.args as args_util
 from library.controlnet_dataset import ControlNetDataset
 from library.dataset import DatasetGroup, MinimalDataset
@@ -44,6 +51,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
     def __init__(self):
         super().__init__()
         self.ref_latents_cached = False
+        self.network = None  # set in post_process_network, used to disable the LoRA during the reference forward
+        self.ref_kv_blocks = None
+        self._uncond_embeds = None  # cached embeddings of the empty prompt [1, L, C] and mask [1, L] (CPU)
 
     def use_controlnet_dataset(self, args) -> bool:
         return True  # conditioning images are the reference images
@@ -68,6 +78,14 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             logger.warning("cache_ref_latents_to_disk is enabled, so cache_ref_latents is also enabled")
             args.cache_ref_latents = True
 
+        if args.ref_mode == "kv":
+            assert args.blocks_to_swap is None or args.blocks_to_swap == 0, (
+                "ref_mode kv does not support blocks_to_swap / ref_mode kv は blocks_to_swap と併用できません"
+            )
+            self.ref_kv_blocks = moss_image_train_utils.parse_skip_layers(args.ref_kv_blocks) or None
+            if self.ref_kv_blocks is not None:
+                logger.info(f"reference K/V is used in blocks: {sorted(self.ref_kv_blocks)}")
+
         if args.ref_mask_source == "random" and args.ref_mask_space == "pixel":
             assert not args.cache_ref_latents, (
                 "ref_mask_source random with ref_mask_space pixel generates a new reference image at every step and cannot be"
@@ -89,6 +107,43 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                         dataset.cond_alpha_fill = args.ref_mask_fill_pixel  # fill the hole of the reference images at load time
                     else:
                         dataset.cond_load_alpha = True  # the dataset returns the hole mask (pixel resolution) with the reference
+
+    def post_process_network(self, args, accelerator, network, text_encoders, unet):
+        super().post_process_network(args, accelerator, network, text_encoders, unet)
+        self.network = network
+
+    @contextlib.contextmanager
+    def lora_disabled(self):
+        """Disable the LoRA (multiplier 0) during the reference forward of --ref_mode kv"""
+        network = self.network
+        if network is None or not hasattr(network, "set_multiplier"):
+            yield
+            return
+        multiplier = network.multiplier
+        network.set_multiplier(0.0)
+        try:
+            yield
+        finally:
+            network.set_multiplier(multiplier)
+
+    def get_uncond_embeds(self, batch, text_encoders, text_encoding_strategy, tokenize_strategy, device, weight_dtype):
+        """Embeddings of the empty prompt for the reference forward: [1, L, C] and mask [1, L]. Taken from the cached text
+        encoder outputs of the batch (every npz holds the unconditional outputs) or encoded once with the text encoder."""
+        if self._uncond_embeds is None:
+            te_outputs = batch.get("text_encoder_outputs_list")
+            if te_outputs is not None and len(te_outputs) >= 5:
+                # [prompt_embeds, attn_mask, uncond_embeds, uncond_mask, caption_dropout_rates] (before the caption dropout)
+                uncond_embeds, uncond_mask = te_outputs[2][:1], te_outputs[3][:1]
+                length = int(uncond_mask.sum())  # drop the padding (all samples share the same unconditional outputs)
+                self._uncond_embeds = (uncond_embeds[:, :length].cpu(), uncond_mask[:, :length].cpu())
+            else:
+                te = text_encoders[0]
+                tokens = tokenize_strategy.tokenize("")
+                with torch.no_grad():
+                    outputs = text_encoding_strategy.encode_tokens(tokenize_strategy, [te], tokens)
+                self._uncond_embeds = (outputs[0].cpu(), outputs[1].cpu())
+        embeds, mask = self._uncond_embeds
+        return embeds.to(device, dtype=weight_dtype), mask.to(device)
 
     def cache_conditioning_latents_if_needed(self, args, accelerator, vae, vae_dtype, dataset_group):
         if not args.cache_ref_latents or not isinstance(dataset_group, DatasetGroup):
@@ -157,6 +212,12 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
 
         batch["ref_latents"] = ref_latents.to(dtype=weight_dtype)
 
+        if args.ref_mode == "kv":
+            # the empty prompt for the reference forward (must be taken before the caption dropout replaces the list)
+            batch["ref_uncond_embeds"], batch["ref_uncond_mask"] = self.get_uncond_embeds(
+                batch, text_encoders, text_encoding_strategy, tokenize_strategy, accelerator.device, weight_dtype
+            )
+
         return super().process_batch(
             batch,
             text_encoders,
@@ -195,11 +256,52 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             drop = torch.rand(ref.shape[0], device=ref.device) < args.ref_dropout_rate
             ref = torch.where(drop.view(-1, 1, 1, 1), torch.zeros_like(ref), ref)
 
+        if args.ref_mode == "kv":
+            # one-way reference: K/V of the clean reference (empty prompt, fixed timestep, LoRA off, no grad), then the
+            # generation forward attends to them
+            with accelerator.autocast():
+                ref_kv = moss_image_train_utils.compute_reference_kv(
+                    accelerator.unwrap_model(dit),
+                    ref,
+                    args.ref_timestep,
+                    batch["ref_uncond_embeds"],
+                    batch["ref_uncond_mask"],
+                    args.ref_rope_r,
+                    self.ref_kv_blocks,
+                    self.lora_disabled,
+                )
+            with torch.set_grad_enabled(is_train), accelerator.autocast():
+                return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv)
+
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref=ref, ref_rope_r=args.ref_rope_r)
 
+    def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+        text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]  # compatibility
+        te = self.get_models_for_text_encoding(args, accelerator, text_encoders)
+        te = te[0] if te is not None else None
+
+        text_encoding_strategy = strategy_base.TextEncodingStrategy.get_strategy()
+        tokenize_strategy = strategy_base.TokenizeStrategy.get_strategy()
+        moss_image_train_utils.sample_images(
+            accelerator,
+            args,
+            epoch,
+            global_step,
+            unet,
+            vae,
+            te,
+            tokenize_strategy,
+            text_encoding_strategy,
+            self.sample_prompts_te_outputs,
+            ref_kv_context=self.lora_disabled,
+        )
+
     def update_metadata(self, metadata, args):
         super().update_metadata(metadata, args)
+        metadata["ss_ref_mode"] = args.ref_mode
+        metadata["ss_ref_timestep"] = args.ref_timestep
+        metadata["ss_ref_kv_blocks"] = args.ref_kv_blocks
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
         metadata["ss_cache_ref_latents"] = bool(args.cache_ref_latents)
@@ -227,6 +329,35 @@ def apply_random_reference_masks_pixel(images: torch.Tensor, fill: int) -> torch
 
 
 def add_moss_image_edit_arguments(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--ref_mode",
+        type=str,
+        default="concat",
+        choices=["concat", "kv"],
+        help="how the reference is given to the DiT. concat (default): the reference tokens are concatenated to the sequence"
+        " (bidirectional, Kontext style). kv: one-way reference with cached K/V: the clean reference is run through the DiT"
+        " once (empty prompt, --ref_timestep, LoRA off, no grad) and the generation attends to its per-block keys / values."
+        " The same mode must be used at inference (metadata ss_ref_mode)"
+        " / 参照の与え方。concat（デフォルト）: 参照トークンをシーケンスに連結（双方向、Kontext 型）。kv: 一方向の KV cache 参照。"
+        "clean な参照を DiT に 1 回通し（空プロンプト、--ref_timestep、LoRA off、no grad）、生成側が block 毎の K/V に注意を向ける。"
+        "推論時も同じモードを使うこと（メタデータ ss_ref_mode）",
+    )
+    parser.add_argument(
+        "--ref_timestep",
+        type=float,
+        default=0.0,
+        help="timestep (sigma * 1000, 0-1000) of the reference forward for --ref_mode kv (default 0 = clean). The reference"
+        " latents themselves are not noised"
+        " / --ref_mode kv の参照 forward の timestep（sigma × 1000、0〜1000、デフォルト 0 = clean）。参照 latent 自体にノイズは乗せない",
+    )
+    parser.add_argument(
+        "--ref_kv_blocks",
+        type=str,
+        default=None,
+        help="comma separated indices of the DiT blocks which attend to the reference K/V for --ref_mode kv (default: all 42"
+        " blocks). The reference forward stops after the last one"
+        " / --ref_mode kv で参照 K/V に注意を向ける DiT block の番号（カンマ区切り、デフォルト: 全 42 block）。参照 forward は最後の block で止まる",
+    )
     parser.add_argument(
         "--ref_dropout_rate",
         type=float,

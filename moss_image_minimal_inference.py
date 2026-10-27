@@ -6,7 +6,9 @@
 #       --prompt "A cat" --image_size 1024 1024 --seed 42 --save_path output
 #
 # Reference-conditioned editing (LoRA trained with moss_image_train_network_edit.py): add `--ref_image path/to/ref.png`
-# (or `--ri path` per prompt line) and the `--ref_rope_r` value used for the training (default 1.0).
+# (or `--ri path` per prompt line) and the `--ref_rope_r` value used for the training (default 1.0). For a LoRA trained
+# with `--ref_mode kv` add `--ref_mode kv` (and `--ref_timestep` / `--ref_kv_blocks` if they were changed): the reference
+# K/V are computed once per image with the base model (without the LoRA) before the LoRA is merged.
 
 import argparse
 import copy
@@ -79,6 +81,18 @@ def parse_args() -> argparse.Namespace:
         help="r coordinate of the reference tokens in the RoPE, must match the training (--ref_rope_r, metadata ss_ref_rope_r). Default 1.0",
     )
     parser.add_argument(
+        "--ref_mode",
+        type=str,
+        default="concat",
+        choices=["concat", "kv"],
+        help="concat: reference tokens concatenated to the sequence. kv: one-way reference with K/V cached from the base model"
+        " (metadata ss_ref_mode). Default concat",
+    )
+    parser.add_argument("--ref_timestep", type=float, default=0.0, help="timestep (sigma * 1000) of the reference forward for --ref_mode kv")
+    parser.add_argument(
+        "--ref_kv_blocks", type=str, default=None, help="comma separated block indices which attend to the reference K/V (--ref_mode kv), default all"
+    )
+    parser.add_argument(
         "--ref_mask",
         type=str,
         default=None,
@@ -138,6 +152,8 @@ def parse_args() -> argparse.Namespace:
             raise ValueError("Either --prompt, --from_file or --interactive must be specified")
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"
+    if args.ref_mode == "kv" and args.blocks_to_swap > 0:
+        raise ValueError("--ref_mode kv does not support --blocks_to_swap")
 
     device = args.device if args.device is not None else "cuda" if torch.cuda.is_available() else "cpu"
     args.device = torch.device(device)
@@ -220,8 +236,8 @@ def load_lora_weights(args: argparse.Namespace, prefix: str) -> Optional[List[Di
     return lora_weights_list
 
 
-def load_dit_model(args: argparse.Namespace, device: torch.device) -> moss_image_models.MossImage:
-    lora_weights_list = load_lora_weights(args, "lora_unet_")
+def load_dit_model(args: argparse.Namespace, device: torch.device, with_lora: bool = True) -> moss_image_models.MossImage:
+    lora_weights_list = load_lora_weights(args, "lora_unet_") if with_lora else None
     loading_device = "cpu" if args.blocks_to_swap > 0 else device
     model = moss_image_utils.load_moss_image_model(
         device,
@@ -292,7 +308,8 @@ def prepare_text_inputs(args: argparse.Namespace, tokenizer, text_encoder, devic
     """Return (prompt embeds, negative prompt embeds) [L, C] tensors on the CPU. The cache is keyed by the prompt string."""
     prompt = process_escape(args.prompt)
     negative_prompt = process_escape(args.negative_prompt)
-    to_encode = [p for p in dict.fromkeys([prompt, negative_prompt]) if p not in conds_cache]
+    prompts = [prompt, negative_prompt] + ([""] if args.ref_mode == "kv" else [])  # "" for the reference forward
+    to_encode = [p for p in dict.fromkeys(prompts) if p not in conds_cache]
     if to_encode:
         logger.info(f"Encoding {len(to_encode)} prompt(s) with the Text Encoder")
         embeds = encode_prompts(tokenizer, text_encoder, to_encode, args.max_token_length, device)
@@ -322,6 +339,26 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
     )
 
 
+def compute_reference_kv(
+    args: argparse.Namespace, dit: moss_image_models.MossImage, ref: Optional[torch.Tensor], uncond_embeds: torch.Tensor, device: torch.device
+) -> Optional[list]:
+    """Reference K/V for --ref_mode kv from the (base) DiT, moved to the CPU (the DiT is reloaded with the LoRA afterwards)."""
+    if ref is None or args.ref_mode != "kv":
+        return None
+    logger.info(f"Computing the reference K/V (timestep {args.ref_timestep}, blocks {args.ref_kv_blocks or 'all'})")
+    uncond, uncond_mask = moss_image_utils.pad_text_embeds([uncond_embeds.to(device)])
+    ref_kv = moss_image_train_utils.compute_reference_kv(
+        dit,
+        ref.to(device, dtype=dit.dtype),
+        args.ref_timestep,
+        uncond.to(dit.dtype),
+        uncond_mask,
+        args.ref_rope_r,
+        moss_image_train_utils.parse_skip_layers(args.ref_kv_blocks) or None,
+    )
+    return [None if kv is None else (kv[0].cpu(), kv[1].cpu()) for kv in ref_kv]
+
+
 def generate_latents(
     args: argparse.Namespace,
     dit: moss_image_models.MossImage,
@@ -330,14 +367,18 @@ def generate_latents(
     device: torch.device,
     seed: int,
     ref: Optional[torch.Tensor] = None,
+    ref_kv: Optional[list] = None,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32)."""
+    if ref_kv is not None:
+        ref_kv = [None if kv is None else (kv[0].to(device), kv[1].to(device)) for kv in ref_kv]
+        ref = None  # the reference is given through the K/V
     height, width = check_inputs(args)
     uncond_skip_layers = moss_image_train_utils.parse_skip_layers(args.uncond_skip_layers)
     logger.info(
         f"Image size: {height}x{width} (HxW), steps: {args.infer_steps}, guidance: {args.guidance_scale}, "
         f"flow shift: {args.flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
-        + ("" if ref is None else f", reference image: {args.ref_image} (rope r: {args.ref_rope_r})")
+        + ("" if (ref is None and ref_kv is None) else f", reference image: {args.ref_image} (mode: {args.ref_mode}, rope r: {args.ref_rope_r})")
     )
 
     positive, positive_mask = moss_image_utils.pad_text_embeds([prompt_embeds.to(device)])
@@ -360,6 +401,7 @@ def generate_latents(
         device,
         ref=ref,
         ref_rope_r=args.ref_rope_r,
+        ref_kv=ref_kv,
     )
 
 
@@ -401,6 +443,10 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
         if args.ref_image is not None:
             metadata["ref_image"] = f"{args.ref_image}"
             metadata["ref_rope_r"] = f"{args.ref_rope_r}"
+            metadata["ref_mode"] = f"{args.ref_mode}"
+            if args.ref_mode == "kv":
+                metadata["ref_timestep"] = f"{args.ref_timestep}"
+                metadata["ref_kv_blocks"] = f"{args.ref_kv_blocks}"
             if args.ref_mask is not None or args.ref_mask_from_alpha:
                 metadata["ref_mask"] = f"{args.ref_mask}" if args.ref_mask is not None else "alpha"
                 metadata["ref_mask_space"] = f"{args.ref_mask_space}"
@@ -450,8 +496,10 @@ def generate_single(args: argparse.Namespace):
     text_encoder_device = torch.device("cpu") if args.text_encoder_cpu else device
     tokenizer = moss_image_utils.load_tokenizer(args.tokenizer_cache_dir)
     text_encoder = load_text_encoder(args, text_encoder_device)
-    prompt_embeds, negative_embeds = prepare_text_inputs(args, tokenizer, text_encoder, text_encoder_device, {})
-    del text_encoder
+    conds_cache = {}
+    prompt_embeds, negative_embeds = prepare_text_inputs(args, tokenizer, text_encoder, text_encoder_device, conds_cache)
+    uncond_embeds = conds_cache.get("")
+    del text_encoder, conds_cache
     gc.collect()
     clean_memory_on_device(device)
 
@@ -460,9 +508,20 @@ def generate_single(args: argparse.Namespace):
     ref = encode_reference(args, vae, device)
     clean_memory_on_device(device)
 
-    # 2. DiT
-    dit = load_dit_model(args, device)
-    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref)
+    # reference K/V (--ref_mode kv) from the base model, before the LoRA is merged
+    ref_kv = None
+    if ref is not None and args.ref_mode == "kv":
+        dit = load_dit_model(args, device, with_lora=False)
+        ref_kv = compute_reference_kv(args, dit, ref, uncond_embeds, device)
+        if args.lora_weight:
+            del dit
+            gc.collect()
+            clean_memory_on_device(device)
+            dit = load_dit_model(args, device)
+    else:
+        # 2. DiT
+        dit = load_dit_model(args, device)
+    latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref, ref_kv)
     del dit
     gc.collect()
     clean_memory_on_device(device)
@@ -493,6 +552,7 @@ def generate_batch(args: argparse.Namespace):
     text_encoder = load_text_encoder(args, text_encoder_device)
     conds_cache = {}
     all_embeds = [prepare_text_inputs(a, tokenizer, text_encoder, text_encoder_device, conds_cache) for a in all_args]
+    uncond_embeds = conds_cache.get("")
     del text_encoder, conds_cache
     gc.collect()
     clean_memory_on_device(device)
@@ -503,12 +563,24 @@ def generate_batch(args: argparse.Namespace):
     all_refs = [encode_reference(a, vae, device) for a in all_args]
     clean_memory_on_device(device)
 
+    # reference K/V (--ref_mode kv) from the base model, before the LoRA is merged
+    all_ref_kvs = [None] * len(all_args)
+    if args.ref_mode == "kv" and any(r is not None for r in all_refs):
+        dit = load_dit_model(args, device, with_lora=False)
+        all_ref_kvs = [compute_reference_kv(a, dit, r, uncond_embeds, device) for a, r in zip(all_args, all_refs)]
+        if args.lora_weight:
+            del dit
+            gc.collect()
+            clean_memory_on_device(device)
+            dit = load_dit_model(all_args[0], device)
+    else:
+        dit = load_dit_model(all_args[0], device)
+
     # 2. generate all latents
-    dit = load_dit_model(all_args[0], device)
     all_latents = []
-    for i, (prompt_args, (prompt_embeds, negative_embeds), ref) in enumerate(zip(all_args, all_embeds, all_refs)):
+    for i, (prompt_args, (prompt_embeds, negative_embeds), ref, ref_kv) in enumerate(zip(all_args, all_embeds, all_refs, all_ref_kvs)):
         logger.info(f"Generating {i + 1}/{len(all_args)}: {prompt_args.prompt}")
-        all_latents.append(generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref))
+        all_latents.append(generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv))
     del dit
     gc.collect()
     clean_memory_on_device(device)
@@ -520,6 +592,8 @@ def generate_batch(args: argparse.Namespace):
 
 
 def generate_interactive(args: argparse.Namespace):
+    if args.ref_mode == "kv" and args.lora_weight:
+        raise ValueError("--ref_mode kv with a LoRA is not supported in the interactive mode (the reference K/V need the base model): use --from_file")
     device = args.device
     text_encoder_device = torch.device("cpu") if args.text_encoder_cpu else device
     tokenizer = moss_image_utils.load_tokenizer(args.tokenizer_cache_dir)
@@ -551,7 +625,8 @@ def generate_interactive(args: argparse.Namespace):
                 prompt_args.seed = prompt_args.seed if prompt_args.seed is not None else random.randint(0, 2**32 - 1)
                 prompt_embeds, negative_embeds = prepare_text_inputs(prompt_args, tokenizer, text_encoder, text_encoder_device, conds_cache)
                 ref = encode_reference(prompt_args, vae, device)
-                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref)
+                ref_kv = compute_reference_kv(prompt_args, dit, ref, conds_cache.get(""), device)  # base model (no LoRA) in this mode
+                latents = generate_latents(prompt_args, dit, prompt_embeds, negative_embeds, device, prompt_args.seed, ref, ref_kv)
                 save_output(prompt_args, vae, latents, device)
                 if vae is not None:
                     vae.to("cpu")

@@ -3,10 +3,11 @@
 # to the nearest sigma of the training grid (shift 1, 1000 steps) and integrated with Euler steps in float32.
 
 import argparse
+import contextlib
 import gc
 import os
 import time
-from typing import Optional, Tuple
+from typing import Callable, ContextManager, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -259,12 +260,14 @@ def generate_latents(
     show_progress: bool = True,
     ref: Optional[torch.Tensor] = None,
     ref_rope_r: float = 1.0,
+    ref_kv: Optional[list] = None,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32).
 
     The initial noise is drawn on a CPU generator in float32 and CFG / Euler updates are done in float32 like the official
     pipeline. CFG is applied when `guidance_scale != 1` and the negative embeddings are given. `ref` (normalized, patchified
-    reference latents [1, 128, Hr/16, Wr/16]) is given to both the conditional and the unconditional branch.
+    reference latents [1, 128, Hr/16, Wr/16], sequence concatenation) or `ref_kv` (cached reference K/V from
+    `compute_reference_kv`, one-way reference) is given to both the conditional and the unconditional branch.
     """
     generator = torch.Generator(device="cpu")
     if seed is not None:
@@ -288,10 +291,10 @@ def generate_latents(
         for i in range(num_steps):
             timestep = (sigmas[i] * NUM_TRAIN_TIMESTEPS).expand(latents.shape[0])
             x = latents.to(dit.dtype)
-            prediction = dit(x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r).float()
+            prediction = dit(x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r, ref_kv=ref_kv).float()
             if do_cfg:
                 uncond = dit(
-                    x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers, ref=ref, ref_rope_r=ref_rope_r
+                    x, timestep, negative, negative_mask, skip_layers=uncond_skip_layers, ref=ref, ref_rope_r=ref_rope_r, ref_kv=ref_kv
                 ).float()
                 prediction = uncond + guidance_scale * (prediction - uncond)
             latents = euler_step(latents, prediction, sigmas, i)
@@ -301,6 +304,30 @@ def generate_latents(
 
 
 # region reference image (editing)
+
+
+def compute_reference_kv(
+    dit: moss_image_models.MossImage,
+    ref: torch.Tensor,
+    ref_timestep: float,
+    uncond_embeds: torch.Tensor,
+    uncond_mask: Optional[torch.Tensor],
+    ref_rope_r: float = 1.0,
+    blocks: Optional[Sequence[int]] = None,
+    lora_off_context: Optional[Callable[[], ContextManager]] = None,
+) -> list:
+    """Cached reference K/V for the one-way reference (editing, --ref_mode kv): one forward of the clean reference latents
+    [B, 128, Hr/16, Wr/16] with the empty prompt embeddings and the fixed `ref_timestep` (sigma * 1000), without gradients
+    and, with `lora_off_context` (a context manager factory which disables the LoRA), without the LoRA. The result depends
+    only on the reference image, so it is computed once per image at inference and shared by all steps."""
+    batch = ref.shape[0]
+    timesteps = torch.full((batch,), float(ref_timestep), dtype=torch.float32, device=ref.device)
+    if uncond_embeds.shape[0] == 1 and batch > 1:
+        uncond_embeds = uncond_embeds.expand(batch, -1, -1)
+        uncond_mask = None if uncond_mask is None else uncond_mask.expand(batch, -1)
+    context = lora_off_context() if lora_off_context is not None else contextlib.nullcontext()
+    with torch.no_grad(), context:
+        return dit.forward_ref_kv(ref, timesteps, uncond_embeds.to(ref.device), uncond_mask, ref_rope_r=ref_rope_r, blocks=blocks)
 
 
 def downsample_mask_to_latents(mask: torch.Tensor) -> torch.Tensor:
@@ -392,11 +419,13 @@ def sample_images(
     text_encoding_strategy,
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
+    ref_kv_context: Optional[Callable[[], ContextManager]] = None,
 ):
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
     uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
     (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (hole mask, 255 = hole; with
-    `--ref_mask_source alpha` the alpha channel of the reference image is used instead)."""
+    `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_kv_context` disables the LoRA
+    during the reference forward of the KV cache editing (`--ref_mode kv`)."""
     if steps == 0:
         if not args.sample_at_first:
             return
@@ -451,6 +480,7 @@ def sample_images(
             steps,
             sample_prompts_te_outputs,
             prompt_replacement,
+            ref_kv_context,
         )
 
     if distributed_state.num_processes <= 1:
@@ -491,6 +521,7 @@ def _sample_image_inference(
     steps,
     sample_prompts_te_outputs,
     prompt_replacement,
+    ref_kv_context=None,
 ):
     """Generate a single sample image."""
     prompt = prompt_dict.get("prompt", "")
@@ -506,6 +537,7 @@ def _sample_image_inference(
     ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional hole mask (255 = hole)
     ref_rope_r = float(getattr(args, "ref_rope_r", 1.0))
     ref_mask_from_alpha = getattr(args, "ref_mask_source", "none") == "alpha"
+    ref_mode = getattr(args, "ref_mode", "concat")
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -522,7 +554,7 @@ def _sample_image_inference(
     logger.info(
         f"  prompt: {prompt}, negative: {negative_prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, "
         f"flow_shift: {flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
-        + ("" if ref_image_path is None else f", reference image: {ref_image_path} (rope r: {ref_rope_r})")
+        + ("" if ref_image_path is None else f", reference image: {ref_image_path} (mode: {ref_mode}, rope r: {ref_rope_r})")
     )
 
     # Encode prompt: [prompt_embeds [1, L, C], attn_mask [1, L]]
@@ -564,6 +596,26 @@ def _sample_image_inference(
             getattr(args, "ref_mask_fill_latent", 0.0),
         )
 
+    # One-way reference: cache the reference K/V once (empty prompt, fixed timestep, LoRA off)
+    ref_kv = None
+    if ref is not None and ref_mode == "kv":
+        uncond = encode_prompt("")
+        if uncond is None:
+            logger.warning("Cannot encode the empty prompt for the reference forward, skipping sample")
+            return
+        with accelerator.autocast():
+            ref_kv = compute_reference_kv(
+                dit,
+                ref.to(dit.dtype),
+                float(getattr(args, "ref_timestep", 0.0)),
+                uncond[0].to(dit.dtype),
+                uncond[1],
+                ref_rope_r,
+                parse_skip_layers(getattr(args, "ref_kv_blocks", None)) or None,
+                ref_kv_context,
+            )
+        ref = None
+
     clean_memory_on_device(accelerator.device)
     latents = generate_latents(
         dit,
@@ -581,7 +633,9 @@ def _sample_image_inference(
         accelerator.device,
         ref=ref,
         ref_rope_r=ref_rope_r,
+        ref_kv=ref_kv,
     )
+    del ref_kv
 
     # Decode latents in float32 outside autocast (the VAE is in float32)
     gc.collect()

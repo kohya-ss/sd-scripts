@@ -10,7 +10,7 @@
 # - Gradient checkpointing (optionally with CPU / unsloth offloading), block swapping and per-block torch.compile hooks.
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -195,14 +195,26 @@ class MossImageBlock(nn.Module):
         self.unsloth_offload_checkpointing = False
 
     def _forward(
-        self, x: torch.Tensor, rope: torch.Tensor, modulation: torch.Tensor, attn_params: AttentionParams
-    ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        rope: torch.Tensor,
+        modulation: torch.Tensor,
+        attn_params: AttentionParams,
+        ref_k: Optional[torch.Tensor] = None,
+        ref_v: Optional[torch.Tensor] = None,
+        return_kv: bool = False,
+    ):
         """
         Args:
             x: [B, N + L, D] image tokens followed by (right-padded) text tokens
             rope: [B, N + L, head_dim]
             modulation: [B, 6, D]
-            attn_params: attention parameters built from the text mask (img_len = N)
+            attn_params: attention parameters built from the text mask (img_len = N; kv_img_len = N + Nr with ref_k / ref_v)
+            ref_k, ref_v: [B, Nr, heads, head_dim] cached reference keys / values (after qk-norm and RoPE) of this block,
+                inserted after the image tokens on the key / value side (one-way reference: the reference is not updated)
+            return_kv: also return the keys / values (after qk-norm and RoPE) of this block, [B, N + L, heads, head_dim]
+        Returns:
+            [B, N + L, D], or (output, (k, v)) with return_kv
         """
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
@@ -213,16 +225,32 @@ class MossImageBlock(nn.Module):
         k = self.k_norm(self.proj.k(y).unflatten(-1, (self.heads, -1)))
         v = self.proj.v(y).unflatten(-1, (self.heads, -1))
         del y
-        x = x + self.proj.o(moss_attention(q, k, v, rope, attn_params)) * gate_a[:, None]
+        q = apply_rope(q, rope).to(v.dtype)
+        k = apply_rope(k, rope).to(v.dtype)
+        kv = (k, v) if return_kv else None
+        if ref_k is not None:
+            # keys: [image N, reference Nr, text L] so that the valid tokens stay a prefix per sample (see AttentionParams)
+            n = attn_params.img_len if attn_params.img_len is not None else k.shape[1]
+            k = torch.cat((k[:, :n], ref_k.to(k.dtype), k[:, n:]), 1)
+            v = torch.cat((v[:, :n], ref_v.to(v.dtype), v[:, n:]), 1)
+        x = x + self.proj.o(attention([q, k, v], attn_params=attn_params)) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self.proj.ffn_up_gate(y.to(dtype)).chunk(2, -1)
         del y
-        return x + self.proj.ffn_down(situ_glu(hidden, gate)) * gate_f[:, None]
+        x = x + self.proj.ffn_down(situ_glu(hidden, gate)) * gate_f[:, None]
+        return (x, kv) if return_kv else x
 
     def forward(
-        self, x: torch.Tensor, rope: torch.Tensor, modulation: torch.Tensor, attn_params: AttentionParams
-    ) -> torch.Tensor:
-        return _checkpointed_forward(self, self._forward, x, rope, modulation, attn_params)
+        self,
+        x: torch.Tensor,
+        rope: torch.Tensor,
+        modulation: torch.Tensor,
+        attn_params: AttentionParams,
+        ref_k: Optional[torch.Tensor] = None,
+        ref_v: Optional[torch.Tensor] = None,
+        return_kv: bool = False,
+    ):
+        return _checkpointed_forward(self, self._forward, x, rope, modulation, attn_params, ref_k, ref_v, return_kv)
 
 
 def _checkpointed_forward(module: nn.Module, forward_fn, *args):
@@ -294,6 +322,7 @@ class MossImageRoPE(nn.Module):
         text_lens: torch.Tensor,
         ref_size: Optional[Tuple[int, int]] = None,
         ref_r: float = 1.0,
+        image_r: float = 0.0,
     ) -> torch.Tensor:
         """
         Args:
@@ -302,6 +331,8 @@ class MossImageRoPE(nn.Module):
             text_lens: [B] number of valid text tokens per sample (int tensor)
             ref_size: (height, width) of the reference image token grid, if reference tokens follow the image tokens
             ref_r: r coordinate of the reference tokens
+            image_r: r coordinate of the image tokens (0 in the base model; the reference forward of the KV cache editing
+                uses the reference r so that the cached keys carry the relative offset)
         Returns:
             [B, H*W (+ Hr*Wr) + L_max, head_dim] float32 (first half sin, second half cos)
         """
@@ -310,7 +341,7 @@ class MossImageRoPE(nn.Module):
             self.bands = self._default_bands(device)
 
         batch = text_lens.shape[0]
-        coords = [self._image_coords(height, width, 0.0, text_lens)]
+        coords = [self._image_coords(height, width, image_r, text_lens)]
         if ref_size is not None:
             coords.append(self._image_coords(ref_size[0], ref_size[1], ref_r, text_lens))
 
@@ -458,30 +489,20 @@ class MossImage(nn.Module):
         head = self.video_head_modulation(time.to(self.video_head_modulation.weight.dtype)).view(batch, 2, -1)
         return mod, head
 
-    def forward(
+    def _prepare_tokens(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
         context: torch.Tensor,
-        context_mask: Optional[torch.Tensor] = None,
-        skip_layers: Optional[Sequence[int]] = None,
-        ref: Optional[torch.Tensor] = None,
-        ref_rope_r: float = 1.0,
-    ) -> torch.Tensor:
-        """
-        Args:
-            x: [B, latent_channels, H, W] patchified and normalized latents
-            timesteps: [B] sigma * 1000 (note: not divided by 1000)
-            context: [B, L, text_dim] right-padded text encoder hidden states
-            context_mask: [B, L] 1 for valid tokens. None means all tokens are valid.
-            skip_layers: indices of the main blocks to skip (used for the unconditional branch of CFG)
-            ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x) for reference-conditioned
-                editing. The reference tokens are embedded like the image tokens and concatenated to the sequence
-                ([image, reference, text]) with the r coordinate of the RoPE set to `ref_rope_r`. They share the (per
-                sample) modulation of the noisy image and attend bidirectionally. Only the image tokens are output.
-            ref_rope_r: r coordinate of the reference tokens in the RoPE (0 = same positions as the image tokens)
-        Returns:
-            [B, latent_channels, H, W]
+        context_mask: Optional[torch.Tensor],
+        ref: Optional[torch.Tensor],
+        ref_rope_r: float,
+        image_r: float,
+        kv_extra_len: int,
+    ):
+        """Shared part of `forward` and `forward_ref_kv`: embeds the image (+ reference) and text tokens.
+
+        Returns: hidden [B, N (+ Nr) + L, D], rope, mod [B, 6, D], head [B, 2, D], attn_params, img_len
         """
         batch, _, height, width = x.shape
         if x.shape[1] != self.latent_channels:
@@ -496,7 +517,6 @@ class MossImage(nn.Module):
         text_lens = context_mask.sum(1)  # [B]
         if torch.any(text_lens < 1):
             raise ValueError("Each sample needs at least one valid text token.")
-        skip_layers = frozenset(skip_layers) if skip_layers else frozenset()
 
         mod, head = self.get_time_modulation(timesteps, batch)
 
@@ -514,21 +534,118 @@ class MossImage(nn.Module):
             seq_img_len += ref_tokens.shape[1]
             del ref_tokens
 
-        rope = self.rope(height, width, text_len, text_lens, ref_size, ref_rope_r).to(video.dtype)  # [B, N (+ Nr) + L, head_dim]
+        rope = self.rope(height, width, text_len, text_lens, ref_size, ref_rope_r, image_r).to(video.dtype)  # [B, N (+ Nr) + L, head_dim]
 
         txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, context_mask)
         text = self.text_embedder(context, rope[:, seq_img_len:], txt_attn_params)
         hidden = torch.cat((video, text), 1)
         del video, text
 
-        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, seq_img_len, context_mask)
+        attn_params = AttentionParams.create_attention_params_from_mask(
+            self.attn_mode, self.split_attn, seq_img_len, context_mask, seq_img_len + kv_extra_len if kv_extra_len > 0 else None
+        )
+        return hidden, rope, mod, head, attn_params, img_len
+
+    def forward_ref_kv(
+        self,
+        ref: torch.Tensor,
+        timesteps: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: Optional[torch.Tensor] = None,
+        ref_rope_r: float = 1.0,
+        blocks: Optional[Sequence[int]] = None,
+    ) -> List[Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """One-way reference for editing: run the clean reference latents through the DiT as the image (its own forward
+        with `context`, usually the empty prompt, and `timesteps`, usually 0) and return the per-block keys / values of
+        the reference image tokens (after qk-norm and RoPE) for `forward(ref_kv=...)`. The reference image tokens get
+        `ref_rope_r` as the r coordinate so that the cached keys carry the relative offset to the image tokens of the
+        generation (RoPE is relative: the reference forward itself is unchanged by this).
+
+        Args:
+            ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x)
+            blocks: indices of the blocks whose K/V are returned (None = all). The forward stops after the last one.
+        Returns:
+            list with one entry per block: (k, v) [B, Nr, heads, head_dim] or None for blocks not in `blocks`
+        """
+        if self.blocks_to_swap:
+            raise RuntimeError("forward_ref_kv does not support block swapping")
+        hidden, rope, mod, _, attn_params, img_len = self._prepare_tokens(ref, timesteps, context, context_mask, None, 1.0, ref_rope_r, 0)
+        blocks = None if blocks is None else frozenset(blocks)
+        last = len(self.layers) - 1 if blocks is None else (max(blocks) if len(blocks) > 0 else -1)
+
+        kvs: List[Optional[Tuple[torch.Tensor, torch.Tensor]]] = [None] * len(self.layers)
+        for layer_index, layer in enumerate(self.layers):
+            if layer_index > last:
+                break
+            hidden, (k, v) = layer(hidden, rope, mod, attn_params, None, None, True)
+            if blocks is None or layer_index in blocks:
+                kvs[layer_index] = (k[:, :img_len], v[:, :img_len])
+        return kvs
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: Optional[torch.Tensor] = None,
+        skip_layers: Optional[Sequence[int]] = None,
+        ref: Optional[torch.Tensor] = None,
+        ref_rope_r: float = 1.0,
+        ref_kv: Optional[Sequence[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: [B, latent_channels, H, W] patchified and normalized latents
+            timesteps: [B] sigma * 1000 (note: not divided by 1000)
+            context: [B, L, text_dim] right-padded text encoder hidden states
+            context_mask: [B, L] 1 for valid tokens. None means all tokens are valid.
+            skip_layers: indices of the main blocks to skip (used for the unconditional branch of CFG)
+            ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x) for reference-conditioned
+                editing. The reference tokens are embedded like the image tokens and concatenated to the sequence
+                ([image, reference, text]) with the r coordinate of the RoPE set to `ref_rope_r`. They share the (per
+                sample) modulation of the noisy image and attend bidirectionally. Only the image tokens are output.
+            ref_rope_r: r coordinate of the reference tokens in the RoPE (0 = same positions as the image tokens)
+            ref_kv: per-block cached reference keys / values from `forward_ref_kv` (one-way reference): the image and
+                text tokens additionally attend to them, the reference itself is not updated. None entries skip the
+                reference in that block. Not with `ref`.
+        Returns:
+            [B, latent_channels, H, W]
+        """
+        if ref is not None and ref_kv is not None:
+            raise ValueError("ref and ref_kv cannot be used together")
+        kv_extra_len = 0
+        if ref_kv is not None:
+            if len(ref_kv) != len(self.layers):
+                raise ValueError(f"ref_kv must have one entry per block ({len(self.layers)}), got {len(ref_kv)}")
+            lens = {kv[0].shape[1] for kv in ref_kv if kv is not None}
+            if len(lens) > 1:
+                raise ValueError("all reference K/V must have the same number of tokens")
+            kv_extra_len = lens.pop() if lens else 0
+        skip_layers = frozenset(skip_layers) if skip_layers else frozenset()
+
+        batch, _, height, width = x.shape
+        hidden, rope, mod, head, attn_params, img_len = self._prepare_tokens(
+            x, timesteps, context, context_mask, ref, ref_rope_r, 0.0, kv_extra_len
+        )
+        if kv_extra_len > 0:
+            # blocks without reference K/V attend to the normal keys only
+            attn_params_plain = AttentionParams.create_attention_params_from_mask(
+                self.attn_mode, self.split_attn, img_len, context_mask.to(torch.int32) if context_mask is not None else None
+            )
 
         for layer_index, layer in enumerate(self.layers):
             if self.blocks_to_swap:
                 self.offloader.wait_for_block(layer_index)
 
             if layer_index not in skip_layers:
-                hidden = layer(hidden, rope, mod, attn_params)
+                kv = ref_kv[layer_index] if ref_kv is not None else None
+                if kv_extra_len > 0:
+                    if kv is not None:
+                        hidden = layer(hidden, rope, mod, attn_params, kv[0], kv[1])
+                    else:
+                        hidden = layer(hidden, rope, mod, attn_params_plain)
+                else:
+                    hidden = layer(hidden, rope, mod, attn_params)
 
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks_forward(self.layers, layer_index)

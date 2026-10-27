@@ -40,6 +40,13 @@ class AttentionParams:
     # sequence to this length instead of masking. Python ints are used (not tensors) so that no graph break
     # occurs inside torch.compile'd blocks; torch.compile treats them as dynamic after the first recompile.
     uniform_seqlen: Optional[int] = None
+    # Key / value side when the keys have extra (always valid) tokens inserted after the image tokens (`kv_img_len` >
+    # `img_len`, e.g. cached reference K/V): valid length, cumulative lengths, padded length and uniform length of the
+    # keys. None means the same as the query side.
+    kv_seqlens: Optional[List[int]] = None
+    cu_seqlens_k: Optional[torch.Tensor] = None
+    max_seqlen_k: Optional[int] = None
+    uniform_kv_seqlen: Optional[int] = None
 
     @property
     def supports_fp32(self) -> bool:
@@ -55,10 +62,21 @@ class AttentionParams:
 
     @staticmethod
     def create_attention_params_from_mask(
-        attn_mode: Optional[str], split_attn: bool, img_len: Optional[int], attention_mask: Optional[torch.Tensor]
+        attn_mode: Optional[str],
+        split_attn: bool,
+        img_len: Optional[int],
+        attention_mask: Optional[torch.Tensor],
+        kv_img_len: Optional[int] = None,
     ) -> "AttentionParams":
+        """
+        Args:
+            img_len: number of (always valid) image tokens before the right-padded text tokens of the queries
+            attention_mask: [B, L] mask of the text tokens (1 = valid), None if all tokens are valid
+            kv_img_len: number of always valid tokens before the text tokens on the key / value side, if the keys have
+                extra tokens inserted after the image tokens (e.g. cached reference K/V). None: same as img_len.
+        """
         if attention_mask is None:
-            # No attention mask provided: assume all tokens are valid
+            # No attention mask provided: assume all tokens are valid (the keys may still be longer than the queries)
             return AttentionParams(attn_mode, split_attn, None, None, None, None, None)
         else:
             # Note: attention_mask is only for text tokens, not including image tokens
@@ -67,33 +85,59 @@ class AttentionParams:
             seqlens = [int(n) + img_len for n in attention_mask.sum(dim=1).tolist()]  # [B]
             max_seqlen = attention_mask.shape[1] + img_len
 
+            kv_extra = 0 if kv_img_len is None else kv_img_len - img_len
+            assert kv_extra >= 0, "kv_img_len must not be smaller than img_len"
+            kv_seqlens = [n + kv_extra for n in seqlens] if kv_extra > 0 else None
+            max_seqlen_k = max_seqlen + kv_extra if kv_extra > 0 else None
+
             if split_attn:
                 # cu_seqlens is not needed for split attention
-                return AttentionParams(attn_mode, split_attn, img_len, attention_mask, seqlens, None, max_seqlen)
+                return AttentionParams(
+                    attn_mode, split_attn, img_len, attention_mask, seqlens, None, max_seqlen, None, kv_seqlens, None, max_seqlen_k
+                )
 
             # All batch elements have the same valid length: `attention` trims the sequence instead of masking
             uniform_seqlen = seqlens[0] if all(n == seqlens[0] for n in seqlens) else None
+            uniform_kv_seqlen = uniform_seqlen + kv_extra if (uniform_seqlen is not None and kv_extra > 0) else None
 
             # Convert attention mask to cumulative sequence lengths for flash attention
             batch_size = attention_mask.shape[0]
             cu_seqlens_list = [0]
+            cu_seqlens_k_list = [0]
             for i in range(batch_size):
                 cu_seqlens_list.append(i * max_seqlen + seqlens[i])  # end of valid tokens for query
                 cu_seqlens_list.append((i + 1) * max_seqlen)  # end of all tokens for query
+                if kv_extra > 0:
+                    cu_seqlens_k_list.append(i * max_seqlen_k + kv_seqlens[i])
+                    cu_seqlens_k_list.append((i + 1) * max_seqlen_k)
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int32, device=attention_mask.device)
+            cu_seqlens_k = (
+                torch.tensor(cu_seqlens_k_list, dtype=torch.int32, device=attention_mask.device) if kv_extra > 0 else None
+            )
 
-            # Expand attention mask to include image tokens
-            attention_mask = torch.nn.functional.pad(attention_mask, (img_len, 0), value=1)  # [B, img_len + L]
+            # Expand attention mask to include the image (and extra key) tokens: the mask is applied to the keys
+            attention_mask = torch.nn.functional.pad(attention_mask, (img_len + kv_extra, 0), value=1)  # [B, kv_img_len + L]
 
             if attn_mode == "xformers":
                 attention_mask = xops.fmha.attn_bias.BlockDiagonalMask.from_seqlens(
-                    seqlens, seqlens, device=attention_mask.device
+                    seqlens, kv_seqlens if kv_seqlens is not None else seqlens, device=attention_mask.device
                 )
             elif attn_mode == "torch":
-                attention_mask = attention_mask[:, None, None, :].to(torch.bool)  # [B, 1, 1, img_len + L]
+                attention_mask = attention_mask[:, None, None, :].to(torch.bool)  # [B, 1, 1, kv_img_len + L]
 
             return AttentionParams(
-                attn_mode, split_attn, img_len, attention_mask, seqlens, cu_seqlens, max_seqlen, uniform_seqlen
+                attn_mode,
+                split_attn,
+                img_len,
+                attention_mask,
+                seqlens,
+                cu_seqlens,
+                max_seqlen,
+                uniform_seqlen,
+                kv_seqlens,
+                cu_seqlens_k,
+                max_seqlen_k,
+                uniform_kv_seqlen,
             )
 
 
@@ -112,8 +156,8 @@ def attention(
 
     Args:
         qkv_or_q: Query tensor [B, L, H, D]. or list of such tensors.
-        k: Key tensor [B, L, H, D].
-        v: Value tensor [B, L, H, D].
+        k: Key tensor [B, Lk, H, D]. Lk may be larger than L (extra key tokens, see `kv_img_len` of AttentionParams).
+        v: Value tensor [B, Lk, H, D].
         attn_params: Attention parameters including mask and sequence lengths.
         drop_rate: Attention dropout rate.
 
@@ -138,11 +182,13 @@ def attention(
     seqlen_trimmed = False
     if not attn_params.split_attn and attn_params.attention_mask is not None and attn_params.uniform_seqlen is not None:
         seqlen = attn_params.uniform_seqlen
+        kv_seqlen = attn_params.uniform_kv_seqlen if attn_params.uniform_kv_seqlen is not None else seqlen
         if seqlen < q.shape[1]:
             q = q[:, :seqlen]
-            k = k[:, :seqlen]
-            v = v[:, :seqlen]
             seqlen_trimmed = True
+        if kv_seqlen < k.shape[1]:
+            k = k[:, :kv_seqlen]
+            v = v[:, :kv_seqlen]
         max_seqlen = attn_params.max_seqlen
         attn_params = AttentionParams.create_attention_params(attn_params.attn_mode, False)  # do not in-place modify
         attn_params.max_seqlen = max_seqlen  # keep max_seqlen for padding
@@ -169,9 +215,12 @@ def attention(
             attn_params = AttentionParams.create_attention_params(attn_params.attn_mode, True)  # do not in-place modify
             attn_params.seqlens = [q.shape[1]] * q.shape[0]
             attn_params.max_seqlen = q.shape[1]
+            if k.shape[1] != q.shape[1]:
+                attn_params.kv_seqlens = [k.shape[1]] * k.shape[0]
+        kv_seqlens = attn_params.kv_seqlens if attn_params.kv_seqlens is not None else attn_params.seqlens
         q = [transpose_fn(q[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(q))]
-        k = [transpose_fn(k[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(k))]
-        v = [transpose_fn(v[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(v))]
+        k = [transpose_fn(k[i : i + 1, : kv_seqlens[i]]) for i in range(len(k))]
+        v = [transpose_fn(v[i : i + 1, : kv_seqlens[i]]) for i in range(len(v))]
     else:
         q = transpose_fn(q)
         k = transpose_fn(k)
@@ -231,10 +280,10 @@ def attention(
             k = k.view(k.shape[0] * k.shape[1], *k.shape[2:])  # [B*L, H, D]
             v = v.view(v.shape[0] * v.shape[1], *v.shape[2:])  # [B*L, H, D]
 
-            # Assume cu_seqlens_q == cu_seqlens_kv and max_seqlen_q == max_seqlen_kv. No dropout support
-            x = sageattn_varlen(
-                q, k, v, attn_params.cu_seqlens, attn_params.cu_seqlens, attn_params.max_seqlen, attn_params.max_seqlen
-            )
+            # No dropout support
+            cu_seqlens_k = attn_params.cu_seqlens_k if attn_params.cu_seqlens_k is not None else attn_params.cu_seqlens
+            max_seqlen_k = attn_params.max_seqlen_k if attn_params.max_seqlen_k is not None else attn_params.max_seqlen
+            x = sageattn_varlen(q, k, v, attn_params.cu_seqlens, cu_seqlens_k, attn_params.max_seqlen, max_seqlen_k)
             q = k = v = None
 
             # Reshape x with shape [(bxs), a, d] to [b, s, a, d]
@@ -262,9 +311,10 @@ def attention(
             k = k.view(k.shape[0] * k.shape[1], *k.shape[2:])  # [B*L, H, D]
             v = v.view(v.shape[0] * v.shape[1], *v.shape[2:])  # [B*L, H, D]
 
-            # Assume cu_seqlens_q == cu_seqlens_kv and max_seqlen_q == max_seqlen_kv
+            cu_seqlens_k = attn_params.cu_seqlens_k if attn_params.cu_seqlens_k is not None else attn_params.cu_seqlens
+            max_seqlen_k = attn_params.max_seqlen_k if attn_params.max_seqlen_k is not None else attn_params.max_seqlen
             x = flash_attn_varlen_func(
-                q, k, v, attn_params.cu_seqlens, attn_params.cu_seqlens, attn_params.max_seqlen, attn_params.max_seqlen, drop_rate
+                q, k, v, attn_params.cu_seqlens, cu_seqlens_k, attn_params.max_seqlen, max_seqlen_k, drop_rate
             )
             q = k = v = None
 

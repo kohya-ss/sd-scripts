@@ -205,6 +205,9 @@ def make_args(**overrides):
         ref_dropout_rate=0.0,
         ref_rope_r=1.0,
         cache_ref_latents=False,
+        ref_mode="concat",
+        ref_timestep=0.0,
+        ref_kv_blocks=None,
     )
     args.update(overrides)
     return argparse.Namespace(**args)
@@ -224,6 +227,9 @@ def test_setup_parser_edit_defaults():
     assert args.ref_mask_space == "latent"
     assert args.ref_mask_fill_pixel == 128
     assert args.ref_mask_fill_latent == 0.0
+    assert args.ref_mode == "concat"
+    assert args.ref_timestep == 0.0
+    assert args.ref_kv_blocks is None
 
 
 def test_random_reference_masks():
@@ -596,6 +602,234 @@ def test_controlnet_dataset_cond_load_alpha_returns_masks(tmp_path, cache_to_dis
             check(example)
             seen.update(bool(f) for f in example["flippeds"])
     assert seen == {True, False}
+
+
+# endregion
+
+
+# region one-way reference with cached K/V (Step B)
+
+from library.attention import AttentionParams, attention
+
+
+def _manual_attention(q, k, v, q_valid, k_valid):
+    """Reference attention [B, L, H, D] with per-sample valid lengths of the queries and keys (fp32 softmax)."""
+    out = torch.zeros_like(q)
+    scale = q.shape[-1] ** -0.5
+    for i in range(q.shape[0]):
+        qi = q[i, : q_valid[i]].transpose(0, 1).float()  # [H, Lq, D]
+        ki = k[i, : k_valid[i]].transpose(0, 1).float()
+        vi = v[i, : k_valid[i]].transpose(0, 1).float()
+        w = torch.softmax(qi @ ki.transpose(1, 2) * scale, dim=-1)
+        out[i, : q_valid[i]] = (w @ vi).transpose(0, 1).to(q.dtype)
+    return out
+
+
+@pytest.mark.parametrize("split_attn", [False, True])
+@pytest.mark.parametrize("lens", [[4, 7], [7, 7]])
+def test_attention_with_extra_key_tokens_matches_manual(split_attn, lens):
+    torch.manual_seed(0)
+    batch, img_len, extra, text_len, heads, dim = 2, 6, 5, 7, 2, 8
+    mask = torch.zeros(batch, text_len, dtype=torch.int32)
+    for i, l in enumerate(lens):
+        mask[i, :l] = 1
+    q = torch.randn(batch, img_len + text_len, heads, dim)
+    k_img, k_ref, k_txt = torch.randn(batch, img_len, heads, dim), torch.randn(batch, extra, heads, dim), torch.randn(batch, text_len, heads, dim)
+    v_img, v_ref, v_txt = torch.randn(batch, img_len, heads, dim), torch.randn(batch, extra, heads, dim), torch.randn(batch, text_len, heads, dim)
+    k = torch.cat([k_img, k_ref, k_txt], 1)
+    v = torch.cat([v_img, v_ref, v_txt], 1)
+
+    q_valid = [img_len + l for l in lens]
+
+    def assert_valid_close(actual, expected):
+        # the outputs of the padding queries are not defined (they are ignored downstream)
+        for i, n in enumerate(q_valid):
+            torch.testing.assert_close(actual[i, :n], expected[i, :n], atol=1e-5, rtol=1e-5)
+
+    params = AttentionParams.create_attention_params_from_mask("torch", split_attn, img_len, mask, img_len + extra)
+    out = attention([q, k, v], attn_params=params)
+    expected = _manual_attention(q, k, v, q_valid, [img_len + extra + l for l in lens]).flatten(2)
+    assert_valid_close(out, expected)
+
+    # without the extra tokens the result is the plain attention
+    params0 = AttentionParams.create_attention_params_from_mask("torch", split_attn, img_len, mask)
+    k0 = torch.cat([k_img, k_txt], 1)
+    v0 = torch.cat([v_img, v_txt], 1)
+    out0 = attention([q, k0, v0], attn_params=params0)
+    expected0 = _manual_attention(q, k0, v0, q_valid, q_valid).flatten(2)
+    assert_valid_close(out0, expected0)
+    assert not torch.allclose(out[:, :img_len], out0[:, :img_len])
+
+    # no mask: all tokens valid, the keys are simply longer than the queries
+    params_none = AttentionParams.create_attention_params_from_mask("torch", split_attn, img_len, None)
+    out_none = attention([q, k, v], attn_params=params_none)
+    expected_none = _manual_attention(q, k, v, [q.shape[1]] * batch, [k.shape[1]] * batch).flatten(2)
+    torch.testing.assert_close(out_none, expected_none, atol=1e-5, rtol=1e-5)
+
+
+def test_rope_image_r():
+    rope = moss_image_models.MossImageRoPE(SMALL_CONFIG["dim"] // SMALL_CONFIG["num_heads"], SMALL_CONFIG["rope_base"])
+    text_lens = torch.tensor([4, 7])
+    base = rope(3, 5, 7, text_lens)
+    shifted = rope(3, 5, 7, text_lens, image_r=1.0)
+    with_ref = rope(3, 5, 7, text_lens, ref_size=(3, 5), ref_r=1.0)
+    torch.testing.assert_close(shifted[:, :15], with_ref[:, 15:30])  # the image tokens at r=1 == the reference tokens at r=1
+    torch.testing.assert_close(shifted[:, 15:], base[:, 15:])  # text unchanged
+
+
+def test_forward_ref_kv_shapes_blocks_and_early_exit():
+    model = make_dit()
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    heads, head_dim = SMALL_CONFIG["num_heads"], SMALL_CONFIG["dim"] // SMALL_CONFIG["num_heads"]
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask, ref_rope_r=1.0)
+    assert len(kvs) == SMALL_CONFIG["num_layers"]
+    for k, v in kvs:
+        assert k.shape == (2, 8, heads, head_dim) and v.shape == (2, 8, heads, head_dim)
+
+    calls = []
+    for i, layer in enumerate(model.layers):
+        layer.register_forward_hook(lambda m, a, o, i=i: calls.append(i))
+    with torch.no_grad():
+        kvs_sub = model.forward_ref_kv(ref, torch.zeros(2), context, mask, ref_rope_r=1.0, blocks=[0, 1])
+    assert calls == [0, 1]  # the forward stops after the last requested block
+    assert kvs_sub[2] is None
+    torch.testing.assert_close(kvs_sub[0][0], kvs[0][0])
+    torch.testing.assert_close(kvs_sub[1][1], kvs[1][1])
+
+
+def test_forward_with_ref_kv_effect_and_exclusivity():
+    model = make_dit()
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask)
+        base = model(x, timesteps, context, mask)
+        none_kv = model(x, timesteps, context, mask, ref_kv=[None] * len(kvs))
+        with_kv = model(x, timesteps, context, mask, ref_kv=kvs)
+        partial = model(x, timesteps, context, mask, ref_kv=[kvs[0], None, None])
+        skipped = model(x, timesteps, context, mask, ref_kv=kvs, skip_layers=(1,))
+    torch.testing.assert_close(none_kv, base)
+    assert with_kv.shape == x.shape
+    assert not torch.allclose(with_kv, base)
+    assert not torch.allclose(partial, with_kv) and not torch.allclose(partial, base)
+    assert not torch.allclose(skipped, with_kv)
+    with pytest.raises(ValueError):
+        model(x, timesteps, context, mask, ref=ref, ref_kv=kvs)
+    with pytest.raises(ValueError):
+        model(x, timesteps, context, mask, ref_kv=kvs[:2])
+
+
+@pytest.mark.parametrize("split_attn", [False, True])
+def test_batched_forward_with_ref_kv_matches_per_sample(split_attn):
+    # the key side has extra tokens: padded batch == per-sample with the true text length (mask / cu_seqlens handling)
+    model = make_dit(split_attn=split_attn)
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask)
+        batched = model(x, timesteps, context, mask, ref_kv=kvs)
+        for i in range(x.shape[0]):
+            l = int(mask[i].sum())
+            kv_i = [(k[i : i + 1], v[i : i + 1]) for k, v in kvs]
+            kvs_single = model.forward_ref_kv(ref[i : i + 1], torch.zeros(1), context[i : i + 1, :l], None)
+            for (k, v), (ks, vs) in zip(kv_i, kvs_single):
+                torch.testing.assert_close(k, ks, atol=1e-5, rtol=1e-5)
+                torch.testing.assert_close(v, vs, atol=1e-5, rtol=1e-5)
+            single = model(x[i : i + 1], timesteps[i : i + 1], context[i : i + 1, :l], None, ref_kv=kv_i)
+            torch.testing.assert_close(batched[i : i + 1], single, atol=1e-5, rtol=1e-5)
+
+
+def test_gradient_checkpointing_with_ref_kv_matches_plain_forward():
+    model = make_dit()
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask)
+        expected = model(x, timesteps, context, mask, ref_kv=kvs)
+    model.train()
+    model.enable_gradient_checkpointing()
+    x_grad = x.clone().requires_grad_(True)
+    out = model(x_grad, timesteps, context, mask, ref_kv=kvs)
+    out.sum().backward()
+    torch.testing.assert_close(out.detach(), expected, atol=1e-5, rtol=1e-5)
+    assert x_grad.grad is not None and torch.isfinite(x_grad.grad).all()
+
+
+def test_compute_reference_kv_and_generate_latents():
+    dit = make_dit()
+    ref = torch.randn(1, SMALL_CONFIG["latent_channels"], 3, 5)
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
+
+    entered = []
+
+    @contextlib.contextmanager
+    def lora_off():
+        entered.append(True)
+        yield
+
+    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, lora_off)
+    assert entered == [True] and len(kvs) == SMALL_CONFIG["num_layers"]
+    # batch 1 embeddings are expanded to the batch of the reference
+    kvs2 = moss_image_train_utils.compute_reference_kv(dit, ref.expand(2, -1, -1, -1), 0.0, uncond, uncond_mask)
+    assert kvs2[0][0].shape[0] == 2
+
+    embeds = torch.randn(1, 5, SMALL_CONFIG["text_dim"])
+    mask = torch.ones(1, 5, dtype=torch.int32)
+    common = dict(height=48, width=80, steps=4, flow_shift=5.0, uncond_skip_layers=(1,), seed=42, device=torch.device("cpu"))
+    a = moss_image_train_utils.generate_latents(dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, **common)
+    b = moss_image_train_utils.generate_latents(dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, **common)
+    c = moss_image_train_utils.generate_latents(dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, **common)
+    assert a.shape == (1, SMALL_CONFIG["latent_channels"], 3, 5)
+    torch.testing.assert_close(a, b)
+    assert not torch.allclose(a, c)
+
+
+class FakeNetwork:
+    def __init__(self):
+        self.multiplier = 0.7
+        self.history = []
+
+    def set_multiplier(self, multiplier):
+        self.multiplier = multiplier
+        self.history.append(multiplier)
+
+
+def test_edit_trainer_kv_mode_call_dit():
+    import moss_image_train_network_edit
+
+    trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+    network = FakeNetwork()
+    trainer.post_process_network(None, None, network, None, None)
+
+    dit = make_dit()
+    accelerator = FakeAccelerator()
+    x, ref, timesteps, context, mask = make_inputs()
+    uncond = torch.randn(2, 4, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.tensor([[1, 1, 1, 0], [1, 1, 1, 0]], dtype=torch.int32)
+    batch = {"text_encoder_outputs_list": [context, mask, uncond, uncond_mask, torch.zeros(2)]}
+
+    # the empty prompt embeddings are taken from the cached outputs (padding dropped) and cached in the trainer
+    embeds, emask = trainer.get_uncond_embeds(batch, None, None, None, torch.device("cpu"), torch.float32)
+    assert embeds.shape == (1, 3, SMALL_CONFIG["text_dim"]) and emask.shape == (1, 3)
+    torch.testing.assert_close(embeds, uncond[:1, :3])
+    embeds2, _ = trainer.get_uncond_embeds({}, None, None, None, torch.device("cpu"), torch.float32)
+    torch.testing.assert_close(embeds2, embeds)
+
+    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None)
+    trainer.ref_kv_blocks = None
+    batch = {"ref_latents": ref, "ref_uncond_embeds": embeds, "ref_uncond_mask": emask}
+    out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    assert out.shape == x.shape
+    assert network.history == [0.0, 0.7]  # the LoRA is disabled during the reference forward and restored
+
+    with torch.no_grad():
+        kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, embeds, emask, 1.0)
+        expected = dit(x, timesteps, context, mask, ref_kv=kvs)
+    torch.testing.assert_close(out, expected)
+
+    # a subset of blocks
+    trainer.ref_kv_blocks = frozenset([0, 2])
+    out_sub = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    assert not torch.allclose(out_sub, out)
 
 
 # endregion
