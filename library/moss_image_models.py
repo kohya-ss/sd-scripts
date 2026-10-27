@@ -214,7 +214,8 @@ class MossImageBlock(nn.Module):
                 inserted after the image tokens on the key / value side (one-way reference: the reference is not updated)
             return_kv: also return the keys / values (after qk-norm and RoPE) of this block, [B, N + L, heads, head_dim]
         Returns:
-            [B, N + L, D], or (output, (k, v)) with return_kv
+            [B, N + L, D], or the flat tuple (output, k, v) with return_kv (flat so that it passes through the checkpointing
+            autograd functions)
         """
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
@@ -238,7 +239,7 @@ class MossImageBlock(nn.Module):
         hidden, gate = self.proj.ffn_up_gate(y.to(dtype)).chunk(2, -1)
         del y
         x = x + self.proj.ffn_down(situ_glu(hidden, gate)) * gate_f[:, None]
-        return (x, kv) if return_kv else x
+        return (x, kv[0], kv[1]) if return_kv else x
 
     def forward(
         self,
@@ -559,7 +560,8 @@ class MossImage(nn.Module):
         with `context`, usually the empty prompt, and `timesteps`, usually 0) and return the per-block keys / values of
         the reference image tokens (after qk-norm and RoPE) for `forward(ref_kv=...)`. The reference image tokens get
         `ref_rope_r` as the r coordinate so that the cached keys carry the relative offset to the image tokens of the
-        generation (RoPE is relative: the reference forward itself is unchanged by this).
+        generation (RoPE is relative: the reference forward itself is unchanged by this). Gradients flow through the
+        returned K/V when grad is enabled (gradient checkpointing applies as in `forward`).
 
         Args:
             ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x)
@@ -577,7 +579,7 @@ class MossImage(nn.Module):
         for layer_index, layer in enumerate(self.layers):
             if layer_index > last:
                 break
-            hidden, (k, v) = layer(hidden, rope, mod, attn_params, None, None, True)
+            hidden, k, v = layer(hidden, rope, mod, attn_params, None, None, True)
             if blocks is None or layer_index in blocks:
                 kvs[layer_index] = (k[:, :img_len], v[:, :img_len])
         return kvs

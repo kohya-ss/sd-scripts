@@ -12,10 +12,13 @@
 # cached like the target latents (--cache_ref_latents / --cache_ref_latents_to_disk / --ref_latents_cache_dir).
 #
 # --ref_mode kv (one-way reference with cached K/V): instead of concatenating the reference tokens, the clean reference is
-# run through the DiT once per step (empty prompt, --ref_timestep, LoRA off, no grad) and the image / text tokens of the
-# generation additionally attend to the per-block reference keys / values. The reference itself is not updated, so the
-# FFN cost of the reference tokens is saved, and at inference the reference K/V are computed once and shared by all steps.
-# --ref_kv_blocks restricts the blocks which see the reference (all by default).
+# run through the DiT once per step (empty prompt, --ref_timestep) and the image / text tokens of the generation
+# additionally attend to the per-block reference keys / values. The reference itself is not updated, so the FFN cost of
+# the reference tokens is saved, and at inference the reference K/V are computed once and shared by all steps.
+# --ref_kv_lora on (default): the LoRA is applied to the reference forward too and trained through it (matches inference
+# with a LoRA-merged DiT, e.g. ComfyUI). on_no_grad: applied but not trained through it. off: reference K/V of the base
+# model (the inference has to compute them without the LoRA). --ref_kv_blocks restricts the blocks which see the
+# reference (all by default).
 #
 # Inpainting-like tasks (--ref_mask_source alpha | random): the hole of the reference is given by the alpha channel of the
 # RGBA reference image (255 = hole) or cut randomly at every step (library.mask_generator). The hole is applied in the
@@ -114,7 +117,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
 
     @contextlib.contextmanager
     def lora_disabled(self):
-        """Disable the LoRA (multiplier 0) during the reference forward of --ref_mode kv"""
+        """Disable the LoRA (multiplier 0) during the reference forward of --ref_mode kv with --ref_kv_lora off"""
         network = self.network
         if network is None or not hasattr(network, "set_multiplier"):
             yield
@@ -257,8 +260,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             ref = torch.where(drop.view(-1, 1, 1, 1), torch.zeros_like(ref), ref)
 
         if args.ref_mode == "kv":
-            # one-way reference: K/V of the clean reference (empty prompt, fixed timestep, LoRA off, no grad), then the
-            # generation forward attends to them
+            # one-way reference: K/V of the clean reference (empty prompt, fixed timestep), then the generation forward
+            # attends to them. --ref_kv_lora: on = LoRA applied and trained through the reference forward,
+            # on_no_grad = applied but detached, off = base model (LoRA disabled)
             with accelerator.autocast():
                 ref_kv = moss_image_train_utils.compute_reference_kv(
                     accelerator.unwrap_model(dit),
@@ -268,7 +272,8 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                     batch["ref_uncond_mask"],
                     args.ref_rope_r,
                     self.ref_kv_blocks,
-                    self.lora_disabled,
+                    self.lora_disabled if args.ref_kv_lora == "off" else None,
+                    enable_grad=is_train and args.ref_kv_lora == "on",
                 )
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv)
@@ -294,7 +299,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             tokenize_strategy,
             text_encoding_strategy,
             self.sample_prompts_te_outputs,
-            ref_kv_context=self.lora_disabled,
+            ref_kv_context=self.lora_disabled if args.ref_kv_lora == "off" else None,
         )
 
     def update_metadata(self, metadata, args):
@@ -302,6 +307,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         metadata["ss_ref_mode"] = args.ref_mode
         metadata["ss_ref_timestep"] = args.ref_timestep
         metadata["ss_ref_kv_blocks"] = args.ref_kv_blocks
+        metadata["ss_ref_kv_lora"] = args.ref_kv_lora
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
         metadata["ss_cache_ref_latents"] = bool(args.cache_ref_latents)
@@ -349,6 +355,19 @@ def add_moss_image_edit_arguments(parser: argparse.ArgumentParser):
         help="timestep (sigma * 1000, 0-1000) of the reference forward for --ref_mode kv (default 0 = clean). The reference"
         " latents themselves are not noised"
         " / --ref_mode kv の参照 forward の timestep（sigma × 1000、0〜1000、デフォルト 0 = clean）。参照 latent 自体にノイズは乗せない",
+    )
+    parser.add_argument(
+        "--ref_kv_lora",
+        type=str,
+        default="on",
+        choices=["on", "on_no_grad", "off"],
+        help="LoRA in the reference forward of --ref_mode kv. on (default): the LoRA is applied and trained through the reference"
+        " forward (the reference features are optimized; matches inference with a LoRA-merged DiT such as ComfyUI)."
+        " on_no_grad: applied but detached (cheaper, the reference features only drift). off: reference K/V of the base model"
+        " (ablation; the inference must compute the reference K/V without the LoRA: --ref_kv_without_lora of the inference script)"
+        " / --ref_mode kv の参照 forward での LoRA。on（デフォルト）: LoRA を適用し参照 forward 経由でも学習する（参照特徴が最適化される。"
+        "ComfyUI 等の LoRA マージ済み DiT での推論と一致）。on_no_grad: 適用するが勾配は流さない（軽いが参照特徴は副作用で変わるだけ）。"
+        "off: ベースモデルの参照 K/V（ablation。推論側は LoRA なしで参照 K/V を計算する必要がある: 推論スクリプトの --ref_kv_without_lora）",
     )
     parser.add_argument(
         "--ref_kv_blocks",

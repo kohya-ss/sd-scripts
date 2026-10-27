@@ -315,18 +315,20 @@ def compute_reference_kv(
     ref_rope_r: float = 1.0,
     blocks: Optional[Sequence[int]] = None,
     lora_off_context: Optional[Callable[[], ContextManager]] = None,
+    enable_grad: bool = False,
 ) -> list:
     """Cached reference K/V for the one-way reference (editing, --ref_mode kv): one forward of the clean reference latents
-    [B, 128, Hr/16, Wr/16] with the empty prompt embeddings and the fixed `ref_timestep` (sigma * 1000), without gradients
-    and, with `lora_off_context` (a context manager factory which disables the LoRA), without the LoRA. The result depends
-    only on the reference image, so it is computed once per image at inference and shared by all steps."""
+    [B, 128, Hr/16, Wr/16] with the empty prompt embeddings and the fixed `ref_timestep` (sigma * 1000). `enable_grad`
+    lets the gradients flow through the reference forward (training with --ref_kv_lora on); `lora_off_context` (a context
+    manager factory which disables the LoRA) reproduces --ref_kv_lora off. The result depends only on the reference image
+    (and the LoRA), so it is computed once per image at inference and shared by all steps."""
     batch = ref.shape[0]
     timesteps = torch.full((batch,), float(ref_timestep), dtype=torch.float32, device=ref.device)
     if uncond_embeds.shape[0] == 1 and batch > 1:
         uncond_embeds = uncond_embeds.expand(batch, -1, -1)
         uncond_mask = None if uncond_mask is None else uncond_mask.expand(batch, -1)
     context = lora_off_context() if lora_off_context is not None else contextlib.nullcontext()
-    with torch.no_grad(), context:
+    with torch.set_grad_enabled(enable_grad), context:
         return dit.forward_ref_kv(ref, timesteps, uncond_embeds.to(ref.device), uncond_mask, ref_rope_r=ref_rope_r, blocks=blocks)
 
 
@@ -424,8 +426,8 @@ def sample_images(
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
     uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
     (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (hole mask, 255 = hole; with
-    `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_kv_context` disables the LoRA
-    during the reference forward of the KV cache editing (`--ref_mode kv`)."""
+    `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_kv_context` (optional) wraps the
+    reference forward of the KV cache editing (`--ref_mode kv`), e.g. to disable the LoRA for `--ref_kv_lora off`."""
     if steps == 0:
         if not args.sample_at_first:
             return

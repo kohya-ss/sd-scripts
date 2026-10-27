@@ -208,6 +208,7 @@ def make_args(**overrides):
         ref_mode="concat",
         ref_timestep=0.0,
         ref_kv_blocks=None,
+        ref_kv_lora="on",
     )
     args.update(overrides)
     return argparse.Namespace(**args)
@@ -230,6 +231,7 @@ def test_setup_parser_edit_defaults():
     assert args.ref_mode == "concat"
     assert args.ref_timestep == 0.0
     assert args.ref_kv_blocks is None
+    assert args.ref_kv_lora == "on"
 
 
 def test_random_reference_masks():
@@ -768,6 +770,10 @@ def test_compute_reference_kv_and_generate_latents():
 
     kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, lora_off)
     assert entered == [True] and len(kvs) == SMALL_CONFIG["num_layers"]
+    assert not kvs[0][0].requires_grad
+    kvs_grad = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, None, enable_grad=True)
+    assert kvs_grad[0][0].requires_grad
+    torch.testing.assert_close(kvs_grad[0][0].detach(), kvs[0][0])
     # batch 1 embeddings are expanded to the batch of the reference
     kvs2 = moss_image_train_utils.compute_reference_kv(dit, ref.expand(2, -1, -1, -1), 0.0, uncond, uncond_mask)
     assert kvs2[0][0].shape[0] == 2
@@ -814,12 +820,13 @@ def test_edit_trainer_kv_mode_call_dit():
     embeds2, _ = trainer.get_uncond_embeds({}, None, None, None, torch.device("cpu"), torch.float32)
     torch.testing.assert_close(embeds2, embeds)
 
-    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None)
+    # off: the LoRA is disabled during the reference forward and restored, no gradients through the reference
+    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="off")
     trainer.ref_kv_blocks = None
     batch = {"ref_latents": ref, "ref_uncond_embeds": embeds, "ref_uncond_mask": emask}
     out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
     assert out.shape == x.shape
-    assert network.history == [0.0, 0.7]  # the LoRA is disabled during the reference forward and restored
+    assert network.history == [0.0, 0.7]
 
     with torch.no_grad():
         kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, embeds, emask, 1.0)
@@ -830,6 +837,28 @@ def test_edit_trainer_kv_mode_call_dit():
     trainer.ref_kv_blocks = frozenset([0, 2])
     out_sub = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
     assert not torch.allclose(out_sub, out)
+    trainer.ref_kv_blocks = None
+
+    # on / on_no_grad: the LoRA stays enabled (the fake network has no modules, so the outputs equal "off"), and only
+    # "on" lets the loss gradient reach the weights through the reference forward
+    def grad_of_k_proj(mode):
+        network.history.clear()
+        dit.zero_grad()
+        args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora=mode)
+        out_mode = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+        torch.testing.assert_close(out_mode, out)
+        assert network.history == []
+        out_mode.square().sum().backward()
+        return dit.layers[0].proj.k.weight.grad.clone()
+
+    grad_on = grad_of_k_proj("on")
+    grad_no_grad = grad_of_k_proj("on_no_grad")
+    assert not torch.allclose(grad_on, grad_no_grad)
+
+    # validation (is_train False) never builds a graph
+    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="on")
+    out_val = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=False)
+    assert not out_val.requires_grad
 
 
 # endregion
