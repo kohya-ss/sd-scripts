@@ -34,6 +34,11 @@ def _synchronize_device(device: torch.device):
     elif device.type == "mps":
         torch.mps.synchronize()
 
+def _create_copy_stream(device: torch.device):
+    if (getattr(torch.cuda, "is_xpu_hijacked", False) and torch.cuda.is_xpu_hijacked):
+        return torch.xpu.Stream(device=torch.device("xpu"))
+
+    return torch.cuda.Stream(device=device)
 
 def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
     assert layer_to_cpu.__class__ == layer_to_cuda.__class__
@@ -61,7 +66,11 @@ def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, laye
 
     torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
 
-    stream = torch.Stream(device="cuda")
+    if (getattr(torch.cuda, "is_xpu_hijacked", False) and torch.cuda.is_xpu_hijacked):
+        stream = torch.Stream(device="xpu")
+    else: 
+        stream = torch.Stream(device="cuda")
+
     with torch.cuda.stream(stream):
         # cuda to cpu
         for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
@@ -390,7 +399,7 @@ class _DirectCopier:
     def __init__(self, device: torch.device, debug: bool = False):
         self.device = device
         self.debug = debug
-        self.copy_stream = torch.cuda.Stream(device=device)
+        self.copy_stream = _create_copy_stream(device)
         self._events = {}  # key -> cuda.Event recording H2D completion
         self._xfer = {}  # key -> (ev_a, ev_b) transfer-timing events (debug only)
 
@@ -451,7 +460,7 @@ class _StagedCopier:
         self.device = device
         self.num_staging = max(1, num_staging)
         self.debug = debug
-        self.copy_stream = torch.cuda.Stream(device=device)
+        self.copy_stream = _create_copy_stream(device)
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._futures = {}  # key -> Future -> (load_event, (ev_a, ev_b))
         self._xfer = {}  # key -> (ev_a, ev_b) transfer-timing events (debug only)
