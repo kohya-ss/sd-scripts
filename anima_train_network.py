@@ -25,6 +25,7 @@ from library import (
 import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
+import library.replica_trainer as replica_trainer
 from library.dataset import DatasetGroup, MinimalDataset
 import train_network
 from library.utils import setup_logging
@@ -472,6 +473,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
         "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap.",
     )
+    replica_trainer.add_replica_arguments(parser)
     return parser
 
 
@@ -488,5 +490,5 @@ if __name__ == "__main__":
     if args.show_timesteps:
         anima_train_utils.show_timesteps(args)
     else:
-        trainer = AnimaNetworkTrainer()
+        trainer = replica_trainer.wrap_trainer_class(AnimaNetworkTrainer, args)()
         trainer.train(args)

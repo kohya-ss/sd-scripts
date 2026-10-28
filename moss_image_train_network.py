@@ -27,6 +27,7 @@ from library import (
 import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
+import library.replica_trainer as replica_trainer
 from library.dataset import DatasetGroup, MinimalDataset
 import train_network
 from library.utils import setup_logging
@@ -503,6 +504,7 @@ def setup_parser() -> argparse.ArgumentParser:
     args_util.add_dit_training_arguments(parser)
     moss_image_train_utils.add_moss_image_model_arguments(parser)
     moss_image_train_utils.add_moss_image_training_arguments(parser)
+    replica_trainer.add_replica_arguments(parser)
     return parser
 
 
@@ -519,5 +521,5 @@ if __name__ == "__main__":
     if args.show_timesteps:
         moss_image_train_utils.show_timesteps(args)
     else:
-        trainer = MossImageNetworkTrainer()
+        trainer = replica_trainer.wrap_trainer_class(MossImageNetworkTrainer, args)()
         trainer.train(args)
