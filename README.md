@@ -47,6 +47,11 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Changes planned for the next release:** The following are the main changes planned for the next release. Please note that these changes may be subject to change without notice before the release.
+    - Added experimental single-process multi-GPU training (`--replica_devices`) for Anima and MOSS-Image LoRA training. One Python process drives a master and one replica per additional GPU without DDP, so no `accelerate launch --multi_gpu`, `torchrun` or NCCL / gloo is needed, and multi-GPU LoRA training also works on Windows. Requires `--cache_latents`, `--cache_text_encoder_outputs` and `--network_train_unet_only`; `train_batch_size` is per device as with DDP. For details, please refer to [the documentation](./docs/replica_training.md).
+        - For developers: `NetworkTrainer.create_network` (network creation from the arguments) and `NetworkTrainer.forward_backward` (one micro-step) are new overridable methods of `train_network.py`; the replica trainer (`library/replica_trainer.py`) is a mixin composed in front of the per-model trainer class.
+        - Fixed: a single-process training started with plain `python` (without `accelerate launch`) on a machine with several GPUs failed in the accelerator initialization (`Default process group has not been initialized`).
+
 - **Version 0.12.3 (2026-10-26):**
     - Added `--timestep_sampling truncated_logit_normal` for FLUX.1, Anima, HunyuanImage-2.1 and MOSS-Image training: the logit-normal distribution (`--logit_mean` / `--logit_std`) on the discrete training grid, truncated at `--timestep_cutoff` (default 0.95) and rescaled, with a `--timestep_uniform_ratio` (default 0.01) share of uniform samples. With `--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0`, this reproduces the timestep schedule of the MOSS-Image pre-training exactly (previously the truncation and the uniform samples were not reproduced). [PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
         - The per-subset `timestep_sampling.offset` now also applies to `truncated_logit_normal` and to `sigma` with `--weighting_scheme logit_normal` (a positive offset biases toward higher noise, as in the other modes). See [the documentation](./docs/timestep_sampling_offset.md).
@@ -150,6 +155,7 @@ If you find this project helpful, please consider supporting its development via
 * [Masked Loss Training](./docs/masked_loss_README.md) / [Japanese version](./docs/masked_loss_README-ja.md)
 * [Inpainting Training](./docs/inpainting_training.md)
 * [Block Swap (CPU Offloading)](./docs/block_swap.md)
+* [Single-Process Multi-GPU Training (Replica Training)](./docs/replica_training.md)
 
 ### Other Documentation (English and Japanese)
 

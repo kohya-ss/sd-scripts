@@ -126,7 +126,9 @@ def prepare_accelerator(args: argparse.Namespace):
                 ),
                 timeout=datetime.timedelta(minutes=args.ddp_timeout) if args.ddp_timeout else None,
             )
-            if torch.cuda.device_count() > 1
+            # only when launched as a distributed job: an explicit backend without LOCAL_RANK makes accelerate
+            # look for a process group that does not exist (single process on a multi-GPU machine)
+            if torch.cuda.device_count() > 1 and int(os.environ.get("LOCAL_RANK", -1)) != -1
             else None
         ),
         (
