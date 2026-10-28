@@ -66,11 +66,7 @@ def swap_weight_devices_cuda(device: torch.device, layer_to_cpu: nn.Module, laye
 
     torch.cuda.current_stream().synchronize()  # this prevents the illegal loss value
 
-    if (getattr(torch.cuda, "is_xpu_hijacked", False) and torch.cuda.is_xpu_hijacked):
-        stream = torch.Stream(device="xpu")
-    else: 
-        stream = torch.Stream(device="cuda")
-
+    stream = stream = _create_copy_stream(device=device)
     with torch.cuda.stream(stream):
         # cuda to cpu
         for module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view in weight_swap_jobs:
