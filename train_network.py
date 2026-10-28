@@ -232,8 +232,84 @@ class NetworkTrainer:
 
     # region SD/SDXL
 
+    @staticmethod
+    def parse_network_args(args) -> dict:
+        """`--network_args key=value ...` -> dict (also recorded in the metadata as ss_network_args)."""
+        net_kwargs = {}
+        if args.network_args is not None:
+            for net_arg in args.network_args:
+                key, value = net_arg.split("=", 1)
+                net_kwargs[key] = value
+        return net_kwargs
+
+    def create_network(self, args, network_module, vae, text_encoder, unet, net_kwargs: dict):
+        """Create the network (LoRA etc.) from the command line arguments. Returns None to abort the training.
+
+        Also used by the replica trainer (library/replica_trainer.py) to build an identical network for each replica.
+        """
+        # if a new network is added in future, add if ~ then blocks for each network (;'∀')
+        if args.dim_from_weights:
+            network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
+        else:
+            if "dropout" not in net_kwargs:
+                # workaround for LyCORIS (;^ω^)
+                net_kwargs["dropout"] = args.network_dropout
+
+            network = network_module.create_network(
+                1.0,
+                args.network_dim,
+                args.network_alpha,
+                vae,
+                text_encoder,
+                unet,
+                neuron_dropout=args.network_dropout,
+                **net_kwargs,
+            )
+        return network
+
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
         pass
+
+    def forward_backward(
+        self,
+        args,
+        accelerator,
+        batch,
+        text_encoders,
+        unet,
+        network,
+        vae,
+        noise_scheduler,
+        vae_dtype,
+        weight_dtype,
+        text_encoding_strategy,
+        tokenize_strategy,
+        train_text_encoder,
+        train_unet,
+    ) -> torch.Tensor:
+        """One training micro-step: forward (process_batch) and backward. Returns the detached-able loss for logging.
+
+        The replica trainer (library/replica_trainer.py) overrides this to run the micro-step on another GPU.
+        """
+        loss = self.process_batch(
+            batch,
+            text_encoders,
+            unet,
+            network,
+            vae,
+            noise_scheduler,
+            vae_dtype,
+            weight_dtype,
+            accelerator,
+            args,
+            text_encoding_strategy,
+            tokenize_strategy,
+            is_train=True,
+            train_text_encoder=train_text_encoder,
+            train_unet=train_unet,
+        )
+        accelerator.backward(loss)
+        return loss
 
     def get_noise_scheduler(self, args: argparse.Namespace, device: torch.device) -> Any:
         noise_scheduler = DDPMScheduler(
@@ -1070,30 +1146,8 @@ class NetworkTrainer:
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
 
         # prepare network
-        net_kwargs = {}
-        if args.network_args is not None:
-            for net_arg in args.network_args:
-                key, value = net_arg.split("=", 1)
-                net_kwargs[key] = value
-
-        # if a new network is added in future, add if ~ then blocks for each network (;'∀')
-        if args.dim_from_weights:
-            network, _ = network_module.create_network_from_weights(1, args.network_weights, vae, text_encoder, unet, **net_kwargs)
-        else:
-            if "dropout" not in net_kwargs:
-                # workaround for LyCORIS (;^ω^)
-                net_kwargs["dropout"] = args.network_dropout
-
-            network = network_module.create_network(
-                1.0,
-                args.network_dim,
-                args.network_alpha,
-                vae,
-                text_encoder,
-                unet,
-                neuron_dropout=args.network_dropout,
-                **net_kwargs,
-            )
+        net_kwargs = self.parse_network_args(args)
+        network = self.create_network(args, network_module, vae, text_encoder, unet, net_kwargs)
         if network is None:
             return
         network_has_multiplier = hasattr(network, "set_multiplier")
@@ -1598,7 +1652,9 @@ class NetworkTrainer:
                     # preprocess batch for each model
                     self.on_step_start(args, accelerator, network, text_encoders, unet, batch, weight_dtype, is_train=True)
 
-                    loss = self.process_batch(
+                    loss = self.forward_backward(
+                        args,
+                        accelerator,
                         batch,
                         text_encoders,
                         unet,
@@ -1607,16 +1663,12 @@ class NetworkTrainer:
                         noise_scheduler,
                         vae_dtype,
                         weight_dtype,
-                        accelerator,
-                        args,
                         text_encoding_strategy,
                         tokenize_strategy,
-                        is_train=True,
-                        train_text_encoder=train_text_encoder,
-                        train_unet=train_unet,
+                        train_text_encoder,
+                        train_unet,
                     )
 
-                    accelerator.backward(loss)
                     if accelerator.sync_gradients:
                         self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                         if args.max_grad_norm != 0.0:

@@ -50,6 +50,11 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - Anima と MOSS-Image の LoRA 学習に、1 プロセスでのマルチ GPU 学習（`--replica_devices`、実験的機能）を追加しました。DDP を使わず、1 つの Python プロセスがマスターと追加 GPU ごとのレプリカを駆動します。`accelerate launch --multi_gpu`、`torchrun`、NCCL / gloo が不要なため、Windows でもマルチ GPU の LoRA 学習ができます。`--cache_latents`、`--cache_text_encoder_outputs`、`--network_train_unet_only` が必須で、`train_batch_size` は DDP と同様にデバイスごとの値です。詳細は[ドキュメント](./docs/replica_training.md)をご覧ください。
+        - 開発者向け: `train_network.py` の `NetworkTrainer.create_network`（引数からのネットワーク生成）と `NetworkTrainer.forward_backward`（1 micro-step）がオーバーライド可能なメソッドとして追加されました。レプリカ学習（`library/replica_trainer.py`）はモデルごとの trainer クラスの前に合成される mixin です。
+        - 修正: 複数 GPU のあるマシンで、`accelerate launch` を使わずに `python` で直接起動した単一プロセスの学習が accelerator の初期化で失敗していました（`Default process group has not been initialized`）。
+
 - **Version 0.12.3 (2026-10-26):**
     - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。[PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
         - サブセットごとの `timestep_sampling.offset` が `truncated_logit_normal` と、`--weighting_scheme logit_normal` の `sigma` にも適用されるようになりました（他のモードと同様に、正のオフセットはノイズが多い側に偏らせます）。詳細は[ドキュメント](./docs/timestep_sampling_offset.md)をご覧ください。
@@ -154,6 +159,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [Validation](./docs/validation.md)
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
 * [インペインティング学習](./docs/inpainting_training.md)
+* [1プロセスでのマルチGPU学習（レプリカ学習）](./docs/replica_training.md)
 
 ### その他のドキュメント
 
