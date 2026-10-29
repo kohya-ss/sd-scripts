@@ -396,7 +396,7 @@ class _DirectCopier:
     def __init__(self, device: torch.device, debug: bool = False):
         self.device = device
         self.debug = debug
-        self.copy_stream = torch.cuda.stream(_check_ipex_to_cuda_device(device))
+        self.copy_stream = torch.cuda.Stream(device=_check_ipex_to_cuda_device(device))
         self._events = {}  # key -> cuda.Event recording H2D completion
         self._xfer = {}  # key -> (ev_a, ev_b) transfer-timing events (debug only)
 
@@ -457,7 +457,7 @@ class _StagedCopier:
         self.device = device
         self.num_staging = max(1, num_staging)
         self.debug = debug
-        self.copy_stream = torch.cuda.Stream(_check_ipex_to_cuda_device(device))
+        self.copy_stream = torch.cuda.Stream(device=_check_ipex_to_cuda_device(device))
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._futures = {}  # key -> Future -> (load_event, (ev_a, ev_b))
         self._xfer = {}  # key -> (ev_a, ev_b) transfer-timing events (debug only)
