@@ -153,6 +153,25 @@ def test_pinned_stager_cross_device_copy():
 # endregion
 
 
+def test_replica_submit_runs_in_the_callers_context():
+    """torch._dynamo config overrides (e.g. --compile_cache_size_limit) are contextvars: a plain worker thread would see
+    the defaults. Replica.submit runs the micro-step in a copy of the main thread's context."""
+    import torch._dynamo
+    from concurrent.futures import ThreadPoolExecutor
+
+    replica = replica_trainer.Replica(
+        index=1, device=torch.device("cpu"), proxy=None, unet=nn.Identity(), network=nn.Identity(), text_encoders=[],
+        executor=ThreadPoolExecutor(max_workers=1),
+    )
+    try:
+        with torch._dynamo.config.patch(recompile_limit=123):
+            assert replica.submit(lambda: torch._dynamo.config.recompile_limit).result() == 123
+            assert replica.executor.submit(lambda: torch._dynamo.config.recompile_limit).result() != 123  # plain submit
+        assert replica.submit(lambda: torch._dynamo.config.recompile_limit).result() != 123  # follows the caller
+    finally:
+        replica.executor.shutdown()
+
+
 # region end-to-end with a toy trainer
 
 

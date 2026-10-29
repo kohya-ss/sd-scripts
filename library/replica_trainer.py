@@ -27,9 +27,13 @@ Implementation notes (see references/replica_training/README.md for the measurem
   replica micro-steps serially.
 - Cross-device copies through pinned host memory (``PinnedStager``): the direct ``tensor.to(other_device)`` path is
   slow on Windows (no P2P).
+- The ``torch._dynamo`` / ``torch._inductor`` config overrides (``--compile_cache_size_limit`` etc.) are stored in
+  ``contextvars``, which a new thread does not inherit: the worker runs each micro-step in a copy of the main thread's
+  context (``Replica.submit``), otherwise the replica frames would use the default recompile limit.
 """
 
 import argparse
+import contextvars
 import importlib
 import logging
 import os
@@ -317,7 +321,9 @@ class Replica:
     weights_dirty: bool = True  # pull the master weights before the next micro-step
 
     def submit(self, fn) -> Future:
-        self.last_future = self.executor.submit(fn)
+        # run in a copy of the caller's context: the torch._dynamo / torch._inductor config overrides made in the main
+        # thread (e.g. --compile_cache_size_limit) live in contextvars and are not inherited by the worker thread
+        self.last_future = self.executor.submit(contextvars.copy_context().run, fn)
         return self.last_future
 
     def join(self):
