@@ -303,18 +303,18 @@ def test_edit_trainer_call_dit_and_reference_dropout():
     batch = {"ref_latents": ref}
 
     args = make_args()
-    out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, None, is_train=True)
     with torch.no_grad():
         expected = dit(x, timesteps, context, mask, ref=ref, ref_rope_r=1.0)
     torch.testing.assert_close(out, expected)
 
     # reference dropout 1.0 replaces the reference with zeros (training only)
     args = make_args(ref_dropout_rate=1.0)
-    dropped = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    dropped = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, None, is_train=True)
     with torch.no_grad():
         expected = dit(x, timesteps, context, mask, ref=torch.zeros_like(ref), ref_rope_r=1.0)
     torch.testing.assert_close(dropped, expected)
-    kept = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=False)
+    kept = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, None, is_train=False)
     assert not torch.allclose(kept, dropped)
 
     # the full get_noise_pred_and_target path uses the reference
@@ -835,7 +835,7 @@ def test_edit_trainer_kv_mode_call_dit():
     args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="off")
     trainer.ref_kv_blocks = None
     batch = {"ref_latents": ref, "ref_uncond_embeds": embeds, "ref_uncond_mask": emask}
-    out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=True)
     assert out.shape == x.shape
     assert network.history == [0.0, 0.7]
 
@@ -846,7 +846,7 @@ def test_edit_trainer_kv_mode_call_dit():
 
     # a subset of blocks
     trainer.ref_kv_blocks = frozenset([0, 2])
-    out_sub = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+    out_sub = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=True)
     assert not torch.allclose(out_sub, out)
     trainer.ref_kv_blocks = None
 
@@ -856,7 +856,7 @@ def test_edit_trainer_kv_mode_call_dit():
         network.history.clear()
         dit.zero_grad()
         args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora=mode)
-        out_mode = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=True)
+        out_mode = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=True)
         torch.testing.assert_close(out_mode, out)
         assert network.history == []
         out_mode.square().sum().backward()
@@ -868,7 +868,7 @@ def test_edit_trainer_kv_mode_call_dit():
 
     # validation (is_train False) never builds a graph
     args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="on")
-    out_val = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, is_train=False)
+    out_val = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=False)
     assert not out_val.requires_grad
 
 
@@ -1117,6 +1117,88 @@ def test_generate_latents_with_gate_table():
         dit, embeds, mask, uncond, uncond_mask, guidance_scale=3.0, show_progress=False, ref_kv=kvs, ref_gate=gate, **common
     )
     assert not torch.allclose(half, plain)
+
+
+# endregion
+
+
+# region replica training (--replica_devices)
+
+
+def test_edit_trainer_replica_wrapping_and_parser():
+    import moss_image_train_network_edit
+    from library import replica_trainer
+
+    parser = moss_image_train_network_edit.setup_parser()
+    assert parser.parse_args([]).replica_devices is None  # the replica arguments come with the MOSS-Image parser
+
+    cls = replica_trainer.wrap_trainer_class(moss_image_train_network_edit.MossImageEditNetworkTrainer, make_args(replica_devices="1"))
+    assert cls.__mro__[0] is cls and cls.__mro__[1] is replica_trainer.ReplicaTrainerMixin
+    assert cls.__mro__[2] is moss_image_train_network_edit.MossImageEditNetworkTrainer
+    plain = replica_trainer.wrap_trainer_class(moss_image_train_network_edit.MossImageEditNetworkTrainer, make_args(replica_devices=None))
+    assert plain is moss_image_train_network_edit.MossImageEditNetworkTrainer
+
+
+def test_edit_trainer_gate_per_network_and_frozen_table_sync():
+    """Every network created by the trainer (the master's and the replicas') carries its own gate table; call_dit uses the
+    table of the network of the micro-step; the binarized (frozen) table of the master is copied to the other tables once."""
+    import moss_image_train_network_edit
+    from networks import lora_generic
+
+    net_args = dict(dim_from_weights=False, network_dim=4, network_alpha=1.0, network_dropout=None, network_args=None)
+    accelerator = FakeAccelerator()
+    dits = [make_dit(), make_dit()]
+
+    # first stage: trainable tables
+    trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+    args = make_args(ref_mode="kv", ref_gate=True, ref_gate_budget=1, **net_args)
+    networks = [trainer.create_network(args, lora_generic, None, [None], d, {}) for d in dits]
+    assert trainer._ref_gates == [n.ref_gate for n in networks]
+    assert all(g.trainable for g in trainer._ref_gates)
+    for n in networks:
+        assert any(p is n.ref_gate.logits for p in n.get_trainable_params())  # synchronized like the LoRA weights
+    trainer.post_process_network(args, accelerator, networks[0], [None], dits[0])
+    assert trainer.ref_gate is networks[0].ref_gate
+    assert trainer.ref_gate_of(accelerator, networks[1]) is networks[1].ref_gate
+    assert trainer.ref_gate_of(accelerator, None) is networks[0].ref_gate  # no network given: the master's table
+
+    # call_dit uses the table of the given network, not the master's
+    x, ref, timesteps, context, mask = make_inputs()
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    batch = {"ref_latents": ref, "ref_uncond_embeds": uncond, "ref_uncond_mask": torch.ones(1, 3, dtype=torch.int32)}
+
+    def run(network):
+        return trainer.call_dit(args, accelerator, dits[1], batch, x, timesteps, context, mask, network, is_train=False)
+
+    base = run(networks[1])
+    with torch.no_grad():
+        networks[0].ref_gate.logits.fill_(-20.0)  # closing the master's table does not change the replica's micro-step
+    torch.testing.assert_close(run(networks[1]), base)
+    with torch.no_grad():
+        networks[1].ref_gate.logits.fill_(-20.0)
+    assert not torch.allclose(run(networks[1]), base)
+
+    # without --ref_gate no table is attached
+    plain = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+    network = plain.create_network(make_args(**net_args), lora_generic, None, [None], make_dit(), {})
+    assert not hasattr(network, "ref_gate") and plain._ref_gates == [] and plain.ref_gate_of(accelerator, network) is None
+
+    # second stage: frozen tables; the master's table (loaded from --network_weights) is binarized once and copied
+    trainer2 = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+    args2 = make_args(ref_mode="kv", ref_gate=True, ref_gate_binarize=True, ref_gate_budget=1, **net_args)
+    networks2 = [trainer2.create_network(args2, lora_generic, None, [None], d, {}) for d in dits]
+    assert not any(g.trainable for g in trainer2._ref_gates)
+    trainer2.post_process_network(args2, accelerator, networks2[0], [None], dits[0])
+    with torch.no_grad():
+        trainer2.ref_gate.logits.copy_(torch.randn_like(trainer2.ref_gate.logits))  # as loaded by network.load_weights
+    assert not torch.equal(networks2[1].ref_gate.logits, trainer2.ref_gate.logits)
+    trainer2.prepare_ref_gate_after_load(args2)
+    assert trainer2.ref_gate.is_binarized()
+    torch.testing.assert_close(networks2[1].ref_gate.logits, trainer2.ref_gate.logits)
+    with torch.no_grad():
+        networks2[1].ref_gate.logits.zero_()
+    trainer2.prepare_ref_gate_after_load(args2)  # done once: later calls do not touch the tables
+    assert torch.all(networks2[1].ref_gate.logits == 0)
 
 
 # endregion

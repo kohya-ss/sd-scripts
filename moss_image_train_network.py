@@ -383,7 +383,9 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             prompt_embeds.requires_grad_(True)
 
         # Call the model: subclasses may override call_dit (e.g. to add reference tokens for editing)
-        model_pred = self.call_dit(args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, is_train)
+        model_pred = self.call_dit(
+            args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, network, is_train
+        )
 
         # Rectified flow target: v = noise - x0
         target = noise - latents
@@ -403,8 +405,10 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         timesteps: torch.Tensor,
         prompt_embeds: torch.Tensor,
         attn_mask: torch.Tensor,
+        network,
         is_train: bool,
     ) -> torch.Tensor:
+        # `network` is the network trained with this DiT (the master's or, with --replica_devices, the replica's own copy)
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask)
 

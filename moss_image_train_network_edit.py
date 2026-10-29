@@ -32,10 +32,15 @@
 # latent space by default (--ref_mask_space latent): the clean reference latents (cacheable) are blended with a constant
 # fill value using the mask downsampled to the latent resolution (smooth), so the context outside the hole stays exact up
 # to the boundary. --ref_mask_space pixel fills the hole with a gray level before the VAE instead (LLLite style).
+#
+# --replica_devices (single-process multi-GPU, library/replica_trainer.py) is supported with --cache_ref_latents: every
+# replica network gets its own reference gate table (created in `create_network`, synchronized like the LoRA weights), and
+# the LoRA toggling of --ref_kv_lora off acts on the network of the device which runs the micro-step.
 
 import argparse
 import contextlib
-from typing import Optional, Union
+import functools
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
@@ -48,6 +53,7 @@ from library.controlnet_dataset import ControlNetDataset
 from library.dataset import DatasetGroup, MinimalDataset
 from library.device_utils import clean_memory_on_device
 from library.mask_generator import random_mask
+import library.replica_trainer as replica_trainer
 import moss_image_train_network
 from library import moss_image_train_utils
 from library.utils import setup_logging
@@ -65,7 +71,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         self.network = None  # set in post_process_network, used to disable the LoRA during the reference forward
         self.ref_kv_blocks = None
         self._uncond_embeds = None  # cached embeddings of the empty prompt [1, L, C] and mask [1, L] (CPU)
-        self.ref_gate: Optional[ReferenceGate] = None  # learned reference gate table (Step C)
+        self.ref_gate: Optional[ReferenceGate] = None  # learned reference gate table (Step C) of the master network
+        self._ref_gates: List[ReferenceGate] = []  # the gate tables of all networks (master and replicas), see create_network
+        self._ref_gate_prepared = False
 
     def use_controlnet_dataset(self, args) -> bool:
         return True  # conditioning images are the reference images
@@ -89,6 +97,13 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         if args.cache_ref_latents_to_disk and not args.cache_ref_latents:
             logger.warning("cache_ref_latents_to_disk is enabled, so cache_ref_latents is also enabled")
             args.cache_ref_latents = True
+
+        if getattr(args, "replica_devices", None) is not None:
+            # the VAE is not replicated (library/replica_trainer.py): the reference latents must come from the cache
+            assert args.cache_ref_latents, (
+                "--replica_devices requires --cache_ref_latents (the VAE is not replicated)"
+                " / --replica_devices には --cache_ref_latents が必要です（VAE はレプリカに複製されません）"
+            )
 
         if args.ref_mode == "kv":
             assert args.blocks_to_swap is None or args.blocks_to_swap == 0, (
@@ -137,33 +152,66 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                     else:
                         dataset.cond_load_alpha = True  # the dataset returns the hole mask (pixel resolution) with the reference
 
+    def create_network(self, args, network_module, vae, text_encoder, unet, net_kwargs: dict):
+        """The reference gate table (--ref_gate) is attached to every network created: the master's in train() and, with
+        --replica_devices, the copy of each replica (library/replica_trainer.py builds them with this method)."""
+        network = super().create_network(args, network_module, vae, text_encoder, unet, net_kwargs)
+        if network is None or not args.ref_gate:
+            return network
+
+        num_blocks = len(unet.layers)
+        band_edges = moss_image_ref_gate.parse_band_edges(args.ref_gate_bands)
+        # the binarized table is a frozen buffer; the learned table is a parameter with its own learning rate.
+        # Both are saved into the LoRA file as `ref_gate.*` and loaded from --network_weights by network.load_weights
+        gate = ReferenceGate(num_blocks, band_edges, args.ref_gate_init, trainable=not args.ref_gate_binarize)
+        network.add_extra_trainable_module("ref_gate", gate, args.ref_gate_lr)
+        self._ref_gates.append(gate)
+        if len(self._ref_gates) == 1:
+            logger.info(
+                f"reference gate: {num_blocks} blocks x {gate.num_bands} bands {gate.band_ranges()}, "
+                f"init logit {args.ref_gate_init}, budget {args.ref_gate_budget}, binarize: {args.ref_gate_binarize}"
+            )
+        return network
+
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
         super().post_process_network(args, accelerator, network, text_encoders, unet)
         self.network = network
-
         if args.ref_gate:
-            num_blocks = len(accelerator.unwrap_model(unet).layers)
-            band_edges = moss_image_ref_gate.parse_band_edges(args.ref_gate_bands)
-            # the binarized table is a frozen buffer; the learned table is a parameter with its own learning rate.
-            # Both are saved into the LoRA file as `ref_gate.*` and loaded from --network_weights by network.load_weights
-            self.ref_gate = ReferenceGate(num_blocks, band_edges, args.ref_gate_init, trainable=not args.ref_gate_binarize)
-            network.add_extra_trainable_module("ref_gate", self.ref_gate, args.ref_gate_lr)
-            logger.info(
-                f"reference gate: {num_blocks} blocks x {self.ref_gate.num_bands} bands {self.ref_gate.band_ranges()}, "
-                f"init logit {args.ref_gate_init}, budget {args.ref_gate_budget}, binarize: {args.ref_gate_binarize}"
+            self.ref_gate = self.ref_gate_of(accelerator, network)
+            assert self.ref_gate is not None, (
+                "the network has no reference gate table: --ref_gate needs a network created by create_network"
+                " / network に参照 gate 表がありません（--ref_gate には create_network で作られた network が必要です）"
             )
 
+    def ref_gate_of(self, accelerator, network) -> Optional[ReferenceGate]:
+        """The gate table of `network` (the master's or a replica's), None without --ref_gate"""
+        if self.ref_gate is None and not self._ref_gates:
+            return None
+        network = accelerator.unwrap_model(network) if accelerator is not None and network is not None else network
+        gate = getattr(network, "ref_gate", None)
+        return gate if gate is not None else self.ref_gate
+
     def prepare_ref_gate_after_load(self, args):
-        """--ref_gate_binarize: the table loaded from --network_weights is binarized (top budget blocks per band)"""
-        if self.ref_gate is not None and args.ref_gate_binarize and not self.ref_gate.is_binarized():
+        """--ref_gate_binarize: the table loaded from --network_weights is binarized (top budget blocks per band) once the
+        weights are loaded. The frozen table is not a parameter, so the replicas (--replica_devices) do not receive it with
+        the weight synchronization: it is copied to their tables here."""
+        if self.ref_gate is None or self._ref_gate_prepared:
+            return
+        self._ref_gate_prepared = True
+        if not args.ref_gate_binarize:
+            return
+        if not self.ref_gate.is_binarized():
             self.ref_gate.binarize_(args.ref_gate_budget)
             logger.info("reference gate binarized:")
             print(self.ref_gate.table_string())  # print: the rich log handler would wrap the table
+        with torch.no_grad():
+            for gate in self._ref_gates:
+                if gate is not self.ref_gate:
+                    gate.logits.copy_(self.ref_gate.logits.to(gate.logits.device))
 
     @contextlib.contextmanager
-    def lora_disabled(self):
-        """Disable the LoRA (multiplier 0) during the reference forward of --ref_mode kv with --ref_kv_lora off"""
-        network = self.network
+    def lora_disabled(self, network):
+        """Disable the LoRA (multiplier 0) of `network` during the reference forward of --ref_mode kv with --ref_kv_lora off"""
         if network is None or not hasattr(network, "set_multiplier"):
             yield
             return
@@ -285,8 +333,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         )
 
         # budget penalty of the learned reference gate (training only, not for the binarized table)
-        if is_train and self.ref_gate is not None and self.ref_gate.trainable and args.ref_gate_budget is not None:
-            loss = loss + args.ref_gate_budget_weight * self.ref_gate.budget_penalty(args.ref_gate_budget).to(loss.device)
+        gate = self.ref_gate_of(accelerator, network)
+        if is_train and gate is not None and gate.trainable and args.ref_gate_budget is not None:
+            loss = loss + args.ref_gate_budget_weight * gate.budget_penalty(args.ref_gate_budget).to(loss.device)
         return loss
 
     def get_noise_pred_and_target(
@@ -317,7 +366,9 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             noisy_model_input.requires_grad_(True)
             prompt_embeds.requires_grad_(True)
 
-        model_pred = self.call_dit(args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, is_train)
+        model_pred = self.call_dit(
+            args, accelerator, dit, batch, noisy_model_input, timesteps, prompt_embeds, attn_mask, network, is_train
+        )
         target = noise - latents
         weighting = flux_train_utils.compute_loss_weighting_for_sd3(args.weighting_scheme, sigmas_b)
         return model_pred, target, timesteps, weighting
@@ -332,8 +383,11 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
         timesteps: torch.Tensor,
         prompt_embeds: torch.Tensor,
         attn_mask: torch.Tensor,
+        network,
         is_train: bool,
     ) -> torch.Tensor:
+        # `network` and its gate table belong to the device of this micro-step (master or replica)
+        network = accelerator.unwrap_model(network) if network is not None else None
         ref = batch["ref_latents"].to(device=noisy_model_input.device, dtype=noisy_model_input.dtype)
 
         # Reference dropout: replace the reference with zeros so that the model also learns the no-reference case
@@ -355,14 +409,15 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                     batch["ref_uncond_mask"],
                     args.ref_rope_r,
                     self.ref_kv_blocks,
-                    self.lora_disabled if args.ref_kv_lora == "off" else None,
+                    functools.partial(self.lora_disabled, network) if args.ref_kv_lora == "off" else None,
                     enable_grad=is_train and args.ref_kv_lora == "on",
                 )
             ref_gate = None
-            if self.ref_gate is not None:
+            gate = self.ref_gate_of(None, network)
+            if gate is not None:
                 # learned gate: per-sample log gates of the band of each timestep (bias path), binarized tables resolve to
                 # plain concatenation / skipping of the reference per block
-                ref_kv, ref_gate = moss_image_ref_gate.resolve_block_gates(ref_kv, self.ref_gate.log_gates(timesteps))
+                ref_kv, ref_gate = moss_image_ref_gate.resolve_block_gates(ref_kv, gate.log_gates(timesteps))
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv, ref_gate=ref_gate)
 
@@ -397,7 +452,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             tokenize_strategy,
             text_encoding_strategy,
             self.sample_prompts_te_outputs,
-            ref_kv_context=self.lora_disabled if args.ref_kv_lora == "off" else None,
+            ref_kv_context=functools.partial(self.lora_disabled, self.network) if args.ref_kv_lora == "off" else None,
             ref_gate=self.ref_gate,
         )
 
@@ -632,5 +687,5 @@ if __name__ == "__main__":
     if args.show_timesteps:
         moss_image_train_utils.show_timesteps(args)
     else:
-        trainer = MossImageEditNetworkTrainer()
+        trainer = replica_trainer.wrap_trainer_class(MossImageEditNetworkTrainer, args)()
         trainer.train(args)
