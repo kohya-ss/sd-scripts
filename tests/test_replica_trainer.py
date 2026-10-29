@@ -165,9 +165,10 @@ def test_replica_submit_runs_in_the_callers_context():
         executor=ThreadPoolExecutor(max_workers=1),
     )
     try:
-        with torch._dynamo.config.patch(recompile_limit=123):
-            assert replica.submit(lambda: torch._dynamo.config.recompile_limit).result() == 123
-        assert replica.submit(lambda: torch._dynamo.config.recompile_limit).result() != 123  # follows the caller
+        # cache_size_limit: the name of the recompile limit in every supported torch version (an alias in recent ones)
+        with torch._dynamo.config.patch(cache_size_limit=123):
+            assert replica.submit(lambda: torch._dynamo.config.cache_size_limit).result() == 123
+        assert replica.submit(lambda: torch._dynamo.config.cache_size_limit).result() != 123  # follows the caller
     finally:
         replica.executor.shutdown()
 
