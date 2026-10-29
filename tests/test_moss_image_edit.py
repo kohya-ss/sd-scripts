@@ -210,13 +210,12 @@ def make_args(**overrides):
         ref_kv_blocks=None,
         ref_kv_lora="on",
         ref_gate=False,
-        ref_gate_bands="950,850,700,500",
-        ref_gate_init=2.0,
+        ref_gate_bands=None,
         ref_gate_lr=1e-2,
         ref_gate_budget=None,
         ref_gate_budget_weight=0.1,
-        ref_gate_balanced_timesteps=False,
         ref_gate_binarize=False,
+        network_weights=None,
     )
     args.update(overrides)
     return argparse.Namespace(**args)
@@ -233,16 +232,20 @@ def test_setup_parser_edit_defaults():
     assert args.cache_ref_latents_to_disk is False
     assert args.ref_latents_cache_dir is None
     assert args.ref_mask_source == "none"
-    assert args.ref_mask_space == "latent"
-    assert args.ref_mask_fill_pixel == 128
     assert args.ref_mask_fill_latent == 0.0
-    assert args.ref_mode == "concat"
+    assert args.ref_mode == "kv"
     assert args.ref_timestep == 0.0
     assert args.ref_kv_blocks is None
     assert args.ref_kv_lora == "on"
     assert args.ref_gate is False and args.ref_gate_binarize is False
-    assert args.ref_gate_bands == "950,850,700,500" and args.ref_gate_init == 2.0 and args.ref_gate_lr == 1e-2
-    assert args.ref_gate_budget is None and args.ref_gate_budget_weight == 0.1 and args.ref_gate_balanced_timesteps is False
+    assert args.ref_gate_bands is None and args.ref_gate_lr == 1e-2
+    assert args.ref_gate_budget is None and args.ref_gate_budget_weight == 0.1
+    assert parser.parse_args(["--ref_gate_bands", ""]).ref_gate_bands == ""  # a single band
+    for removed in ["--ref_mask_space", "--ref_mask_fill_pixel", "--ref_gate_init", "--ref_gate_balanced_timesteps"]:
+        with pytest.raises(SystemExit):
+            parser.parse_args([removed, "1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ref_kv_lora", "off"])
 
 
 def test_random_reference_masks():
@@ -253,17 +256,6 @@ def test_random_reference_masks():
     for i in range(2):
         assert set(masks[i].unique().tolist()) == {0.0, 1.0}
         assert 0 < masks[i].mean() < 1
-
-    torch.manual_seed(0)
-    images = torch.rand(2, 3, 64, 96) * 2 - 1
-    masked = moss_image_train_network_edit.apply_random_reference_masks_pixel(images, 128)
-    assert masked.shape == images.shape
-    value = 128 / 127.5 - 1.0
-    for i in range(2):
-        changed = (masked[i] != images[i]).any(0)  # [H, W]
-        assert changed.any() and not changed.all()
-        assert torch.all(masked[i][:, changed] == value)
-    assert not torch.equal(images, masked)  # the input is not modified in place
 
 
 def test_latent_mask_blend_has_sub_token_precision():
@@ -545,30 +537,11 @@ def test_controlnet_dataset_conditioning_latents_cache_dir_and_flip(tmp_path):
     assert seen_flipped
 
 
-def test_controlnet_dataset_cond_alpha_fill(tmp_path):
+def test_controlnet_dataset_rgba_cond_alpha_is_dropped_by_default(tmp_path):
     dataset = make_controlnet_dataset(tmp_path, rgba_cond=True)
-    gray = 128 / 127.5 - 1.0
-
-    # without fill the alpha is dropped: no gray block
     example = dataset[0]
     cond = example["conditioning_images"]
-    assert not torch.all(cond[:, :, 16:32, 16:32] == gray)
-
-    # with fill: the alpha region (a quarter block at 1/4..1/2) is gray in the pixel path ...
-    dataset.cond_alpha_fill = 128
-    example = dataset[0]
-    cond_filled = example["conditioning_images"]
-    h, w = cond_filled.shape[-2:]
-    block = cond_filled[:, :, h // 4 : h // 2, w // 4 : w // 2]
-    torch.testing.assert_close(block, torch.full_like(block, gray))
-    torch.testing.assert_close(cond_filled[:, :, : h // 4], cond[:, :, : h // 4])
-
-    # ... and in the cached latents path (same encoding of the same filled pixels)
-    vae = FakeVAE()
-    strategy = FakeLatentsCachingStrategy(False, batch_size=2, skip_disk_cache_validity_check=False)
-    dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), strategy)
-    cached = dataset[0]["conditioning_latents"]
-    torch.testing.assert_close(cached, vae.encode(cond_filled), atol=1e-5, rtol=1e-5)
+    assert cond.shape[1] == 3 and "conditioning_masks" not in example
 
 
 @pytest.mark.parametrize("cache_to_disk", [False, True])
@@ -772,17 +745,10 @@ def test_compute_reference_kv_and_generate_latents():
     uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
     uncond_mask = torch.ones(1, 3, dtype=torch.int32)
 
-    entered = []
-
-    @contextlib.contextmanager
-    def lora_off():
-        entered.append(True)
-        yield
-
-    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, lora_off)
-    assert entered == [True] and len(kvs) == SMALL_CONFIG["num_layers"]
+    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None)
+    assert len(kvs) == SMALL_CONFIG["num_layers"]
     assert not kvs[0][0].requires_grad
-    kvs_grad = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, None, enable_grad=True)
+    kvs_grad = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, enable_grad=True)
     assert kvs_grad[0][0].requires_grad
     torch.testing.assert_close(kvs_grad[0][0].detach(), kvs[0][0])
     # batch 1 embeddings are expanded to the batch of the reference
@@ -831,18 +797,18 @@ def test_edit_trainer_kv_mode_call_dit():
     embeds2, _ = trainer.get_uncond_embeds({}, None, None, None, torch.device("cpu"), torch.float32)
     torch.testing.assert_close(embeds2, embeds)
 
-    # off: the LoRA is disabled during the reference forward and restored, no gradients through the reference
-    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="off")
+    # the generation forward attends to the K/V of the reference forward (empty prompt, timestep 0)
+    args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="on")
     trainer.ref_kv_blocks = None
     batch = {"ref_latents": ref, "ref_uncond_embeds": embeds, "ref_uncond_mask": emask}
     out = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=True)
     assert out.shape == x.shape
-    assert network.history == [0.0, 0.7]
+    assert network.history == []  # the LoRA multiplier is never touched (the LoRA is applied in the reference forward)
 
     with torch.no_grad():
         kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, embeds, emask, 1.0)
         expected = dit(x, timesteps, context, mask, ref_kv=kvs)
-    torch.testing.assert_close(out, expected)
+    torch.testing.assert_close(out.detach(), expected)
 
     # a subset of blocks
     trainer.ref_kv_blocks = frozenset([0, 2])
@@ -850,14 +816,13 @@ def test_edit_trainer_kv_mode_call_dit():
     assert not torch.allclose(out_sub, out)
     trainer.ref_kv_blocks = None
 
-    # on / on_no_grad: the LoRA stays enabled (the fake network has no modules, so the outputs equal "off"), and only
-    # "on" lets the loss gradient reach the weights through the reference forward
+    # on / on_no_grad give the same output, and only "on" lets the loss gradient reach the weights through the reference forward
     def grad_of_k_proj(mode):
         network.history.clear()
         dit.zero_grad()
         args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora=mode)
         out_mode = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=True)
-        torch.testing.assert_close(out_mode, out)
+        torch.testing.assert_close(out_mode.detach(), out.detach())
         assert network.history == []
         out_mode.square().sum().backward()
         return dit.layers[0].proj.k.weight.grad.clone()
@@ -884,8 +849,19 @@ from library.moss_image_ref_gate import ReferenceGate, resolve_block_gates
 def test_reference_gate_bands_and_table():
     assert moss_image_ref_gate.parse_band_edges(None) == [950.0, 850.0, 700.0, 500.0]
     assert moss_image_ref_gate.parse_band_edges("500, 850") == [850.0, 500.0]
+    assert moss_image_ref_gate.parse_band_edges("") == []  # a single band
+    assert moss_image_ref_gate.format_band_edges([850.0, 500.0]) == "850,500" and moss_image_ref_gate.format_band_edges([]) == ""
     with pytest.raises(ValueError):
         moss_image_ref_gate.parse_band_edges("1000,500")
+
+    # a single band over all timesteps: one column, every timestep maps to it, binarization and the state dict work
+    single = ReferenceGate(3, [], init_logit=2.0)
+    assert single.num_bands == 1 and single.band_ranges() == [(0.0, 1000.0)]
+    assert single.band_index(torch.tensor([1000.0, 500.0, 1.0])).tolist() == [0, 0, 0]
+    assert single.log_gates(torch.tensor([1000.0, 1.0])).shape == (2, 3)
+    single.binarize_(2)
+    assert single.is_binarized() and single.open_blocks(0) == [0, 1]
+    assert single.state_dict()["band_edges"].shape == (0,)
 
     gate = ReferenceGate(3, [950, 850, 700, 500], init_logit=2.0)
     assert gate.num_bands == 5 and gate.trainable
@@ -1055,46 +1031,6 @@ def test_network_extra_trainable_module_saved_and_loaded(tmp_path):
     assert "ref_gate" not in descriptions2
 
 
-def test_edit_trainer_balanced_timesteps():
-    import moss_image_train_network_edit
-    from library import sd3_train_utils
-
-    trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
-    trainer.ref_gate = ReferenceGate(SMALL_CONFIG["num_layers"], [950, 850, 700, 500])
-    dit = make_dit()
-    accelerator = FakeAccelerator()
-    noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=1.0)
-    args = make_args(ref_mode="kv", ref_gate=True, ref_gate_balanced_timesteps=True)
-
-    torch.manual_seed(0)
-    bsz = 64
-    latents = torch.randn(bsz, SMALL_CONFIG["latent_channels"], 3, 5)
-    ref = torch.randn(bsz, SMALL_CONFIG["latent_channels"], 3, 5)
-    context = torch.randn(bsz, 5, SMALL_CONFIG["text_dim"])
-    mask = torch.ones(bsz, 5, dtype=torch.int32)
-    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
-    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
-    batch = {"ref_latents": ref, "ref_uncond_embeds": uncond, "ref_uncond_mask": uncond_mask}
-
-    model_pred, target, timesteps, weighting = trainer.get_noise_pred_and_target(
-        args, accelerator, noise_scheduler, latents, batch, [context, mask, torch.zeros(bsz)], dit, None, torch.float32, True, is_train=True
-    )
-    assert model_pred.shape == latents.shape and timesteps.shape == (bsz,) and timesteps.dtype == torch.float32
-    assert torch.all(timesteps > 0) and torch.all(timesteps <= 1000)
-    bands = trainer.ref_gate.band_index(timesteps)
-    assert set(bands.tolist()) == set(range(5))  # every band is drawn (64 draws over 5 bands)
-    # v = noise - x0 target: the noisy input follows (1 - sigma) x0 + sigma noise
-    noise = target + latents
-    assert torch.all(weighting == 1.0)
-
-    # validation keeps the normal sampling
-    out_val = trainer.get_noise_pred_and_target(
-        args, accelerator, noise_scheduler, latents[:2], {k: v[:2] if k == "ref_latents" else v for k, v in batch.items()},
-        [context[:2], mask[:2], torch.zeros(2)], dit, None, torch.float32, True, is_train=False,
-    )
-    assert out_val[0].shape == latents[:2].shape
-
-
 def test_generate_latents_with_gate_table():
     dit = make_dit()
     ref = torch.randn(1, SMALL_CONFIG["latent_channels"], 3, 5)
@@ -1139,11 +1075,12 @@ def test_edit_trainer_replica_wrapping_and_parser():
     assert plain is moss_image_train_network_edit.MossImageEditNetworkTrainer
 
 
-def test_edit_trainer_gate_per_network_and_frozen_table_sync():
+def test_edit_trainer_gate_per_network_and_frozen_table_sync(tmp_path):
     """Every network created by the trainer (the master's and the replicas') carries its own gate table; call_dit uses the
     table of the network of the micro-step; the binarized (frozen) table of the master is copied to the other tables once."""
     import moss_image_train_network_edit
     from networks import lora_generic
+    from safetensors.torch import save_file
 
     net_args = dict(dim_from_weights=False, network_dim=4, network_alpha=1.0, network_dropout=None, network_args=None)
     accelerator = FakeAccelerator()
@@ -1183,11 +1120,31 @@ def test_edit_trainer_gate_per_network_and_frozen_table_sync():
     network = plain.create_network(make_args(**net_args), lora_generic, None, [None], make_dit(), {})
     assert not hasattr(network, "ref_gate") and plain._ref_gates == [] and plain.ref_gate_of(accelerator, network) is None
 
-    # second stage: frozen tables; the master's table (loaded from --network_weights) is binarized once and copied
+    # second stage: frozen tables with the bands of the first stage file (2 bands here, not the default 5); the master's
+    # table (loaded from --network_weights) is binarized once and copied
+    first_stage = ReferenceGate(SMALL_CONFIG["num_layers"], [500.0])
+    weights_path = str(tmp_path / "stage1.safetensors")
+    save_file({f"ref_gate.{k}": v.contiguous() for k, v in first_stage.state_dict().items()}, weights_path)
     trainer2 = moss_image_train_network_edit.MossImageEditNetworkTrainer()
-    args2 = make_args(ref_mode="kv", ref_gate=True, ref_gate_binarize=True, ref_gate_budget=1, **net_args)
+    args2 = make_args(ref_mode="kv", ref_gate=True, ref_gate_binarize=True, ref_gate_budget=1, network_weights=weights_path, **net_args)
     networks2 = [trainer2.create_network(args2, lora_generic, None, [None], d, {}) for d in dits]
     assert not any(g.trainable for g in trainer2._ref_gates)
+    assert all(g.num_bands == 2 and g.band_edges.tolist() == [500.0] for g in trainer2._ref_gates)
+    assert moss_image_ref_gate.format_band_edges(trainer2.resolve_band_edges(args2)) == "500"  # recorded in the metadata
+    # --ref_gate_bands must match the saved bands if given; a file without a table is rejected
+    with pytest.raises(ValueError):
+        moss_image_train_network_edit.MossImageEditNetworkTrainer().resolve_band_edges(
+            make_args(ref_gate_binarize=True, ref_gate_bands="950,850,700,500", network_weights=weights_path)
+        )
+    assert moss_image_train_network_edit.MossImageEditNetworkTrainer().resolve_band_edges(
+        make_args(ref_gate_binarize=True, ref_gate_bands="500", network_weights=weights_path)
+    ) == [500.0]
+    no_table = str(tmp_path / "no_table.safetensors")
+    save_file({"lora_unet_x.lora_down.weight": torch.zeros(1, 1)}, no_table)
+    with pytest.raises(AssertionError):
+        moss_image_train_network_edit.MossImageEditNetworkTrainer().resolve_band_edges(
+            make_args(ref_gate_binarize=True, network_weights=no_table)
+        )
     trainer2.post_process_network(args2, accelerator, networks2[0], [None], dits[0])
     with torch.no_grad():
         trainer2.ref_gate.logits.copy_(torch.randn_like(trainer2.ref_gate.logits))  # as loaded by network.load_weights

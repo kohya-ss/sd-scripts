@@ -3,11 +3,10 @@
 # to the nearest sigma of the training grid (shift 1, 1000 steps) and integrated with Euler steps in float32.
 
 import argparse
-import contextlib
 import gc
 import os
 import time
-from typing import Callable, ContextManager, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -331,21 +330,18 @@ def compute_reference_kv(
     uncond_mask: Optional[torch.Tensor],
     ref_rope_r: float = 1.0,
     blocks: Optional[Sequence[int]] = None,
-    lora_off_context: Optional[Callable[[], ContextManager]] = None,
     enable_grad: bool = False,
 ) -> list:
     """Cached reference K/V for the one-way reference (editing, --ref_mode kv): one forward of the clean reference latents
     [B, 128, Hr/16, Wr/16] with the empty prompt embeddings and the fixed `ref_timestep` (sigma * 1000). `enable_grad`
-    lets the gradients flow through the reference forward (training with --ref_kv_lora on); `lora_off_context` (a context
-    manager factory which disables the LoRA) reproduces --ref_kv_lora off. The result depends only on the reference image
-    (and the LoRA), so it is computed once per image at inference and shared by all steps."""
+    lets the gradients flow through the reference forward (training with --ref_kv_lora on). The result depends only on the
+    reference image (and the LoRA), so it is computed once per image at inference and shared by all steps."""
     batch = ref.shape[0]
     timesteps = torch.full((batch,), float(ref_timestep), dtype=torch.float32, device=ref.device)
     if uncond_embeds.shape[0] == 1 and batch > 1:
         uncond_embeds = uncond_embeds.expand(batch, -1, -1)
         uncond_mask = None if uncond_mask is None else uncond_mask.expand(batch, -1)
-    context = lora_off_context() if lora_off_context is not None else contextlib.nullcontext()
-    with torch.set_grad_enabled(enable_grad), context:
+    with torch.set_grad_enabled(enable_grad):
         return dit.forward_ref_kv(ref, timesteps, uncond_embeds.to(ref.device), uncond_mask, ref_rope_r=ref_rope_r, blocks=blocks)
 
 
@@ -394,17 +390,13 @@ def encode_reference_image(
     device: torch.device,
     mask_path: Optional[str] = None,
     mask_from_alpha: bool = False,
-    mask_space: str = "latent",
-    fill_pixel: int = 128,
     fill_latent: float = 0.0,
 ) -> torch.Tensor:
     """Load a reference image (see `load_reference_pixels`), resize it to (width, height) and encode it to normalized,
-    patchified latents [1, 128, H/16, W/16] (float32). The hole mask (if any) is applied like in training: `mask_space`
-    latent blends the latents with `fill_latent` using the smooth downsampled mask, pixel fills the pixels with the gray
-    level `fill_pixel` before the VAE. The VAE is moved to `device` for the encoding and back afterwards."""
+    patchified latents [1, 128, H/16, W/16] (float32). The hole mask (if any) is applied like in training: the latents are
+    blended with `fill_latent` using the smooth downsampled mask. The VAE is moved to `device` for the encoding and back
+    afterwards."""
     pixels, mask = load_reference_pixels(image_path, width, height, mask_path, mask_from_alpha)
-    if mask is not None and mask_space == "pixel":
-        pixels = torch.where(mask[:, None] >= 0.5, torch.full_like(pixels, fill_pixel / 127.5 - 1.0), pixels)
 
     org_vae_device = vae.device
     vae.to(device)
@@ -412,7 +404,7 @@ def encode_reference_image(
         ref = vae.encode_for_dit(pixels.to(device, dtype=vae.dtype)).float()
     vae.to(org_vae_device)
 
-    if mask is not None and mask_space == "latent":
+    if mask is not None:
         ref = apply_reference_latent_mask(ref, downsample_mask_to_latents(mask.to(device)), fill_latent)
     return ref
 
@@ -449,14 +441,13 @@ def sample_images(
     text_encoding_strategy,
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
-    ref_kv_context: Optional[Callable[[], ContextManager]] = None,
     ref_gate: Optional["ReferenceGate"] = None,
 ):
     """Generate sample images during training with the official sampler settings (steps 50, CFG 3.0, flow shift 5.0,
     uncond skip layer 22 by default). Per prompt options: `--w`, `--h`, `--s`, `--l`, `--fs`, `--n`, `--d`, and `--cn`
     (reference image for reference-conditioned editing, resized to the sample size) with `--mk` (hole mask, 255 = hole; with
-    `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_kv_context` (optional) wraps the
-    reference forward of the KV cache editing (`--ref_mode kv`), e.g. to disable the LoRA for `--ref_kv_lora off`."""
+    `--ref_mask_source alpha` the alpha channel of the reference image is used instead). `ref_gate` (optional) is the learned
+    reference gate table of the KV cache editing (`--ref_mode kv --ref_gate`)."""
     if not should_sample_images(args, epoch, steps):
         return
 
@@ -501,7 +492,6 @@ def sample_images(
             steps,
             sample_prompts_te_outputs,
             prompt_replacement,
-            ref_kv_context,
             ref_gate,
         )
 
@@ -543,7 +533,6 @@ def _sample_image_inference(
     steps,
     sample_prompts_te_outputs,
     prompt_replacement,
-    ref_kv_context=None,
     ref_gate=None,
 ):
     """Generate a single sample image."""
@@ -560,7 +549,7 @@ def _sample_image_inference(
     ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional hole mask (255 = hole)
     ref_rope_r = float(getattr(args, "ref_rope_r", 1.0))
     ref_mask_from_alpha = getattr(args, "ref_mask_source", "none") == "alpha"
-    ref_mode = getattr(args, "ref_mode", "concat")
+    ref_mode = getattr(args, "ref_mode", "kv")
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -614,8 +603,6 @@ def _sample_image_inference(
             accelerator.device,
             ref_mask_path,
             ref_mask_from_alpha,
-            getattr(args, "ref_mask_space", "latent"),
-            getattr(args, "ref_mask_fill_pixel", 128),
             getattr(args, "ref_mask_fill_latent", 0.0),
         )
 
@@ -638,7 +625,6 @@ def _sample_image_inference(
                 uncond[1],
                 ref_rope_r,
                 parse_skip_layers(getattr(args, "ref_kv_blocks", None)) or None,
-                ref_kv_context,
             )
         ref = None
 

@@ -7,9 +7,8 @@
 #
 # Reference-conditioned editing (LoRA trained with moss_image_train_network_edit.py): add `--ref_image path/to/ref.png`
 # (or `--ri path` per prompt line) and the `--ref_rope_r` value used for the training (default 1.0). For a LoRA trained
-# with `--ref_mode kv` add `--ref_mode kv` (and `--ref_timestep` / `--ref_kv_blocks` if they were changed): the reference
-# K/V are computed once per image with the LoRA-merged DiT. For a LoRA trained with `--ref_kv_lora off` add
-# `--ref_kv_without_lora`: the reference K/V are then computed with the base model before the LoRA-merged DiT is loaded.
+# with `--ref_mode concat` add `--ref_mode concat` (the default is kv; `--ref_timestep` / `--ref_kv_blocks` if they were
+# changed): with kv the reference K/V are computed once per image with the LoRA-merged DiT.
 
 import argparse
 import copy
@@ -84,10 +83,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ref_mode",
         type=str,
-        default="concat",
-        choices=["concat", "kv"],
-        help="concat: reference tokens concatenated to the sequence. kv: one-way reference with K/V cached from the base model"
-        " (metadata ss_ref_mode). Default concat",
+        default="kv",
+        choices=["kv", "concat"],
+        help="kv: one-way reference with the K/V of the reference cached once per image from the (LoRA-merged) DiT. concat:"
+        " reference tokens concatenated to the sequence. Must match the training (metadata ss_ref_mode). Default kv",
     )
     parser.add_argument("--ref_timestep", type=float, default=0.0, help="timestep (sigma * 1000) of the reference forward for --ref_mode kv")
     parser.add_argument(
@@ -97,12 +96,6 @@ def parse_args() -> argparse.Namespace:
         " sageattn). Default: binarized (gate > 0.5 opens the block; closed blocks skip the reference)",
     )
     parser.add_argument("--no_ref_gate", action="store_true", help="ignore the reference gate table of the LoRA (all blocks open)")
-    parser.add_argument(
-        "--ref_kv_without_lora",
-        action="store_true",
-        help="compute the reference K/V (--ref_mode kv) with the base model, without the LoRA (for a LoRA trained with --ref_kv_lora off;"
-        " loads the DiT twice). Default: with the LoRA-merged DiT (--ref_kv_lora on / on_no_grad)",
-    )
     parser.add_argument(
         "--ref_kv_blocks", type=str, default=None, help="comma separated block indices which attend to the reference K/V (--ref_mode kv), default all"
     )
@@ -116,15 +109,10 @@ def parse_args() -> argparse.Namespace:
         "--ref_mask_from_alpha", action="store_true", help="use the alpha channel of the reference image as the hole mask (255 = hole)"
     )
     parser.add_argument(
-        "--ref_mask_space",
-        type=str,
-        default="latent",
-        choices=["latent", "pixel"],
-        help="how the hole is applied, must match the training (--ref_mask_space, metadata ss_ref_mask_space). Default latent",
-    )
-    parser.add_argument("--ref_mask_fill_pixel", type=int, default=128, help="gray level of the hole for --ref_mask_space pixel (default 128)")
-    parser.add_argument(
-        "--ref_mask_fill_latent", type=float, default=0.0, help="fill value of the hole in the normalized latent space for --ref_mask_space latent (default 0.0)"
+        "--ref_mask_fill_latent",
+        type=float,
+        default=0.0,
+        help="fill value of the hole in the normalized latent space, must match the training (--ref_mask_fill_latent). Default 0.0",
     )
     parser.add_argument("--save_path", type=str, required=True, help="path to save generated images")
     parser.add_argument("--seed", type=int, default=None, help="Seed for generation")
@@ -250,8 +238,8 @@ def load_lora_weights(args: argparse.Namespace, prefix: str) -> Optional[List[Di
     return lora_weights_list
 
 
-def load_dit_model(args: argparse.Namespace, device: torch.device, with_lora: bool = True) -> moss_image_models.MossImage:
-    lora_weights_list = load_lora_weights(args, "lora_unet_") if with_lora else None
+def load_dit_model(args: argparse.Namespace, device: torch.device) -> moss_image_models.MossImage:
+    lora_weights_list = load_lora_weights(args, "lora_unet_")
     loading_device = "cpu" if args.blocks_to_swap > 0 else device
     model = moss_image_utils.load_moss_image_model(
         device,
@@ -347,8 +335,6 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
         device,
         args.ref_mask,
         args.ref_mask_from_alpha,
-        args.ref_mask_space,
-        args.ref_mask_fill_pixel,
         args.ref_mask_fill_latent,
     )
 
@@ -378,10 +364,10 @@ def load_reference_gate(args: argparse.Namespace, num_blocks: int) -> Optional[m
 def compute_reference_kv(
     args: argparse.Namespace, dit: moss_image_models.MossImage, ref: Optional[torch.Tensor], uncond_embeds: torch.Tensor, device: torch.device
 ) -> Optional[list]:
-    """Reference K/V for --ref_mode kv from the DiT (LoRA-merged, or the base model with --ref_kv_without_lora), moved to the CPU."""
+    """Reference K/V for --ref_mode kv from the (LoRA-merged) DiT, moved to the CPU."""
     if ref is None or args.ref_mode != "kv":
         return None
-    logger.info(f"Computing the reference K/V (timestep {args.ref_timestep}, blocks {args.ref_kv_blocks or 'all'}, LoRA: {not args.ref_kv_without_lora})")
+    logger.info(f"Computing the reference K/V (timestep {args.ref_timestep}, blocks {args.ref_kv_blocks or 'all'})")
     uncond, uncond_mask = moss_image_utils.pad_text_embeds([uncond_embeds.to(device)])
     ref_kv = moss_image_train_utils.compute_reference_kv(
         dit,
@@ -485,11 +471,9 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
             if args.ref_mode == "kv":
                 metadata["ref_timestep"] = f"{args.ref_timestep}"
                 metadata["ref_kv_blocks"] = f"{args.ref_kv_blocks}"
-                metadata["ref_kv_without_lora"] = f"{args.ref_kv_without_lora}"
             if args.ref_mask is not None or args.ref_mask_from_alpha:
                 metadata["ref_mask"] = f"{args.ref_mask}" if args.ref_mask is not None else "alpha"
-                metadata["ref_mask_space"] = f"{args.ref_mask_space}"
-                metadata["ref_mask_fill"] = f"{args.ref_mask_fill_pixel if args.ref_mask_space == 'pixel' else args.ref_mask_fill_latent}"
+                metadata["ref_mask_fill_latent"] = f"{args.ref_mask_fill_latent}"
     save_file({"latent": latent.contiguous()}, latent_path, metadata=metadata)
     logger.info(f"Latent saved to: {latent_path}")
     return latent_path
@@ -547,17 +531,9 @@ def generate_single(args: argparse.Namespace):
     ref = encode_reference(args, vae, device)
     clean_memory_on_device(device)
 
-    # 2. DiT. With --ref_kv_without_lora the reference K/V come from the base model: load it first, then the LoRA-merged DiT
-    ref_kv = None
-    if ref is not None and args.ref_mode == "kv" and args.ref_kv_without_lora and args.lora_weight:
-        dit = load_dit_model(args, device, with_lora=False)
-        ref_kv = compute_reference_kv(args, dit, ref, uncond_embeds, device)
-        del dit
-        gc.collect()
-        clean_memory_on_device(device)
+    # 2. DiT (LoRA-merged): the reference K/V of --ref_mode kv are computed once with it
     dit = load_dit_model(args, device)
-    if ref_kv is None:
-        ref_kv = compute_reference_kv(args, dit, ref, uncond_embeds, device)
+    ref_kv = compute_reference_kv(args, dit, ref, uncond_embeds, device)
     ref_gate = load_reference_gate(args, len(dit.layers))
     latents = generate_latents(args, dit, prompt_embeds, negative_embeds, device, seed, ref, ref_kv, ref_gate)
     del dit
@@ -601,18 +577,9 @@ def generate_batch(args: argparse.Namespace):
     all_refs = [encode_reference(a, vae, device) for a in all_args]
     clean_memory_on_device(device)
 
-    # 2. DiT. With --ref_kv_without_lora the reference K/V come from the base model: load it first, then the LoRA-merged DiT
-    all_ref_kvs = [None] * len(all_args)
-    needs_kv = args.ref_mode == "kv" and any(r is not None for r in all_refs)
-    if needs_kv and args.ref_kv_without_lora and args.lora_weight:
-        dit = load_dit_model(args, device, with_lora=False)
-        all_ref_kvs = [compute_reference_kv(a, dit, r, uncond_embeds, device) for a, r in zip(all_args, all_refs)]
-        del dit
-        gc.collect()
-        clean_memory_on_device(device)
+    # 2. DiT (LoRA-merged): the reference K/V of --ref_mode kv are computed once per image with it
     dit = load_dit_model(all_args[0], device)
-    if needs_kv and all_ref_kvs[0] is None and all(kv is None for kv in all_ref_kvs):
-        all_ref_kvs = [compute_reference_kv(a, dit, r, uncond_embeds, device) for a, r in zip(all_args, all_refs)]
+    all_ref_kvs = [compute_reference_kv(a, dit, r, uncond_embeds, device) for a, r in zip(all_args, all_refs)]
 
     # 2. generate all latents
     ref_gate = load_reference_gate(args, len(dit.layers))
@@ -633,8 +600,6 @@ def generate_batch(args: argparse.Namespace):
 
 
 def generate_interactive(args: argparse.Namespace):
-    if args.ref_mode == "kv" and args.lora_weight and args.ref_kv_without_lora:
-        raise ValueError("--ref_kv_without_lora is not supported in the interactive mode (the reference K/V need the base model): use --from_file")
     device = args.device
     text_encoder_device = torch.device("cpu") if args.text_encoder_cpu else device
     tokenizer = moss_image_utils.load_tokenizer(args.tokenizer_cache_dir)

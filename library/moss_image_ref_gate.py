@@ -9,8 +9,9 @@
 #
 # The timestep bands are given by their upper boundaries in sigma * 1000 (descending), e.g. "950,850,700,500" gives the
 # five bands (1000, 950], (950, 850], (850, 700], (700, 500], (500, 0] which follow the quantization points of the
-# inference schedule (50 steps, shift 5).
+# inference schedule (50 steps, shift 5). No boundary ("") gives a single band over all timesteps.
 
+import os
 from typing import List, Optional, Sequence, Tuple
 
 import torch
@@ -23,14 +24,34 @@ OFF_LOG_GATE = -1.0e4  # log gate of a closed block in the bias path (exp underf
 
 
 def parse_band_edges(value: Optional[str]) -> List[float]:
-    """"950,850,700,500" -> [950.0, 850.0, 700.0, 500.0] (descending, strictly inside (0, 1000))"""
-    if value is None or not str(value).strip():
+    """"950,850,700,500" -> [950.0, 850.0, 700.0, 500.0] (descending, strictly inside (0, 1000)). None gives the default
+    edges, an empty string gives no edges (a single band over all timesteps)."""
+    if value is None:
         value = DEFAULT_BAND_EDGES
     edges = [float(v.strip()) for v in str(value).split(",") if v.strip()]
     edges = sorted(edges, reverse=True)
     if any(not (0.0 < e < 1000.0) for e in edges) or len(set(edges)) != len(edges):
         raise ValueError(f"band edges must be distinct values in (0, 1000): {value}")
     return edges
+
+
+def format_band_edges(edges: Sequence[float]) -> str:
+    """[950.0, 850.0] -> "950,850" (the inverse of `parse_band_edges`, "" for no edges)"""
+    return ",".join(f"{e:g}" for e in edges)
+
+
+def load_band_edges(file: str) -> Optional[List[float]]:
+    """The band edges of the gate table saved in a LoRA file (`ref_gate.band_edges`), None if the file has no gate table"""
+    if os.path.splitext(file)[1] == ".safetensors":
+        from safetensors import safe_open
+
+        with safe_open(file, "pt") as f:
+            if "ref_gate.band_edges" not in f.keys():
+                return None
+            return f.get_tensor("ref_gate.band_edges").float().tolist()
+    sd = torch.load(file, map_location="cpu")
+    edges = sd.get("ref_gate.band_edges")
+    return None if edges is None else edges.float().tolist()
 
 
 class ReferenceGate(nn.Module):

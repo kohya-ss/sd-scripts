@@ -169,11 +169,8 @@ class ControlNetDataset(BaseDataset):
         # conditioning latents cache (reference-conditioned training): None (serve pixels), "memory" or "disk"
         self.cond_latents_cache_mode: Optional[str] = None
         self.cond_latents_caching_strategy: Optional[LatentsCachingStrategy] = None
-        # gray level (0-255) to fill the alpha region (alpha >= 128, e.g. the inpainting hole) of RGBA conditioning images with,
-        # set by the trainer. None: the alpha channel is dropped
-        self.cond_alpha_fill: Optional[int] = None
         # return the alpha channel of the conditioning images as a mask (`conditioning_masks` [B, H, W], 1 = alpha 255 = hole)
-        # with the images / latents, set by the trainer (hole applied in the latent space)
+        # with the images / latents, set by the trainer (hole applied in the latent space). False: the alpha channel is dropped
         self.cond_load_alpha: bool = False
         self._warned_cond_alpha_missing = False
 
@@ -186,20 +183,12 @@ class ControlNetDataset(BaseDataset):
             self._warned_cond_alpha_missing = True
 
     def load_cond_image(self, path: str) -> np.ndarray:
-        """Load a conditioning image as uint8 [H, W, 3] (RGB), or [H, W, 4] (RGBA) with `cond_load_alpha`. With `cond_alpha_fill`,
-        the alpha region of an RGBA image is filled with the gray level (255 = fill, as the inpainting masks of the LLLite trainer)
-        and RGB is returned."""
+        """Load a conditioning image as uint8 [H, W, 3] (RGB), or [H, W, 4] (RGBA) with `cond_load_alpha`."""
         if self.cond_load_alpha:
             img = load_image(path, alpha=True)
             self._check_cond_alpha(img[:, :, 3], path)
             return img
-        if self.cond_alpha_fill is None:
-            return load_image(path)
-        img = load_image(path, alpha=True)
-        alpha = img[:, :, 3:4]
-        self._check_cond_alpha(alpha, path)
-        fill = np.full_like(img[:, :, :3], self.cond_alpha_fill)
-        return np.where(alpha >= 128, fill, img[:, :, :3])
+        return load_image(path)
 
     def set_current_strategies(self):
         return self.dreambooth_dataset_delegate.set_current_strategies()
