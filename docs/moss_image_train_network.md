@@ -222,7 +222,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--convrot_int8_text_encoder`
   - Quantize the text encoder weights to ConvRot INT8 at load time (about 16GB -> 8GB). Not needed for the ComfyUI `qwen3.5_9b_int8_convrot.safetensors`.
 * `--text_encoder_blocks_to_swap=<integer>`
-  - Number of trailing text encoder layers (out of 32) kept on the CPU and moved to the GPU one layer at a time while it is executed. The token embedding, the final norm and the remaining layers stay on the GPU. `28` keeps 4 layers plus the token embedding resident (about 3.8GB in bf16, 1.9GB with ConvRot INT8), which makes caching the text encoder outputs possible on an 8GB GPU. The transfers are not overlapped with the computation: on an RTX 3050 a prompt takes about 5 seconds with the bf16 text encoder for the usual caption lengths (the cost is dominated by the transfers and barely depends on the length) and about 8 seconds at 2,000 tokens. ConvRot INT8 halves the transferred weights, but without triton the dequantizing fallback makes the forward slower (with triton it is faster). Use it only when VRAM is tight. Can be combined with `--convrot_int8_text_encoder`. Cannot be used when training a text encoder LoRA.
+  - Number of text encoder layers (out of 32) streamed from the CPU instead of being kept on the GPU (0 or unset = disabled, 32 = minimum VRAM). The weights of the streamed layers stay on the CPU and are copied to a small GPU buffer (two layers) just before they run, overlapped with the computation of the previous layer. The token embedding, the final norm and the other layers stay on the GPU. Peak VRAM for caching (including the activations of a 2,000-token prompt): about 5.1GB with `28` and 3.5GB with `32` in bf16, 2.2GB with `32` and ConvRot INT8, which makes caching the text encoder outputs possible on an 8GB GPU. The cost is dominated by the transfers and barely depends on the prompt length (with `28` and bf16, about 0.7 seconds per prompt on an RTX PRO 6000 with PCIe 5.0, compared with 0.1 to 0.3 seconds without the swap; slower on narrower PCIe links). Use it only when VRAM is tight. Can be combined with `--convrot_int8_text_encoder`. Cannot be used when training a text encoder LoRA.
 * `--convrot_int8_bwd=<bf16|int8>`
   - Backward mode of the ConvRot INT8 layers. Default `bf16` (most accurate). `int8` reuses the fused int8 GEMM for the input gradient (requires triton and CUDA); it has no measurable benefit with gradient checkpointing.
 * `--blocks_to_swap=<integer>`
@@ -276,7 +276,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 
 * `--convrot_int8` - DiT のベース重み（42 個のメインブロックの Linear 層）をロード時に ConvRot INT8 に量子化します。重みの VRAM が半減します。ComfyUI の `*_int8_convrot.safetensors` は自動判別されるので指定不要です。[7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照。
 * `--convrot_int8_text_encoder` - テキストエンコーダーの重みをロード時に ConvRot INT8 に量子化します（約 16GB → 8GB）。ComfyUI の `qwen3.5_9b_int8_convrot.safetensors` には不要です。
-* `--text_encoder_blocks_to_swap` - テキストエンコーダーの最後の N 層（全 32 層）を CPU に置き、実行時だけ 1 層ずつ GPU に移動します。トークン埋め込み、最終 norm、残りの層は GPU に常駐します。`28` なら 4 層とトークン埋め込みが常駐し（bf16 で約 3.8GB、ConvRot INT8 で約 1.9GB）、8GB の GPU でもテキストエンコーダー出力をキャッシュできます。転送は計算とオーバーラップしないため、RTX 3050 の bf16 では通常のキャプション長で 1 プロンプトあたり約 5 秒（転送律速で長さによらずほぼ一定）、約 2,000 トークンで約 8 秒かかります。ConvRot INT8 は転送量が半分になりますが、triton がない場合の逆量子化フォールバックで forward は遅くなります（triton があれば速くなります）。VRAM が厳しいときのみ使用してください。`--convrot_int8_text_encoder` と併用できます。テキストエンコーダーの LoRA 学習には使用できません。
+* `--text_encoder_blocks_to_swap` - テキストエンコーダーの層（全 32 層）のうち、GPU に常駐させず CPU からストリーミングする層の数（0 または未指定で無効、32 で VRAM 最小）。対象層の重みは CPU に置いたまま、実行直前に小さな GPU バッファ（2 層分）へコピーされ、転送は直前の層の計算とオーバーラップします。トークン埋め込み、最終 norm、その他の層は GPU に常駐します。キャッシュ時のピーク VRAM（2,000 トークンのプロンプトのアクティベーションを含む）は bf16 で `28` なら約 5.1GB、`32` なら約 3.5GB、ConvRot INT8 で `32` なら約 2.2GB で、8GB の GPU でもテキストエンコーダー出力をキャッシュできます。処理時間は転送律速でプロンプト長にほぼよらず、bf16 で `28` の場合 RTX PRO 6000（PCIe 5.0）で 1 プロンプトあたり約 0.7 秒です（スワップなしは 0.1〜0.3 秒。PCIe の帯域が狭い環境ではより遅くなります）。VRAM が厳しいときのみ使用してください。`--convrot_int8_text_encoder` と併用できます。テキストエンコーダーの LoRA 学習には使用できません。
 * `--convrot_int8_bwd` - ConvRot INT8 層の backward の方式。デフォルト `bf16`（最も高精度）。`int8` は入力勾配にも融合 int8 GEMM を使います（triton と CUDA が必要）。gradient checkpointing 使用時には速度差はほぼありません。
 * `--blocks_to_swap` - DiT のブロックを CPU と GPU でスワップして VRAM を節約。最大 **40**（42 ブロック − 2）。`--cpu_offload_checkpointing` および `--unsloth_offload_checkpointing` とは併用できません。
   - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
@@ -482,7 +482,7 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute. Practically required.
 - **`--unsloth_offload_checkpointing`**: Offloads the checkpointed activations to CPU RAM using async transfers. Cannot be combined with `--blocks_to_swap`.
 - **`--cache_text_encoder_outputs`**: Caches the Qwen3.5-9B outputs so the text encoder can be freed from the GPU during training. The text encoder is still loaded to CPU RAM (about 16GB in bf16, 8GB with ConvRot INT8) and moved to the GPU for caching.
-- **`--text_encoder_blocks_to_swap <number>`**: Moves the last N text encoder layers to the GPU one at a time while they run, instead of moving the whole 16GB text encoder to the GPU for caching. `28` needs about 4GB of VRAM with the bf16 text encoder (about 2GB with ConvRot INT8). Slower than moving the whole model, but it makes the caching work on small GPUs.
+- **`--text_encoder_blocks_to_swap <number>`**: Streams N text encoder layers from the CPU while they run, instead of moving the whole 16GB text encoder to the GPU for caching. `28` needs about 5GB of VRAM with the bf16 text encoder, `32` about 3.5GB (about 2.2GB with ConvRot INT8). Slower than moving the whole model, but it makes the caching work on small GPUs.
 - **`--cache_latents`**: Caches the FLUX.2 VAE outputs so the VAE can be freed from the GPU during training.
 - **Using Adafactor optimizer**: Can reduce VRAM usage (LoRA optimizer states are small, so the effect is minor):
   ```
@@ -504,14 +504,14 @@ Peak GPU memory as reported by the driver (`nvidia-smi`, includes the CUDA conte
 | DiT + TE LoRA (no TE cache) | ConvRot INT8 | ConvRot INT8 | 17.1GB | 17.1GB | 8.4GB |
 | DiT + TE LoRA (no TE cache) | bf16 | bf16 | 32.4GB | 32.4GB | 16.1GB |
 
-Caching with the tools: `tools/cache_latents.py` (fp32 VAE, 1024x1024) 3.2GB; `tools/cache_text_encoder_outputs.py` 15.5GB with the bf16 text encoder, 8.3GB with ConvRot INT8 (pre-quantized or `--convrot_int8_text_encoder`). With `--text_encoder_blocks_to_swap 28` the text encoder caching peak drops to about 4GB in bf16 (about 2GB with ConvRot INT8), plus the activations.
+Caching with the tools: `tools/cache_latents.py` (fp32 VAE, 1024x1024) 3.2GB; `tools/cache_text_encoder_outputs.py` 15.5GB with the bf16 text encoder, 8.3GB with ConvRot INT8 (pre-quantized or `--convrot_int8_text_encoder`). With `--text_encoder_blocks_to_swap` the text encoder caching peak (PyTorch allocations, 2,000-token prompt) drops to about 5.1GB (`28`) or 3.5GB (`32`) in bf16, and 2.2GB (`32`) with ConvRot INT8.
 
 Guidelines:
 
 * **24GB GPU:** bf16 DiT with the text encoder outputs cached. Use the ConvRot INT8 text encoder (or cache the outputs with the tool beforehand) if the startup peak is a problem.
 * **16GB GPU:** ConvRot INT8 for both the DiT and the text encoder (9GB). Also bf16 DiT with `--blocks_to_swap` and the INT8 text encoder.
 * **12GB GPU:** ConvRot INT8 for both and `--blocks_to_swap` (20 to 36). The text encoder outputs must be cached. About 15GB of CPU RAM is needed for the swapped blocks and the text encoder.
-* **8GB GPU:** Possible with `--text_encoder_blocks_to_swap 28` (or 24 for more headroom) when caching the text encoder outputs: the caching peak drops to about 4GB in bf16 or 2GB with ConvRot INT8. Training itself fits with ConvRot INT8 and `--blocks_to_swap 36` (5.2GB), but the caching and the training must run separately (use the tools to cache first).
+* **8GB GPU:** Possible with `--text_encoder_blocks_to_swap 28` (or `32` for more headroom) when caching the text encoder outputs: the caching peak drops to about 5GB (`28`) or 3.5GB (`32`) in bf16, 2.2GB (`32`) with ConvRot INT8. Training itself fits with ConvRot INT8 and `--blocks_to_swap 36` (5.2GB), but the caching and the training must run separately (use the tools to cache first).
 * **Text encoder LoRA:** needs about 17GB with ConvRot INT8 (DiT and text encoder), 32GB in bf16.
 * Note that on Windows the commit charge of the process is larger than the working set (up to about 38GB in the bf16 runs above), because the GPU allocations are backed by system memory. Make sure the page file is large enough.
 
@@ -541,7 +541,7 @@ MOSS-Image は大きなモデルです。bf16 で DiT が約 10.2GB、テキス�
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント（実質必須）
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションを CPU にオフロード（`--blocks_to_swap` とは併用不可）
 - `--cache_text_encoder_outputs`: Qwen3.5-9B の出力をキャッシュ。テキストエンコーダーは CPU RAM にはロードされ（bf16 で約 16GB、ConvRot INT8 で 8GB）、キャッシュ時に GPU へ移動します
-- `--text_encoder_blocks_to_swap`: テキストエンコーダーの最後の N 層を実行時だけ 1 層ずつ GPU に移動します（モデル全体を GPU に載せない）。`28` なら bf16 で約 4GB（ConvRot INT8 で約 2GB）の VRAM でキャッシュできます。モデル全体を移動するより遅くなりますが、小さい GPU でキャッシュできます
+- `--text_encoder_blocks_to_swap`: テキストエンコーダーの N 層を、実行時に CPU からストリーミングします（モデル全体を GPU に載せない）。bf16 で `28` なら約 5GB、`32` なら約 3.5GB（ConvRot INT8 で約 2.2GB）の VRAM でキャッシュできます。モデル全体を移動するより遅くなりますが、小さい GPU でキャッシュできます
 - `--cache_latents`: FLUX.2 VAE の出力をキャッシュ
 - Adafactor オプティマイザの使用（LoRA のオプティマイザ状態は小さいので効果は限定的）
 
