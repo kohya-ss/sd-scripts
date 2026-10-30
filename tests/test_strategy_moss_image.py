@@ -1,3 +1,4 @@
+import copy
 import os
 from types import SimpleNamespace
 
@@ -345,13 +346,38 @@ def test_latents_caching_roundtrip(tmp_path):
         assert torch.allclose(torch.from_numpy(flipped), vae.encode(torch.flip(pixels, dims=[3]))[0], atol=1e-5)
 
 
-class TinyTextEncoderWithLayers(torch.nn.Module):
-    """Minimal Qwen3_5TextModel-like module: embed_tokens + layers + norm + a rotary buffer."""
+class _TinyLinearAttentionLayer(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.in_proj = torch.nn.Linear(dim, dim * 3)
+        self.out_proj = torch.nn.Linear(dim * 3, dim)
+        self.conv1d = torch.nn.Conv1d(dim * 3, dim * 3, 1)  # not a Linear: stays resident
 
-    def __init__(self, num_layers=4, dim=8):
+    def forward(self, x):
+        h = self.conv1d(self.in_proj(x).transpose(1, 2)).transpose(1, 2)
+        return x + self.out_proj(torch.nn.functional.silu(h))
+
+
+class _TinyFullAttentionLayer(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.q_proj = torch.nn.Linear(dim, dim * 2)
+        self.o_proj = torch.nn.Linear(dim * 2, dim)
+
+    def forward(self, x):
+        return x + self.o_proj(torch.tanh(self.q_proj(x)))
+
+
+class TinyTextEncoderWithLayers(torch.nn.Module):
+    """Minimal Qwen3_5TextModel-like module: embed_tokens + hybrid layers (3 linear : 1 full attention) + norm + a rotary
+    buffer. The two layer types have different weight shapes, like the real model."""
+
+    def __init__(self, num_layers=8, dim=8):
         super().__init__()
         self.embed_tokens = torch.nn.Embedding(16, dim)
-        self.layers = torch.nn.ModuleList([torch.nn.Linear(dim, dim) for _ in range(num_layers)])
+        self.layers = torch.nn.ModuleList(
+            [_TinyFullAttentionLayer(dim) if i % 4 == 3 else _TinyLinearAttentionLayer(dim) for i in range(num_layers)]
+        )
         self.norm = torch.nn.LayerNorm(dim)
         self.rotary_emb = torch.nn.Module()
         self.rotary_emb.register_buffer("inv_freq", torch.ones(2))
@@ -365,35 +391,48 @@ class TinyTextEncoderWithLayers(torch.nn.Module):
 
 def test_text_encoder_block_swap_range():
     model = TinyTextEncoderWithLayers()
-    with pytest.raises(ValueError, match="between 1 and 3"):
-        moss_image_utils.enable_text_encoder_block_swap(model, 0, "cpu")
-    with pytest.raises(ValueError, match="between 1 and 3"):
-        moss_image_utils.enable_text_encoder_block_swap(model, 4, "cpu")
+    with pytest.raises(ValueError, match="between 1 and 8"):
+        moss_image_utils.enable_text_encoder_block_swap(model, 0, "cuda")
+    with pytest.raises(ValueError, match="between 1 and 8"):
+        moss_image_utils.enable_text_encoder_block_swap(model, 9, "cuda")
+    with pytest.raises(ValueError, match="CUDA"):
+        moss_image_utils.enable_text_encoder_block_swap(model, 2, "cpu")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_text_encoder_block_swap_moves_layers_and_keeps_outputs():
+@pytest.mark.parametrize("blocks_to_swap", [4, 8])  # 4 streams layers 1, 3, 5, 7 (3 and 7: full attention)
+def test_text_encoder_block_swap_streams_layers_and_keeps_outputs(blocks_to_swap):
     torch.manual_seed(0)
     model = TinyTextEncoderWithLayers().eval()
-    input_ids = torch.randint(0, 16, (1, 5))
+    inputs = [torch.randint(0, 16, (1, n)) for n in (5, 7, 3)]
     with torch.no_grad():
-        expected = model(input_ids)
+        expected_cpu = model(inputs[0])
+        reference = copy.deepcopy(model).to("cuda")  # fully resident reference: same kernels as the streamed model
+        expected = [reference(input_ids.to("cuda")) for input_ids in inputs]
+    del reference
 
-    moss_image_utils.enable_text_encoder_block_swap(model, 2, "cuda")
+    moss_image_utils.enable_text_encoder_block_swap(model, blocks_to_swap, "cuda")
+    offloader = getattr(model, moss_image_utils.TEXT_ENCODER_BLOCK_SWAP_OFFLOADER_ATTR)
     assert moss_image_utils.get_text_encoder_device(model).type == "cuda"
     assert model.embed_tokens.weight.device.type == "cuda"
     assert model.rotary_emb.inv_freq.device.type == "cuda"
-    assert model.layers[1].weight.device.type == "cuda"
-    assert model.layers[2].weight.device.type == "cpu"
+    assert model.norm.weight.device.type == "cuda"
+    # both layer types are streamed through one ring sized to the larger layer
+    assert {type(model.layers[i]) for i in offloader.stream_idx} == {_TinyLinearAttentionLayer, _TinyFullAttentionLayer}
+    for i, layer in enumerate(model.layers):
+        assert all(b.device.type == "cuda" for name, b in layer.named_parameters() if name.endswith("bias"))
+        if not offloader.is_stream[i]:
+            assert all(p.device.type == "cuda" for p in layer.parameters())
 
     with torch.no_grad():
-        output = model(input_ids.to("cuda"))
-    assert torch.allclose(output.cpu().float(), expected.float())
-    # the streamed layers go back to the CPU after the forward
-    assert model.layers[2].weight.device.type == "cpu"
+        for input_ids, exp in zip(inputs, expected):  # several prompts: pass boundaries (wrap-around preload)
+            output = model(input_ids.to("cuda"))
+            assert torch.allclose(output, exp, atol=1e-6)
 
     # enabling twice is a no-op, disabling restores the CPU model
-    moss_image_utils.enable_text_encoder_block_swap(model, 2, "cuda")
+    moss_image_utils.enable_text_encoder_block_swap(model, blocks_to_swap, "cuda")
     moss_image_utils.disable_text_encoder_block_swap(model)
     assert all(p.device.type == "cpu" for p in model.parameters())
     assert moss_image_utils.get_text_encoder_device(model).type == "cpu"
+    with torch.no_grad():
+        assert torch.allclose(model(inputs[0]), expected_cpu)

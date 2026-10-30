@@ -66,14 +66,13 @@ def add_moss_image_model_arguments(parser: argparse.ArgumentParser):
         "--text_encoder_blocks_to_swap",
         type=int,
         default=None,
-        help="number of trailing text encoder layers (out of 32) kept on the CPU and moved to the GPU only while they are"
-        " executed. Saves VRAM when caching the Text Encoder outputs on a small GPU: 28 keeps the token embedding and 4"
-        " layers on the GPU, 24 keeps 8. The transfers are not overlapped with the computation, so this is slower than the"
-        " DiT --blocks_to_swap. Can be combined with --convrot_int8_text_encoder. Not available when training a Text Encoder LoRA"
-        + " / Text Encoder の最後の N 層（全 32 層）を CPU に置き、実行時だけ GPU に移動する。小さい GPU で Text Encoder 出力を"
-        + "キャッシュするときの VRAM 節約用（28 ならトークン埋め込みと 4 層が GPU に常駐、24 なら 8 層）。転送は計算と"
-        + "オーバーラップしないため DiT の --blocks_to_swap より遅い。--convrot_int8_text_encoder と併用可能。Text Encoder の"
-        + "LoRA を学習する場合は使用できない",
+        help="number of the 32 text encoder layers streamed from the CPU instead of being kept on the GPU (32 = minimum VRAM)."
+        " Saves VRAM when caching the Text Encoder outputs on a small GPU: the streamed weights stay on the CPU and are copied"
+        " to a two-layer GPU buffer while the previous layer runs. Can be combined with --convrot_int8_text_encoder. Not"
+        " available when training a Text Encoder LoRA"
+        + " / Text Encoder の 32 層のうち、GPU に常駐させず CPU からストリーミングする層の数（32 で VRAM 最小）。小さい GPU で"
+        + "Text Encoder 出力をキャッシュするときの VRAM 節約用。対象層の重みは CPU に置いたまま、直前の層の実行中に 2 層分の"
+        + "GPU バッファへコピーされる。--convrot_int8_text_encoder と併用可能。Text Encoder の LoRA を学習する場合は使用できない",
     )
 
 

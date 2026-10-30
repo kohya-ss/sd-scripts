@@ -348,79 +348,81 @@ def load_text_encoder(
 
 
 TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR = "_moss_text_encoder_block_swap_handles"
+TEXT_ENCODER_BLOCK_SWAP_OFFLOADER_ATTR = "_moss_text_encoder_block_swap_offloader"
 TEXT_ENCODER_DEVICE_ATTR = "_moss_text_encoder_device"
 
 
-def enable_text_encoder_block_swap(
-    text_encoder, blocks_to_swap: int, device: Union[str, torch.device]
-) -> None:
-    """Keep the last `blocks_to_swap` layers of the text encoder on the CPU and move each of them to `device` only while
-    it is executed (layer-wise offload, no prefetch).
+def enable_text_encoder_block_swap(text_encoder, blocks_to_swap: int, device: Union[str, torch.device]) -> None:
+    """Stream `blocks_to_swap` of the text encoder layers from CPU masters to `device` while they are executed.
 
-    The token embedding, the final norm, the rotary embedding buffers and the remaining layers stay on `device`. The
-    token embedding in particular must stay on the device: it is the first parameter and the device is derived from it.
+    Uses the H2D-only `LoRAStreamOffloader` (the text encoder is frozen and forward-only): the weights of the streamed
+    layers stay on the CPU, only the Host->Device copy is done, and the next streamed layer is prefetched while the
+    current one runs. The streamed layers are spread evenly over the model, and the linear attention and full attention
+    layers share one ring buffer sized to the larger of them. The token embedding, the final norm, the rotary embedding
+    and the remaining layers stay on `device`. The masters are pageable (staged copier): no large pinned allocation.
 
-    This is a plain hook-based implementation and does not modify the Hugging Face model. It does not overlap the
-    transfers with the computation: the cost is dominated by the transfers and barely depends on the prompt length (a
-    few seconds per prompt with the bf16 text encoder on a small GPU). Use `disable_text_encoder_block_swap` to restore
-    the full CPU model.
+    Use `disable_text_encoder_block_swap` to remove the hooks and move the whole text encoder to a device.
 
     Args:
-        text_encoder: Qwen3.5-9B text model (`Qwen3_5TextModel`)
-        blocks_to_swap: number of trailing layers to stream. `1 <= blocks_to_swap < num_layers`.
-        device: device used for the execution of the layers
+        text_encoder: Qwen3.5-9B text model (`Qwen3_5TextModel`), frozen
+        blocks_to_swap: number of layers to stream. `1 <= blocks_to_swap <= num_layers`.
+        device: CUDA device used for the execution of the layers
     """
+    from library.custom_offloading_utils import LoRAStreamOffloader, attach_forward_streaming_hooks
+
     if getattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, None) is not None:
         logger.info("text encoder block swap is already enabled")
         return
-    layers = text_encoder.layers
+    layers = list(text_encoder.layers)
     num_layers = len(layers)
-    if not 0 < blocks_to_swap < num_layers:
+    if not 0 < blocks_to_swap <= num_layers:
         raise ValueError(
-            f"text_encoder_blocks_to_swap must be between 1 and {num_layers - 1} (the text encoder has {num_layers} layers),"
+            f"text_encoder_blocks_to_swap must be between 1 and {num_layers} (the text encoder has {num_layers} layers),"
             f" but got {blocks_to_swap}"
         )
-
     device = torch.device(device)
-    first_swapped = num_layers - blocks_to_swap
-    swapped_layers = list(layers[first_swapped:])
+    if device.type != "cuda":
+        raise ValueError(f"text_encoder_blocks_to_swap requires a CUDA device, but got {device}")
 
-    # free the GPU first if the swapped layers happen to be there already, then move everything else
-    for layer in swapped_layers:
-        layer.to("cpu")
+    # the offloader requires frozen weights (the ConvRot INT8 model is already frozen, bf16 is not)
+    text_encoder.requires_grad_(False)
     for name, module in text_encoder.named_children():
         if name != "layers":
             module.to(device)
-    for layer in layers[:first_swapped]:
-        layer.to(device)
 
-    def move_to_device(module, args, device=device):
-        module.to(device)
-
-    def move_to_cpu(module, args, output):
-        module.to("cpu")
-
-    handles = []
-    for layer in swapped_layers:
-        handles.append(layer.register_forward_pre_hook(move_to_device))
-        handles.append(layer.register_forward_hook(move_to_cpu))
+    offloader = LoRAStreamOffloader(
+        "moss-te",
+        layers,
+        num_layers,
+        blocks_to_swap,
+        supports_backward=False,
+        device=device,
+        ring_size=2,
+        use_pinned_memory=False,
+    )
+    handles = attach_forward_streaming_hooks(offloader, layers)
+    offloader.prepare_block_devices_before_forward(layers)  # resident layers to the device, masters on the CPU
 
     setattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, handles)
+    setattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_OFFLOADER_ATTR, offloader)
     setattr(text_encoder, TEXT_ENCODER_DEVICE_ATTR, device)
     logger.info(
-        f"Enabled text encoder block swap: {blocks_to_swap}/{num_layers} layers are streamed to {device}, "
-        f"the token embedding and {first_swapped} layers stay on the device"
+        f"Enabled text encoder block swap: {offloader.S}/{num_layers} layers are streamed to {device}, "
+        f"the token embedding and {num_layers - offloader.S} layers stay on the device"
     )
 
 
 def disable_text_encoder_block_swap(text_encoder, device: Union[str, torch.device] = "cpu") -> None:
-    """Remove the hooks installed by `enable_text_encoder_block_swap` and move the whole text encoder to `device`."""
+    """Remove the block swap installed by `enable_text_encoder_block_swap` and move the whole text encoder to `device`."""
     handles = getattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR, None)
     if handles is None:
         return
     for handle in handles:
         handle.remove()
+    offloader = getattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_OFFLOADER_ATTR)
+    offloader.release_device_buffers()  # the streamed weights point to their CPU masters again
     delattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_HANDLES_ATTR)
+    delattr(text_encoder, TEXT_ENCODER_BLOCK_SWAP_OFFLOADER_ATTR)
     delattr(text_encoder, TEXT_ENCODER_DEVICE_ATTR)
     text_encoder.to(device)
     logger.info(f"Disabled text encoder block swap, moved the text encoder to {device}")
