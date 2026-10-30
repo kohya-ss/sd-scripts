@@ -135,14 +135,22 @@ def cache_to_disk(args: argparse.Namespace) -> None:
         text_encoder2.to(accelerator.device, weight_dtype)
         text_encoders = [text_encoder1, text_encoder2]
     elif is_moss_image:
-        # the text encoder is always used in bf16
+        # the text encoder is always used in bf16. It is loaded to the CPU and moved to the GPU only when needed, so that
+        # the layer-wise block swap can keep the VRAM usage low.
         text_encoder = moss_image_utils.load_text_encoder(
             args.text_encoder,
             torch.bfloat16,
-            accelerator.device,
+            "cpu",
             disable_mmap=args.disable_mmap_load_safetensors,
             convrot_int8=args.convrot_int8_text_encoder,
+            calc_device=accelerator.device,  # quantize on the GPU, keep the weights on the CPU
         )
+        if args.text_encoder_blocks_to_swap is not None and args.text_encoder_blocks_to_swap > 0:
+            moss_image_utils.enable_text_encoder_block_swap(
+                text_encoder, args.text_encoder_blocks_to_swap, accelerator.device
+            )
+        else:
+            text_encoder.to(accelerator.device)
         text_encoders = [text_encoder]
     else:
         clip_l = flux_utils.load_clip_l(
