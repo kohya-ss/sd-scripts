@@ -84,24 +84,93 @@ def index_sv_ratio(S, target):
     return index
 
 
-def svd_lora(lora_down, lora_up, device):
+SVD_METHODS = ("merged", "qr")
+DEFAULT_SVD_LOWRANK_NITER = 2
+
+
+def svd_merged(lora_down, lora_up, lora_rank, device, svd_lowrank_niter=DEFAULT_SVD_LOWRANK_NITER):
+    """SVD of the materialized product lora_up @ lora_down (the original method).
+
+    For large matrices (both sides > 2048), torch.svd_lowrank is used unless svd_lowrank_niter is 0.
+    """
     lora_down = lora_down.to(device)
     lora_up = lora_up.to(device)
 
-    Q, R = torch.linalg.qr(lora_up)  # Q: (out, rank), R: (rank, rank)
-    C = R @ lora_down  # C: (rank, in)
-    U, S, Vh = torch.linalg.svd(C, full_matrices=False)  # U: (rank, rank), S: (rank,), Vh: (rank, in)
-    return Q @ U, S, Vh
+    weight = lora_up @ lora_down  # (out, in)
+    out_size, in_size = weight.size()
+    del lora_up, lora_down
+
+    if svd_lowrank_niter > 0 and out_size > 2048 and in_size > 2048:
+        U, S, V = torch.svd_lowrank(weight, q=min(2 * lora_rank, out_size, in_size), niter=svd_lowrank_niter)
+        Vh = V.T
+    else:
+        U, S, Vh = torch.linalg.svd(weight)
+    return U, S, Vh
+
+
+def svd_qr(lora_down, lora_up, lora_rank, device):
+    """Exact SVD of lora_up @ lora_down without materializing the product.
+
+    With lora_up = Q R and R @ lora_down = U S Vh, we get lora_up @ lora_down = (Q U) S Vh.
+
+    If lora_rank is larger than the number of singular values, the result is padded up to lora_rank (capped by the
+    input size) with zero singular values, zero columns of U and rows of Vh orthonormal to the existing ones. This keeps
+    the requested rank like the merged method (whose extra singular values are near zero), and the padded lora_down
+    stays non-zero so that the resized LoRA can be trained further.
+    """
+    lora_down = lora_down.to(device)
+    lora_up = lora_up.to(device)
+
+    Q, R = torch.linalg.qr(lora_up)  # Q: (out, k), R: (k, rank), k = min(out, rank)
+    C = R @ lora_down  # C: (k, in)
+    U, S, Vh = torch.linalg.svd(C, full_matrices=False)  # U: (k, m), S: (m,), Vh: (m, in), m = min(k, in)
+    U = Q @ U
+
+    num_pad = min(lora_rank, Vh.shape[1]) - len(S)
+    if num_pad > 0:
+        U = torch.cat([U, U.new_zeros(U.shape[0], num_pad)], dim=1)
+        S = torch.cat([S, S.new_zeros(num_pad)])
+        Vh = torch.cat([Vh, orthonormal_complement_rows(Vh, num_pad)], dim=0)
+    return U, S, Vh
+
+
+def orthonormal_complement_rows(Vh, num_rows, seed=0):
+    """Return num_rows orthonormal rows orthogonal to the (orthonormal) rows of Vh. Deterministic for a given seed."""
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    G = torch.randn(num_rows, Vh.shape[1], generator=generator, dtype=torch.float64)
+    Vh64 = Vh.to("cpu", torch.float64)
+    for _ in range(2):  # project out twice for numerical stability
+        G = G - (G @ Vh64.T) @ Vh64
+    Qc, _ = torch.linalg.qr(G.T)  # (in, num_rows)
+    return Qc.T.to(Vh.device, Vh.dtype)
+
+
+def svd_lora(lora_down, lora_up, lora_rank, device, svd_method="merged", svd_lowrank_niter=DEFAULT_SVD_LOWRANK_NITER):
+    if svd_method == "qr":
+        return svd_qr(lora_down, lora_up, lora_rank, device)
+    return svd_merged(lora_down, lora_up, lora_rank, device, svd_lowrank_niter)
 
 
 # Modified from Kohaku-blueleaf's extract functions
-def extract_conv(lora_down, lora_up, lora_rank, dynamic_method, dynamic_param, device, scale=1):
+def extract_conv(
+    lora_down,
+    lora_up,
+    lora_rank,
+    dynamic_method,
+    dynamic_param,
+    device,
+    scale=1,
+    svd_method="merged",
+    svd_lowrank_niter=DEFAULT_SVD_LOWRANK_NITER,
+):
     in_rank, in_size, kernel_size, k_ = lora_down.shape
     out_size, out_rank, _, _ = lora_up.shape
     assert in_rank == out_rank, f"rank {in_rank} {out_rank} mismatch"
     assert kernel_size == k_, f"kernel {kernel_size} {k_} mismatch"
 
-    U, S, Vh = svd_lora(lora_down.reshape(in_rank, -1), lora_up.reshape(out_size, in_rank), device)
+    U, S, Vh = svd_lora(
+        lora_down.reshape(in_rank, -1), lora_up.reshape(out_size, -1), lora_rank, device, svd_method, svd_lowrank_niter
+    )
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -114,12 +183,22 @@ def extract_conv(lora_down, lora_up, lora_rank, dynamic_method, dynamic_param, d
     return param_dict
 
 
-def extract_linear(lora_down, lora_up, lora_rank, dynamic_method, dynamic_param, device, scale=1):
+def extract_linear(
+    lora_down,
+    lora_up,
+    lora_rank,
+    dynamic_method,
+    dynamic_param,
+    device,
+    scale=1,
+    svd_method="merged",
+    svd_lowrank_niter=DEFAULT_SVD_LOWRANK_NITER,
+):
     in_rank, in_size = lora_down.shape
     out_size, out_rank = lora_up.shape
     assert in_rank == out_rank, f"rank {in_rank} {out_rank} mismatch"
 
-    U, S, Vh = svd_lora(lora_down, lora_up, device)
+    U, S, Vh = svd_lora(lora_down, lora_up, lora_rank, device, svd_method, svd_lowrank_niter)
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -182,10 +261,30 @@ def rank_resize(S, rank, dynamic_method, dynamic_param, scale=1):
     return param_dict
 
 
-def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dynamic_method, dynamic_param, verbose, svd_lowrank_niter=None):
-    if svd_lowrank_niter is not None:
-        logger.warning(
-            "svd_lowrank_niter is deprecated and ignored. The exact SVD is computed without materializing the LoRA product"
+def resize_lora_model(
+    lora_sd,
+    new_rank,
+    new_conv_rank,
+    save_dtype,
+    device,
+    dynamic_method,
+    dynamic_param,
+    verbose,
+    svd_lowrank_niter=None,
+    svd_method="merged",
+):
+    if svd_method not in SVD_METHODS:
+        raise ValueError(f"Unknown svd_method: {svd_method}, must be one of {SVD_METHODS}")
+
+    if svd_method == "qr":
+        if svd_lowrank_niter is not None:
+            logger.warning("svd_lowrank_niter is ignored with svd_method 'qr' / svd_method 'qr' では svd_lowrank_niter は無視されます")
+    else:
+        if svd_lowrank_niter is None:
+            svd_lowrank_niter = DEFAULT_SVD_LOWRANK_NITER
+        logger.info(
+            "'--svd_method qr' computes the exact SVD much faster without merging the LoRA weights"
+            " / '--svd_method qr' を指定すると、LoRA の重みをマージせずに厳密な SVD を高速に計算できます"
         )
 
     max_old_rank = None
@@ -249,9 +348,29 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
                     scale = lora_alpha / old_rank
 
                 if conv2d:
-                    param_dict = extract_conv(lora_down_weight, lora_up_weight, new_conv_rank, dynamic_method, dynamic_param, device, scale)
+                    param_dict = extract_conv(
+                        lora_down_weight,
+                        lora_up_weight,
+                        new_conv_rank,
+                        dynamic_method,
+                        dynamic_param,
+                        device,
+                        scale,
+                        svd_method,
+                        svd_lowrank_niter,
+                    )
                 else:
-                    param_dict = extract_linear(lora_down_weight, lora_up_weight, new_rank, dynamic_method, dynamic_param, device, scale)
+                    param_dict = extract_linear(
+                        lora_down_weight,
+                        lora_up_weight,
+                        new_rank,
+                        dynamic_method,
+                        dynamic_param,
+                        device,
+                        scale,
+                        svd_method,
+                        svd_lowrank_niter,
+                    )
 
                 if verbose:
                     max_ratio = param_dict["max_ratio"]
@@ -319,7 +438,16 @@ def resize(args):
 
     logger.info("Resizing Lora...")
     state_dict, old_dim, new_alpha = resize_lora_model(
-        lora_sd, args.new_rank, args.new_conv_rank, save_dtype, args.device, args.dynamic_method, args.dynamic_param, args.verbose
+        lora_sd,
+        args.new_rank,
+        args.new_conv_rank,
+        save_dtype,
+        args.device,
+        args.dynamic_method,
+        args.dynamic_param,
+        args.verbose,
+        args.svd_lowrank_niter,
+        args.svd_method,
     )
 
     # update metadata
@@ -401,8 +529,20 @@ def setup_parser() -> argparse.ArgumentParser:
         "--svd_lowrank_niter",
         type=int,
         default=None,
-        help="deprecated and ignored. The exact SVD is computed without materializing the LoRA product"
-        " / 非推奨・無視されます。LoRAの積を明示的に生成することなく、厳密なSVDが計算します",
+        help=f"Number of iterations for svd_lowrank on large matrices (>2048 dims) with svd_method 'merged', default is"
+        f" {DEFAULT_SVD_LOWRANK_NITER}. 0 to disable and use full SVD. Ignored with svd_method 'qr'"
+        f" / svd_method 'merged' で大行列(2048次元超)に対するsvd_lowrankの反復回数、デフォルトは{DEFAULT_SVD_LOWRANK_NITER}。"
+        "0で無効化し完全SVDを使用。svd_method 'qr' では無視されます",
+    )
+    parser.add_argument(
+        "--svd_method",
+        type=str,
+        default="merged",
+        choices=SVD_METHODS,
+        help="SVD method. 'merged' (default): SVD of the merged weight (lora_up @ lora_down), svd_lowrank is used for"
+        " large matrices. 'qr': exact SVD via QR decomposition without merging the weight, much faster"
+        " / SVDの方式。'merged'（デフォルト）: マージした重み (lora_up @ lora_down) をSVD、大行列にはsvd_lowrankを使用。"
+        "'qr': QR分解により重みをマージせずに厳密なSVDを計算、大幅に高速",
     )
 
     return parser
