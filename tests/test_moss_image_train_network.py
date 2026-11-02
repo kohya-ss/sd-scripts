@@ -54,6 +54,10 @@ def test_setup_parser_defaults():
     args = parser.parse_args(["--pretrained_model_name_or_path", "dit.safetensors", "--text_encoder", "te.safetensors"])
     assert args.text_encoder == "te.safetensors"
     assert args.moss_max_token_length == 4096
+    assert args.text_encoder_blocks_to_swap is None
+    assert parser.parse_args(
+        ["--pretrained_model_name_or_path", "dit.safetensors", "--text_encoder", "te.safetensors", "--text_encoder_blocks_to_swap", "28"]
+    ).text_encoder_blocks_to_swap == 28
     assert args.timestep_sampling == "sigmoid" and args.discrete_flow_shift == 1.0
     assert args.sample_uncond_skip_layers == "22"
     assert args.compile is False and args.cuda_allow_tf32 is False

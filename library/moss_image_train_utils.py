@@ -63,6 +63,18 @@ def add_moss_image_model_arguments(parser: argparse.ArgumentParser):
         + " / Text Encoder（Qwen3.5-9B）の重みをロード時に ConvRot INT8 に量子化する（約 16GB → 9GB）。ComfyUI の事前量子化済みファイル"
         + "（qwen3.5_9b_int8_convrot.safetensors）は自動判別されるのでこのオプションは不要",
     )
+    parser.add_argument(
+        "--text_encoder_blocks_to_swap",
+        type=int,
+        default=None,
+        help="number of the 32 text encoder layers streamed from the CPU instead of being kept on the GPU (32 = minimum VRAM)."
+        " Saves VRAM when caching the Text Encoder outputs on a small GPU: the streamed weights stay on the CPU and are copied"
+        " to a two-layer GPU buffer while the previous layer runs. Can be combined with --convrot_int8_text_encoder. Not"
+        " available when training a Text Encoder LoRA"
+        + " / Text Encoder の 32 層のうち、GPU に常駐させず CPU からストリーミングする層の数（32 で VRAM 最小）。小さい GPU で"
+        + "Text Encoder 出力をキャッシュするときの VRAM 節約用。対象層の重みは CPU に置いたまま、直前の層の実行中に 2 層分の"
+        + "GPU バッファへコピーされる。--convrot_int8_text_encoder と併用可能。Text Encoder の LoRA を学習する場合は使用できない",
+    )
 
 
 def add_convrot_int8_arguments(parser: argparse.ArgumentParser):
