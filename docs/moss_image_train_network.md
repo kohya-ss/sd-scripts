@@ -512,6 +512,7 @@ Measured on an RTX PRO 6000 Blackwell with about 1MP images (`resolution = 1024`
 * In bf16, one block costs about 1GB of VRAM and saves about 8.6 ms per step (about 0.7%). Checkpointing all blocks costs 39% of the step time in total, close to the theoretical value for LoRA training, where the backward pass of the frozen layers is about as expensive as the forward pass.
 * With `--compile`, one block costs only about 0.6GB because the compiled blocks keep fewer intermediate tensors, so about 1.6 times as many blocks fit into the same VRAM. The per-block speed gain is about 4.8 ms (about 0.6%).
 * Guidelines at this resolution with the bf16 DiT: about `10` on a 24GB GPU, `18` on 32GB, `34` on 48GB. With ConvRot INT8 and `--compile`: about `22` on 24GB, `36` on 32GB, all `42` on 48GB. Leave 1GB to 2GB of headroom for larger buckets and sample generation.
+* The VRAM cost per block does not depend on the GPU, only the time does. On an RTX 4090 (24GB, same settings, ConvRot INT8 text encoder): bf16 DiT 14.3GB / 1.88s with `0`, 17.6GB / 1.83s with `5`, 22.5GB / 1.77s with `10` (about 0.8GB and 11.5 ms per block); ConvRot INT8 + `--compile` 10.0GB / 1.00s with `0`, 13.0GB / 0.98s with `7`, 17.5GB / 0.94s with `14`, 22.0GB / 0.90s with `21` (about 0.6GB and 4.8 ms per block). On the RTX 4090, ConvRot INT8 + `--compile` is 1.9 times faster than bf16 (probably because the bf16 tensor core throughput of the GeForce GPUs is limited while int8 is not), so on 24GB GPUs use it first and then spend the remaining VRAM on `--gradient_checkpointing_skip_blocks`.
 
 #### Measured Memory Usage / メモリ使用量の実測値
 
@@ -589,6 +590,7 @@ RTX PRO 6000 Blackwell、約 1MP の画像（`resolution = 1024` でバケット
 * bf16 では 1 ブロックあたり約 1GB の VRAM で、ステップあたり約 8.6 ms（約 0.7%）短縮されます。全ブロックの checkpointing のコストは合計でステップ時間の 39% で、凍結層の backward が forward とほぼ同じコストになる LoRA 学習の理論値に近い値です。
 * `--compile` ではコンパイルされたブロックが保持する中間テンソルが減るため、1 ブロックあたり約 0.6GB で済み、同じ VRAM で約 1.6 倍のブロックをスキップできます。1 ブロックあたりの短縮は約 4.8 ms（約 0.6%）です。
 * この解像度での目安は、bf16 DiT で 24GB GPU なら `10` 前後、32GB で `18`、48GB で `34`。ConvRot INT8 と `--compile` なら 24GB で `22` 前後、32GB で `36`、48GB で全 `42` です。大きめのバケットやサンプル生成のために 1〜2GB の余裕を残してください。
+* 1 ブロックあたりの VRAM は GPU によらず、時間だけが変わります。RTX 4090（24GB、同じ設定、テキストエンコーダーは ConvRot INT8）では、bf16 DiT で `0` が 14.3GB / 1.88 秒、`5` が 17.6GB / 1.83 秒、`10` が 22.5GB / 1.77 秒（1 ブロックあたり約 0.8GB・11.5 ms）、ConvRot INT8 + `--compile` で `0` が 10.0GB / 1.00 秒、`7` が 13.0GB / 0.98 秒、`14` が 17.5GB / 0.94 秒、`21` が 22.0GB / 0.90 秒（約 0.6GB・4.8 ms）でした。RTX 4090 では ConvRot INT8 + `--compile` が bf16 の 1.9 倍速い（GeForce は bf16 の Tensor Core 性能が制限されており、int8 は制限されていないためと思われます）ので、24GB の GPU ではまずこちらを使い、残った VRAM を `--gradient_checkpointing_skip_blocks` に充ててください。
 
 #### メモリ使用量の実測値
 

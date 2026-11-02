@@ -462,7 +462,7 @@ Anima models can be large, so GPUs with limited VRAM may require optimization:
   | Peak VRAM | 6.5GB | 9.4GB | 12.9GB | 16.4GB | 19.9GB |
   | Step time | 0.85s | 0.75s | 0.73s | 0.59s | 0.53s |
 
-  Each skipped block costs about 0.48GB at this resolution and saves about 3.5% of the step time. Larger batch sizes give little throughput gain with this model size, so skipping blocks is usually the better use of spare VRAM than increasing the batch size.
+  Each skipped block costs about 0.48GB at this resolution and saves about 3.5% of the step time. Larger batch sizes give little throughput gain with this model size, so skipping blocks is usually the better use of spare VRAM than increasing the batch size. The VRAM cost per block does not depend on the GPU: on an RTX 4090 (24GB, same settings) the peaks are 6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB and the step times 0.73s / 0.68s / 0.63s / 0.56s / 0.52s for `0` / `7` / `14` / `21` / `28`, so all blocks can be skipped on a 24GB GPU for a 30% faster step.
 
 - **`--cache_text_encoder_outputs`**: Caches Qwen3 outputs so the text encoder can be freed from VRAM during training.
 
@@ -482,7 +482,7 @@ Animaモデルは大きい場合があるため、VRAMが限られたGPUでは�
 - `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションをCPUにオフロード
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント
-- `--gradient_checkpointing_skip_blocks`: 部分的なgradient checkpointing。末尾のN個のブロックはbackwardで再計算せずactivationを保持するため、余っているVRAMを速度に変換できます。VRAM使用量とステップ時間はNに対して線形に変化するので、学習が収まる範囲でNを増やしてください。Anima（28ブロック）、約1MPの画像、batch size 1、LoRA dim 16、bf16、`--attn_mode flash`、latentとText Encoder出力をキャッシュした場合の実測（RTX PRO 6000 Blackwell、`nvidia-smi`の学習中ピーク）は、`0`で6.5GB / 0.85秒、`7`で9.4GB / 0.75秒、`14`で12.9GB / 0.73秒、`21`で16.4GB / 0.59秒、`28`（再計算なし）で19.9GB / 0.53秒でした。1ブロックあたり約0.48GBでステップ時間が約3.5%短縮されます。このモデルサイズではbatch sizeを増やしてもスループットはほとんど向上しないため、余ったVRAMはbatch sizeよりもブロックのスキップに使う方が有利です
+- `--gradient_checkpointing_skip_blocks`: 部分的なgradient checkpointing。末尾のN個のブロックはbackwardで再計算せずactivationを保持するため、余っているVRAMを速度に変換できます。VRAM使用量とステップ時間はNに対して線形に変化するので、学習が収まる範囲でNを増やしてください。Anima（28ブロック）、約1MPの画像、batch size 1、LoRA dim 16、bf16、`--attn_mode flash`、latentとText Encoder出力をキャッシュした場合の実測（RTX PRO 6000 Blackwell、`nvidia-smi`の学習中ピーク）は、`0`で6.5GB / 0.85秒、`7`で9.4GB / 0.75秒、`14`で12.9GB / 0.73秒、`21`で16.4GB / 0.59秒、`28`（再計算なし）で19.9GB / 0.53秒でした。1ブロックあたり約0.48GBでステップ時間が約3.5%短縮されます。このモデルサイズではbatch sizeを増やしてもスループットはほとんど向上しないため、余ったVRAMはbatch sizeよりもブロックのスキップに使う方が有利です。1ブロックあたりのVRAMはGPUによらず、RTX 4090（24GB、同じ設定）では`0` / `7` / `14` / `21` / `28`でピークが6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB、ステップ時間が0.73秒 / 0.68秒 / 0.63秒 / 0.56秒 / 0.52秒でした。24GBのGPUなら全ブロックをスキップでき、ステップ時間が30%短縮されます
 - `--cache_text_encoder_outputs`: Qwen3の出力をキャッシュ
 - `--cache_latents`: Qwen-Image VAEの出力をキャッシュ
 - Adafactorオプティマイザの使用
