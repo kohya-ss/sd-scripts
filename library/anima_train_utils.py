@@ -16,6 +16,7 @@ from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
 from library import anima_models, anima_utils, checkpoint_io, sampling, qwen_image_autoencoder_kl
+import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
 
@@ -144,6 +145,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Use the image-only 2D Qwen-Image VAE implementation. Official Qwen-Image VAE weights are converted on load."
         + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
     )
+    args_util.add_gradient_checkpointing_skip_blocks_argument(parser)
 
     # torch.compile (per-block compilation, Triton required) and CUDA performance switches
     compile_utils.add_compile_arguments(parser)

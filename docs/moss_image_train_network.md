@@ -230,6 +230,8 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Enables `--gradient_checkpointing`. Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
+* `--gradient_checkpointing_skip_blocks=<integer>`
+  - Partial gradient checkpointing: the last N of the 42 DiT blocks keep their activations instead of recomputing them in the backward pass. Each skipped block uses more VRAM and saves the recomputation of one block, so the VRAM usage and the step time change linearly with N. `0` (default) checkpoints all blocks, `42` checkpoints none of them. Only effective with `--gradient_checkpointing` (ignored with a warning otherwise). Can be combined with `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` and `--compile`. See [Section 7.1](#71-vram-usage-optimization--vram-使用量の最適化) for measurements.
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk`
   - Cache the Qwen3.5-9B outputs. Strongly recommended when not training text encoder LoRA: the text encoder is removed from the GPU after caching. The cache files are `<image>_moss_te.npz` and contain the unconditional embedding as well, so `caption_dropout_rate` can be used. Requires `--network_train_unet_only`.
   - The outputs of all caption candidates of an image are stored in one file (`num_candidates`, `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}` for each candidate `k`). The processed caption texts (`caption_prefix` / `caption_suffix` applied) are stored as well, and the file is re-cached when the number of candidates or the texts differ from the current captions, unless `--skip_cache_check` is specified. The files created with version 0.12.1 (without `num_candidates`) are still valid for images with a single candidate.
@@ -281,6 +283,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 * `--blocks_to_swap` - DiT のブロックを CPU と GPU でスワップして VRAM を節約。最大 **40**（42 ブロック − 2）。`--cpu_offload_checkpointing` および `--unsloth_offload_checkpointing` とは併用できません。
   - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションを CPU RAM にオフロード。`--gradient_checkpointing` を有効にします。`--cpu_offload_checkpointing` および `--blocks_to_swap` とは併用できません。
+* `--gradient_checkpointing_skip_blocks` - 部分的な gradient checkpointing。42 個の DiT ブロックのうち末尾の N 個は backward で再計算せず activation を保持します。スキップしたブロック 1 個につき VRAM が増え、1 ブロック分の再計算が省けるため、VRAM 使用量とステップ時間は N に対して線形に変化します。`0`（デフォルト）で全ブロックを checkpointing、`42` で全ブロックをスキップします。`--gradient_checkpointing` 指定時のみ有効です（未指定時は警告を出して無視します）。`--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing`、`--compile` と併用できます。実測値は [7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照。
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。
 * `--cache_latents`, `--cache_latents_to_disk` - FLUX.2 VAE の出力をキャッシュします。キャッシュファイルは `<image>_<W>x<H>_moss.npz` で、VAE の生の出力（32 チャンネル、1/8 解像度）を保存します。DiT 向けの patchify と正規化は学習時に行います。
@@ -480,6 +483,7 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
 - **`--convrot_int8` / `--convrot_int8_text_encoder`**: See above.
 - **`--blocks_to_swap <number>`**: Swaps DiT blocks between CPU and GPU. Higher numbers save more VRAM but reduce training speed. Maximum 40.
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute. Practically required.
+- **`--gradient_checkpointing_skip_blocks <number>`**: Partial gradient checkpointing. The last N of the 42 blocks keep their activations instead of recomputing them, converting spare VRAM into speed. See [Partial Gradient Checkpointing](#partial-gradient-checkpointing--部分的な-gradient-checkpointing) below.
 - **`--unsloth_offload_checkpointing`**: Offloads the checkpointed activations to CPU RAM using async transfers. Cannot be combined with `--blocks_to_swap`.
 - **`--cache_text_encoder_outputs`**: Caches the Qwen3.5-9B outputs so the text encoder can be freed from the GPU during training. The text encoder is still loaded to CPU RAM (about 16GB in bf16, 8GB with ConvRot INT8) and moved to the GPU for caching.
 - **`--text_encoder_blocks_to_swap <number>`**: Streams N text encoder layers from the CPU while they run, instead of moving the whole 16GB text encoder to the GPU for caching. `28` needs about 5GB of VRAM with the bf16 text encoder, `32` about 3.5GB (about 2.2GB with ConvRot INT8). Slower than moving the whole model, but it makes the caching work on small GPUs.
@@ -488,6 +492,26 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
   ```
   --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
   ```
+
+#### Partial Gradient Checkpointing / 部分的な gradient checkpointing
+
+With gradient checkpointing, every block recomputes its forward pass during the backward pass. `--gradient_checkpointing_skip_blocks N` excludes the last N blocks from the recomputation: they keep their activations like a model without gradient checkpointing. Each skipped block costs the activation memory of one block and saves the recomputation of one block, so both the peak VRAM and the step time change linearly with N. The blocks near the output are skipped because their activations are freed first in the backward pass.
+
+Increasing the batch size gives little throughput gain with a model of this size (the per-sample cost barely drops), so on GPUs with 24GB to 48GB of VRAM the leftover memory is usually better spent on skipping blocks than on a larger batch. Increase N until the training no longer fits.
+
+Measured on an RTX PRO 6000 Blackwell with about 1MP images (`resolution = 1024` with bucketing), batch size 1, LoRA dim 16, `--attn_mode flash`, latents and text encoder outputs cached. Peak GPU memory during training as reported by `nvidia-smi` (includes the CUDA context; with the bf16 text encoder the startup peak of about 15.6GB from caching remains the maximum for the first rows), and the steady-state step time (after the compile and autotune warm-up for the INT8 rows):
+
+| `--gradient_checkpointing_skip_blocks` | bf16 DiT: VRAM | bf16 DiT: step time | ConvRot INT8 DiT + `--compile`: VRAM | ConvRot INT8 DiT + `--compile`: step time |
+|---|---|---|---|---|
+| 0 (default, all blocks checkpointed) | 13.5GB | 1.29s | 10.0GB | 0.84s |
+| 11 | 23.4GB | 1.21s | 15.4GB | 0.79s |
+| 21 | 33.6GB | 1.13s | 21.9GB | 0.74s |
+| 32 | 44.9GB | 1.02s | 29.1GB | 0.70s |
+| 42 (no recomputation) | 55.0GB | 0.93s | 35.5GB | 0.64s |
+
+* In bf16, one block costs about 1GB of VRAM and saves about 8.6 ms per step (about 0.7%). Checkpointing all blocks costs 39% of the step time in total, close to the theoretical value for LoRA training, where the backward pass of the frozen layers is about as expensive as the forward pass.
+* With `--compile`, one block costs only about 0.6GB because the compiled blocks keep fewer intermediate tensors, so about 1.6 times as many blocks fit into the same VRAM. The per-block speed gain is about 4.8 ms (about 0.6%).
+* Guidelines at this resolution with the bf16 DiT: about `10` on a 24GB GPU, `18` on 32GB, `34` on 48GB. With ConvRot INT8 and `--compile`: about `22` on 24GB, `36` on 32GB, all `42` on 48GB. Leave 1GB to 2GB of headroom for larger buckets and sample generation.
 
 #### Measured Memory Usage / メモリ使用量の実測値
 
@@ -539,11 +563,32 @@ MOSS-Image は大きなモデルです。bf16 で DiT が約 10.2GB、テキス�
 - `--convrot_int8` / `--convrot_int8_text_encoder`: 上記を参照
 - `--blocks_to_swap`: DiT のブロックを CPU と GPU 間でスワップ（最大 40）
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント（実質必須）
+- `--gradient_checkpointing_skip_blocks`: 部分的な gradient checkpointing。42 ブロックのうち末尾の N 個は再計算せず activation を保持し、余った VRAM を速度に変換します（下記参照）
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションを CPU にオフロード（`--blocks_to_swap` とは併用不可）
 - `--cache_text_encoder_outputs`: Qwen3.5-9B の出力をキャッシュ。テキストエンコーダーは CPU RAM にはロードされ（bf16 で約 16GB、ConvRot INT8 で 8GB）、キャッシュ時に GPU へ移動します
 - `--text_encoder_blocks_to_swap`: テキストエンコーダーの N 層を、実行時に CPU からストリーミングします（モデル全体を GPU に載せない）。bf16 で `28` なら約 5GB、`32` なら約 3.5GB（ConvRot INT8 で約 2.2GB）の VRAM でキャッシュできます。モデル全体を移動するより遅くなりますが、小さい GPU でキャッシュできます
 - `--cache_latents`: FLUX.2 VAE の出力をキャッシュ
 - Adafactor オプティマイザの使用（LoRA のオプティマイザ状態は小さいので効果は限定的）
+
+#### 部分的な gradient checkpointing
+
+gradient checkpointing では全ブロックが backward 時に forward を再計算します。`--gradient_checkpointing_skip_blocks N` を指定すると末尾の N ブロックが再計算の対象外になり、gradient checkpointing なしのモデルと同じように activation を保持します。スキップしたブロック 1 個につき 1 ブロック分の activation メモリを使い、1 ブロック分の再計算が省けるため、ピーク VRAM とステップ時間は N に対して線形に変化します。backward で先に activation が解放される出力側のブロックをスキップします。
+
+このサイズのモデルでは batch size を増やしてもスループットはほとんど向上しない（サンプルあたりのコストがほぼ下がらない）ため、24GB〜48GB の GPU で余った VRAM は batch size を増やすよりブロックのスキップに使う方が有利なことが多いです。学習が収まる範囲で N を増やしてください。
+
+RTX PRO 6000 Blackwell、約 1MP の画像（`resolution = 1024` でバケット）、batch size 1、LoRA dim 16、`--attn_mode flash`、latent とテキストエンコーダー出力をキャッシュした条件での実測です。VRAM は `nvidia-smi` の学習中のピーク（CUDA コンテキストを含む。bf16 テキストエンコーダーではキャッシュ時の起動ピーク約 15.6GB が最初の行の最大値のままです）、ステップ時間は定常状態（INT8 の行は compile と autotune のウォームアップ後）の値です。
+
+| `--gradient_checkpointing_skip_blocks` | bf16 DiT: VRAM | bf16 DiT: ステップ時間 | ConvRot INT8 DiT + `--compile`: VRAM | ConvRot INT8 DiT + `--compile`: ステップ時間 |
+|---|---|---|---|---|
+| 0（デフォルト、全ブロック checkpointing） | 13.5GB | 1.29 秒 | 10.0GB | 0.84 秒 |
+| 11 | 23.4GB | 1.21 秒 | 15.4GB | 0.79 秒 |
+| 21 | 33.6GB | 1.13 秒 | 21.9GB | 0.74 秒 |
+| 32 | 44.9GB | 1.02 秒 | 29.1GB | 0.70 秒 |
+| 42（再計算なし） | 55.0GB | 0.93 秒 | 35.5GB | 0.64 秒 |
+
+* bf16 では 1 ブロックあたり約 1GB の VRAM で、ステップあたり約 8.6 ms（約 0.7%）短縮されます。全ブロックの checkpointing のコストは合計でステップ時間の 39% で、凍結層の backward が forward とほぼ同じコストになる LoRA 学習の理論値に近い値です。
+* `--compile` ではコンパイルされたブロックが保持する中間テンソルが減るため、1 ブロックあたり約 0.6GB で済み、同じ VRAM で約 1.6 倍のブロックをスキップできます。1 ブロックあたりの短縮は約 4.8 ms（約 0.6%）です。
+* この解像度での目安は、bf16 DiT で 24GB GPU なら `10` 前後、32GB で `18`、48GB で `34`。ConvRot INT8 と `--compile` なら 24GB で `22` 前後、32GB で `36`、48GB で全 `42` です。大きめのバケットやサンプル生成のために 1〜2GB の余裕を残してください。
 
 #### メモリ使用量の実測値
 

@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from library import device_utils, flux2_vae, flux_train_utils, moss_image_models, moss_image_utils, sampling
 from library.device_utils import clean_memory_on_device, synchronize_device
+import library.args as args_util
 import library.compile_utils as compile_utils
 from library.utils import setup_logging
 
@@ -156,6 +157,7 @@ def add_moss_image_training_arguments(parser: argparse.ArgumentParser):
         "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap."
         + " / 非同期転送で activation を CPU RAM に退避する（--cpu_offload_checkpointing より高速）。--cpu_offload_checkpointing および --blocks_to_swap とは併用できない",
     )
+    args_util.add_gradient_checkpointing_skip_blocks_argument(parser)
 
     # torch.compile (per-block compilation, Triton required) and CUDA performance switches
     compile_utils.add_compile_arguments(parser)

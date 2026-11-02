@@ -304,6 +304,7 @@ def train(args):
     assert not args.unsloth_offload_checkpointing, (
         "unsloth_offload_checkpointing is not supported in Anima ControlNet-LLLite training (MVP)"
     )
+    args_util.verify_gradient_checkpointing_skip_blocks(args)
     assert not args.deepspeed, "deepspeed is not supported in Anima ControlNet-LLLite training (MVP)"
     assert not args.fused_backward_pass, (
         "fused_backward_pass is not supported in Anima ControlNet-LLLite training (MVP)"
@@ -481,6 +482,7 @@ def train(args):
         dit.enable_gradient_checkpointing(
             cpu_offload=args.cpu_offload_checkpointing,
             unsloth_offload=args.unsloth_offload_checkpointing,
+            skip_blocks=args.gradient_checkpointing_skip_blocks,
         )
 
     dit.requires_grad_(False)
