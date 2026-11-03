@@ -217,6 +217,8 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
   - Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
+* `--gradient_checkpointing_skip_blocks=<integer>`
+  - Partial gradient checkpointing: the last N Transformer blocks keep their activations instead of recomputing them in the backward pass. Each skipped block uses more VRAM and saves the recomputation of one block, so the VRAM usage and the step time change linearly with N. `0` (default) checkpoints all blocks; the maximum is the number of blocks of the model (28 for Anima-Preview). Only effective with `--gradient_checkpointing` (ignored with a warning otherwise). Can be combined with `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` and `--compile`. See [Section 7.1](#71-vram-usage-optimization--vram使用量の最適化).
 * `--cache_text_encoder_outputs`
   - Cache Qwen3 text encoder outputs to reduce VRAM usage. Recommended when not training text encoder LoRA.
 * `--cache_text_encoder_outputs_to_disk`
@@ -280,6 +282,7 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 * `--blocks_to_swap` - TransformerブロックをCPUとGPUでスワップしてVRAMを節約。`--cpu_offload_checkpointing`および`--unsloth_offload_checkpointing`とは併用できません。
   - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションをCPU RAMにオフロード。`--cpu_offload_checkpointing`および`--blocks_to_swap`とは併用できません。
+* `--gradient_checkpointing_skip_blocks` - 部分的なgradient checkpointing。末尾のN個のTransformerブロックはbackwardで再計算せずactivationを保持します。スキップしたブロック1個につきVRAMが増え、1ブロック分の再計算が省けるため、VRAM使用量とステップ時間はNに対して線形に変化します。`0`（デフォルト）で全ブロックをcheckpointing、最大値はモデルのブロック数（Anima-Previewは28）です。`--gradient_checkpointing`指定時のみ有効です（未指定時は警告を出して無視します）。`--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing`、`--compile`と併用できます。[7.1節](#71-vram-usage-optimization--vram使用量の最適化)も参照してください。
 * `--cache_text_encoder_outputs` - Qwen3の出力をキャッシュしてメモリ使用量を削減。
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
@@ -452,6 +455,15 @@ Anima models can be large, so GPUs with limited VRAM may require optimization:
 
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute.
 
+- **`--gradient_checkpointing_skip_blocks <number>`**: Partial gradient checkpointing. The last N blocks keep their activations instead of recomputing them in the backward pass, so spare VRAM can be converted into speed. Both the VRAM usage and the step time change linearly with N. Increase N until the training no longer fits. Measured with Anima (28 blocks) on an RTX PRO 6000 Blackwell, about 1MP images, batch size 1, LoRA dim 16, bf16, `--attn_mode flash`, latents and text encoder outputs cached (peak GPU memory during training as reported by `nvidia-smi`):
+
+  | `--gradient_checkpointing_skip_blocks` | 0 | 7 | 14 | 21 | 28 (no recomputation) |
+  |---|---|---|---|---|---|
+  | Peak VRAM | 6.5GB | 9.4GB | 12.9GB | 16.4GB | 19.9GB |
+  | Step time | 0.85s | 0.75s | 0.73s | 0.59s | 0.53s |
+
+  Each skipped block costs about 0.48GB at this resolution and saves about 3.5% of the step time. Larger batch sizes give little throughput gain with this model size, so skipping blocks is usually the better use of spare VRAM than increasing the batch size. The VRAM cost per block does not depend on the GPU: on an RTX 4090 (24GB, same settings) the peaks are 6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB and the step times 0.73s / 0.68s / 0.63s / 0.56s / 0.52s for `0` / `7` / `14` / `21` / `28`, so all blocks can be skipped on a 24GB GPU for a 30% faster step.
+
 - **`--cache_text_encoder_outputs`**: Caches Qwen3 outputs so the text encoder can be freed from VRAM during training.
 
 - **`--cache_latents`**: Caches Qwen-Image VAE outputs so the VAE can be freed from VRAM during training.
@@ -470,6 +482,7 @@ Animaモデルは大きい場合があるため、VRAMが限られたGPUでは�
 - `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションをCPUにオフロード
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント
+- `--gradient_checkpointing_skip_blocks`: 部分的なgradient checkpointing。末尾のN個のブロックはbackwardで再計算せずactivationを保持するため、余っているVRAMを速度に変換できます。VRAM使用量とステップ時間はNに対して線形に変化するので、学習が収まる範囲でNを増やしてください。Anima（28ブロック）、約1MPの画像、batch size 1、LoRA dim 16、bf16、`--attn_mode flash`、latentとText Encoder出力をキャッシュした場合の実測（RTX PRO 6000 Blackwell、`nvidia-smi`の学習中ピーク）は、`0`で6.5GB / 0.85秒、`7`で9.4GB / 0.75秒、`14`で12.9GB / 0.73秒、`21`で16.4GB / 0.59秒、`28`（再計算なし）で19.9GB / 0.53秒でした。1ブロックあたり約0.48GBでステップ時間が約3.5%短縮されます。このモデルサイズではbatch sizeを増やしてもスループットはほとんど向上しないため、余ったVRAMはbatch sizeよりもブロックのスキップに使う方が有利です。1ブロックあたりのVRAMはGPUによらず、RTX 4090（24GB、同じ設定）では`0` / `7` / `14` / `21` / `28`でピークが6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB、ステップ時間が0.73秒 / 0.68秒 / 0.63秒 / 0.56秒 / 0.52秒でした。24GBのGPUなら全ブロックをスキップでき、ステップ時間が30%短縮されます
 - `--cache_text_encoder_outputs`: Qwen3の出力をキャッシュ
 - `--cache_latents`: Qwen-Image VAEの出力をキャッシュ
 - Adafactorオプティマイザの使用

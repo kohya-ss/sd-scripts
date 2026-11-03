@@ -134,6 +134,8 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
                 args.blocks_to_swap is None or args.blocks_to_swap == 0
             ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
 
+        args_util.verify_gradient_checkpointing_skip_blocks(args)
+
         if args.compile:
             assert not args.torch_compile, (
                 "--compile (per-block torch.compile) and --torch_compile (accelerate dynamo) cannot be used together"
@@ -493,10 +495,14 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
     ) -> torch.nn.Module:
-        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False),
-        # so we re-apply with unsloth_offload if needed (after base has already enabled it).
-        if self._use_unsloth_offload_checkpointing and args.gradient_checkpointing:
-            unet.enable_gradient_checkpointing(unsloth_offload=True)
+        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False), so we re-apply with
+        # unsloth_offload and/or skip_blocks (partial gradient checkpointing) if needed (after base has already enabled it).
+        if args.gradient_checkpointing and (self._use_unsloth_offload_checkpointing or args.gradient_checkpointing_skip_blocks > 0):
+            unet.enable_gradient_checkpointing(
+                cpu_offload=args.cpu_offload_checkpointing,
+                unsloth_offload=self._use_unsloth_offload_checkpointing,
+                skip_blocks=args.gradient_checkpointing_skip_blocks,
+            )
 
         if not self.is_swapping_blocks:
             model = super().prepare_unet_with_accelerator(args, accelerator, unet)

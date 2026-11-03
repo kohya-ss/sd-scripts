@@ -356,12 +356,27 @@ class MossImage(nn.Module):
 
     # gradient checkpointing
 
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False):
-        for block in self.layers:
-            block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False, skip_blocks: int = 0):
+        """Enable gradient checkpointing on the main blocks and the text embedder blocks.
+
+        skip_blocks: the last `skip_blocks` main blocks keep their activations instead of recomputing them in the backward
+        pass (partial gradient checkpointing). The blocks near the output are skipped because their activations are
+        freed first in the backward pass. The text embedder blocks are always checkpointed.
+        """
+        if not 0 <= skip_blocks <= self.num_layers:
+            raise ValueError(f"skip_blocks must be between 0 and {self.num_layers} (the number of blocks), got {skip_blocks}")
+        num_checkpointed = self.num_layers - skip_blocks
+        for i, block in enumerate(self.layers):
+            if i < num_checkpointed:
+                block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
+            else:
+                block.disable_gradient_checkpointing()
         for block in self.text_embedder.blocks:
             block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
-        logger.info(f"MossImage: Gradient checkpointing enabled. cpu_offload: {cpu_offload}, unsloth_offload: {unsloth_offload}")
+        logger.info(
+            f"MossImage: Gradient checkpointing enabled. cpu_offload: {cpu_offload}, unsloth_offload: {unsloth_offload},"
+            f" checkpointed blocks: {num_checkpointed}/{self.num_layers}"
+        )
 
     def disable_gradient_checkpointing(self):
         for block in self.layers:

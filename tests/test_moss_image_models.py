@@ -231,6 +231,36 @@ def test_gradient_checkpointing_matches_plain_forward():
     assert x_grad.grad is not None and torch.isfinite(x_grad.grad).all()
 
 
+def test_partial_gradient_checkpointing_skips_last_blocks():
+    _, model = _make_models(False)
+    x, timesteps, context, mask = _make_inputs()
+    model.train()
+
+    # reference: every block is checkpointed
+    model.enable_gradient_checkpointing()
+    x_ref = x.clone().requires_grad_(True)
+    model(x_ref, timesteps, context, mask).sum().backward()
+
+    model.enable_gradient_checkpointing(skip_blocks=2)
+    assert [block.gradient_checkpointing for block in model.layers] == [True, False, False]
+    assert all(block.gradient_checkpointing for block in model.text_embedder.blocks)
+    x_grad = x.clone().requires_grad_(True)
+    out = model(x_grad, timesteps, context, mask)
+    out.sum().backward()
+    torch.testing.assert_close(x_grad.grad, x_ref.grad, atol=1e-5, rtol=1e-5)
+
+    # re-applying with fewer skipped blocks re-enables checkpointing on the previously skipped blocks
+    model.enable_gradient_checkpointing(skip_blocks=0)
+    assert all(block.gradient_checkpointing for block in model.layers)
+    model.enable_gradient_checkpointing(skip_blocks=3)
+    assert not any(block.gradient_checkpointing for block in model.layers)
+
+    with pytest.raises(ValueError):
+        model.enable_gradient_checkpointing(skip_blocks=4)
+    with pytest.raises(ValueError):
+        model.enable_gradient_checkpointing(skip_blocks=-1)
+
+
 def test_split_fused_qkv_hook():
     dim = 3072
     fused = torch.randn(3 * dim, dim)
