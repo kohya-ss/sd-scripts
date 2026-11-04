@@ -80,5 +80,5 @@ save_file(state_dict, file)
 
 ### ControlNet-LLLite
 
-ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [documentation](./docs/train_lllite_README.md) for details.
+ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [documentation](./train_lllite_README.md) for details.
 
