@@ -57,12 +57,36 @@ batch_size = 1
 
 Inpainting-like tasks (`--ref_mask_source`): the hole of the reference can come from the alpha channel of RGBA reference images (`alpha`, alpha 255 = hole) or be cut randomly at every step (`random`; set `conditioning_data_dir` to the same directory as `image_dir`, so the reference is the target itself). The hole is applied in the latent space (the clean reference latents are blended with `--ref_mask_fill_latent`, default 0), so the reference latents can still be cached.
 
+**Reference images with a size of their own** (e.g. a character reference, where the reference and the target have different sizes and compositions): set `independent_conditioning_size = true` on the dataset (or `[general]`). The size check is removed, and each reference gets its own aspect ratio bucket with `conditioning_resolution` (default 1024) as the area. The other bucket settings (`min_bucket_reso`, `max_bucket_reso`, `bucket_reso_steps`, `bucket_no_upscale`) are shared with the targets, so the number of reference tokens stays roughly constant whatever the size of the original image. The reference is center cropped like the targets, and flipped together with its target.
+
+```toml
+[[datasets]]
+resolution = 1024
+batch_size = 1                        # required
+independent_conditioning_size = true
+conditioning_resolution = 1024        # default
+
+  [[datasets.subsets]]
+  image_dir = "data/targets"
+  conditioning_data_dir = "data/refs"
+```
+
+* Requires `enable_bucket = true` and `batch_size = 1` (use `--gradient_accumulation_steps` for a larger effective batch). Cannot be used with `--ref_mask_source` (the hole must be aligned with the target).
+* A very tall or wide image is cropped if no bucket is close to its aspect ratio: lower `min_bucket_reso` (e.g. 512) and raise `max_bucket_reso` (e.g. 2048) for such data.
+* Use `--ref_resolution` at inference (see §4). The sample images during training follow `conditioning_resolution` automatically.
+
 <details>
 <summary>日本語</summary>
 
 データセットは **ControlNet データセット形式** です。`image_dir` に目標画像とキャプション（キャプションは *目標* の説明）、`conditioning_data_dir` に **同名の** 参照画像を置きます。`--masked_loss` は使えません（conditioning image はマスクではなく参照画像です）。
 
 inpainting 系のタスク（`--ref_mask_source`）では、参照の穴を RGBA 参照画像のアルファ（`alpha`、アルファ 255 = 穴）から取るか、毎ステップランダムに開けます（`random`。`conditioning_data_dir` を `image_dir` と同じにして、参照 = 目標画像そのものにします）。穴は latent 空間で適用される（clean な参照 latent を `--ref_mask_fill_latent`、デフォルト 0 と混合）ので、参照 latent のキャッシュと併用できます。
+
+**目標画像とサイズが異なる参照画像**（参照と目標のサイズや構図が異なるキャラクター参照など）: データセット（または `[general]`）に `independent_conditioning_size = true` を指定します。サイズの一致チェックがなくなり、参照画像ごとに `conditioning_resolution`（デフォルト 1024）を面積とする ARB のバケットが選ばれます。他のバケット設定（`min_bucket_reso`、`max_bucket_reso`、`bucket_reso_steps`、`bucket_no_upscale`）は目標画像と共通なので、元画像のサイズによらず参照トークン数はほぼ一定になります。参照は目標と同様に中央クロップされ、反転は目標と連動します。
+
+* `enable_bucket = true` と `batch_size = 1` が必要です（実効バッチを増やすには `--gradient_accumulation_steps` を使ってください）。`--ref_mask_source` とは併用できません（穴の位置を目標と揃える必要があるため）。
+* 極端に縦長・横長の画像は、アスペクト比の近いバケットがないとクロップされます。そのようなデータでは `min_bucket_reso` を下げ（例: 512）、`max_bucket_reso` を上げて（例: 2048）ください。
+* 推論では `--ref_resolution` を指定します（§4）。学習中のサンプル画像は `conditioning_resolution` に自動で従います。
 
 </details>
 
@@ -137,6 +161,7 @@ python moss_image_minimal_inference.py --dit "<DiT>" --text_encoder "<Qwen3.5-9B
 ```
 
 * `--ref_image` (or `--ri path` in a prompt line of `--from_file` / interactive mode): the reference image, resized to the image size.
+* `--ref_resolution 1024`: for a LoRA trained with `independent_conditioning_size` (metadata `ss_ref_resolution`): the reference keeps its aspect ratio in its own bucket with this resolution as the area, instead of being resized to the image size. The bucket limits are fixed to 1/4 and 2x of the resolution, and upscaling is always allowed. Cannot be used with a hole mask.
 * `--ref_mode`, `--ref_timestep`, `--ref_rope_r`, `--ref_kv_blocks` must match the training (they are recorded in the LoRA metadata as `ss_ref_mode` etc.). The defaults match the training defaults.
 * Inpainting-like LoRA: `--ref_mask mask.png` (`--rm` per line, 255 = hole) or `--ref_mask_from_alpha`, and `--ref_mask_fill_latent` as in the training.
 * A gate table in the LoRA file is detected automatically and used binarized (gate > 0.5 opens the block; closed blocks skip the reference). `--ref_gate_continuous` uses the continuous gates instead (not with sageattn), `--no_ref_gate` ignores the table.
@@ -147,6 +172,7 @@ python moss_image_minimal_inference.py --dit "<DiT>" --text_encoder "<Qwen3.5-9B
 ComfyUI には現時点で MOSS-Image に参照画像を渡す仕組みがないので、当リポジトリの `moss_image_minimal_inference.py` を使ってください。
 
 * `--ref_image`（`--from_file` / インタラクティブモードではプロンプト行の `--ri path`）: 参照画像。画像サイズにリサイズされます。
+* `--ref_resolution 1024`: `independent_conditioning_size` で学習した LoRA 用（メタデータ `ss_ref_resolution`）。画像サイズへのリサイズの代わりに、この解像度を面積とする独自のバケットでアスペクト比を保ちます。バケットの上下限は解像度の 1/4 と 2 倍に固定で、拡大は常に許可されます。穴マスクとは併用できません。
 * `--ref_mode`、`--ref_timestep`、`--ref_rope_r`、`--ref_kv_blocks` は学習時と合わせてください（LoRA のメタデータに `ss_ref_mode` 等として記録されています）。デフォルトは学習側のデフォルトと一致します。
 * inpainting 系の LoRA: `--ref_mask mask.png`（行単位は `--rm`、255 = 穴）または `--ref_mask_from_alpha`、`--ref_mask_fill_latent` を学習時と同じにします。
 * LoRA ファイル内の gate 表は自動検出され、2 値化して使われます（gate > 0.5 の block が開く。閉じた block は参照を見ません）。`--ref_gate_continuous` で連続 gate のまま使い（sageattn 不可）、`--no_ref_gate` で表を無視します。

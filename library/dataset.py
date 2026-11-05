@@ -239,6 +239,11 @@ class ImageInfo:
             None  # crop left top right bottom in original pixel size, not latents size
         )
         self.cond_img_path: Optional[str] = None
+        # size of the conditioning image and its bucket, set in ControlNetDataset.make_buckets: the same as the training image
+        # unless independent_conditioning_size is enabled
+        self.cond_image_size: Optional[Tuple[int, int]] = None
+        self.cond_resized_size: Optional[Tuple[int, int]] = None
+        self.cond_bucket_reso: Optional[Tuple[int, int]] = None
         # cached latents of the conditioning image (ControlNetDataset, reference-conditioned training), see
         # ControlNetDataset.new_cache_conditioning_latents
         self.cond_latents: Optional[torch.Tensor] = None

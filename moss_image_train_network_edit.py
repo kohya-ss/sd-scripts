@@ -140,6 +140,37 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                 if args.ref_mask_source == "alpha":
                     dataset.cond_load_alpha = True  # the dataset returns the hole mask (pixel resolution) with the reference
 
+        self.resolve_ref_resolution(args, train_dataset_group, val_dataset_group)
+
+    @staticmethod
+    def resolve_ref_resolution(args, train_dataset_group, val_dataset_group):
+        """Set `args.ref_resolution` for the sampling and the LoRA metadata: `conditioning_resolution` of the datasets with
+        independent_conditioning_size, None (the reference is resized to the sample size) if there are none."""
+        args.ref_resolution = None
+        resolutions = []
+        num_aligned = 0
+        for group in [train_dataset_group, val_dataset_group]:
+            if group is None or not isinstance(group, DatasetGroup):
+                continue
+            for dataset in group.datasets:
+                if not dataset.independent_conditioning_size:
+                    num_aligned += 1
+                    continue
+                assert args.ref_mask_source == "none", (
+                    "ref_mask_source cannot be used with independent_conditioning_size: the hole must be aligned with the target image"
+                    " / ref_mask_source は independent_conditioning_size と併用できません（穴の位置を目標画像と揃える必要があるため）"
+                )
+                resolutions.append(tuple(dataset.conditioning_resolution))
+
+        if len(resolutions) == 0:
+            return
+        args.ref_resolution = resolutions[0]
+        if len(set(resolutions)) > 1 or num_aligned > 0:
+            logger.warning(
+                f"datasets have different reference sizes: {args.ref_resolution} is used for the sample images and the metadata"
+                f" / データセットごとに参照サイズが異なります。サンプル画像とメタデータには {args.ref_resolution} を使います"
+            )
+
     def create_network(self, args, network_module, vae, text_encoder, unet, net_kwargs: dict):
         """The reference gate table (--ref_gate) is attached to every network created: the master's in train() and, with
         --replica_devices, the copy of each replica (library/replica_trainer.py builds them with this method)."""
@@ -434,6 +465,8 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             metadata["ss_ref_gate_binarize"] = bool(args.ref_gate_binarize)
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
+        ref_resolution = getattr(args, "ref_resolution", None)
+        metadata["ss_ref_resolution"] = None if ref_resolution is None else f"{ref_resolution[0]}x{ref_resolution[1]}"
         metadata["ss_cache_ref_latents"] = bool(args.cache_ref_latents)
         metadata["ss_ref_mask_source"] = args.ref_mask_source
         metadata["ss_ref_mask_fill_latent"] = args.ref_mask_fill_latent

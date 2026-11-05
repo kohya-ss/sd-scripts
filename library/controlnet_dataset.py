@@ -18,6 +18,7 @@ from tqdm import tqdm
 from library.dataset import (
     IMAGE_TRANSFORMS,
     BaseDataset,
+    BucketManager,
     ImageInfo,
     glob_images,
     load_image,
@@ -49,7 +50,18 @@ class ControlNetDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str] = None,
         skip_image_resolution: Optional[Tuple[int, int]] = None,
+        independent_conditioning_size: bool = False,
+        conditioning_resolution: Tuple[int, int] = (1024, 1024),
     ) -> None:
+        if independent_conditioning_size:
+            assert enable_bucket, (
+                "independent_conditioning_size requires enable_bucket / independent_conditioning_size には enable_bucket が必要です"
+            )
+            assert batch_size == 1, (
+                "independent_conditioning_size requires batch_size = 1: the conditioning images of a batch cannot be stacked"
+                " / independent_conditioning_size には batch_size = 1 が必要です（バッチ内の条件画像のサイズを揃えられないため）"
+            )
+
         super().__init__(
             resolution,
             network_multiplier,
@@ -124,6 +136,10 @@ class ControlNetDataset(BaseDataset):
         self.validation_split = validation_split
         self.validation_seed = validation_seed
         self.resize_interpolation = resize_interpolation
+        # bucket the conditioning images on their own (aspect ratio bucketing with `conditioning_resolution` as the area), for
+        # models which do not need the conditioning image to be aligned with the training image (e.g. reference images)
+        self.independent_conditioning_size = independent_conditioning_size
+        self.conditioning_resolution = conditioning_resolution
 
         # assert all conditioning data exists
         missing_imgs = []
@@ -198,6 +214,33 @@ class ControlNetDataset(BaseDataset):
         self.bucket_manager = self.dreambooth_dataset_delegate.bucket_manager
         self.buckets_indices = self.dreambooth_dataset_delegate.buckets_indices
 
+        if self.independent_conditioning_size:
+            self._make_conditioning_buckets()
+        else:
+            for info in self.image_data.values():
+                info.cond_image_size = info.image_size
+                info.cond_resized_size = info.resized_size
+                info.cond_bucket_reso = info.bucket_reso
+
+    def _make_conditioning_buckets(self):
+        """Select the bucket of each conditioning image independently of its training image, with the bucket settings of the
+        dataset and `conditioning_resolution` as the area."""
+        delegate = self.dreambooth_dataset_delegate
+        bucket_manager = BucketManager(
+            delegate.bucket_no_upscale,
+            self.conditioning_resolution,
+            delegate.min_bucket_reso,
+            delegate.max_bucket_reso,
+            delegate.bucket_reso_steps,
+        )
+        if not delegate.bucket_no_upscale:
+            bucket_manager.make_buckets()
+
+        logger.info(f"make conditioning image buckets: resolution {self.conditioning_resolution}")
+        for info in tqdm(self.image_data.values()):
+            info.cond_image_size = delegate.get_image_size(info.cond_img_path)
+            info.cond_bucket_reso, info.cond_resized_size, _ = bucket_manager.select_bucket(*info.cond_image_size)
+
     def new_cache_latents(self, model: Any, accelerator: Accelerator):
         return self.dreambooth_dataset_delegate.new_cache_latents(model, accelerator)
 
@@ -207,7 +250,7 @@ class ControlNetDataset(BaseDataset):
     def get_cond_latents_npz_path(self, caching_strategy: LatentsCachingStrategy, info: ImageInfo, cache_dir: Optional[str]) -> str:
         """npz path of the cached conditioning latents: next to the conditioning image by default, or in `cache_dir` with a
         short hash of the conditioning image path as prefix (conditioning directories of different subsets may share file names)."""
-        npz_path = caching_strategy.get_latents_npz_path(info.cond_img_path, info.image_size)
+        npz_path = caching_strategy.get_latents_npz_path(info.cond_img_path, info.cond_image_size)
         if cache_dir is None:
             return npz_path
         digest = hashlib.sha1(os.path.normcase(info.cond_img_path).encode("utf-8")).hexdigest()[:8]
@@ -219,9 +262,10 @@ class ControlNetDataset(BaseDataset):
         r"""
         Cache the VAE latents of the conditioning images (for trainers which use them as reference images), with the same
         VAE / npz handling as the latents of the training images: `caching_strategy` decides memory or disk and does the
-        encoding. The conditioning image gets the same resize / center crop as its training image (random_crop is not
-        supported by this dataset, so the result is deterministic), and the flipped latents are cached too when flip_aug
-        is enabled. After this call `__getitem__` returns `conditioning_latents` [B, C, h, w] instead of `conditioning_images`.
+        encoding. The conditioning image gets the same resize / center crop as its training image, or its own with
+        independent_conditioning_size (random_crop is not supported by this dataset, so the result is deterministic), and the
+        flipped latents are cached too when flip_aug is enabled. After this call `__getitem__` returns `conditioning_latents`
+        [B, C, h, w] instead of `conditioning_images`.
         """
         logger.info("caching conditioning (reference) latents" + ("" if cache_dir is None else f" to {cache_dir}"))
         self.cond_latents_cache_mode = "disk" if caching_strategy.cache_to_disk else "memory"
@@ -230,22 +274,23 @@ class ControlNetDataset(BaseDataset):
             os.makedirs(cache_dir, exist_ok=True)
 
         image_infos = list(self.image_data.values())
-        image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
+        image_infos.sort(key=lambda info: info.cond_bucket_reso[0] * info.cond_bucket_reso[1])
 
         num_processes = accelerator.num_processes
         process_index = accelerator.process_index
 
         def make_proxy(info: ImageInfo) -> ImageInfo:
             # a proxy ImageInfo of the conditioning image so that the caching strategy can be reused as is: same
-            # bucket / resized size as the training image (the sizes are checked in __getitem__ for the pixel path)
+            # bucket / resized size as the training image (the sizes are checked in __getitem__ for the pixel path), or
+            # its own with independent_conditioning_size
             proxy = ImageInfo(info.image_key, 1, "", False, info.cond_img_path)
-            proxy.image_size = info.image_size
-            proxy.resized_size = info.resized_size
-            proxy.bucket_reso = info.bucket_reso
+            proxy.image_size = info.cond_image_size
+            proxy.resized_size = info.cond_resized_size
+            proxy.bucket_reso = info.cond_bucket_reso
             proxy.resize_interpolation = info.resize_interpolation
             proxy.latents_npz = info.cond_latents_npz
             cond_img = self.load_cond_image(info.cond_img_path)
-            if cond_img.shape[0] != info.image_size[1] or cond_img.shape[1] != info.image_size[0]:
+            if cond_img.shape[0] != info.cond_image_size[1] or cond_img.shape[1] != info.cond_image_size[0]:
                 if self.dreambooth_dataset_delegate.enable_bucket:
                     raise ValueError(
                         f"size of conditioning image is not match / 画像サイズが合いません: {info.cond_img_path} {cond_img.shape[1]}x{cond_img.shape[0]}"
@@ -278,11 +323,11 @@ class ControlNetDataset(BaseDataset):
                 if i % num_processes != process_index:  # each process caches different latents
                     continue
                 if caching_strategy.is_disk_cached_latents_expected(
-                    info.bucket_reso, info.cond_latents_npz, subset.flip_aug, self.cond_load_alpha
+                    info.cond_bucket_reso, info.cond_latents_npz, subset.flip_aug, self.cond_load_alpha
                 ):
                     continue
 
-            condition = (info.bucket_reso, subset.flip_aug)
+            condition = (info.cond_bucket_reso, subset.flip_aug)
             if len(batch) > 0 and current_condition != condition:
                 submit_batch(batch, current_condition[1])
                 batch = []
@@ -328,7 +373,15 @@ class ControlNetDataset(BaseDataset):
             flipped = example["flippeds"][i]
             cond_img = self.load_cond_image(image_info.cond_img_path)
 
-            if self.dreambooth_dataset_delegate.enable_bucket:
+            if self.independent_conditioning_size:
+                cond_img, _, _ = trim_and_resize_if_required(
+                    False,
+                    cond_img,
+                    image_info.cond_bucket_reso,
+                    image_info.cond_resized_size,
+                    resize_interpolation=image_info.resize_interpolation,
+                )
+            elif self.dreambooth_dataset_delegate.enable_bucket:
                 assert (
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
@@ -391,7 +444,7 @@ class ControlNetDataset(BaseDataset):
                     mask = torch.flip(mask, [1])
             else:
                 latents, _, _, flipped_latents, mask = self.cond_latents_caching_strategy.load_latents_from_disk(
-                    image_info.cond_latents_npz, image_info.bucket_reso
+                    image_info.cond_latents_npz, image_info.cond_bucket_reso
                 )
                 if flipped:
                     assert flipped_latents is not None, (

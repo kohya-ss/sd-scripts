@@ -19,7 +19,8 @@ from library.moss_image_ref_gate import ReferenceGate
 from library.device_utils import clean_memory_on_device, synchronize_device
 import library.args as args_util
 import library.compile_utils as compile_utils
-from library.utils import setup_logging
+from library.dataset import BucketManager
+from library.utils import setup_logging, trim_and_resize_if_required
 
 setup_logging()
 import logging
@@ -396,6 +397,25 @@ def load_reference_pixels(
     return pixels, torch.from_numpy(mask).unsqueeze(0)
 
 
+def select_reference_bucket(image_width: int, image_height: int, resolution: Tuple[int, int]) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Bucket and resized size (width, height) of a reference image bucketed independently of the generated image, for
+    sampling and inference of a LoRA trained with independent_conditioning_size. Aspect ratio bucketing like the dataset:
+    upscaling is allowed, and the bucket limits are fixed to 1/4 and 2x of the resolution because the dataset settings are
+    not available here."""
+    bucket_manager = BucketManager(False, resolution, min(resolution) // 4, max(resolution) * 2, 16)
+    bucket_manager.make_buckets()
+    bucket_reso, resized_size, _ = bucket_manager.select_bucket(image_width, image_height)
+    return bucket_reso, resized_size
+
+
+def load_reference_pixels_bucketed(image_path: str, resolution: Tuple[int, int]) -> torch.Tensor:
+    """Load a reference image with its own bucket (see `select_reference_bucket`) as pixels [1, 3, H, W] in -1..1 (float32)"""
+    rgb = np.array(Image.open(image_path).convert("RGB"))
+    bucket_reso, resized_size = select_reference_bucket(rgb.shape[1], rgb.shape[0], resolution)
+    rgb, _, _ = trim_and_resize_if_required(False, rgb, bucket_reso, resized_size)
+    return torch.from_numpy(rgb.astype(np.float32) / 127.5 - 1.0).permute(2, 0, 1).unsqueeze(0)
+
+
 def encode_reference_image(
     vae: flux2_vae.AutoEncoder,
     image_path: str,
@@ -405,12 +425,22 @@ def encode_reference_image(
     mask_path: Optional[str] = None,
     mask_from_alpha: bool = False,
     fill_latent: float = 0.0,
+    resolution: Optional[Tuple[int, int]] = None,
 ) -> torch.Tensor:
     """Load a reference image (see `load_reference_pixels`), resize it to (width, height) and encode it to normalized,
     patchified latents [1, 128, H/16, W/16] (float32). The hole mask (if any) is applied like in training: the latents are
     blended with `fill_latent` using the smooth downsampled mask. The VAE is moved to `device` for the encoding and back
-    afterwards."""
-    pixels, mask = load_reference_pixels(image_path, width, height, mask_path, mask_from_alpha)
+    afterwards.
+
+    With `resolution` the image gets its own bucket (see `load_reference_pixels_bucketed`) and (width, height) is not used:
+    the size of the latents is independent of the generated image, and a hole mask cannot be used because it needs the
+    reference to be aligned with the generated image."""
+    if resolution is not None:
+        if mask_path is not None or mask_from_alpha:
+            raise ValueError("a hole mask cannot be used with a reference image bucketed independently (ref_resolution)")
+        pixels, mask = load_reference_pixels_bucketed(image_path, resolution), None
+    else:
+        pixels, mask = load_reference_pixels(image_path, width, height, mask_path, mask_from_alpha)
 
     org_vae_device = vae.device
     vae.to(device)
@@ -606,9 +636,14 @@ def _sample_image_inference(
         else:
             negative_embeds, negative_mask = neg_encoded[0], neg_encoded[1]
 
-    # Encode the reference image (resized to the sample size) with the VAE in float32 outside autocast
+    # Encode the reference image (resized to the sample size, or its own bucket with independent_conditioning_size) with the
+    # VAE in float32 outside autocast
     ref = None
     if ref_image_path is not None:
+        ref_resolution = getattr(args, "ref_resolution", None)
+        if ref_resolution is not None and ref_mask_path is not None:
+            logger.warning(f"--mk is ignored: a hole mask cannot be used with independent_conditioning_size: {ref_mask_path}")
+            ref_mask_path = None
         ref = encode_reference_image(
             vae,
             ref_image_path,
@@ -618,6 +653,7 @@ def _sample_image_inference(
             ref_mask_path,
             ref_mask_from_alpha,
             getattr(args, "ref_mask_fill_latent", 0.0),
+            ref_resolution,
         )
 
     # One-way reference: cache the reference K/V once (empty prompt, fixed timestep, LoRA off)

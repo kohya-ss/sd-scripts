@@ -590,6 +590,266 @@ def test_controlnet_dataset_cond_load_alpha_returns_masks(tmp_path, cache_to_dis
     assert seen == {True, False}
 
 
+def make_independent_size_dataset(tmp_path, flip_aug=False, batch_size=1, enable_bucket=True, bucket_no_upscale=False):
+    """The targets and the references have different sizes and aspect ratios, and the references of a target bucket differ"""
+    image_dir = tmp_path / "images"
+    cond_dir = tmp_path / "cond"
+    image_dir.mkdir(exist_ok=True)
+    cond_dir.mkdir(exist_ok=True)
+    pairs = {"a": ((64, 64), (48, 96)), "b": ((96, 64), (64, 64)), "c": ((64, 64), (128, 64))}
+    for i, (name, (size, cond_size)) in enumerate(pairs.items()):
+        _write_image(image_dir / f"{name}.png", size, i)
+        _write_image(cond_dir / f"{name}.png", cond_size, 100 + i)
+        (image_dir / f"{name}.txt").write_text(f"caption {name}", encoding="utf-8")
+
+    subset = ControlNetSubset(
+        **asdict(
+            config_util.ControlNetSubsetParams(
+                image_dir=str(image_dir), conditioning_data_dir=str(cond_dir), caption_extension=".txt", flip_aug=flip_aug
+            )
+        )
+    )
+    dataset = ControlNetDataset(
+        subsets=[subset],
+        **asdict(
+            config_util.ControlNetDatasetParams(
+                resolution=(64, 64),
+                batch_size=batch_size,
+                enable_bucket=enable_bucket,
+                min_bucket_reso=32,
+                max_bucket_reso=128,
+                bucket_reso_steps=16,
+                bucket_no_upscale=bucket_no_upscale,
+                independent_conditioning_size=True,
+                conditioning_resolution=(48, 48),
+            )
+        ),
+    )
+    dataset.make_buckets()
+    dataset.dreambooth_dataset_delegate.tokenize_strategy = FakeTokenizeStrategy()
+    return dataset
+
+
+def _infos_by_name(dataset):
+    # by the name without the extension: the case of the extension may differ on Windows
+    return {os.path.splitext(os.path.basename(i.cond_img_path))[0]: i for i in dataset.image_data.values()}
+
+
+def test_controlnet_dataset_aligned_sizes_are_kept_by_default(tmp_path):
+    dataset = make_controlnet_dataset(tmp_path)
+    assert not dataset.independent_conditioning_size
+    for info in dataset.image_data.values():
+        assert info.cond_image_size == info.image_size
+        assert info.cond_resized_size == info.resized_size
+        assert info.cond_bucket_reso == info.bucket_reso
+
+
+def test_controlnet_dataset_size_mismatch_is_still_an_error_by_default(tmp_path):
+    dataset = make_controlnet_dataset(tmp_path)
+    info = next(iter(dataset.image_data.values()))
+    _write_image(info.cond_img_path, (48, 96), 0)
+    with pytest.raises(AssertionError, match="size of conditioning image"):
+        _collect_examples(dataset)
+
+
+@pytest.mark.parametrize("kwargs", [{"batch_size": 2}, {"enable_bucket": False}])
+def test_independent_conditioning_size_requirements(tmp_path, kwargs):
+    with pytest.raises(AssertionError, match="independent_conditioning_size"):
+        make_independent_size_dataset(tmp_path, **kwargs)
+
+
+def test_independent_conditioning_size_buckets(tmp_path):
+    dataset = make_independent_size_dataset(tmp_path)
+    for info in dataset.image_data.values():
+        width, height = info.cond_bucket_reso
+        assert width % 16 == 0 and height % 16 == 0
+        assert width * height <= 48 * 48  # limited by conditioning_resolution, not by the resolution of the targets
+    by_name = _infos_by_name(dataset)
+    assert by_name["a"].cond_image_size == (48, 96)
+    assert by_name["a"].cond_bucket_reso[0] < by_name["a"].cond_bucket_reso[1]  # portrait stays portrait
+    assert by_name["c"].cond_bucket_reso[0] > by_name["c"].cond_bucket_reso[1]  # landscape stays landscape
+    # the buckets of the targets are not affected
+    assert by_name["a"].bucket_reso == (64, 64)
+
+
+def test_independent_conditioning_size_no_upscale(tmp_path):
+    dataset = make_independent_size_dataset(tmp_path, bucket_no_upscale=True)
+    by_name = _infos_by_name(dataset)
+    assert by_name["b"].cond_bucket_reso == (48, 48)  # downscaled to the area of conditioning_resolution
+    width, height = by_name["a"].cond_bucket_reso
+    assert width * height <= 48 * 96
+
+
+@pytest.mark.parametrize("cache_to_disk", [False, True])
+def test_independent_conditioning_size_pixels_and_cache(tmp_path, cache_to_disk):
+    dataset = make_independent_size_dataset(tmp_path)
+    keys = dataset.dreambooth_dataset_delegate.bucket_manager.buckets
+
+    def info_of(index):
+        bucket_index = dataset.buckets_indices[index]
+        return dataset.image_data[keys[bucket_index.bucket_index][bucket_index.batch_index]]
+
+    # pixel path: the size of the conditioning image comes from its own bucket
+    seen_different = False
+    for i in range(len(dataset)):
+        example = dataset[i]
+        width, height = info_of(i).cond_bucket_reso
+        assert example["conditioning_images"].shape == (1, 3, height, width)
+        seen_different |= example["conditioning_images"].shape[-2:] != example["images"].shape[-2:]
+    assert seen_different
+
+    vae = FakeVAE()
+    strategy = FakeLatentsCachingStrategy(cache_to_disk, batch_size=2, skip_disk_cache_validity_check=False)
+    dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), strategy)
+
+    # the npz name has the size of the conditioning image itself
+    if cache_to_disk:
+        for info in dataset.image_data.values():
+            assert f"_{info.cond_image_size[0]:04d}x{info.cond_image_size[1]:04d}" in info.cond_latents_npz
+
+    # cached path: same as encoding the pixel path
+    for i in range(len(dataset)):
+        dataset.cond_latents_cache_mode = None
+        pixels = dataset[i]["conditioning_images"]
+        dataset.cond_latents_cache_mode = "disk" if cache_to_disk else "memory"
+        latents = dataset[i]["conditioning_latents"]
+        torch.testing.assert_close(latents, vae.encode(pixels), atol=1e-5, rtol=1e-5)
+
+    if cache_to_disk:
+        calls = vae.calls
+        dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), strategy)
+        assert vae.calls == calls
+
+
+def test_independent_conditioning_size_flip_is_tied_to_the_target(tmp_path):
+    import random
+
+    dataset = make_independent_size_dataset(tmp_path, flip_aug=True)
+    vae = FakeVAE()
+    dataset.new_cache_conditioning_latents(vae, FakeAccelerator(), FakeLatentsCachingStrategy(False, 2, False))
+    random.seed(0)
+    keys = dataset.dreambooth_dataset_delegate.bucket_manager.buckets
+    seen = set()
+    for _ in range(8):
+        for i in range(len(dataset)):
+            example = dataset[i]
+            bucket_index = dataset.buckets_indices[i]
+            info = dataset.image_data[keys[bucket_index.bucket_index][bucket_index.batch_index]]
+            flipped = bool(example["flippeds"][0])
+            expected = info.cond_latents_flipped if flipped else info.cond_latents
+            torch.testing.assert_close(example["conditioning_latents"][0], expected)
+            seen.add(flipped)
+    assert seen == {True, False}
+
+
+def test_independent_conditioning_size_config():
+    sanitizer = config_util.ConfigSanitizer(False, False, True, True)
+    user_config = {
+        "general": {"enable_bucket": True, "conditioning_resolution": 768},
+        "datasets": [
+            {
+                "independent_conditioning_size": True,
+                "subsets": [{"image_dir": "targets", "conditioning_data_dir": "refs"}],
+            },
+            {
+                "conditioning_resolution": [512, 640],
+                "subsets": [{"image_dir": "targets2", "conditioning_data_dir": "refs2"}],
+            },
+        ],
+    }
+    args = argparse.Namespace()
+    blueprint = config_util.BlueprintGenerator(sanitizer).generate(user_config, args)
+    first, second = [dataset.params for dataset in blueprint.dataset_group.datasets]
+    assert first.independent_conditioning_size and first.conditioning_resolution == (768, 768)
+    assert not second.independent_conditioning_size and second.conditioning_resolution == (512, 640)
+
+    # the default is 1024
+    assert config_util.ControlNetDatasetParams().conditioning_resolution == (1024, 1024)
+
+
+def test_select_reference_bucket():
+    # the token count is bounded by the area and the aspect ratio is kept, also for extreme aspect ratios
+    for size in [(500, 500), (473, 1412), (2716, 1838), (1412, 473)]:
+        (width, height), (resized_width, resized_height) = moss_image_train_utils.select_reference_bucket(*size, (1024, 1024))
+        assert width % 16 == 0 and height % 16 == 0
+        assert width * height <= 1024 * 1024
+        assert resized_width >= width and resized_height >= height
+        assert (width > height) == (size[0] > size[1]) or size[0] == size[1]
+        assert (resized_width - width) / resized_width < 0.05 and (resized_height - height) / resized_height < 0.05
+
+
+def test_load_reference_pixels_bucketed(tmp_path):
+    path = tmp_path / "ref.png"
+    _write_image(path, (473, 1412), 0)
+    pixels = moss_image_train_utils.load_reference_pixels_bucketed(str(path), (1024, 1024))
+    (width, height), _ = moss_image_train_utils.select_reference_bucket(473, 1412, (1024, 1024))
+    assert pixels.shape == (1, 3, height, width)
+    assert pixels.dtype == torch.float32 and pixels.min() >= -1.0 and pixels.max() <= 1.0
+
+
+def test_encode_reference_image_rejects_mask_with_resolution(tmp_path):
+    path = tmp_path / "ref.png"
+    _write_image(path, (64, 64), 0)
+    with pytest.raises(ValueError, match="hole mask"):
+        moss_image_train_utils.encode_reference_image(None, str(path), 64, 64, torch.device("cpu"), str(path), resolution=(64, 64))
+
+
+@pytest.mark.parametrize("ref_hw", [(2, 8), (6, 4)])
+def test_kv_reference_with_a_different_grid_from_the_target(ref_hw):
+    # the reference token grid does not have to be the one of the generated image, including the gradients through it
+    dit = make_dit()
+    ref = torch.randn(1, SMALL_CONFIG["latent_channels"], *ref_hw)
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
+    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, 1.0, None, enable_grad=True)
+    assert kvs[0][0].shape[1] == ref_hw[0] * ref_hw[1]
+
+    x = torch.randn(1, SMALL_CONFIG["latent_channels"], 3, 5)
+    context = torch.randn(1, 5, SMALL_CONFIG["text_dim"])
+    mask = torch.ones(1, 5, dtype=torch.int32)
+    out = dit(x, torch.tensor([500.0]), context, mask, ref_kv=kvs)
+    assert out.shape == x.shape
+    out.sum().backward()
+    grads = [p.grad for p in dit.parameters() if p.grad is not None]
+    assert len(grads) > 0 and all(torch.isfinite(g).all() for g in grads)
+
+
+def _edit_dataset_group(tmp_path, independent):
+    from library.dataset import DatasetGroup
+
+    return DatasetGroup([make_independent_size_dataset(tmp_path) if independent else make_controlnet_dataset(tmp_path)])
+
+
+def test_resolve_ref_resolution(tmp_path):
+    import moss_image_train_network_edit
+
+    resolve = moss_image_train_network_edit.MossImageEditNetworkTrainer.resolve_ref_resolution
+    trainer = moss_image_train_network_edit.MossImageEditNetworkTrainer()
+
+    aligned_dir = tmp_path / "aligned"
+    aligned_dir.mkdir()
+    args = argparse.Namespace(ref_mask_source="none", ref_resolution="stale")
+    resolve(args, _edit_dataset_group(aligned_dir, False), None)
+    assert args.ref_resolution is None
+
+    group = _edit_dataset_group(tmp_path, True)
+    args = argparse.Namespace(ref_mask_source="none")
+    resolve(args, group, None)
+    assert args.ref_resolution == (48, 48)
+
+    full_args = moss_image_train_network_edit.setup_parser().parse_args([])
+    metadata = {}
+    trainer.update_metadata(metadata, full_args)
+    assert metadata["ss_ref_resolution"] is None
+    full_args.ref_resolution = args.ref_resolution
+    trainer.update_metadata(metadata, full_args)
+    assert metadata["ss_ref_resolution"] == "48x48"
+
+    for source in ["alpha", "random"]:
+        with pytest.raises(AssertionError, match="ref_mask_source"):
+            resolve(argparse.Namespace(ref_mask_source=source), group, None)
+
+
 # endregion
 
 

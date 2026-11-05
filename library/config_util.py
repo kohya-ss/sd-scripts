@@ -143,6 +143,8 @@ class ControlNetDatasetParams(BaseDatasetParams):
     max_bucket_reso: int = 1024
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
+    independent_conditioning_size: bool = False
+    conditioning_resolution: Tuple[int, int] = (1024, 1024)
 
 
 @dataclass
@@ -254,6 +256,10 @@ class ConfigSanitizer:
         "resize_interpolation": str,
         "skip_image_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
     }
+    CN_DATASET_ASCENDABLE_SCHEMA = {
+        "independent_conditioning_size": bool,
+        "conditioning_resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
+    }
 
     # options handled by argparse but not handled by user config
     ARGPARSE_SPECIFIC_SCHEMA = {
@@ -317,6 +323,7 @@ class ConfigSanitizer:
 
         self.cn_dataset_schema = self.__merge_dict(
             self.DATASET_ASCENDABLE_SCHEMA,
+            self.CN_DATASET_ASCENDABLE_SCHEMA,
             self.SUBSET_ASCENDABLE_SCHEMA,
             self.CN_SUBSET_ASCENDABLE_SCHEMA,
             self.DO_SUBSET_ASCENDABLE_SCHEMA if support_dropout else {},
@@ -356,6 +363,7 @@ class ConfigSanitizer:
 
         self.general_schema = self.__merge_dict(
             self.DATASET_ASCENDABLE_SCHEMA,
+            self.CN_DATASET_ASCENDABLE_SCHEMA if support_controlnet else {},
             self.SUBSET_ASCENDABLE_SCHEMA,
             self.DB_SUBSET_ASCENDABLE_SCHEMA if support_dreambooth else {},
             self.CN_SUBSET_ASCENDABLE_SCHEMA if support_controlnet else {},
@@ -553,6 +561,9 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                 \n"""), "  ")
             else:
                 info += "\n"
+
+            if is_controlnet and dataset.independent_conditioning_size:
+                info += f"  independent_conditioning_size: True\n  conditioning_resolution: {dataset.conditioning_resolution}\n\n"
 
             for j, subset in enumerate(dataset.subsets):
                 info += indent(dedent(f"""\

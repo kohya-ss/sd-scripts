@@ -72,7 +72,14 @@ def parse_args() -> argparse.Namespace:
         "--ref_image",
         type=str,
         default=None,
-        help="reference image for reference-conditioned editing LoRA (resized to the image size), `--ri` in prompt lines",
+        help="reference image for reference-conditioned editing LoRA (resized to the image size, or see --ref_resolution), `--ri` in prompt lines",
+    )
+    parser.add_argument(
+        "--ref_resolution",
+        type=int,
+        default=None,
+        help="bucket the reference image on its own with this resolution as the area (aspect ratio kept), for a LoRA trained with"
+        " independent_conditioning_size (metadata ss_ref_resolution). Cannot be used with a hole mask. Default: resize to the image size",
     )
     parser.add_argument(
         "--ref_rope_r",
@@ -326,7 +333,11 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
         return None
     assert vae is not None, "VAE is required to encode the reference image"
     height, width = check_inputs(args)
-    logger.info(f"Encoding reference image: {args.ref_image} (resized to {width}x{height})")
+    resolution = None if args.ref_resolution is None else (args.ref_resolution, args.ref_resolution)
+    logger.info(
+        f"Encoding reference image: {args.ref_image} "
+        + (f"(resized to {width}x{height})" if resolution is None else f"(bucketed with resolution {args.ref_resolution})")
+    )
     return moss_image_train_utils.encode_reference_image(
         vae,
         args.ref_image,
@@ -336,6 +347,7 @@ def encode_reference(args: argparse.Namespace, vae: Optional[flux2_vae.AutoEncod
         args.ref_mask,
         args.ref_mask_from_alpha,
         args.ref_mask_fill_latent,
+        resolution,
     )
 
 
