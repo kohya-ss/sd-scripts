@@ -317,7 +317,7 @@ def test_submit_move_blocks(mock_submit, model_offloader):
     
     # Test with blocks_to_swap=0
     model_offloader.blocks_to_swap = 0
-    model_offloader.submit_move_blocks(blocks, 1)
+    model_offloader.submit_move_blocks_forward(blocks, 1)
     mock_submit.assert_not_called()
     
     mock_submit.reset_mock()
@@ -325,14 +325,14 @@ def test_submit_move_blocks(mock_submit, model_offloader):
     
     # Test within swap range
     block_idx = 1
-    model_offloader.submit_move_blocks(blocks, block_idx)
+    model_offloader.submit_move_blocks_forward(blocks, block_idx)
     mock_submit.assert_called_once()
     
     mock_submit.reset_mock()
     
     # Test outside swap range
     block_idx = 3
-    model_offloader.submit_move_blocks(blocks, block_idx)
+    model_offloader.submit_move_blocks_forward(blocks, block_idx)
     mock_submit.assert_not_called()
 
 
@@ -368,7 +368,7 @@ def test_offloading_integration():
         x = block(x)
         
         # Schedule moving weights for future blocks
-        offloader.submit_move_blocks(blocks, i)
+        offloader.submit_move_blocks_forward(blocks, i)
     
     # Verify we get a valid output
     assert x.shape == (1, 10)

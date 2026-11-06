@@ -177,6 +177,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>` **[experimental]** – Swap a number of Transformer blocks between CPU and GPU. More blocks reduce VRAM but slow training. Cannot be used with `--cpu_offload_checkpointing`.
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--cache_text_encoder_outputs` – Cache Gemma2 outputs to reduce memory usage.
 * `--cache_latents`, `--cache_latents_to_disk` – Cache AE outputs.
 * `--fp8_base` – Use FP8 precision for the base model.
@@ -225,6 +226,7 @@ For Lumina Image 2.0, you can specify different dimensions for various component
 #### メモリ・速度関連
 
 *   `--blocks_to_swap=<integer>` **[実験的機能]** – TransformerブロックをCPUとGPUでスワップしてVRAMを節約します。`--cpu_offload_checkpointing`とは併用できません。
+    - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 *   `--cache_text_encoder_outputs` – Gemma2の出力をキャッシュしてメモリ使用量を削減します。
 *   `--cache_latents`, `--cache_latents_to_disk` – AEの出力をキャッシュします。
 *   `--fp8_base` – ベースモデルにFP8精度を使用します。

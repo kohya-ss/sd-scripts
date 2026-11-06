@@ -175,7 +175,7 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
 * `--model_prediction_type=<choice>`
   - Specifies what the model predicts. Choose from `raw`, `additive`, `sigma_scaled`. Default and recommended is `raw`.
 * `--timestep_sampling=<choice>`
-  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`. Default is `sigma`.
+  - Specifies the sampling method for timesteps (noise levels) during training. Choose from `sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`. Default is `sigma`.
 * `--sigmoid_scale=<float>`
   - Scale factor when `timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default is `1.0`.
 
@@ -193,6 +193,7 @@ The script adds HunyuanImage-2.1 specific arguments. For common arguments (like 
   - Runs the text encoders on CPU to reduce VRAM usage. This is useful when VRAM is insufficient (less than 12GB). Encoding one text may take a few minutes (depending on CPU). It is highly recommended to use this option with `--cache_text_encoder_outputs_to_disk` to avoid repeated encoding every time training starts. **In addition, increasing `--num_cpu_threads_per_process` in the `accelerate launch` command, like `--num_cpu_threads_per_process=8` or `16`, can speed up encoding in some environments.**
 * `--blocks_to_swap=<integer>` **[Experimental Feature]**
   - Setting to reduce VRAM usage by swapping parts of the model (Transformer blocks) between CPU and GPU. Specify the number of blocks to swap as an integer (e.g., `18`). Larger values reduce VRAM usage but decrease training speed. Adjust according to your GPU's VRAM capacity. Can be used with `gradient_checkpointing`.
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--cache_text_encoder_outputs`
   - Caches the outputs of Qwen2.5-VL and byT5. This reduces memory usage.
 * `--cache_latents`, `--cache_latents_to_disk`
@@ -286,6 +287,7 @@ The `--timestep_sampling` option specifies how timesteps (0-1) are sampled:
 - `sigmoid`: Sigmoid of normal distribution random
 - `shift`: Sigmoid value of normal distribution random with shift.
 - `flux_shift`: Shift sigmoid value of normal distribution random according to resolution.
+- `truncated_logit_normal`: Logit-normal distribution on the discrete training grid, truncated at `--timestep_cutoff` and rescaled, with a `--timestep_uniform_ratio` share of uniform samples. See the [FLUX.1 guide](flux_train_network.md#timestep-sampling-methods).
 
 #### Model Prediction Processing
 

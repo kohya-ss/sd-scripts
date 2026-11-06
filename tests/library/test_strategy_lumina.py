@@ -170,7 +170,9 @@ def test_lumina_text_encoder_outputs_caching_strategy():
             mock_isinstance.side_effect = custom_isinstance
 
             # Call cache_batch_outputs
-            caching_strategy.cache_batch_outputs(tokenize_strategy, [mock_model], encoding_strategy, batch)
+            caching_strategy.cache_batch_outputs(
+                tokenize_strategy, [mock_model], encoding_strategy, batch, [info.caption for info in batch]
+            )
 
         # Verify the npz file was created
         assert os.path.exists(cache_file), f"Cache file not created at {cache_file}"

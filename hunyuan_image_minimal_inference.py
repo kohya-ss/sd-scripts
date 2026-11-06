@@ -22,6 +22,7 @@ from library import hunyuan_image_models, hunyuan_image_text_encoder, hunyuan_im
 from library import hunyuan_image_vae
 from library.hunyuan_image_vae import HunyuanVAE2D
 from library.device_utils import clean_memory_on_device, synchronize_device
+from library.custom_offloading_utils import BlockSwapConfig
 from library.safetensors_utils import mem_eff_save_file
 from networks import lora_hunyuan_image
 
@@ -358,7 +359,7 @@ def load_dit_model(
 
     if args.blocks_to_swap > 0:
         logger.info(f"Enable swap {args.blocks_to_swap} blocks to CPU from device: {device}")
-        model.enable_block_swap(args.blocks_to_swap, device, supports_backward=False)
+        model.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(device, supports_backward=False))
         model.move_to_device_except_swap_blocks(device)
         model.prepare_block_swap_before_forward()
     else:

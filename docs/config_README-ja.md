@@ -148,6 +148,8 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
 | `keep_tokens_separator` | `“|||”` | o | o | o |
 | `secondary_separator` | `“;;;”` | o | o | o |
 | `enable_wildcard` | `true` | o | o | o |
+| `enable_multiline_caption` | `true` | o | o | o |
+| `multiline_caption_separator` | （通常は設定しません） | o | o | o |
 | `resize_interpolation` |（通常は設定しません） | o | o | o |
 
 * `num_repeats`
@@ -165,7 +167,13 @@ DreamBooth の手法と fine tuning の手法の両方とも利用可能な学�
     * 追加の区切り文字を指定します。この区切り文字で区切られた部分は一つのタグとして扱われ、シャッフル、drop されます。その後、`caption_separator` に置き換えられます。たとえば `aaa;;;bbb;;;ccc` のように指定すると、`aaa,bbb,ccc` に置き換えられるか、まとめて drop されます。
 
 * `enable_wildcard`
-    * ワイルドカード記法および複数行キャプションを有効にします。ワイルドカード記法、複数行キャプションについては後述します。
+    * ワイルドカード記法および複数行キャプション（行ごとのランダム選択）を有効にします。ワイルドカード記法、複数行キャプションについては後述します。
+
+* `enable_multiline_caption`
+    * 改行を含むキャプションをそのまま使います。また区切り行で複数のキャプション候補を定義できます。詳細は後述します。
+
+* `multiline_caption_separator`
+    * `enable_multiline_caption` 有効時に、キャプション候補を区切る行の先頭文字列を指定します。デフォルトは `---===---` です。
 
 * `resize_interpolation`
     * 画像のリサイズ時に使用する補間方法を指定します。通常は指定しなくて構いません。`lanczos`, `nearest`, `bilinear`, `linear`, `bicubic`, `cubic`, `area`, `box` が指定可能です。デフォルト（未指定時）は、縮小時は `area`、拡大時は `lanczos` になります。このオプションを指定すると、拡大時・縮小時とも同じ補間方法が使用されます。`lanczos`、`box`を指定するとPILが、それ以外を指定するとOpenCVが使用されます。
@@ -340,9 +348,11 @@ skip_image_resolution = 1024
 
 ## その他
 
-### 複数行キャプション
+### 複数行キャプション（行ごとのランダム選択）
 
 `enable_wildcard = true` を設定することで、複数行キャプションも同時に有効になります。キャプションファイルが複数の行からなる場合、ランダムに一つの行が選ばれてキャプションとして利用されます。
+
+（デフォルトでは、キャプションファイルの 1 行目のみが使われます。改行を含むキャプションをそのまま使いたい場合は、後述の `enable_multiline_caption` を使ってください。）
 
 ```txt
 1girl, hatsune miku, vocaloid, upper body, looking at viewer, microphone, stage
@@ -351,6 +361,8 @@ detailed digital art of a girl with a microphone on a stage
 ```
 
 ワイルドカード記法と組み合わせることも可能です。
+
+※ Text Encoder の出力をキャッシュする場合（`--cache_text_encoder_outputs`）、行のランダム選択とワイルドカード記法は効きません（キャプションの内容がそのままエンコードされます）。この場合は警告が表示されます。`caption_prefix` / `caption_suffix` などの決定的な処理はキャッシュ時にも適用されます。
 
 メタデータファイルでも同様に複数行キャプションを指定することができます。メタデータの .json 内には、`\n` を使って改行を表現してください。キャプションファイルが複数行からなる場合、`merge_captions_to_metadata.py` を使うと、この形式でメタデータファイルが作成されます。
 
@@ -367,6 +379,47 @@ detailed digital art of a girl with a microphone on a stage
 ```
 
 この場合、実際のキャプションは `a cartoon of a frog with the word frog on it, open mouth, simple background ...` または `test multiline caption1, open mouth, simple background ...`、 `test multiline caption2, open mouth, simple background ...` 等になります。
+
+### 改行を含むキャプションと複数のキャプション候補：`enable_multiline_caption = true` の場合
+
+`enable_multiline_caption = true` を設定すると、キャプションファイル全体が、改行を含めてそのまま一つのキャプションとして使われます。Anima、Lumina、HunyuanImage など LLM ベースの Text Encoder を持つモデルでは改行がトークンとして扱われるため、画像内のテキストやレイアウトの学習に利用できます。CLIP や T5 の Text Encoder では改行は空白として扱われるため、効果はほとんどありません。
+
+さらに、`multiline_caption_separator`（デフォルト `---===---`）で始まる行で区切ることで、一つの画像に複数のキャプション候補を用意できます。学習時にはステップごとにランダムに一つの候補が選ばれます。
+
+```txt
+The image depicts a girl with long hair standing on a stage under spotlights.
+She is holding a microphone with both hands and looking at the viewer with a smile.
+---===---
+A girl with long hair sings on a stage.
+She holds a microphone and smiles.
+---===--- # タグ形式の候補
+1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer
+```
+
+* 区切り行の `#` 以降はコメントとして無視されます。区切り文字列と `#` の間には何も書けません（将来の拡張のために予約されており、書くとエラーになります）。
+* 各候補について、行末の空白と、先頭・末尾の空行は除去されます。行頭の空白と途中の空行はそのまま残ります。
+* `caption_prefix` / `caption_suffix` は選ばれた候補の前後に付きます。
+* `shuffle_caption`、`caption_tag_dropout_rate`、`token_warmup_step` は、選ばれた候補に改行が含まれない場合（上の例の 3 番目の候補など）のみ適用されます。改行を含む候補はそのまま使われます。
+* `enable_wildcard` と併用できます。その場合 `{a|b}` の置換のみが行われ、行ごとのランダム選択は区切り行による候補の選択に置き換わります。キャプションに `{` や `}` を含む JSON などを書く場合は `enable_wildcard` を有効にしないでください。
+* 複数の候補を持つ画像がある場合、Text Encoder の出力のキャッシュ（`--cache_text_encoder_outputs`）は、複数候補のキャッシュに対応したモデル（現在は MOSS-Image）でのみ使えます。全候補をエンコードして一つのキャッシュファイルに保存し、ステップごとにランダムに一つを選ぶため、キャッシュのサイズとキャッシュ時間は候補数倍になります。他のモデルでは、候補がランダムに選ばれるため Text Encoder の出力をキャッシュできません。
+* `cache_info = true` を使っている場合、`enable_multiline_caption` を切り替えたときは `metadata_cache.json` を削除して作り直してください。
+
+メタデータファイル（fine tuning 方式）でも同様です。`caption` に区切り行を含む文字列を書くか、文字列のリストを指定します（リストの各要素が候補になります）。`tags` は各候補の末尾に付与されます。
+
+```json
+{
+    "/path/to/image.png": {
+        "caption": [
+            "The image depicts a girl with long hair standing on a stage under spotlights.\nShe is holding a microphone with both hands and looking at the viewer with a smile.",
+            "A girl with long hair sings on a stage.\nShe holds a microphone and smiles.",
+            "1girl, solo, long hair, stage, microphone, spotlight, smile, looking at viewer"
+        ],
+        "tags": "upper body, indoors"
+    }
+}
+```
+
+サンプル画像生成用のプロンプトファイル（`--sample_prompts`）では、.txt ファイルの各行（および .json の文字列形式）で `\n`（バックスラッシュ + n）と書くと改行に変換されます。.toml / .json の辞書形式ではそのまま改行を書けるため、変換は行われません。
 
 ### 設定ファイルの記述例：追加の区切り文字、ワイルドカード記法、`keep_tokens_separator` 等
 

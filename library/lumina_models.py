@@ -1157,7 +1157,7 @@ class NextDiT(nn.Module):
                 
                 x = layer(x, mask, freqs_cis, t)
                 
-                self.offloader_main.submit_move_blocks(self.layers, block_idx)
+                self.offloader_main.submit_move_blocks_forward(self.layers, block_idx)
 
         x = self.final_layer(x, t)
         x = self.unpatchify(x, width, height, l_effective_cap_len, seq_lengths)
@@ -1274,13 +1274,13 @@ class NextDiT(nn.Module):
     def get_checkpointing_wrap_module_list(self) -> List[nn.Module]:
         return list(self.layers)
 
-    def enable_block_swap(self, blocks_to_swap: int, device: torch.device):
+    def enable_block_swap(self, blocks_to_swap: int, config: custom_offloading_utils.BlockSwapConfig):
         """
         Enable block swapping to reduce memory usage during inference.
         
         Args:
-            num_blocks (int): Number of blocks to swap between CPU and device
-            device (torch.device): Device to use for computation
+            blocks_to_swap (int): Number of blocks to swap between CPU and device
+            config (BlockSwapConfig): Device and offloader policy (classic / H2D-only, pinned memory, etc.)
         """
         self.blocks_to_swap = blocks_to_swap
         
@@ -1291,9 +1291,8 @@ class NextDiT(nn.Module):
             f"Requested {blocks_to_swap} blocks."
         )
         
-        self.offloader_main = custom_offloading_utils.ModelOffloader(
-            self.layers, blocks_to_swap, device, debug=False
-        )
+        self.offloader_main = custom_offloading_utils.create_offloader("main", self.layers, len(self.layers), blocks_to_swap, config)
+        print(f"Lumina 2: Block swap enabled. Swapping {blocks_to_swap} blocks, total blocks: {len(self.layers)}. H2D-only: {config.h2d_only}")
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         """

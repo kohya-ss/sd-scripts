@@ -13,6 +13,7 @@ from PIL import Image
 from accelerate import Accelerator, PartialState
 
 from library import flux_utils, hunyuan_image_models, hunyuan_image_vae, strategy_base, sampling
+from library.custom_offloading_utils import BlockSwapConfig
 import library.args as args_util
 import library.model_io as model_io
 from library.dataset import DatasetGroup, MinimalDataset
@@ -407,8 +408,14 @@ class HunyuanImageNetworkTrainer(train_network.NetworkTrainer):
 
         if self.is_swapping_blocks:
             # Swap blocks between CPU and GPU to reduce memory usage, in forward and backward passes.
-            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device, supports_backward=True)
+            # The base weights are frozen in LoRA training. Freeze them here, before enabling block swap, for the H2D-only offloader.
+            model.requires_grad_(False)
+            swap_config = BlockSwapConfig.from_args(args, accelerator.device, supports_backward=True)
+            logger.info(
+                f"enable block swap: blocks_to_swap={args.blocks_to_swap}, H2D-only: {swap_config.h2d_only}, "
+                f"use pinned memory: {swap_config.use_pinned_memory}"
+            )
+            model.enable_block_swap(args.blocks_to_swap, swap_config)
 
         return model, text_encoders
 
@@ -650,10 +657,12 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "truncated_logit_normal"],
         default="sigma",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and FLUX.1 shifting."
-        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト。",
+        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid, FLUX.1 shifting"
+        " and truncated logit-normal on the training grid (--logit_mean / --logit_std / --timestep_cutoff / --timestep_uniform_ratio)."
+        " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト、"
+        "学習グリッド上の切り詰めた logit-normal（--logit_mean / --logit_std / --timestep_cutoff / --timestep_uniform_ratio）。",
     )
     parser.add_argument(
         "--sigmoid_scale",

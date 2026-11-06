@@ -47,7 +47,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **Model structure:** Uses a MiniTrainDIT (Transformer based) instead of U-Net. Employs a single text encoder (Qwen3-0.6B), an LLM Adapter that bridges Qwen3 embeddings to T5-compatible cross-attention space, and a Qwen-Image VAE (16-channel latent space with 8x spatial downscale).
 * **Arguments:** Uses the common `--pretrained_model_name_or_path` for the DiT model path, `--qwen3` for the Qwen3 text encoder, and `--vae` for the Qwen-Image VAE. The LLM adapter and T5 tokenizer can be specified separately with `--llm_adapter_path` and `--t5_tokenizer_path`.
 * **Incompatible arguments:** Stable Diffusion v1/v2 options such as `--v2`, `--v_parameterization` and `--clip_skip` are not used. `--fp8_base` is not supported.
-* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`).
+* **Timestep sampling:** Uses the same `--timestep_sampling` options as FLUX training (`sigma`, `uniform`, `sigmoid`, `shift`, `flux_shift`, `truncated_logit_normal`).
 * **LoRA:** Uses regex-based module selection and per-module rank/learning rate control (`network_reg_dims`, `network_reg_lrs`) instead of per-component arguments. Module exclusion/inclusion is controlled by `exclude_patterns` and `include_patterns`.
 
 <details>
@@ -59,7 +59,7 @@ Qwen-Image VAEとQwen-Image VAEは同じアーキテクチャですが、[Anima�
 * **モデル構造:** U-Netの代わりにMiniTrainDIT (Transformerベース) を使用します。テキストエンコーダーとしてQwen3-0.6B、Qwen3埋め込みをT5互換のクロスアテンション空間に変換するLLM Adapter、およびQwen-Image VAE (16チャンネル潜在空間、8倍空間ダウンスケール) を使用します。
 * **引数:** DiTモデルのパスには共通引数`--pretrained_model_name_or_path`を、Qwen3テキストエンコーダーには`--qwen3`を、Qwen-Image VAEには`--vae`を使用します。LLM AdapterとT5トークナイザーはそれぞれ`--llm_adapter_path`、`--t5_tokenizer_path`で個別に指定できます。
 * **一部引数の非互換性:** Stable Diffusion v1/v2向けの引数（例: `--v2`, `--v_parameterization`, `--clip_skip`）は使用されません。`--fp8_base`はサポートされていません。
-* **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`）を使用します。
+* **タイムステップサンプリング:** FLUX学習と同じ`--timestep_sampling`オプション（`sigma`、`uniform`、`sigmoid`、`shift`、`flux_shift`、`truncated_logit_normal`）を使用します。
 * **LoRA:** コンポーネント別の引数の代わりに、正規表現ベースのモジュール選択とモジュール単位のランク/学習率制御（`network_reg_dims`、`network_reg_lrs`）を使用します。モジュールの除外/包含は`exclude_patterns`と`include_patterns`で制御します。
 </details>
 
@@ -116,6 +116,7 @@ accelerate launch --num_cpu_threads_per_process 1 anima_train_network.py \
   --save_model_as=safetensors \
   --network_module=networks.lora_anima \
   --network_dim=8 \
+  --network_train_unet_only \
   --learning_rate=1e-4 \
   --optimizer_type="AdamW8bit" \
   --lr_scheduler="constant" \
@@ -179,9 +180,9 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Anima Training Parameters / Anima 学習パラメータ
 
 * `--timestep_sampling=<choice>`
-  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
+  - Timestep sampling method. Choose from `sigma`, `uniform`, `sigmoid` (default), `shift`, `flux_shift`, `truncated_logit_normal`. Same options as FLUX training. See the [flux_train_network.py guide](flux_train_network.md) for details on each method.
 * `--discrete_flow_shift=<float>`
-  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`. This value is used when `--timestep_sampling` is set to **`shift`**. The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
+  - Shift for the timestep distribution in Rectified Flow training. Default `1.0`. This value is used when `--timestep_sampling` is set to **`shift`** (and to `sigma` / `truncated_logit_normal` through the shifted training grid). The shift formula is `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
 * `--sigmoid_scale=<float>`
   - Scale factor when `--timestep_sampling` is set to `sigmoid`, `shift`, or `flux_shift`. Default `1.0`.
 * `--qwen3_max_token_length=<integer>`
@@ -211,10 +212,13 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
   - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum values depend on model size:
     - 28-block model: max **26** (Anima-Preview)
     - 36-block model: max **34**
+  - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
     - 20-block model: max **18**
   - Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
+* `--gradient_checkpointing_skip_blocks=<integer>`
+  - Partial gradient checkpointing: the last N Transformer blocks keep their activations instead of recomputing them in the backward pass. Each skipped block uses more VRAM and saves the recomputation of one block, so the VRAM usage and the step time change linearly with N. `0` (default) checkpoints all blocks; the maximum is the number of blocks of the model (28 for Anima-Preview). Only effective with `--gradient_checkpointing` (ignored with a warning otherwise). Can be combined with `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` and `--compile`. See [Section 7.1](#71-vram-usage-optimization--vram使用量の最適化).
 * `--cache_text_encoder_outputs`
   - Cache Qwen3 text encoder outputs to reduce VRAM usage. Recommended when not training text encoder LoRA.
 * `--cache_text_encoder_outputs_to_disk`
@@ -253,8 +257,8 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 
 #### Anima 学習パラメータ
 
-* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift`から選択。FLUX学習と同じオプションです。各方法の詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
-* `--discrete_flow_shift` - Rectified Flow学習のタイムステップ分布シフト。デフォルト`1.0`。`--timestep_sampling`が`shift`の場合に使用されます。
+* `--timestep_sampling` - タイムステップのサンプリング方法。`sigma`、`uniform`、`sigmoid`（デフォルト）、`shift`、`flux_shift`、`truncated_logit_normal`から選択。FLUX学習と同じオプションです。各方法の詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
+* `--discrete_flow_shift` - Rectified Flow学習のタイムステップ分布シフト。デフォルト`1.0`。`--timestep_sampling`が`shift`の場合（および`sigma` / `truncated_logit_normal`ではシフトされた学習グリッドを通じて）使用されます。
 * `--sigmoid_scale` - `sigmoid`、`shift`、`flux_shift`タイムステップサンプリングのスケール係数。デフォルト`1.0`。
 * `--qwen3_max_token_length` - Qwen3トークナイザーの最大トークン長。デフォルト`512`。
 * `--t5_max_token_length` - T5トークナイザーの最大トークン長。デフォルト`512`。
@@ -276,7 +280,9 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 #### メモリ・速度関連
 
 * `--blocks_to_swap` - TransformerブロックをCPUとGPUでスワップしてVRAMを節約。`--cpu_offload_checkpointing`および`--unsloth_offload_checkpointing`とは併用できません。
+  - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションをCPU RAMにオフロード。`--cpu_offload_checkpointing`および`--blocks_to_swap`とは併用できません。
+* `--gradient_checkpointing_skip_blocks` - 部分的なgradient checkpointing。末尾のN個のTransformerブロックはbackwardで再計算せずactivationを保持します。スキップしたブロック1個につきVRAMが増え、1ブロック分の再計算が省けるため、VRAM使用量とステップ時間はNに対して線形に変化します。`0`（デフォルト）で全ブロックをcheckpointing、最大値はモデルのブロック数（Anima-Previewは28）です。`--gradient_checkpointing`指定時のみ有効です（未指定時は警告を出して無視します）。`--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing`、`--compile`と併用できます。[7.1節](#71-vram-usage-optimization--vram使用量の最適化)も参照してください。
 * `--cache_text_encoder_outputs` - Qwen3の出力をキャッシュしてメモリ使用量を削減。
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
@@ -449,6 +455,15 @@ Anima models can be large, so GPUs with limited VRAM may require optimization:
 
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute.
 
+- **`--gradient_checkpointing_skip_blocks <number>`**: Partial gradient checkpointing. The last N blocks keep their activations instead of recomputing them in the backward pass, so spare VRAM can be converted into speed. Both the VRAM usage and the step time change linearly with N. Increase N until the training no longer fits. Measured with Anima (28 blocks) on an RTX PRO 6000 Blackwell, about 1MP images, batch size 1, LoRA dim 16, bf16, `--attn_mode flash`, latents and text encoder outputs cached (peak GPU memory during training as reported by `nvidia-smi`):
+
+  | `--gradient_checkpointing_skip_blocks` | 0 | 7 | 14 | 21 | 28 (no recomputation) |
+  |---|---|---|---|---|---|
+  | Peak VRAM | 6.5GB | 9.4GB | 12.9GB | 16.4GB | 19.9GB |
+  | Step time | 0.85s | 0.75s | 0.73s | 0.59s | 0.53s |
+
+  Each skipped block costs about 0.48GB at this resolution and saves about 3.5% of the step time. Larger batch sizes give little throughput gain with this model size, so skipping blocks is usually the better use of spare VRAM than increasing the batch size. The VRAM cost per block does not depend on the GPU: on an RTX 4090 (24GB, same settings) the peaks are 6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB and the step times 0.73s / 0.68s / 0.63s / 0.56s / 0.52s for `0` / `7` / `14` / `21` / `28`, so all blocks can be skipped on a 24GB GPU for a 30% faster step.
+
 - **`--cache_text_encoder_outputs`**: Caches Qwen3 outputs so the text encoder can be freed from VRAM during training.
 
 - **`--cache_latents`**: Caches Qwen-Image VAE outputs so the VAE can be freed from VRAM during training.
@@ -467,6 +482,7 @@ Animaモデルは大きい場合があるため、VRAMが限られたGPUでは�
 - `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションをCPUにオフロード
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント
+- `--gradient_checkpointing_skip_blocks`: 部分的なgradient checkpointing。末尾のN個のブロックはbackwardで再計算せずactivationを保持するため、余っているVRAMを速度に変換できます。VRAM使用量とステップ時間はNに対して線形に変化するので、学習が収まる範囲でNを増やしてください。Anima（28ブロック）、約1MPの画像、batch size 1、LoRA dim 16、bf16、`--attn_mode flash`、latentとText Encoder出力をキャッシュした場合の実測（RTX PRO 6000 Blackwell、`nvidia-smi`の学習中ピーク）は、`0`で6.5GB / 0.85秒、`7`で9.4GB / 0.75秒、`14`で12.9GB / 0.73秒、`21`で16.4GB / 0.59秒、`28`（再計算なし）で19.9GB / 0.53秒でした。1ブロックあたり約0.48GBでステップ時間が約3.5%短縮されます。このモデルサイズではbatch sizeを増やしてもスループットはほとんど向上しないため、余ったVRAMはbatch sizeよりもブロックのスキップに使う方が有利です。1ブロックあたりのVRAMはGPUによらず、RTX 4090（24GB、同じ設定）では`0` / `7` / `14` / `21` / `28`でピークが6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB、ステップ時間が0.73秒 / 0.68秒 / 0.63秒 / 0.56秒 / 0.52秒でした。24GBのGPUなら全ブロックをスキップでき、ステップ時間が30%短縮されます
 - `--cache_text_encoder_outputs`: Qwen3の出力をキャッシュ
 - `--cache_latents`: Qwen-Image VAEの出力をキャッシュ
 - Adafactorオプティマイザの使用
@@ -484,6 +500,7 @@ The `--timestep_sampling` option specifies how timesteps are sampled. The availa
 - `sigmoid` (default): Sample from Normal(0,1), multiply by `sigmoid_scale`, apply sigmoid. Good general-purpose option.
 - `shift`: Like `sigmoid`, but applies the discrete flow shift formula: `t_shifted = (t * shift) / (1 + (shift - 1) * t)`.
 - `flux_shift`: Resolution-dependent shift used in FLUX training.
+- `truncated_logit_normal`: Logit-normal distribution (`--logit_mean` / `--logit_std`) on the discrete training grid, truncated at `--timestep_cutoff` and rescaled, with a `--timestep_uniform_ratio` share of uniform samples (the schedule of the MOSS-Image pre-training).
 
 See the [flux_train_network.py guide](flux_train_network.md) for detailed descriptions.
 
@@ -524,7 +541,7 @@ Caption dropout uses the `caption_dropout_rate` setting from the dataset configu
 
 **If you change the `caption_dropout_rate` setting, you must delete and regenerate the cache.**
 
-Note: Currently, only Anima supports combining `caption_dropout_rate` with text encoder output caching.
+Note: Currently, only Anima and MOSS-Image support combining `caption_dropout_rate` with text encoder output caching.
 
 <details>
 <summary>日本語</summary>
@@ -538,6 +555,7 @@ Note: Currently, only Anima supports combining `caption_dropout_rate` with text 
 - `sigmoid`（デフォルト）: 正規分布からサンプリングし、sigmoidを適用。汎用的なオプション。
 - `shift`: `sigmoid`と同様だが、離散フローシフトの式を適用。
 - `flux_shift`: FLUX学習で使用される解像度依存のシフト。
+- `truncated_logit_normal`: 離散的な学習グリッド上のlogit-normal分布（`--logit_mean` / `--logit_std`）を`--timestep_cutoff`で切り詰めてリスケールし、`--timestep_uniform_ratio`の割合で一様サンプルを混ぜたもの（MOSS-Imageの事前学習のスケジュール）。
 
 詳細は[flux_train_network.pyのガイド](flux_train_network.md)を参照してください。
 
@@ -563,7 +581,7 @@ Note: Currently, only Anima supports combining `caption_dropout_rate` with text 
 
 **`caption_dropout_rate`の設定を変えた場合、キャッシュを削除し、再生成する必要があります。**
 
-※`caption_dropout_rate`をテキストエンコーダー出力キャッシュと組み合わせられるのは、今のところAnimaのみです。
+※`caption_dropout_rate`をテキストエンコーダー出力キャッシュと組み合わせられるのは、今のところAnimaとMOSS-Imageのみです。
 
 </details>
 

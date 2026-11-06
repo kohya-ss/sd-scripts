@@ -54,7 +54,7 @@ Each supported model family has a consistent structure:
 ### Key Components
 
 #### Memory Management
-- **Block swapping**: CPU-GPU memory optimization via `--blocks_to_swap` parameter, works with custom offloading. Only available for models with transformer architectures like SD3 and FLUX.1.
+- **Block swapping**: CPU-GPU memory optimization via `--blocks_to_swap` parameter, works with custom offloading. Only available for models with transformer architectures like SD3 and FLUX.1. `--block_swap_h2d_only` selects the H2D-only offloader (`LoRAStreamOffloader`, frozen-base / LoRA training only, not for SD3); the offloader is chosen by `custom_offloading_utils.create_offloader` from a `BlockSwapConfig`, shared with Musubi Tuner. See `docs/block_swap.md`.
 - **Custom offloading**: `library/custom_offloading_utils.py` for advanced memory management
 - **Gradient checkpointing**: Memory reduction during training
 

@@ -85,6 +85,8 @@ class ControlNetDataset(BaseDataset):
                 subset.token_warmup_min,
                 subset.token_warmup_step,
                 resize_interpolation=subset.resize_interpolation,
+                enable_multiline_caption=subset.enable_multiline_caption,
+                multiline_caption_separator=subset.multiline_caption_separator,
             )
             db_subsets.append(db_subset)
 
@@ -110,6 +112,7 @@ class ControlNetDataset(BaseDataset):
 
         # config_util等から参照される値をいれておく（若干微妙なのでなんとかしたい）
         self.image_data = self.dreambooth_dataset_delegate.image_data
+        self.has_multiple_caption_candidates = self.dreambooth_dataset_delegate.has_multiple_caption_candidates
         self.batch_size = batch_size
         self.num_train_images = self.dreambooth_dataset_delegate.num_train_images
         self.num_reg_images = self.dreambooth_dataset_delegate.num_reg_images

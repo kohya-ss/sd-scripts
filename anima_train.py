@@ -15,6 +15,7 @@ from tqdm import tqdm
 import torch
 from library import flux_train_utils, qwen_image_autoencoder_kl
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.custom_offloading_utils import BlockSwapConfig
 from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 init_ipex()
@@ -80,6 +81,8 @@ def train(args):
     assert (
         args.blocks_to_swap is None or args.blocks_to_swap == 0
     ) or not args.unsloth_offload_checkpointing, "blocks_to_swap is not supported with unsloth_offload_checkpointing"
+
+    args_util.verify_gradient_checkpointing_skip_blocks(args)
 
     cache_latents = args.cache_latents
     use_dreambooth_method = args.in_json is None
@@ -254,6 +257,7 @@ def train(args):
         dit.enable_gradient_checkpointing(
             cpu_offload=args.cpu_offload_checkpointing,
             unsloth_offload=args.unsloth_offload_checkpointing,
+            skip_blocks=args.gradient_checkpointing_skip_blocks,
         )
 
     train_dit = args.learning_rate != 0
@@ -264,8 +268,13 @@ def train(args):
     # Block swap
     is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
     if is_swapping_blocks:
+        if args.block_swap_h2d_only:
+            raise ValueError(
+                "--block_swap_h2d_only requires frozen base weights and cannot be used for full fine-tuning"
+                " / --block_swap_h2d_only はベース重みの凍結が前提のため、全体のファインチューニングでは使用できません"
+            )
         logger.info(f"Enable block swap: blocks_to_swap={args.blocks_to_swap}")
-        dit.enable_block_swap(args.blocks_to_swap, accelerator.device)
+        dit.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(accelerator.device, supports_backward=True))
 
     if not cache_latents:
         vae.requires_grad_(False)

@@ -211,9 +211,9 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         models: List[Any],
         text_encoding_strategy: TextEncodingStrategy,
         infos: List,
+        captions: List[str],
     ):
         anima_text_encoding_strategy: AnimaTextEncodingStrategy = text_encoding_strategy
-        captions = [info.caption for info in infos]
 
         tokens_and_masks = tokenize_strategy.tokenize(captions)
         with torch.no_grad():

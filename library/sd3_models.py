@@ -1072,17 +1072,21 @@ class MMDiT(nn.Module):
         # )
         return spatial_pos_embed
 
-    def enable_block_swap(self, num_blocks: int, device: torch.device):
+    def enable_block_swap(self, num_blocks: int, config: custom_offloading_utils.BlockSwapConfig):
         self.blocks_to_swap = num_blocks
 
         assert (
             self.blocks_to_swap <= self.num_blocks - 2
         ), f"Cannot swap more than {self.num_blocks - 2} blocks. Requested: {self.blocks_to_swap} blocks."
 
+        # The joint blocks are not homogeneous (the last block is `pre_only`, and SD3.5 Medium has `x_block_self_attn`
+        # in some blocks), so the H2D-only offloader (which streams blocks through a shared ring buffer) is not supported.
+        assert not config.h2d_only, "H2D-only block swap is not supported for SD3 / SD3ではH2D-onlyブロックスワップはサポートされていません"
+
         self.offloader = custom_offloading_utils.ModelOffloader(
-            self.joint_blocks, self.blocks_to_swap, device  # , debug=True
+            self.joint_blocks, self.blocks_to_swap, config.device, supports_backward=config.supports_backward, debug=config.debug
         )
-        print(f"SD3: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {device}.")
+        print(f"SD3: Block swap enabled. Swapping {num_blocks} blocks, total blocks: {self.num_blocks}, device: {config.device}.")
 
     def move_to_device_except_swap_blocks(self, device: torch.device):
         # assume model is on cpu. do not move blocks to device to reduce temporary memory usage
@@ -1150,7 +1154,7 @@ class MMDiT(nn.Module):
 
                 context, x = block(context, x, c)
 
-                self.offloader.submit_move_blocks(self.joint_blocks, block_idx)
+                self.offloader.submit_move_blocks_forward(self.joint_blocks, block_idx)
 
         x = self.final_layer(x, c, H, W)  # Our final layer combined UnPatchify
         return x[:, :, :H, :W]

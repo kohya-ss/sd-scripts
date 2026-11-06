@@ -16,6 +16,7 @@ import toml
 from huggingface_hub import hf_hub_download
 
 import library.huggingface_util as huggingface_util
+from library.subset import DEFAULT_MULTILINE_CAPTION_SEPARATOR
 from library.utils import setup_logging
 
 setup_logging()
@@ -634,6 +635,31 @@ def add_masked_loss_arguments(parser: argparse.ArgumentParser):
     )
 
 
+def add_gradient_checkpointing_skip_blocks_argument(parser: argparse.ArgumentParser):
+    """Partial gradient checkpointing for the models whose `enable_gradient_checkpointing` accepts `skip_blocks`."""
+    parser.add_argument(
+        "--gradient_checkpointing_skip_blocks",
+        type=int,
+        default=0,
+        help="number of the last transformer blocks that keep their activations instead of recomputing them in the backward pass"
+        " when --gradient_checkpointing is enabled. Each skipped block trades VRAM for speed. 0 (default) checkpoints all blocks."
+        " / --gradient_checkpointing 有効時に、backward で再計算せず activation を保持する末尾の transformer ブロック数。"
+        "スキップしたブロックの分だけ VRAM を使う代わりに速くなる。0（デフォルト）で全ブロックを checkpointing する",
+    )
+
+
+def verify_gradient_checkpointing_skip_blocks(args: argparse.Namespace):
+    """Validate --gradient_checkpointing_skip_blocks. It is ignored with a warning when gradient checkpointing is disabled."""
+    if args.gradient_checkpointing_skip_blocks < 0:
+        raise ValueError(f"--gradient_checkpointing_skip_blocks must be 0 or positive, got {args.gradient_checkpointing_skip_blocks}")
+    if args.gradient_checkpointing_skip_blocks > 0 and not args.gradient_checkpointing:
+        logger.warning(
+            "--gradient_checkpointing_skip_blocks is ignored because --gradient_checkpointing is not enabled"
+            " / --gradient_checkpointing が無効なため --gradient_checkpointing_skip_blocks は無視されます"
+        )
+        args.gradient_checkpointing_skip_blocks = 0
+
+
 def add_dit_training_arguments(parser: argparse.ArgumentParser):
     # Text encoder related arguments
     parser.add_argument(
@@ -679,6 +705,24 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         type=float,
         default=1.0,
         help="std to use when using the `'logit_normal'` weighting scheme / `'logit_normal'`重み付けスキームを使用する場合のstd",
+    )
+    parser.add_argument(
+        "--timestep_cutoff",
+        type=float,
+        default=0.95,
+        help="truncate the sigma distribution at this value and rescale it to (0, 1]. Only used when `--timestep_sampling` is"
+        " `truncated_logit_normal`. Default is 0.95 (MOSS-Image pre-training)"
+        " / sigma の分布をこの値で切り詰めて (0, 1] にリスケールする。`--timestep_sampling` が `truncated_logit_normal` の場合のみ有効。"
+        "デフォルトは 0.95（MOSS-Image の事前学習の値）",
+    )
+    parser.add_argument(
+        "--timestep_uniform_ratio",
+        type=float,
+        default=0.01,
+        help="ratio of the samples drawn uniformly from the timestep grid. Only used when `--timestep_sampling` is"
+        " `truncated_logit_normal`. Default is 0.01 (MOSS-Image pre-training)"
+        " / タイムステップのグリッドから一様にサンプリングする割合。`--timestep_sampling` が `truncated_logit_normal` の場合のみ有効。"
+        "デフォルトは 0.01（MOSS-Image の事前学習の値）",
     )
     parser.add_argument(
         "--mode_scale",
@@ -728,6 +772,31 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         "Increasing this number lowers the overall VRAM used during training at the expense of training speed (s/it)."
         " / 順伝播および逆伝播中にスワップするブロックの数を設定します。"
         "この数を増やすと、トレーニング中のVRAM使用量が減りますが、トレーニング速度（s/it）も低下します。",
+    )
+    parser.add_argument(
+        "--block_swap_h2d_only",
+        action="store_true",
+        help="(experimental, frozen-base / LoRA training only) use H2D-only block swap:"
+        " keep a CPU master copy of streamed weights and only copy Host->Device, never back. Removes the D2H transfer."
+        " Requires --gradient_checkpointing. Not supported for SD3."
+        " / (実験的、ベース凍結＝LoRA学習専用) H2DのみのブロックスワップでD2H転送を行わない。--gradient_checkpointing が必須。SD3では使用不可。",
+    )
+    parser.add_argument(
+        "--block_swap_ring_size",
+        type=int,
+        default=2,
+        help="(used with --block_swap_h2d_only) number of GPU ring buffers for streamed blocks. 2 = double buffering"
+        " (one computed on, one prefetched); 1 = minimal memory but no transfer/compute overlap."
+        " / (--block_swap_h2d_only用) ストリーミング用GPUリングバッファ数。2でダブルバッファ、1で最小メモリ(オーバーラップなし)。",
+    )
+    parser.add_argument(
+        "--use_pinned_memory_for_block_swap",
+        action="store_true",
+        help="(used with --block_swap_h2d_only) keep the CPU master copies of the streamed weights in pinned memory for faster"
+        " Host->Device copies. Uses more shared GPU memory on Windows. Without this, the transfers are staged through a small"
+        " pinned buffer pool on a worker thread."
+        " / (--block_swap_h2d_only用) ストリーミングする重みのCPUマスターコピーをピン留めメモリに置き、Host->Device転送を高速化する。"
+        "Windowsでは共有GPUメモリを多く使用する。指定しない場合は小さなピン留めバッファを介してワーカースレッドで転送する。",
     )
 
 
@@ -948,6 +1017,19 @@ def add_dataset_arguments(
         "--enable_wildcard",
         action="store_true",
         help="enable wildcard for caption (e.g. '{image|picture|rendition}') / captionのワイルドカードを有効にする（例：'{image|picture|rendition}'）",
+    )
+    parser.add_argument(
+        "--enable_multiline_caption",
+        action="store_true",
+        help="use multi-line captions as they are (including line breaks). Multiple caption candidates can be separated by lines starting with `--multiline_caption_separator`, and one is chosen randomly at each step"
+        + " / 複数行のキャプションを改行を含めてそのまま使う。`--multiline_caption_separator` で始まる行で複数のキャプション候補を区切ると、ステップごとにランダムに1つが選ばれる",
+    )
+    parser.add_argument(
+        "--multiline_caption_separator",
+        type=str,
+        default=DEFAULT_MULTILINE_CAPTION_SEPARATOR,
+        help="prefix of the lines which separate caption candidates when `--enable_multiline_caption` is enabled. Text after `#` on the line is a comment"
+        + " / `--enable_multiline_caption` 有効時に、キャプション候補を区切る行の先頭文字列。行内の `#` 以降はコメント",
     )
     parser.add_argument(
         "--caption_prefix",

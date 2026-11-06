@@ -191,6 +191,7 @@ The prompt weighting such as `( )` and `[ ]` are working for SD/SDXL models, not
 
 * `--lr_scheduler_type`: Specifies a custom scheduler module.
 * `--lr_scheduler_args`: Provides additional arguments to the custom scheduler (e.g., `"T_max=100"`).
+    * If the custom scheduler's constructor has `num_training_steps` and/or `num_warmup_steps` arguments, the total number of training steps and the number of warmup steps (`--lr_warmup_steps`) computed by the script are passed automatically. Values specified in `--lr_scheduler_args` take priority.
 * `--lr_decay_steps`: Sets the number of steps for the learning rate to decay.
 * `--lr_scheduler_timescale`: The timescale for the inverse square root scheduler.
 * `--lr_scheduler_min_lr_ratio`: Sets the minimum learning rate as a ratio of the initial learning rate for certain schedulers.
@@ -516,6 +517,7 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
 
 * `--lr_scheduler_type`: カスタムスケジューラモジュールを指定します。
 * `--lr_scheduler_args`: カスタムスケジューラに追加の引数を渡します (例: `"T_max=100"`)。
+    * カスタムスケジューラのコンストラクタが `num_training_steps` や `num_warmup_steps` 引数を持つ場合、スクリプトが計算した総学習ステップ数と warmup ステップ数（`--lr_warmup_steps`）が自動的に渡されます。`--lr_scheduler_args` で指定した値が優先されます。
 * `--lr_decay_steps`: 学習率が減衰するステップ数を設定します。
 * `--lr_scheduler_timescale`: 逆平方根スケジューラのタイムスケール。
 * `--lr_scheduler_min_lr_ratio`: 特定のスケジューラについて、初期学習率に対する最小学習率の比率を設定します。

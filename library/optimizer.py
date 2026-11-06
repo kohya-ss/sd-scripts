@@ -12,6 +12,7 @@ factory (``get_scheduler_fix``); and the LR-logging helpers
 import argparse
 import ast
 import importlib
+import inspect
 import logging
 from typing import Any, Callable, Optional, Tuple
 
@@ -516,8 +517,33 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             lr_scheduler_module = importlib.import_module(".".join(values[:-1]))
             lr_scheduler_type = values[-1]
         lr_scheduler_class = getattr(lr_scheduler_module, lr_scheduler_type)
-        lr_scheduler = lr_scheduler_class(optimizer, **lr_scheduler_kwargs)
-        return wrap_check_needless_num_warmup_steps(lr_scheduler)
+
+        # pass the computed step counts if the scheduler accepts them as named arguments and they are not given explicitly
+        try:
+            scheduler_params = inspect.signature(lr_scheduler_class).parameters
+        except (TypeError, ValueError):
+            scheduler_params = {}
+        accepted_keys = {
+            key
+            for key, param in scheduler_params.items()
+            if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        auto_kwargs = {}
+        for key, value in (("num_training_steps", num_training_steps), ("num_warmup_steps", num_warmup_steps)):
+            if key in accepted_keys and key not in lr_scheduler_kwargs:
+                auto_kwargs[key] = value
+        if auto_kwargs:
+            logger.info(f"pass {auto_kwargs} to {lr_scheduler_type} automatically")
+
+        lr_scheduler = lr_scheduler_class(optimizer, **auto_kwargs, **lr_scheduler_kwargs)
+        if "num_warmup_steps" not in accepted_keys:
+            return wrap_check_needless_num_warmup_steps(lr_scheduler)
+        if "num_warmup_steps" in lr_scheduler_kwargs and num_warmup_steps:
+            logger.warning(
+                "num_warmup_steps in --lr_scheduler_args is used and --lr_warmup_steps is ignored"
+                + " / --lr_scheduler_args の num_warmup_steps が使用され、--lr_warmup_steps は無視されます"
+            )
+        return lr_scheduler
 
     if name.startswith("adafactor"):
         assert (

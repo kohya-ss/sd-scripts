@@ -4,7 +4,9 @@ from unittest.mock import MagicMock, patch
 from library.flux_train_utils import (
     get_noisy_model_input_and_timesteps,
     get_show_timesteps_offset,
+    sample_truncated_logit_normal_indices,
 )
+from library.sd3_train_utils import FlowMatchEulerDiscreteScheduler
 
 # Mock classes and functions
 class MockNoiseScheduler:
@@ -25,6 +27,8 @@ def args():
     args.mode_scale = 1.0
     args.sigmoid_scale = 1.0
     args.discrete_flow_shift = 3.1582
+    args.timestep_cutoff = 0.95
+    args.timestep_uniform_ratio = 0.01
     args.ip_noise_gamma = None
     args.ip_noise_gamma_random_strength = False
     return args
@@ -33,6 +37,12 @@ def args():
 @pytest.fixture
 def noise_scheduler():
     return MockNoiseScheduler(num_train_timesteps=1000)
+
+
+@pytest.fixture
+def real_noise_scheduler():
+    # The real (descending, shift=1.0) training grid: timesteps[k] = 1000 - k, sigma = timesteps / 1000
+    return FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=1.0)
 
 
 @pytest.fixture
@@ -287,6 +297,65 @@ class TestTimestepSamplingOffset:
         )
         assert ts_offset.mean() > ts_baseline.mean()
 
+    @pytest.mark.parametrize("mode, weighting_scheme", [("truncated_logit_normal", "uniform"), ("sigma", "logit_normal")])
+    def test_none_and_zero_offset_match_baseline_on_grid(self, args, real_noise_scheduler, device, mode, weighting_scheme):
+        args.timestep_sampling = mode
+        args.weighting_scheme = weighting_scheme
+        bsz = 64
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(args, real_noise_scheduler, latents, noise, device, dtype)
+        torch.manual_seed(42)
+        _, ts_none, _ = get_noisy_model_input_and_timesteps(
+            args, real_noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=None
+        )
+        torch.manual_seed(42)
+        _, ts_zero, _ = get_noisy_model_input_and_timesteps(
+            args, real_noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=torch.zeros(bsz)
+        )
+        assert torch.allclose(ts_baseline, ts_none)
+        assert torch.allclose(ts_baseline, ts_zero)
+
+    @pytest.mark.parametrize("mode, weighting_scheme", [("truncated_logit_normal", "uniform"), ("sigma", "logit_normal")])
+    def test_positive_offset_increases_mean_timestep_on_grid(self, args, real_noise_scheduler, device, mode, weighting_scheme):
+        """Grid-based modes: a positive offset must also mean higher noise (the normal sample is the logit of 1 - sigma)."""
+        args.timestep_sampling = mode
+        args.weighting_scheme = weighting_scheme
+        args.logit_mean = -1.09
+        args.logit_std = 0.95
+        bsz = 1024
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(args, real_noise_scheduler, latents, noise, device, dtype)
+        torch.manual_seed(42)
+        _, ts_offset, _ = get_noisy_model_input_and_timesteps(
+            args, real_noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=torch.full((bsz,), 1.0)
+        )
+        assert ts_offset.mean() > ts_baseline.mean() + 50
+
+    def test_offset_ignored_for_sigma_without_logit_normal(self, args, real_noise_scheduler, device):
+        """sigma with a weighting scheme that draws no normal sample ignores the offset."""
+        args.timestep_sampling = "sigma"
+        args.weighting_scheme = "uniform"
+        bsz = 64
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        dtype = torch.float32
+
+        torch.manual_seed(42)
+        _, ts_baseline, _ = get_noisy_model_input_and_timesteps(args, real_noise_scheduler, latents, noise, device, dtype)
+        torch.manual_seed(42)
+        _, ts_offset, _ = get_noisy_model_input_and_timesteps(
+            args, real_noise_scheduler, latents, noise, device, dtype, timestep_sampling_offset=torch.full((bsz,), 1.0)
+        )
+        assert torch.allclose(ts_baseline, ts_offset)
+
     def test_offset_does_not_affect_uniform(self, args, noise_scheduler, device):
         """Uniform sampling ignores offset (offset code path is not reached)."""
         args.timestep_sampling = "uniform"
@@ -336,7 +405,7 @@ class TestTimestepSamplingOffset:
 class TestGetShowTimestepsOffset:
     """Tests for the --show_timesteps_offset resolution helper."""
 
-    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift"])
+    @pytest.mark.parametrize("mode", ["sigmoid", "shift", "flux_shift", "truncated_logit_normal"])
     def test_offset_applied_for_supported_modes(self, args, mode):
         args.timestep_sampling = mode
         args.show_timesteps_offset = -0.5
@@ -345,8 +414,17 @@ class TestGetShowTimestepsOffset:
         assert "IGNORED" not in note
         assert "-0.5" in note
 
+    def test_offset_applied_for_sigma_with_logit_normal(self, args):
+        args.timestep_sampling = "sigma"
+        args.weighting_scheme = "logit_normal"
+        args.show_timesteps_offset = -0.5
+        offset, note = get_show_timesteps_offset(args)
+        assert offset == -0.5
+        assert "IGNORED" not in note
+
     @pytest.mark.parametrize("mode", ["uniform", "sigma"])
     def test_offset_ignored_for_unsupported_modes(self, args, mode):
+        # the args fixture uses weighting_scheme="uniform", so sigma draws no normal sample here
         args.timestep_sampling = mode
         args.show_timesteps_offset = -0.5
         offset, note = get_show_timesteps_offset(args)
@@ -359,3 +437,90 @@ class TestGetShowTimestepsOffset:
         offset, note = get_show_timesteps_offset(args)
         assert offset is None
         assert note == ""
+
+
+class TestTruncatedLogitNormal:
+    """Tests for --timestep_sampling truncated_logit_normal (the MOSS-Image pre-training schedule)."""
+
+    T = 1000
+
+    def _sigmas(self, indices):
+        # descending grid with shift=1.0: timesteps[k] = T - k
+        return (self.T - indices).double() / self.T
+
+    def test_indices_cover_the_grid(self):
+        torch.manual_seed(0)
+        idx = sample_truncated_logit_normal_indices(20000, self.T, -1.09, 0.95, 0.95, 0.01)
+        assert idx.dtype == torch.long and idx.device.type == "cpu"
+        assert idx.min() >= 0 and idx.max() <= self.T - 1
+        # the rescaling covers the full range: both ends of the grid are reachable
+        assert idx.min() == 0 and idx.max() == self.T - 1
+
+    def test_matches_sigma_logit_normal_without_truncation(self):
+        """cutoff=1.0 / ratio=0.0 is the plain logit-normal of `sigma` + `logit_normal` (floor(u * T) on the grid)."""
+        n = 50000
+        torch.manual_seed(0)
+        idx = sample_truncated_logit_normal_indices(n, self.T, -1.09, 0.95, 1.0, 0.0)
+        torch.manual_seed(1)
+        u = torch.sigmoid(torch.normal(mean=-1.09, std=0.95, size=(n,)))
+        idx_ref = (u * self.T).long()
+        assert abs(idx.double().mean() - idx_ref.double().mean()) < 10  # std of the index is ~190, SE of the mean ~1
+        assert abs(self._sigmas(idx).median() - self._sigmas(idx_ref).median()) < 0.02
+
+    def test_reference_statistics(self):
+        """The official schedule (mu -1.09, s 0.95, cutoff 0.95, 1% uniform) puts about 11% of the samples below sigma 0.5."""
+        torch.manual_seed(0)
+        idx = sample_truncated_logit_normal_indices(100000, self.T, -1.09, 0.95, 0.95, 0.01)
+        sigmas = self._sigmas(idx)
+        assert 0.10 < (sigmas < 0.5).double().mean() < 0.12
+        assert 0.73 < sigmas.mean() < 0.76
+
+    def test_uniform_ratio_one_is_uniform(self):
+        torch.manual_seed(0)
+        idx = sample_truncated_logit_normal_indices(50000, self.T, -1.09, 0.95, 0.95, 1.0)
+        assert abs(idx.double().mean() - (self.T - 1) / 2) < 10
+        counts = torch.bincount(idx, minlength=self.T)
+        assert counts.min() > 0
+
+    def test_smaller_cutoff_means_higher_noise(self):
+        torch.manual_seed(0)
+        idx_a = sample_truncated_logit_normal_indices(20000, self.T, -1.09, 0.95, 1.0, 0.0)
+        torch.manual_seed(0)
+        idx_b = sample_truncated_logit_normal_indices(20000, self.T, -1.09, 0.95, 0.5, 0.0)
+        assert self._sigmas(idx_b).mean() > self._sigmas(idx_a).mean() + 0.05
+        # truncation + rescaling keeps the full range
+        assert idx_b.min() == 0
+
+    def test_logit_offset_shifts_the_mean(self):
+        torch.manual_seed(0)
+        idx = sample_truncated_logit_normal_indices(20000, self.T, -1.09, 0.95, 0.95, 0.0)
+        torch.manual_seed(0)
+        idx_off = sample_truncated_logit_normal_indices(20000, self.T, -1.09, 0.95, 0.95, 0.0, torch.full((20000,), -1.0))
+        # logit_offset < 0 lowers Z, so sigma = sigmoid(-Z) grows
+        assert self._sigmas(idx_off).mean() > self._sigmas(idx).mean() + 0.05
+        torch.manual_seed(0)
+        idx_same = sample_truncated_logit_normal_indices(20000, self.T, -2.09, 0.95, 0.95, 0.0)
+        assert torch.equal(idx_off, idx_same)  # identical to shifting logit_mean
+
+    @pytest.mark.parametrize("cutoff, ratio", [(0.0, 0.0), (1.5, 0.0), (0.95, -0.1), (0.95, 1.1)])
+    def test_invalid_parameters(self, cutoff, ratio):
+        with pytest.raises(ValueError):
+            sample_truncated_logit_normal_indices(4, self.T, -1.09, 0.95, cutoff, ratio)
+
+    def test_get_noisy_model_input_and_timesteps(self, args, real_noise_scheduler, device):
+        args.timestep_sampling = "truncated_logit_normal"
+        args.logit_mean = -1.09
+        args.logit_std = 0.95
+        args.discrete_flow_shift = 1.0
+        bsz = 256
+        latents = torch.randn(bsz, 4, 8, 8)
+        noise = torch.randn(bsz, 4, 8, 8)
+        torch.manual_seed(0)
+        noisy, timesteps, sigmas = get_noisy_model_input_and_timesteps(args, real_noise_scheduler, latents, noise, device, torch.float32)
+        assert noisy.shape == latents.shape and timesteps.shape == (bsz,) and sigmas.shape == (bsz, 1, 1, 1)
+        # on the shift=1.0 grid the timesteps are the integers 1..1000 and sigma = t / 1000
+        assert torch.all(timesteps >= 1) and torch.all(timesteps <= 1000)
+        assert torch.allclose(timesteps, timesteps.round())
+        assert torch.allclose(sigmas.flatten(), timesteps / 1000)
+        expected = (1.0 - sigmas) * latents + sigmas * noise
+        assert torch.allclose(noisy, expected, atol=1e-5)

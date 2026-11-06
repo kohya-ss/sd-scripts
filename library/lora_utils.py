@@ -45,6 +45,129 @@ def filter_lora_state_dict(
     return weights_sd
 
 
+def create_lora_merge_hook(
+    lora_weights_list: List[Dict[str, torch.Tensor]],
+    lora_multipliers: Optional[List[float]],
+    calc_device: torch.device,
+):
+    """Create a weight hook which merges LoRA / LoHa / LoKr weights into model weights on load.
+
+    The hook has the signature `(model_weight_key, model_weight, keep_on_calc_device=False) -> model_weight`.
+    LoRA keys are matched with the model keys with the prefixes `lora_unet_` and `` (no prefix): strip the prefix of
+    the LoRA keys beforehand for other models (e.g. `lora_te_` for the text encoder).
+
+    Returns:
+        (hook, list_of_lora_weight_keys, lora_multipliers). The sets in `list_of_lora_weight_keys` hold the unused keys
+        after loading (consumed keys are removed), so the caller can warn about unused LoRA weights.
+    """
+    list_of_lora_weight_keys = [set(lora_sd.keys()) for lora_sd in lora_weights_list]
+
+    if lora_multipliers is None:
+        lora_multipliers = [1.0] * len(lora_weights_list)
+    elif isinstance(lora_multipliers, (int, float)):
+        lora_multipliers = [float(lora_multipliers)]  # `--lora_multiplier` with nargs="*" defaults to a scalar
+    lora_multipliers = list(lora_multipliers)
+    while len(lora_multipliers) < len(lora_weights_list):
+        lora_multipliers.append(1.0)
+    if len(lora_multipliers) > len(lora_weights_list):
+        lora_multipliers = lora_multipliers[: len(lora_weights_list)]
+
+    # make hook for LoRA merging
+    def weight_hook_func(model_weight_key, model_weight: torch.Tensor, keep_on_calc_device=False):
+
+        if not model_weight_key.endswith(".weight"):
+            return model_weight
+
+        original_device = model_weight.device
+        if original_device != calc_device:
+            model_weight = model_weight.to(calc_device)  # to make calculation faster
+
+        for lora_weight_keys, lora_sd, multiplier in zip(list_of_lora_weight_keys, lora_weights_list, lora_multipliers):
+            # check if this weight has LoRA weights
+            lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]  # remove trailing ".weight"
+            found = False
+            for prefix in ["lora_unet_", ""]:
+                lora_name = prefix + lora_name_without_prefix.replace(".", "_")
+                down_key = lora_name + ".lora_down.weight"
+                up_key = lora_name + ".lora_up.weight"
+                alpha_key = lora_name + ".alpha"
+                if down_key in lora_weight_keys and up_key in lora_weight_keys:
+                    found = True
+                    break
+
+            if found:
+                # Standard LoRA merge
+                # get LoRA weights
+                down_weight = lora_sd[down_key]
+                up_weight = lora_sd[up_key]
+
+                dim = down_weight.size()[0]
+                alpha = lora_sd.get(alpha_key, dim)
+                scale = alpha / dim
+
+                down_weight = down_weight.to(calc_device)
+                up_weight = up_weight.to(calc_device)
+
+                original_dtype = model_weight.dtype
+                if original_dtype.itemsize == 1:  # fp8
+                    # temporarily convert to float16 for calculation
+                    model_weight = model_weight.to(torch.float16)
+                    down_weight = down_weight.to(torch.float16)
+                    up_weight = up_weight.to(torch.float16)
+
+                # W <- W + U * D
+                if len(model_weight.size()) == 2:
+                    # linear
+                    if len(up_weight.size()) == 4:  # use linear projection mismatch
+                        up_weight = up_weight.squeeze(3).squeeze(2)
+                        down_weight = down_weight.squeeze(3).squeeze(2)
+                    model_weight = model_weight + multiplier * (up_weight @ down_weight) * scale
+                elif down_weight.size()[2:4] == (1, 1):
+                    # conv2d 1x1
+                    model_weight = (
+                        model_weight
+                        + multiplier
+                        * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+                        * scale
+                    )
+                else:
+                    # conv2d 3x3
+                    conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+                    # logger.info(conved.size(), weight.size(), module.stride, module.padding)
+                    model_weight = model_weight + multiplier * conved * scale
+
+                if original_dtype.itemsize == 1:  # fp8
+                    model_weight = model_weight.to(original_dtype)  # convert back to original dtype
+
+                # remove LoRA keys from set
+                lora_weight_keys.remove(down_key)
+                lora_weight_keys.remove(up_key)
+                if alpha_key in lora_weight_keys:
+                    lora_weight_keys.remove(alpha_key)
+                continue
+
+            # Check for LoHa/LoKr weights with same prefix search
+            for prefix in ["lora_unet_", ""]:
+                lora_name = prefix + lora_name_without_prefix.replace(".", "_")
+                hada_key = lora_name + ".hada_w1_a"
+                lokr_key = lora_name + ".lokr_w1"
+
+                if hada_key in lora_weight_keys:
+                    # LoHa merge
+                    model_weight = loha_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
+                    break
+                elif lokr_key in lora_weight_keys:
+                    # LoKr merge
+                    model_weight = lokr_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
+                    break
+
+        if not keep_on_calc_device and original_device != calc_device:
+            model_weight = model_weight.to(original_device)  # move back to original device
+        return model_weight
+
+    return weight_hook_func, list_of_lora_weight_keys, lora_multipliers
+
+
 def load_safetensors_with_lora_and_fp8(
     model_files: Union[str, List[str]],
     lora_weights_list: Optional[List[Dict[str, torch.Tensor]]],
@@ -57,6 +180,7 @@ def load_safetensors_with_lora_and_fp8(
     exclude_keys: Optional[List[str]] = None,
     disable_numpy_memmap: bool = False,
     weight_transform_hooks: Optional[WeightTransformHooks] = None,
+    quantizer=None,
 ) -> dict[str, torch.Tensor]:
     """
     Merge LoRA weights into the state dict of a model with fp8 optimization if needed.
@@ -73,6 +197,9 @@ def load_safetensors_with_lora_and_fp8(
         exclude_keys (Optional[List[str]]): Keys to exclude from optimization.
         disable_numpy_memmap (bool): Whether to disable numpy memmap when loading safetensors.
         weight_transform_hooks (Optional[WeightTransformHooks]): Hooks for transforming weights during loading.
+        quantizer: Optional quantization strategy object with its own streaming loader (e.g. `ConvRotInt8Quantizer`).
+            Mutually exclusive with fp8_optimization. The LoRA merge weight_hook is passed through, so LoRA is merged
+            before quantization.
     """
 
     # if the file name ends with 00001-of-00004 etc, we need to load the files with the same prefix
@@ -92,120 +219,12 @@ def load_safetensors_with_lora_and_fp8(
     # load LoRA weights
     weight_hook = None
     if lora_weights_list is None or len(lora_weights_list) == 0:
-        lora_weights_list = []
-        lora_multipliers = []
         list_of_lora_weight_keys = []
     else:
-        list_of_lora_weight_keys = []
-        for lora_sd in lora_weights_list:
-            lora_weight_keys = set(lora_sd.keys())
-            list_of_lora_weight_keys.append(lora_weight_keys)
-
-        if lora_multipliers is None:
-            lora_multipliers = [1.0] * len(lora_weights_list)
-        while len(lora_multipliers) < len(lora_weights_list):
-            lora_multipliers.append(1.0)
-        if len(lora_multipliers) > len(lora_weights_list):
-            lora_multipliers = lora_multipliers[: len(lora_weights_list)]
-
-        # Merge LoRA weights into the state dict
         logger.info(f"Merging LoRA weights into state dict. multipliers: {lora_multipliers}")
-
-        # make hook for LoRA merging
-        def weight_hook_func(model_weight_key, model_weight: torch.Tensor, keep_on_calc_device=False):
-            nonlocal list_of_lora_weight_keys, lora_weights_list, lora_multipliers, calc_device
-
-            if not model_weight_key.endswith(".weight"):
-                return model_weight
-
-            original_device = model_weight.device
-            if original_device != calc_device:
-                model_weight = model_weight.to(calc_device)  # to make calculation faster
-
-            for lora_weight_keys, lora_sd, multiplier in zip(list_of_lora_weight_keys, lora_weights_list, lora_multipliers):
-                # check if this weight has LoRA weights
-                lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]  # remove trailing ".weight"
-                found = False
-                for prefix in ["lora_unet_", ""]:
-                    lora_name = prefix + lora_name_without_prefix.replace(".", "_")
-                    down_key = lora_name + ".lora_down.weight"
-                    up_key = lora_name + ".lora_up.weight"
-                    alpha_key = lora_name + ".alpha"
-                    if down_key in lora_weight_keys and up_key in lora_weight_keys:
-                        found = True
-                        break
-
-                if found:
-                    # Standard LoRA merge
-                    # get LoRA weights
-                    down_weight = lora_sd[down_key]
-                    up_weight = lora_sd[up_key]
-
-                    dim = down_weight.size()[0]
-                    alpha = lora_sd.get(alpha_key, dim)
-                    scale = alpha / dim
-
-                    down_weight = down_weight.to(calc_device)
-                    up_weight = up_weight.to(calc_device)
-
-                    original_dtype = model_weight.dtype
-                    if original_dtype.itemsize == 1:  # fp8
-                        # temporarily convert to float16 for calculation
-                        model_weight = model_weight.to(torch.float16)
-                        down_weight = down_weight.to(torch.float16)
-                        up_weight = up_weight.to(torch.float16)
-
-                    # W <- W + U * D
-                    if len(model_weight.size()) == 2:
-                        # linear
-                        if len(up_weight.size()) == 4:  # use linear projection mismatch
-                            up_weight = up_weight.squeeze(3).squeeze(2)
-                            down_weight = down_weight.squeeze(3).squeeze(2)
-                        model_weight = model_weight + multiplier * (up_weight @ down_weight) * scale
-                    elif down_weight.size()[2:4] == (1, 1):
-                        # conv2d 1x1
-                        model_weight = (
-                            model_weight
-                            + multiplier
-                            * (up_weight.squeeze(3).squeeze(2) @ down_weight.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
-                            * scale
-                        )
-                    else:
-                        # conv2d 3x3
-                        conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
-                        # logger.info(conved.size(), weight.size(), module.stride, module.padding)
-                        model_weight = model_weight + multiplier * conved * scale
-
-                    if original_dtype.itemsize == 1:  # fp8
-                        model_weight = model_weight.to(original_dtype)  # convert back to original dtype
-
-                    # remove LoRA keys from set
-                    lora_weight_keys.remove(down_key)
-                    lora_weight_keys.remove(up_key)
-                    if alpha_key in lora_weight_keys:
-                        lora_weight_keys.remove(alpha_key)
-                    continue
-
-                # Check for LoHa/LoKr weights with same prefix search
-                for prefix in ["lora_unet_", ""]:
-                    lora_name = prefix + lora_name_without_prefix.replace(".", "_")
-                    hada_key = lora_name + ".hada_w1_a"
-                    lokr_key = lora_name + ".lokr_w1"
-
-                    if hada_key in lora_weight_keys:
-                        # LoHa merge
-                        model_weight = loha_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
-                        break
-                    elif lokr_key in lora_weight_keys:
-                        # LoKr merge
-                        model_weight = lokr_merge(model_weight, lora_name, lora_sd, lora_weight_keys, multiplier, calc_device)
-                        break
-
-            if not keep_on_calc_device and original_device != calc_device:
-                model_weight = model_weight.to(original_device)  # move back to original device
-            return model_weight
-
-        weight_hook = weight_hook_func
+        weight_hook, list_of_lora_weight_keys, lora_multipliers = create_lora_merge_hook(
+            lora_weights_list, lora_multipliers, calc_device
+        )
 
     state_dict = load_safetensors_with_fp8_optimization_and_hook(
         model_files,
@@ -218,6 +237,7 @@ def load_safetensors_with_lora_and_fp8(
         weight_hook=weight_hook,
         disable_numpy_memmap=disable_numpy_memmap,
         weight_transform_hooks=weight_transform_hooks,
+        quantizer=quantizer,
     )
 
     for lora_weight_keys in list_of_lora_weight_keys:
@@ -241,10 +261,22 @@ def load_safetensors_with_fp8_optimization_and_hook(
     weight_hook: callable = None,
     disable_numpy_memmap: bool = False,
     weight_transform_hooks: Optional[WeightTransformHooks] = None,
+    quantizer=None,
 ) -> dict[str, torch.Tensor]:
     """
     Load state dict from safetensors files and merge LoRA weights into the state dict with fp8 optimization if needed.
     """
+    if quantizer is not None:
+        assert not fp8_optimization, "quantizer and fp8_optimization are mutually exclusive"
+        logger.info(f"Loading state dict with {type(quantizer).__name__}. Hook enabled: {weight_hook is not None}")
+        return quantizer.load_and_quantize(
+            model_files,
+            calc_device,
+            move_to_device=move_to_device,
+            weight_hook=weight_hook,
+            disable_numpy_memmap=disable_numpy_memmap,
+            weight_transform_hooks=weight_transform_hooks,
+        )
     if fp8_optimization:
         logger.info(
             f"Loading state dict with FP8 optimization. Dtype of weight: {dit_weight_dtype}, hook enabled: {weight_hook is not None}"

@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from library.device_utils import init_ipex, clean_memory_on_device
+from library.custom_offloading_utils import BlockSwapConfig
 
 init_ipex()
 
@@ -24,6 +25,7 @@ from library import (
 import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
+import library.replica_trainer as replica_trainer
 from library.dataset import DatasetGroup, MinimalDataset
 import train_network
 from library.utils import setup_logging
@@ -80,6 +82,8 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
             assert (
                 args.blocks_to_swap is None or args.blocks_to_swap == 0
             ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
+
+        args_util.verify_gradient_checkpointing_skip_blocks(args)
 
         if args.compile:
             assert not args.torch_compile, (
@@ -142,8 +146,14 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
         # Block swap
         self.is_swapping_blocks = args.blocks_to_swap is not None and args.blocks_to_swap > 0
         if self.is_swapping_blocks:
-            logger.info(f"enable block swap: blocks_to_swap={args.blocks_to_swap}")
-            model.enable_block_swap(args.blocks_to_swap, accelerator.device)
+            # The base weights are frozen in LoRA training. Freeze them here, before enabling block swap, for the H2D-only offloader.
+            model.requires_grad_(False)
+            swap_config = BlockSwapConfig.from_args(args, accelerator.device, supports_backward=True)
+            logger.info(
+                f"enable block swap: blocks_to_swap={args.blocks_to_swap}, H2D-only: {swap_config.h2d_only}, "
+                f"use pinned memory: {swap_config.use_pinned_memory}"
+            )
+            model.enable_block_swap(args.blocks_to_swap, swap_config)
 
         return model, text_encoders
 
@@ -424,10 +434,14 @@ class AnimaNetworkTrainer(train_network.NetworkTrainer):
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
     ) -> torch.nn.Module:
-        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False),
-        # so we re-apply with unsloth_offload if needed (after base has already enabled it).
-        if self._use_unsloth_offload_checkpointing and args.gradient_checkpointing:
-            unet.enable_gradient_checkpointing(unsloth_offload=True)
+        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False), so we re-apply with
+        # unsloth_offload and/or skip_blocks (partial gradient checkpointing) if needed (after base has already enabled it).
+        if args.gradient_checkpointing and (self._use_unsloth_offload_checkpointing or args.gradient_checkpointing_skip_blocks > 0):
+            unet.enable_gradient_checkpointing(
+                cpu_offload=args.cpu_offload_checkpointing,
+                unsloth_offload=self._use_unsloth_offload_checkpointing,
+                skip_blocks=args.gradient_checkpointing_skip_blocks,
+            )
 
         if not self.is_swapping_blocks:
             model = super().prepare_unet_with_accelerator(args, accelerator, unet)
@@ -465,6 +479,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
         "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap.",
     )
+    replica_trainer.add_replica_arguments(parser)
     return parser
 
 
@@ -481,5 +496,5 @@ if __name__ == "__main__":
     if args.show_timesteps:
         anima_train_utils.show_timesteps(args)
     else:
-        trainer = AnimaNetworkTrainer()
+        trainer = replica_trainer.wrap_trainer_class(AnimaNetworkTrainer, args)()
         trainer.train(args)
