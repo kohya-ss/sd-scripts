@@ -40,7 +40,7 @@ class LuminaNetworkTrainer(train_network.NetworkTrainer):
         self.is_swapping_blocks: bool = False
 
     def assert_extra_args(self, args, train_dataset_group, val_dataset_group):
-        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
+        # super().assert_extra_args(args, train_dataset_group, val_dataset_group)  # do not call parent because it checks reso steps with 64
 
         if args.cache_text_encoder_outputs_to_disk and not args.cache_text_encoder_outputs:
             logger.warning("Enabling cache_text_encoder_outputs due to disk caching")
