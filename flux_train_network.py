@@ -47,7 +47,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         train_dataset_group: Union[DatasetGroup, MinimalDataset],
         val_dataset_group: Optional[DatasetGroup],
     ):
-        super().assert_extra_args(args, train_dataset_group, val_dataset_group)
+        # super().assert_extra_args(args, train_dataset_group, val_dataset_group)  # do not call parent because it checks reso steps with 64
         # sdxl_train_util.verify_sdxl_training_args(args)
 
         flux_train_utils.log_timestep_sampling_info(args)
