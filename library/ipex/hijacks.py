@@ -340,17 +340,28 @@ def torch_cuda_set_device(device):
         torch.xpu.set_device(device)
 
 
+original_torch_xpu_get_device_properties = torch.xpu._get_device_properties
 @wraps(torch.cuda.get_device_properties)
 def get_device_properties(device=None):
-    device_prop = torch.xpu.get_device_properties(device)
+    device_prop = original_torch_xpu_get_device_properties(get_device_index(device))
     new_keys = {
         "major": 12,
         "minor": 1,
+        "warp_size": 32,
         "multi_processor_count": device_prop.gpu_subslice_count,
     }
     if not hasattr(device_prop, "L2_cache_size"):
         new_keys["L2_cache_size"] = getattr(device_prop, "last_level_cache_size", cache_size_dict.get(getattr(device_prop, "device_id", 0x56A0), cache_size_dict[0x0000]))
     return DeviceProperties(device_prop, new_keys)
+
+
+original_torch_xpu_get_device_index = torch.xpu._get_device_index
+@wraps(torch.cuda._get_device_index)
+def get_device_index(device: torch.device, *args, **kwargs):
+    if check_cuda(device):
+        return original_torch_xpu_get_device_index(return_xpu(device), *args, **kwargs)
+    else:
+        return original_torch_xpu_get_device_index(device, *args, **kwargs)
 
 
 class DeviceProperties():
@@ -371,6 +382,22 @@ class torch_Generator(original_torch_Generator):
             return super().__new__(cls, return_xpu(device))
         else:
             return super().__new__(cls, device)
+
+# Wrap the generic Stream constructor to translate CUDA devices to XPU.
+original_torch_Stream = torch.Stream
+class torch_Stream(original_torch_Stream):
+    def __new__(cls, device=None, *args, **kwargs):
+        if check_cuda(device):
+            device = return_xpu(device)
+        return super().__new__(cls, device, *args, **kwargs)
+
+
+original_torch_xpu_Stream = torch.xpu.Stream
+class torch_xpu_Stream(original_torch_xpu_Stream):
+    def __new__(cls, device=None, priority=0, **kwargs):
+        if check_cuda(device):
+            device = return_xpu(device)
+        return super().__new__(cls, device=device, priority=priority, **kwargs)
 
 
 # Hijack Functions:
@@ -402,10 +429,17 @@ def ipex_hijacks():
     torch.cuda.current_stream = torch_cuda_current_stream
     torch.cuda.device = torch_cuda_device
     torch.cuda.set_device = torch_cuda_set_device
+    torch.xpu.get_device_properties = get_device_properties
     torch.cuda.get_device_properties = get_device_properties
+    torch.xpu._get_device_properties = get_device_properties
+    torch.cuda._get_device_properties = get_device_properties
+    torch.cuda._get_device_index = get_device_index
+    torch.xpu._get_device_index = get_device_index
 
     torch.Generator = torch_Generator
     torch._C.Generator = torch_Generator
+    torch.Stream = torch_Stream
+    torch.cuda.Stream = torch_xpu_Stream
 
     torch.UntypedStorage.is_cuda = is_cuda
     torch.amp.autocast_mode.autocast.__init__ = autocast_init
