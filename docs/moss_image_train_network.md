@@ -221,6 +221,8 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - Quantize the base weights of the DiT (the Linear layers of the 42 main blocks) to ConvRot INT8 at load time. Weight VRAM is halved. Not needed for the ComfyUI `*_int8_convrot.safetensors` files, which are detected automatically. See [Section 7.1](#71-vram-usage-optimization--vram-使用量の最適化).
 * `--convrot_int8_text_encoder`
   - Quantize the text encoder weights to ConvRot INT8 at load time (about 16GB -> 8GB). Not needed for the ComfyUI `qwen3.5_9b_int8_convrot.safetensors`.
+* `--text_encoder_blocks_to_swap=<integer>`
+  - Number of text encoder layers (out of 32) streamed from the CPU instead of being kept on the GPU (0 or unset = disabled, 32 = minimum VRAM). The weights of the streamed layers stay on the CPU and are copied to a small GPU buffer (two layers) just before they run, overlapped with the computation of the previous layer. The token embedding, the final norm and the other layers stay on the GPU. Peak VRAM for caching (including the activations of a 2,000-token prompt): about 5.1GB with `28` and 3.5GB with `32` in bf16, 2.2GB with `32` and ConvRot INT8, which makes caching the text encoder outputs possible on an 8GB GPU. The cost is dominated by the transfers and barely depends on the prompt length (with `28` and bf16, about 0.7 seconds per prompt on an RTX PRO 6000 with PCIe 5.0, compared with 0.1 to 0.3 seconds without the swap; slower on narrower PCIe links). Use it only when VRAM is tight. Can be combined with `--convrot_int8_text_encoder`. Cannot be used when training a text encoder LoRA.
 * `--convrot_int8_bwd=<bf16|int8>`
   - Backward mode of the ConvRot INT8 layers. Default `bf16` (most accurate). `int8` reuses the fused int8 GEMM for the input gradient (requires triton and CUDA); it has no measurable benefit with gradient checkpointing.
 * `--blocks_to_swap=<integer>`
@@ -228,6 +230,8 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
   - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Enables `--gradient_checkpointing`. Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
+* `--gradient_checkpointing_skip_blocks=<integer>`
+  - Partial gradient checkpointing: the last N of the 42 DiT blocks keep their activations instead of recomputing them in the backward pass. Each skipped block uses more VRAM and saves the recomputation of one block, so the VRAM usage and the step time change linearly with N. `0` (default) checkpoints all blocks, `42` checkpoints none of them. Only effective with `--gradient_checkpointing` (ignored with a warning otherwise). Can be combined with `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` and `--compile`. See [Section 7.1](#71-vram-usage-optimization--vram-使用量の最適化) for measurements.
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk`
   - Cache the Qwen3.5-9B outputs. Strongly recommended when not training text encoder LoRA: the text encoder is removed from the GPU after caching. The cache files are `<image>_moss_te.npz` and contain the unconditional embedding as well, so `caption_dropout_rate` can be used. Requires `--network_train_unet_only`.
   - The outputs of all caption candidates of an image are stored in one file (`num_candidates`, `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}` for each candidate `k`). The processed caption texts (`caption_prefix` / `caption_suffix` applied) are stored as well, and the file is re-cached when the number of candidates or the texts differ from the current captions, unless `--skip_cache_check` is specified. The files created with version 0.12.1 (without `num_candidates`) are still valid for images with a single candidate.
@@ -274,10 +278,12 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 
 * `--convrot_int8` - DiT のベース重み（42 個のメインブロックの Linear 層）をロード時に ConvRot INT8 に量子化します。重みの VRAM が半減します。ComfyUI の `*_int8_convrot.safetensors` は自動判別されるので指定不要です。[7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照。
 * `--convrot_int8_text_encoder` - テキストエンコーダーの重みをロード時に ConvRot INT8 に量子化します（約 16GB → 8GB）。ComfyUI の `qwen3.5_9b_int8_convrot.safetensors` には不要です。
+* `--text_encoder_blocks_to_swap` - テキストエンコーダーの層（全 32 層）のうち、GPU に常駐させず CPU からストリーミングする層の数（0 または未指定で無効、32 で VRAM 最小）。対象層の重みは CPU に置いたまま、実行直前に小さな GPU バッファ（2 層分）へコピーされ、転送は直前の層の計算とオーバーラップします。トークン埋め込み、最終 norm、その他の層は GPU に常駐します。キャッシュ時のピーク VRAM（2,000 トークンのプロンプトのアクティベーションを含む）は bf16 で `28` なら約 5.1GB、`32` なら約 3.5GB、ConvRot INT8 で `32` なら約 2.2GB で、8GB の GPU でもテキストエンコーダー出力をキャッシュできます。処理時間は転送律速でプロンプト長にほぼよらず、bf16 で `28` の場合 RTX PRO 6000（PCIe 5.0）で 1 プロンプトあたり約 0.7 秒です（スワップなしは 0.1〜0.3 秒。PCIe の帯域が狭い環境ではより遅くなります）。VRAM が厳しいときのみ使用してください。`--convrot_int8_text_encoder` と併用できます。テキストエンコーダーの LoRA 学習には使用できません。
 * `--convrot_int8_bwd` - ConvRot INT8 層の backward の方式。デフォルト `bf16`（最も高精度）。`int8` は入力勾配にも融合 int8 GEMM を使います（triton と CUDA が必要）。gradient checkpointing 使用時には速度差はほぼありません。
 * `--blocks_to_swap` - DiT のブロックを CPU と GPU でスワップして VRAM を節約。最大 **40**（42 ブロック − 2）。`--cpu_offload_checkpointing` および `--unsloth_offload_checkpointing` とは併用できません。
   - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションを CPU RAM にオフロード。`--gradient_checkpointing` を有効にします。`--cpu_offload_checkpointing` および `--blocks_to_swap` とは併用できません。
+* `--gradient_checkpointing_skip_blocks` - 部分的な gradient checkpointing。42 個の DiT ブロックのうち末尾の N 個は backward で再計算せず activation を保持します。スキップしたブロック 1 個につき VRAM が増え、1 ブロック分の再計算が省けるため、VRAM 使用量とステップ時間は N に対して線形に変化します。`0`（デフォルト）で全ブロックを checkpointing、`42` で全ブロックをスキップします。`--gradient_checkpointing` 指定時のみ有効です（未指定時は警告を出して無視します）。`--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing`、`--compile` と併用できます。実測値は [7.1 節](#71-vram-usage-optimization--vram-使用量の最適化) を参照。
 * `--cache_text_encoder_outputs`, `--cache_text_encoder_outputs_to_disk` - Qwen3.5-9B の出力をキャッシュします。テキストエンコーダーの LoRA を学習しない場合は強く推奨します（キャッシュ後にテキストエンコーダーは GPU から解放されます）。キャッシュファイルは `<image>_moss_te.npz` で、unconditional の埋め込みも保存されるため `caption_dropout_rate` を使用できます。`--network_train_unet_only` が必要です。画像の全キャプション候補の出力を一つのファイルに保存します（`num_candidates`、候補 `k` ごとの `prompt_embeds_{k}` / `attn_mask_{k}` / `caption_{k}`）。処理済みのキャプション文字列（`caption_prefix` / `caption_suffix` 適用後）も保存され、候補数や文字列が現在のキャプションと異なる場合は、`--skip_cache_check` を指定していなければ再キャッシュされます。バージョン 0.12.1 で作成したファイル（`num_candidates` なし）は、候補が一つの画像ではそのまま使えます。
 * `--text_encoder_batch_size` - テキストエンコーダー出力のキャッシュ時に 1 回に処理するキャプション数。テキストエンコーダー自体は常に 1 件ずつ（パディングなし）実行されるため、ループの粒度のみに影響します。
 * `--cache_latents`, `--cache_latents_to_disk` - FLUX.2 VAE の出力をキャッシュします。キャッシュファイルは `<image>_<W>x<H>_moss.npz` で、VAE の生の出力（32 チャンネル、1/8 解像度）を保存します。DiT 向けの patchify と正規化は学習時に行います。
@@ -477,13 +483,36 @@ MOSS-Image is a large model: the DiT is about 10.2GB and the text encoder about 
 - **`--convrot_int8` / `--convrot_int8_text_encoder`**: See above.
 - **`--blocks_to_swap <number>`**: Swaps DiT blocks between CPU and GPU. Higher numbers save more VRAM but reduce training speed. Maximum 40.
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute. Practically required.
+- **`--gradient_checkpointing_skip_blocks <number>`**: Partial gradient checkpointing. The last N of the 42 blocks keep their activations instead of recomputing them, converting spare VRAM into speed. See [Partial Gradient Checkpointing](#partial-gradient-checkpointing--部分的な-gradient-checkpointing) below.
 - **`--unsloth_offload_checkpointing`**: Offloads the checkpointed activations to CPU RAM using async transfers. Cannot be combined with `--blocks_to_swap`.
 - **`--cache_text_encoder_outputs`**: Caches the Qwen3.5-9B outputs so the text encoder can be freed from the GPU during training. The text encoder is still loaded to CPU RAM (about 16GB in bf16, 8GB with ConvRot INT8) and moved to the GPU for caching.
+- **`--text_encoder_blocks_to_swap <number>`**: Streams N text encoder layers from the CPU while they run, instead of moving the whole 16GB text encoder to the GPU for caching. `28` needs about 5GB of VRAM with the bf16 text encoder, `32` about 3.5GB (about 2.2GB with ConvRot INT8). Slower than moving the whole model, but it makes the caching work on small GPUs.
 - **`--cache_latents`**: Caches the FLUX.2 VAE outputs so the VAE can be freed from the GPU during training.
 - **Using Adafactor optimizer**: Can reduce VRAM usage (LoRA optimizer states are small, so the effect is minor):
   ```
   --optimizer_type adafactor --optimizer_args "relative_step=False" "scale_parameter=False" "warmup_init=False" --lr_scheduler constant_with_warmup --max_grad_norm 0.0
   ```
+
+#### Partial Gradient Checkpointing / 部分的な gradient checkpointing
+
+With gradient checkpointing, every block recomputes its forward pass during the backward pass. `--gradient_checkpointing_skip_blocks N` excludes the last N blocks from the recomputation: they keep their activations like a model without gradient checkpointing. Each skipped block costs the activation memory of one block and saves the recomputation of one block, so both the peak VRAM and the step time change linearly with N. The blocks near the output are skipped because their activations are freed first in the backward pass.
+
+Increasing the batch size gives little throughput gain with a model of this size (the per-sample cost barely drops), so on GPUs with 24GB to 48GB of VRAM the leftover memory is usually better spent on skipping blocks than on a larger batch. Increase N until the training no longer fits.
+
+Measured on an RTX PRO 6000 Blackwell with about 1MP images (`resolution = 1024` with bucketing), batch size 1, LoRA dim 16, `--attn_mode flash`, latents and text encoder outputs cached. Peak GPU memory during training as reported by `nvidia-smi` (includes the CUDA context; with the bf16 text encoder the startup peak of about 15.6GB from caching remains the maximum for the first rows), and the steady-state step time (after the compile and autotune warm-up for the INT8 rows):
+
+| `--gradient_checkpointing_skip_blocks` | bf16 DiT: VRAM | bf16 DiT: step time | ConvRot INT8 DiT + `--compile`: VRAM | ConvRot INT8 DiT + `--compile`: step time |
+|---|---|---|---|---|
+| 0 (default, all blocks checkpointed) | 13.5GB | 1.29s | 10.0GB | 0.84s |
+| 11 | 23.4GB | 1.21s | 15.4GB | 0.79s |
+| 21 | 33.6GB | 1.13s | 21.9GB | 0.74s |
+| 32 | 44.9GB | 1.02s | 29.1GB | 0.70s |
+| 42 (no recomputation) | 55.0GB | 0.93s | 35.5GB | 0.64s |
+
+* In bf16, one block costs about 1GB of VRAM and saves about 8.6 ms per step (about 0.7%). Checkpointing all blocks costs 39% of the step time in total, close to the theoretical value for LoRA training, where the backward pass of the frozen layers is about as expensive as the forward pass.
+* With `--compile`, one block costs only about 0.6GB because the compiled blocks keep fewer intermediate tensors, so about 1.6 times as many blocks fit into the same VRAM. The per-block speed gain is about 4.8 ms (about 0.6%).
+* Guidelines at this resolution with the bf16 DiT: about `10` on a 24GB GPU, `18` on 32GB, `34` on 48GB. With ConvRot INT8 and `--compile`: about `22` on 24GB, `36` on 32GB, all `42` on 48GB. Leave 1GB to 2GB of headroom for larger buckets and sample generation.
+* The VRAM cost per block does not depend on the GPU, only the time does. On an RTX 4090 (24GB, same settings, ConvRot INT8 text encoder): bf16 DiT 14.3GB / 1.88s with `0`, 17.6GB / 1.83s with `5`, 22.5GB / 1.77s with `10` (about 0.8GB and 11.5 ms per block); ConvRot INT8 + `--compile` 10.0GB / 1.00s with `0`, 13.0GB / 0.98s with `7`, 17.5GB / 0.94s with `14`, 22.0GB / 0.90s with `21` (about 0.6GB and 4.8 ms per block). On the RTX 4090, ConvRot INT8 + `--compile` is 1.9 times faster than bf16 (probably because the bf16 tensor core throughput of the GeForce GPUs is limited while int8 is not), so on 24GB GPUs use it first and then spend the remaining VRAM on `--gradient_checkpointing_skip_blocks`.
 
 #### Measured Memory Usage / メモリ使用量の実測値
 
@@ -500,14 +529,14 @@ Peak GPU memory as reported by the driver (`nvidia-smi`, includes the CUDA conte
 | DiT + TE LoRA (no TE cache) | ConvRot INT8 | ConvRot INT8 | 17.1GB | 17.1GB | 8.4GB |
 | DiT + TE LoRA (no TE cache) | bf16 | bf16 | 32.4GB | 32.4GB | 16.1GB |
 
-Caching with the tools: `tools/cache_latents.py` (fp32 VAE, 1024x1024) 3.2GB; `tools/cache_text_encoder_outputs.py` 15.5GB with the bf16 text encoder, 8.3GB with ConvRot INT8 (pre-quantized or `--convrot_int8_text_encoder`).
+Caching with the tools: `tools/cache_latents.py` (fp32 VAE, 1024x1024) 3.2GB; `tools/cache_text_encoder_outputs.py` 15.5GB with the bf16 text encoder, 8.3GB with ConvRot INT8 (pre-quantized or `--convrot_int8_text_encoder`). With `--text_encoder_blocks_to_swap` the text encoder caching peak (PyTorch allocations, 2,000-token prompt) drops to about 5.1GB (`28`) or 3.5GB (`32`) in bf16, and 2.2GB (`32`) with ConvRot INT8.
 
 Guidelines:
 
 * **24GB GPU:** bf16 DiT with the text encoder outputs cached. Use the ConvRot INT8 text encoder (or cache the outputs with the tool beforehand) if the startup peak is a problem.
 * **16GB GPU:** ConvRot INT8 for both the DiT and the text encoder (9GB). Also bf16 DiT with `--blocks_to_swap` and the INT8 text encoder.
 * **12GB GPU:** ConvRot INT8 for both and `--blocks_to_swap` (20 to 36). The text encoder outputs must be cached. About 15GB of CPU RAM is needed for the swapped blocks and the text encoder.
-* **8GB GPU:** Not supported at the moment. Training itself fits with ConvRot INT8 and `--blocks_to_swap 36` (5.2GB), but caching the text encoder outputs needs about 8.3GB even with the ConvRot INT8 text encoder.
+* **8GB GPU:** Possible with `--text_encoder_blocks_to_swap 28` (or `32` for more headroom) when caching the text encoder outputs: the caching peak drops to about 5GB (`28`) or 3.5GB (`32`) in bf16, 2.2GB (`32`) with ConvRot INT8. Training itself fits with ConvRot INT8 and `--blocks_to_swap 36` (5.2GB), but the caching and the training must run separately (use the tools to cache first).
 * **Text encoder LoRA:** needs about 17GB with ConvRot INT8 (DiT and text encoder), 32GB in bf16.
 * Note that on Windows the commit charge of the process is larger than the working set (up to about 38GB in the bf16 runs above), because the GPU allocations are backed by system memory. Make sure the page file is large enough.
 
@@ -535,10 +564,33 @@ MOSS-Image は大きなモデルです。bf16 で DiT が約 10.2GB、テキス�
 - `--convrot_int8` / `--convrot_int8_text_encoder`: 上記を参照
 - `--blocks_to_swap`: DiT のブロックを CPU と GPU 間でスワップ（最大 40）
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント（実質必須）
+- `--gradient_checkpointing_skip_blocks`: 部分的な gradient checkpointing。42 ブロックのうち末尾の N 個は再計算せず activation を保持し、余った VRAM を速度に変換します（下記参照）
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションを CPU にオフロード（`--blocks_to_swap` とは併用不可）
 - `--cache_text_encoder_outputs`: Qwen3.5-9B の出力をキャッシュ。テキストエンコーダーは CPU RAM にはロードされ（bf16 で約 16GB、ConvRot INT8 で 8GB）、キャッシュ時に GPU へ移動します
+- `--text_encoder_blocks_to_swap`: テキストエンコーダーの N 層を、実行時に CPU からストリーミングします（モデル全体を GPU に載せない）。bf16 で `28` なら約 5GB、`32` なら約 3.5GB（ConvRot INT8 で約 2.2GB）の VRAM でキャッシュできます。モデル全体を移動するより遅くなりますが、小さい GPU でキャッシュできます
 - `--cache_latents`: FLUX.2 VAE の出力をキャッシュ
 - Adafactor オプティマイザの使用（LoRA のオプティマイザ状態は小さいので効果は限定的）
+
+#### 部分的な gradient checkpointing
+
+gradient checkpointing では全ブロックが backward 時に forward を再計算します。`--gradient_checkpointing_skip_blocks N` を指定すると末尾の N ブロックが再計算の対象外になり、gradient checkpointing なしのモデルと同じように activation を保持します。スキップしたブロック 1 個につき 1 ブロック分の activation メモリを使い、1 ブロック分の再計算が省けるため、ピーク VRAM とステップ時間は N に対して線形に変化します。backward で先に activation が解放される出力側のブロックをスキップします。
+
+このサイズのモデルでは batch size を増やしてもスループットはほとんど向上しない（サンプルあたりのコストがほぼ下がらない）ため、24GB〜48GB の GPU で余った VRAM は batch size を増やすよりブロックのスキップに使う方が有利なことが多いです。学習が収まる範囲で N を増やしてください。
+
+RTX PRO 6000 Blackwell、約 1MP の画像（`resolution = 1024` でバケット）、batch size 1、LoRA dim 16、`--attn_mode flash`、latent とテキストエンコーダー出力をキャッシュした条件での実測です。VRAM は `nvidia-smi` の学習中のピーク（CUDA コンテキストを含む。bf16 テキストエンコーダーではキャッシュ時の起動ピーク約 15.6GB が最初の行の最大値のままです）、ステップ時間は定常状態（INT8 の行は compile と autotune のウォームアップ後）の値です。
+
+| `--gradient_checkpointing_skip_blocks` | bf16 DiT: VRAM | bf16 DiT: ステップ時間 | ConvRot INT8 DiT + `--compile`: VRAM | ConvRot INT8 DiT + `--compile`: ステップ時間 |
+|---|---|---|---|---|
+| 0（デフォルト、全ブロック checkpointing） | 13.5GB | 1.29 秒 | 10.0GB | 0.84 秒 |
+| 11 | 23.4GB | 1.21 秒 | 15.4GB | 0.79 秒 |
+| 21 | 33.6GB | 1.13 秒 | 21.9GB | 0.74 秒 |
+| 32 | 44.9GB | 1.02 秒 | 29.1GB | 0.70 秒 |
+| 42（再計算なし） | 55.0GB | 0.93 秒 | 35.5GB | 0.64 秒 |
+
+* bf16 では 1 ブロックあたり約 1GB の VRAM で、ステップあたり約 8.6 ms（約 0.7%）短縮されます。全ブロックの checkpointing のコストは合計でステップ時間の 39% で、凍結層の backward が forward とほぼ同じコストになる LoRA 学習の理論値に近い値です。
+* `--compile` ではコンパイルされたブロックが保持する中間テンソルが減るため、1 ブロックあたり約 0.6GB で済み、同じ VRAM で約 1.6 倍のブロックをスキップできます。1 ブロックあたりの短縮は約 4.8 ms（約 0.6%）です。
+* この解像度での目安は、bf16 DiT で 24GB GPU なら `10` 前後、32GB で `18`、48GB で `34`。ConvRot INT8 と `--compile` なら 24GB で `22` 前後、32GB で `36`、48GB で全 `42` です。大きめのバケットやサンプル生成のために 1〜2GB の余裕を残してください。
+* 1 ブロックあたりの VRAM は GPU によらず、時間だけが変わります。RTX 4090（24GB、同じ設定、テキストエンコーダーは ConvRot INT8）では、bf16 DiT で `0` が 14.3GB / 1.88 秒、`5` が 17.6GB / 1.83 秒、`10` が 22.5GB / 1.77 秒（1 ブロックあたり約 0.8GB・11.5 ms）、ConvRot INT8 + `--compile` で `0` が 10.0GB / 1.00 秒、`7` が 13.0GB / 0.98 秒、`14` が 17.5GB / 0.94 秒、`21` が 22.0GB / 0.90 秒（約 0.6GB・4.8 ms）でした。RTX 4090 では ConvRot INT8 + `--compile` が bf16 の 1.9 倍速い（GeForce は bf16 の Tensor Core 性能が制限されており、int8 は制限されていないためと思われます）ので、24GB の GPU ではまずこちらを使い、残った VRAM を `--gradient_checkpointing_skip_blocks` に充ててください。
 
 #### メモリ使用量の実測値
 
@@ -779,7 +831,7 @@ Both tools support MOSS-Image with the `--moss_image` option, so the caches can 
 
 ```bash
 python tools/cache_latents.py --moss_image --vae "<path to flux2-vae.safetensors>" --dataset_config my_moss_dataset_config.toml --cache_latents_to_disk
-python tools/cache_text_encoder_outputs.py --moss_image --text_encoder "<path to Qwen3.5-9B>" --dataset_config my_moss_dataset_config.toml --cache_text_encoder_outputs_to_disk [--convrot_int8_text_encoder]
+python tools/cache_text_encoder_outputs.py --moss_image --text_encoder "<path to Qwen3.5-9B>" --dataset_config my_moss_dataset_config.toml --cache_text_encoder_outputs_to_disk [--convrot_int8_text_encoder] [--text_encoder_blocks_to_swap 28]
 ```
 
 The text encoder is always run in bf16 (or ConvRot INT8) and the VAE in fp32 regardless of `--mixed_precision`.
@@ -801,7 +853,7 @@ MOSS-Image の最小限の推論スクリプトです。学習スクリプトと
 
 **`tools/cache_latents.py` / `tools/cache_text_encoder_outputs.py`**
 
-どちらも `--moss_image` オプションで MOSS-Image に対応しており、学習前にキャッシュを作成できます（複数の学習で共用できます）。コマンド例は英語のドキュメントを参照してください。`--mixed_precision` の指定に関係なく、テキストエンコーダーは bf16（または ConvRot INT8）、VAE は fp32 で実行されます。
+どちらも `--moss_image` オプションで MOSS-Image に対応しており、学習前にキャッシュを作成できます（複数の学習で共用できます）。コマンド例は英語のドキュメントを参照してください。`--mixed_precision` の指定に関係なく、テキストエンコーダーは bf16（または ConvRot INT8）、VAE は fp32 で実行されます。テキストエンコーダー出力のキャッシュ時に VRAM が足りない場合は `--text_encoder_blocks_to_swap 28` を追加してください。
 
 </details>
 

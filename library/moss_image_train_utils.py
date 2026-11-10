@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from library import device_utils, flux2_vae, flux_train_utils, moss_image_models, moss_image_utils, sampling
 from library.device_utils import clean_memory_on_device, synchronize_device
+import library.args as args_util
 import library.compile_utils as compile_utils
 from library.utils import setup_logging
 
@@ -61,6 +62,18 @@ def add_moss_image_model_arguments(parser: argparse.ArgumentParser):
         " pre-quantized file (qwen3.5_9b_int8_convrot.safetensors) is detected automatically and does not need this option"
         + " / Text Encoder（Qwen3.5-9B）の重みをロード時に ConvRot INT8 に量子化する（約 16GB → 9GB）。ComfyUI の事前量子化済みファイル"
         + "（qwen3.5_9b_int8_convrot.safetensors）は自動判別されるのでこのオプションは不要",
+    )
+    parser.add_argument(
+        "--text_encoder_blocks_to_swap",
+        type=int,
+        default=None,
+        help="number of the 32 text encoder layers streamed from the CPU instead of being kept on the GPU (32 = minimum VRAM)."
+        " Saves VRAM when caching the Text Encoder outputs on a small GPU: the streamed weights stay on the CPU and are copied"
+        " to a two-layer GPU buffer while the previous layer runs. Can be combined with --convrot_int8_text_encoder. Not"
+        " available when training a Text Encoder LoRA"
+        + " / Text Encoder の 32 層のうち、GPU に常駐させず CPU からストリーミングする層の数（32 で VRAM 最小）。小さい GPU で"
+        + "Text Encoder 出力をキャッシュするときの VRAM 節約用。対象層の重みは CPU に置いたまま、直前の層の実行中に 2 層分の"
+        + "GPU バッファへコピーされる。--convrot_int8_text_encoder と併用可能。Text Encoder の LoRA を学習する場合は使用できない",
     )
 
 
@@ -144,6 +157,7 @@ def add_moss_image_training_arguments(parser: argparse.ArgumentParser):
         "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap."
         + " / 非同期転送で activation を CPU RAM に退避する（--cpu_offload_checkpointing より高速）。--cpu_offload_checkpointing および --blocks_to_swap とは併用できない",
     )
+    args_util.add_gradient_checkpointing_skip_blocks_argument(parser)
 
     # torch.compile (per-block compilation, Triton required) and CUDA performance switches
     compile_utils.add_compile_arguments(parser)

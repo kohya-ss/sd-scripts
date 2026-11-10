@@ -27,6 +27,7 @@ from library import (
 import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
+import library.replica_trainer as replica_trainer
 from library.dataset import DatasetGroup, MinimalDataset
 import train_network
 from library.utils import setup_logging
@@ -110,6 +111,14 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
                 " / Text Encoder（Qwen3.5-9B）の LoRA を学習します。公式は Text Encoder の凍結を推奨しています。"
             )
 
+        if args.text_encoder_blocks_to_swap is not None and args.text_encoder_blocks_to_swap > 0:
+            assert not self.is_train_text_encoder(args), (
+                "--text_encoder_blocks_to_swap cannot be used when training the Text Encoder LoRA, because the layers are"
+                " moved between the devices during the forward pass. Use --network_train_unet_only (with --cache_text_encoder_outputs)"
+                " / --text_encoder_blocks_to_swap は Text Encoder の LoRA 学習には使用できません（forward 中に層をデバイス間で移動するため）。"
+                "--network_train_unet_only（と --cache_text_encoder_outputs）を使用してください"
+            )
+
         assert (
             args.blocks_to_swap is None or args.blocks_to_swap == 0
         ) or not args.cpu_offload_checkpointing, "blocks_to_swap is not supported with cpu_offload_checkpointing"
@@ -124,6 +133,8 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             assert (
                 args.blocks_to_swap is None or args.blocks_to_swap == 0
             ), "blocks_to_swap is not supported with unsloth_offload_checkpointing"
+
+        args_util.verify_gradient_checkpointing_skip_blocks(args)
 
         if args.compile:
             assert not args.torch_compile, (
@@ -250,6 +261,25 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
         # `scale_weight` buffers of the ConvRot INT8 layers, so the cast is skipped here.
         return False
 
+    def move_text_encoder_to_gpu(self, args, accelerator: Accelerator, text_encoder):
+        """Move the text encoder to the GPU, or enable the layer-wise block swap if requested."""
+        if args.text_encoder_blocks_to_swap is not None and args.text_encoder_blocks_to_swap > 0:
+            logger.info(f"enable text encoder block swap: blocks_to_swap={args.text_encoder_blocks_to_swap}")
+            moss_image_utils.enable_text_encoder_block_swap(
+                text_encoder, args.text_encoder_blocks_to_swap, accelerator.device
+            )
+        else:
+            logger.info("move text encoder to gpu")
+            text_encoder.to(accelerator.device)
+
+    def move_text_encoder_to_cpu(self, args, text_encoder):
+        """Move the text encoder to the CPU and remove the block swap hooks if they are installed."""
+        if args.text_encoder_blocks_to_swap is not None and args.text_encoder_blocks_to_swap > 0:
+            moss_image_utils.disable_text_encoder_block_swap(text_encoder)
+        else:
+            logger.info("move text encoder back to cpu")
+            text_encoder.to("cpu")
+
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator: Accelerator, unet, vae, text_encoders, dataset: DatasetGroup, weight_dtype
     ):
@@ -261,8 +291,7 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
                 vae.to("cpu")
                 clean_memory_on_device(accelerator.device)
 
-            logger.info("move text encoder to gpu")
-            text_encoders[0].to(accelerator.device)
+            self.move_text_encoder_to_gpu(args, accelerator, text_encoders[0])
 
             # no autocast: the text encoder is bf16 and the official pipeline runs it in bf16
             dataset.new_cache_text_encoder_outputs(text_encoders, accelerator)
@@ -289,8 +318,7 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
 
             accelerator.wait_for_everyone()
 
-            logger.info("move text encoder back to cpu")
-            text_encoders[0].to("cpu")
+            self.move_text_encoder_to_cpu(args, text_encoders[0])
 
             if not args.lowram:
                 logger.info("move vae back to original device")
@@ -299,7 +327,7 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
             clean_memory_on_device(accelerator.device)
         else:
             # move text encoder to device for encoding during training/validation
-            text_encoders[0].to(accelerator.device)
+            self.move_text_encoder_to_gpu(args, accelerator, text_encoders[0])
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]  # compatibility
@@ -467,10 +495,14 @@ class MossImageNetworkTrainer(train_network.NetworkTrainer):
     def prepare_unet_with_accelerator(
         self, args: argparse.Namespace, accelerator: Accelerator, unet: torch.nn.Module
     ) -> torch.nn.Module:
-        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False),
-        # so we re-apply with unsloth_offload if needed (after base has already enabled it).
-        if self._use_unsloth_offload_checkpointing and args.gradient_checkpointing:
-            unet.enable_gradient_checkpointing(unsloth_offload=True)
+        # The base NetworkTrainer only calls enable_gradient_checkpointing(cpu_offload=True/False), so we re-apply with
+        # unsloth_offload and/or skip_blocks (partial gradient checkpointing) if needed (after base has already enabled it).
+        if args.gradient_checkpointing and (self._use_unsloth_offload_checkpointing or args.gradient_checkpointing_skip_blocks > 0):
+            unet.enable_gradient_checkpointing(
+                cpu_offload=args.cpu_offload_checkpointing,
+                unsloth_offload=self._use_unsloth_offload_checkpointing,
+                skip_blocks=args.gradient_checkpointing_skip_blocks,
+            )
 
         if not self.is_swapping_blocks:
             model = super().prepare_unet_with_accelerator(args, accelerator, unet)
@@ -503,6 +535,7 @@ def setup_parser() -> argparse.ArgumentParser:
     args_util.add_dit_training_arguments(parser)
     moss_image_train_utils.add_moss_image_model_arguments(parser)
     moss_image_train_utils.add_moss_image_training_arguments(parser)
+    replica_trainer.add_replica_arguments(parser)
     return parser
 
 
@@ -519,5 +552,5 @@ if __name__ == "__main__":
     if args.show_timesteps:
         moss_image_train_utils.show_timesteps(args)
     else:
-        trainer = MossImageNetworkTrainer()
+        trainer = replica_trainer.wrap_trainer_class(MossImageNetworkTrainer, args)()
         trainer.train(args)
