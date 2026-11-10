@@ -330,6 +330,9 @@ class MossImageRoPE(nn.Module):
     Reference image tokens (editing, optional): (r, L, h - (Hr-1)/2, w - (Wr-1)/2) with `ref_r` as the r coordinate, placed
     between the image and the text tokens. The r axis is always 0 in the base model, so `ref_r != 0` gives the reference
     tokens a relative offset on an otherwise unused axis (the same idea as the index offset of FLUX.1 Kontext).
+    `ref_w_offset` (tokens) is added to the w coordinate of the reference tokens: with `reference_w_offset(1.0, W, Wr)` the
+    reference grid is placed right next to the image grid (side by side, no overlap), for references which are not spatially
+    aligned with the image (e.g. character references).
     """
 
     def __init__(self, head_dim: int, base: float):
@@ -346,15 +349,15 @@ class MossImageRoPE(nn.Module):
         return (1 / (self.base**exponent)).to(device)
 
     @staticmethod
-    def _image_coords(height: int, width: int, r: float, text_lens: torch.Tensor) -> torch.Tensor:
-        """Coordinates (r, L, h - (H-1)/2, w - (W-1)/2) of an image token grid: [B, H*W, 4] float32"""
+    def _image_coords(height: int, width: int, r: float, text_lens: torch.Tensor, w_offset: float = 0.0) -> torch.Tensor:
+        """Coordinates (r, L, h - (H-1)/2, w - (W-1)/2 + w_offset) of an image token grid: [B, H*W, 4] float32"""
         device = text_lens.device
         batch = text_lens.shape[0]
         h, w = torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device), indexing="ij")
         image = torch.stack((torch.zeros_like(h), torch.zeros_like(h), h, w), -1).flatten(0, 1).float()  # [N, 4]
         image[:, 0] = r
         image[:, 2] -= (height - 1) / 2
-        image[:, 3] -= (width - 1) / 2
+        image[:, 3] -= (width - 1) / 2 - w_offset
         image = image.unsqueeze(0).repeat(batch, 1, 1)  # [B, N, 4]
         image[:, :, 1] = text_lens.to(torch.float32)[:, None]  # f axis = true text length of the sample
         return image
@@ -368,6 +371,8 @@ class MossImageRoPE(nn.Module):
         ref_size: Optional[Tuple[int, int]] = None,
         ref_r: float = 1.0,
         image_r: float = 0.0,
+        ref_w_offset: float = 0.0,
+        w_offset: float = 0.0,
     ) -> torch.Tensor:
         """
         Args:
@@ -378,6 +383,10 @@ class MossImageRoPE(nn.Module):
             ref_r: r coordinate of the reference tokens
             image_r: r coordinate of the image tokens (0 in the base model; the reference forward of the KV cache editing
                 uses the reference r so that the cached keys carry the relative offset)
+            ref_w_offset: offset (tokens) added to the w coordinate of the reference tokens (0 = centered like the image)
+            w_offset: offset (tokens) added to the w coordinate of all tokens (image, reference and text). RoPE is
+                relative, so a forward is unchanged by this; the reference forward of the KV cache editing uses it so that
+                the cached keys carry the relative offset to the tokens of the generation
         Returns:
             [B, H*W (+ Hr*Wr) + L_max, head_dim] float32 (first half sin, second half cos)
         """
@@ -386,16 +395,24 @@ class MossImageRoPE(nn.Module):
             self.bands = self._default_bands(device)
 
         batch = text_lens.shape[0]
-        coords = [self._image_coords(height, width, image_r, text_lens)]
+        coords = [self._image_coords(height, width, image_r, text_lens, w_offset)]
         if ref_size is not None:
-            coords.append(self._image_coords(ref_size[0], ref_size[1], ref_r, text_lens))
+            coords.append(self._image_coords(ref_size[0], ref_size[1], ref_r, text_lens, w_offset + ref_w_offset))
 
         text = torch.zeros(text_length, 4, device=device, dtype=torch.float32)
         text[:, 1] = torch.arange(text_length, device=device)
+        text[:, 3] = w_offset
         coords.append(text.unsqueeze(0).expand(batch, -1, -1))  # [B, L, 4]
 
         phase = torch.cat(coords, 1).unsqueeze(-1) * self.bands  # [B, N (+ Nr) + L, 4, num_bands]
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2)  # [B, N (+ Nr) + L, head_dim]
+
+
+def reference_w_offset(scale: float, width: int, ref_width: int) -> float:
+    """w offset (tokens) of a reference token grid of `ref_width` columns relative to the image grid of `width` columns for
+    `--ref_rope_w_offset scale`: 1.0 puts the reference right next to the image (to the right: the first reference column
+    is one token after the last image column), 0.0 keeps both centered at the same position, negative values go to the left."""
+    return scale * (width + ref_width) / 2
 
 
 # endregion
@@ -559,6 +576,8 @@ class MossImage(nn.Module):
         ref_rope_r: float,
         image_r: float,
         kv_extra_len: int,
+        ref_w_offset: float = 0.0,
+        w_offset: float = 0.0,
     ):
         """Shared part of `forward` and `forward_ref_kv`: embeds the image (+ reference) and text tokens.
 
@@ -594,7 +613,8 @@ class MossImage(nn.Module):
             seq_img_len += ref_tokens.shape[1]
             del ref_tokens
 
-        rope = self.rope(height, width, text_len, text_lens, ref_size, ref_rope_r, image_r).to(video.dtype)  # [B, N (+ Nr) + L, head_dim]
+        rope = self.rope(height, width, text_len, text_lens, ref_size, ref_rope_r, image_r, ref_w_offset, w_offset)
+        rope = rope.to(video.dtype)  # [B, N (+ Nr) + L, head_dim]
 
         txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, context_mask)
         text = self.text_embedder(context, rope[:, seq_img_len:], txt_attn_params)
@@ -614,6 +634,7 @@ class MossImage(nn.Module):
         context_mask: Optional[torch.Tensor] = None,
         ref_rope_r: float = 1.0,
         blocks: Optional[Sequence[int]] = None,
+        ref_w_offset: float = 0.0,
     ) -> List[Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """One-way reference for editing: run the clean reference latents through the DiT as the image (its own forward
         with `context`, usually the empty prompt, and `timesteps`, usually 0) and return the per-block keys / values of
@@ -625,12 +646,17 @@ class MossImage(nn.Module):
         Args:
             ref: [B, latent_channels, Hr, Wr] clean reference latents (same preprocessing as x)
             blocks: indices of the blocks whose K/V are returned (None = all). The forward stops after the last one.
+            ref_w_offset: offset (tokens) of the reference on the w axis relative to the image of the generation, see
+                `reference_w_offset`. All tokens of the reference forward (image and text) are shifted, so the forward
+                itself is the same as without the offset and only the cached keys are rotated.
         Returns:
             list with one entry per block: (k, v) [B, Nr, heads, head_dim] or None for blocks not in `blocks`
         """
         if self.blocks_to_swap:
             raise RuntimeError("forward_ref_kv does not support block swapping")
-        hidden, rope, mod, _, attn_params, img_len = self._prepare_tokens(ref, timesteps, context, context_mask, None, 1.0, ref_rope_r, 0)
+        hidden, rope, mod, _, attn_params, img_len = self._prepare_tokens(
+            ref, timesteps, context, context_mask, None, 1.0, ref_rope_r, 0, w_offset=ref_w_offset
+        )
         blocks = None if blocks is None else frozenset(blocks)
         last = len(self.layers) - 1 if blocks is None else (max(blocks) if len(blocks) > 0 else -1)
 
@@ -654,6 +680,7 @@ class MossImage(nn.Module):
         ref_rope_r: float = 1.0,
         ref_kv: Optional[Sequence[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
         ref_gate: Optional[Sequence[Optional[torch.Tensor]]] = None,
+        ref_w_offset: float = 0.0,
     ) -> torch.Tensor:
         """
         Args:
@@ -672,6 +699,9 @@ class MossImage(nn.Module):
                 reference in that block. Not with `ref`.
             ref_gate: per-block [B] log gates of the reference keys (learned reference gate, bias path of the attention);
                 None entries (or None) mean gate 1 (plain concatenation). See moss_image_ref_gate.resolve_block_gates.
+            ref_w_offset: offset (tokens) of the reference tokens of `ref` on the w axis of the RoPE, see
+                `reference_w_offset` (0 = same positions as the image tokens). With `ref_kv` the offset is already in the
+                cached keys (`forward_ref_kv`).
         Returns:
             [B, latent_channels, H, W]
         """
@@ -691,7 +721,7 @@ class MossImage(nn.Module):
 
         batch, _, height, width = x.shape
         hidden, rope, mod, head, attn_params, img_len = self._prepare_tokens(
-            x, timesteps, context, context_mask, ref, ref_rope_r, 0.0, kv_extra_len
+            x, timesteps, context, context_mask, ref, ref_rope_r, 0.0, kv_extra_len, ref_w_offset=ref_w_offset
         )
         if kv_extra_len > 0:
             # blocks without reference K/V attend to the normal keys only

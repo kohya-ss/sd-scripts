@@ -95,6 +95,50 @@ def test_rope_reference_grid_size_can_differ():
     assert out.shape == (2, 15 + 8 + 7, 16)
 
 
+def _w_axis_dims():
+    half = 4 * NUM_BANDS
+    return list(range(3 * NUM_BANDS, 4 * NUM_BANDS)) + list(range(half + 3 * NUM_BANDS, half + 4 * NUM_BANDS))
+
+
+def test_reference_w_offset_places_the_reference_next_to_the_image():
+    # scale 1.0: the first reference column is one token after the last image column, whatever the two widths are
+    text_lens = torch.tensor([4])
+    for width, ref_width in [(5, 5), (5, 4), (4, 7)]:
+        offset = moss_image_models.reference_w_offset(1.0, width, ref_width)
+        assert offset == (width + ref_width) / 2
+        image_w = moss_image_models.MossImageRoPE._image_coords(3, width, 0.0, text_lens)[0, :, 3]
+        ref_coords = moss_image_models.MossImageRoPE._image_coords(2, ref_width, 1.0, text_lens, offset)[0]
+        assert ref_coords[:, 3].min() == image_w.max() + 1
+        assert torch.all(ref_coords[:, 0] == 1.0)  # the other axes are not touched
+        torch.testing.assert_close(ref_coords[:, 2].unique(), torch.tensor([-0.5, 0.5]))
+    assert moss_image_models.reference_w_offset(0.0, 5, 4) == 0.0
+    assert moss_image_models.reference_w_offset(-1.0, 5, 4) == -4.5  # to the left
+
+
+def test_rope_reference_w_offset():
+    rope = moss_image_models.MossImageRoPE(SMALL_CONFIG["dim"] // SMALL_CONFIG["num_heads"], SMALL_CONFIG["rope_base"])
+    text_lens = torch.tensor([4, 7])
+    n = 15
+    plain = rope(3, 5, 7, text_lens, ref_size=(3, 5), ref_r=1.0)
+    torch.testing.assert_close(rope(3, 5, 7, text_lens, ref_size=(3, 5), ref_r=1.0, ref_w_offset=0.0), plain)
+
+    # ref_w_offset: only the w-axis dims of the reference tokens change
+    shifted = rope(3, 5, 7, text_lens, ref_size=(3, 5), ref_r=1.0, ref_w_offset=5.0)
+    torch.testing.assert_close(shifted[:, :n], plain[:, :n])
+    torch.testing.assert_close(shifted[:, 2 * n :], plain[:, 2 * n :])
+    diff = (shifted[:, n : 2 * n] - plain[:, n : 2 * n]).abs().amax(dim=(0, 1))
+    w_dims = _w_axis_dims()
+    other_dims = [d for d in range(16) if d not in w_dims]
+    assert torch.all(diff[other_dims] == 0)
+    assert torch.all(diff[w_dims] > 0)
+
+    # w_offset moves all tokens (image and text): the image tokens of the reference forward get the positions of the
+    # reference tokens of the concatenation
+    moved = rope(3, 5, 7, text_lens, image_r=1.0, w_offset=5.0)
+    torch.testing.assert_close(moved[:, :n], shifted[:, n : 2 * n])
+    assert not torch.allclose(moved[:, n:], plain[:, 2 * n :])  # the text tokens move too
+
+
 # endregion
 
 
@@ -113,6 +157,15 @@ def test_forward_with_reference_shapes_and_effect():
     assert not torch.allclose(with_ref, base)
     assert not torch.allclose(with_ref, with_ref_r0)
     assert not torch.allclose(with_ref, with_other_ref)
+
+    # the reference next to the image instead of at the same positions
+    with torch.no_grad():
+        offset = moss_image_models.reference_w_offset(1.0, x.shape[-1], ref.shape[-1])
+        with_ref_aside = model(x, timesteps, context, mask, ref=ref, ref_rope_r=1.0, ref_w_offset=offset)
+        with_ref_zero = model(x, timesteps, context, mask, ref=ref, ref_rope_r=1.0, ref_w_offset=0.0)
+    torch.testing.assert_close(with_ref_zero, with_ref)
+    assert with_ref_aside.shape == x.shape
+    assert not torch.allclose(with_ref_aside, with_ref)
 
 
 def test_forward_with_reference_of_different_size():
@@ -204,6 +257,7 @@ def make_args(**overrides):
         gradient_checkpointing=False,
         ref_dropout_rate=0.0,
         ref_rope_r=1.0,
+        ref_rope_w_offset=0.0,
         cache_ref_latents=False,
         ref_mode="concat",
         ref_timestep=0.0,
@@ -228,6 +282,7 @@ def test_setup_parser_edit_defaults():
     args = parser.parse_args([])
     assert args.ref_dropout_rate == 0.0
     assert args.ref_rope_r == 1.0
+    assert args.ref_rope_w_offset == 0.0
     assert args.cache_ref_latents is False
     assert args.cache_ref_latents_to_disk is False
     assert args.ref_latents_cache_dir is None
@@ -308,6 +363,16 @@ def test_edit_trainer_call_dit_and_reference_dropout():
     torch.testing.assert_close(dropped, expected)
     kept = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, None, is_train=False)
     assert not torch.allclose(kept, dropped)
+
+    # --ref_rope_w_offset: the offset in tokens follows the widths of the image and the reference
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    args = make_args(ref_rope_w_offset=1.0)
+    out = trainer.call_dit(args, accelerator, dit, {"ref_latents": ref}, x, timesteps, context, mask, None, is_train=True)
+    with torch.no_grad():
+        expected = dit(x, timesteps, context, mask, ref=ref, ref_rope_r=1.0, ref_w_offset=4.5)
+        aligned = dit(x, timesteps, context, mask, ref=ref, ref_rope_r=1.0)
+    torch.testing.assert_close(out, expected)
+    assert not torch.allclose(out, aligned)
 
     # the full get_noise_pred_and_target path uses the reference
     noise_scheduler = sd3_train_utils.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=1.0)
@@ -923,6 +988,44 @@ def test_rope_image_r():
     torch.testing.assert_close(shifted[:, 15:], base[:, 15:])  # text unchanged
 
 
+def test_forward_ref_kv_w_offset_only_rotates_the_keys():
+    # all tokens of the reference forward are shifted on the w axis: the forward itself is unchanged (RoPE is relative), so
+    # the values are the same in every block and only the keys carry the offset
+    model = make_dit()
+    x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
+    offset = moss_image_models.reference_w_offset(1.0, x.shape[-1], ref.shape[-1])
+    with torch.no_grad():
+        kvs = model.forward_ref_kv(ref, torch.zeros(2), context, mask)
+        kvs_zero = model.forward_ref_kv(ref, torch.zeros(2), context, mask, ref_w_offset=0.0)
+        kvs_aside = model.forward_ref_kv(ref, torch.zeros(2), context, mask, ref_w_offset=offset)
+        for (k, v), (k0, v0), (ka, va) in zip(kvs, kvs_zero, kvs_aside):
+            torch.testing.assert_close(k0, k)
+            torch.testing.assert_close(v0, v)
+            torch.testing.assert_close(va, v, atol=1e-5, rtol=1e-5)
+            assert not torch.allclose(ka, k)
+            torch.testing.assert_close(ka.norm(dim=-1), k.norm(dim=-1), atol=1e-5, rtol=1e-5)  # a rotation
+
+        aligned = model(x, timesteps, context, mask, ref_kv=kvs)
+        aside = model(x, timesteps, context, mask, ref_kv=kvs_aside)
+    assert not torch.allclose(aside, aligned)
+
+
+def test_compute_reference_kv_w_offset_needs_the_image_width():
+    dit = make_dit()
+    ref = torch.randn(1, SMALL_CONFIG["latent_channels"], 2, 4)
+    uncond = torch.randn(1, 3, SMALL_CONFIG["text_dim"])
+    uncond_mask = torch.ones(1, 3, dtype=torch.int32)
+    with pytest.raises(ValueError):
+        moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, ref_rope_w_offset=1.0)
+    kvs = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, ref_rope_w_offset=1.0, image_width=5)
+    with torch.no_grad():
+        expected = dit.forward_ref_kv(ref, torch.zeros(1), uncond, uncond_mask, ref_w_offset=4.5)
+    torch.testing.assert_close(kvs[0][0], expected[0][0])
+    # the keys depend on the width of the generated image
+    other = moss_image_train_utils.compute_reference_kv(dit, ref, 0.0, uncond, uncond_mask, ref_rope_w_offset=1.0, image_width=7)
+    assert not torch.allclose(other[0][0], kvs[0][0])
+
+
 def test_forward_ref_kv_shapes_blocks_and_early_exit():
     model = make_dit()
     x, ref, timesteps, context, mask = make_inputs(ref_hw=(2, 4))
@@ -1095,6 +1198,17 @@ def test_edit_trainer_kv_mode_call_dit():
     args = make_args(ref_mode="kv", ref_timestep=0.0, ref_kv_blocks=None, ref_kv_lora="on")
     out_val = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=False)
     assert not out_val.requires_grad
+
+    # --ref_rope_w_offset: the keys of the reference forward carry the offset for the width of the image
+    args = make_args(ref_mode="kv", ref_rope_w_offset=1.0)
+    out_aside = trainer.call_dit(args, accelerator, dit, batch, x, timesteps, context, mask, network, is_train=False)
+    with torch.no_grad():
+        kvs = moss_image_train_utils.compute_reference_kv(
+            dit, ref, 0.0, embeds, emask, 1.0, ref_rope_w_offset=1.0, image_width=x.shape[-1]
+        )
+        expected = dit(x, timesteps, context, mask, ref_kv=kvs)
+    torch.testing.assert_close(out_aside, expected)
+    assert not torch.allclose(out_aside, out_val)
 
 
 # endregion

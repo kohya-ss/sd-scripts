@@ -88,6 +88,13 @@ def parse_args() -> argparse.Namespace:
         help="r coordinate of the reference tokens in the RoPE, must match the training (--ref_rope_r, metadata ss_ref_rope_r). Default 1.0",
     )
     parser.add_argument(
+        "--ref_rope_w_offset",
+        type=float,
+        default=0.0,
+        help="offset of the reference tokens on the w axis of the RoPE (0.0 = same positions as the image, 1.0 = right next to"
+        " the image), must match the training (--ref_rope_w_offset, metadata ss_ref_rope_w_offset). Default 0.0",
+    )
+    parser.add_argument(
         "--ref_mode",
         type=str,
         default="kv",
@@ -389,6 +396,8 @@ def compute_reference_kv(
         uncond_mask,
         args.ref_rope_r,
         moss_image_train_utils.parse_skip_layers(args.ref_kv_blocks) or None,
+        ref_rope_w_offset=args.ref_rope_w_offset,
+        image_width=args.image_size[1] // 16,
     )
     return [None if kv is None else (kv[0].cpu(), kv[1].cpu()) for kv in ref_kv]
 
@@ -413,7 +422,11 @@ def generate_latents(
     logger.info(
         f"Image size: {height}x{width} (HxW), steps: {args.infer_steps}, guidance: {args.guidance_scale}, "
         f"flow shift: {args.flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
-        + ("" if (ref is None and ref_kv is None) else f", reference image: {args.ref_image} (mode: {args.ref_mode}, rope r: {args.ref_rope_r})")
+        + (
+            ""
+            if (ref is None and ref_kv is None)
+            else f", reference image: {args.ref_image} (mode: {args.ref_mode}, rope r: {args.ref_rope_r}, rope w offset: {args.ref_rope_w_offset})"
+        )
     )
 
     positive, positive_mask = moss_image_utils.pad_text_embeds([prompt_embeds.to(device)])
@@ -438,6 +451,7 @@ def generate_latents(
         ref_rope_r=args.ref_rope_r,
         ref_kv=ref_kv,
         ref_gate=ref_gate,
+        ref_rope_w_offset=args.ref_rope_w_offset,
     )
 
 
@@ -479,6 +493,7 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
         if args.ref_image is not None:
             metadata["ref_image"] = f"{args.ref_image}"
             metadata["ref_rope_r"] = f"{args.ref_rope_r}"
+            metadata["ref_rope_w_offset"] = f"{args.ref_rope_w_offset}"
             metadata["ref_mode"] = f"{args.ref_mode}"
             if args.ref_mode == "kv":
                 metadata["ref_timestep"] = f"{args.ref_timestep}"

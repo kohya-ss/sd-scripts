@@ -401,6 +401,8 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
                     args.ref_rope_r,
                     self.ref_kv_blocks,
                     enable_grad=is_train and args.ref_kv_lora == "on",
+                    ref_rope_w_offset=args.ref_rope_w_offset,
+                    image_width=noisy_model_input.shape[-1],
                 )
             ref_gate = None
             gate = self.ref_gate_of(None, network)
@@ -411,8 +413,11 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             with torch.set_grad_enabled(is_train), accelerator.autocast():
                 return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref_kv=ref_kv, ref_gate=ref_gate)
 
+        ref_w_offset = moss_image_models.reference_w_offset(args.ref_rope_w_offset, noisy_model_input.shape[-1], ref.shape[-1])
         with torch.set_grad_enabled(is_train), accelerator.autocast():
-            return dit(noisy_model_input, timesteps, prompt_embeds, attn_mask, ref=ref, ref_rope_r=args.ref_rope_r)
+            return dit(
+                noisy_model_input, timesteps, prompt_embeds, attn_mask, ref=ref, ref_rope_r=args.ref_rope_r, ref_w_offset=ref_w_offset
+            )
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
         if args.ref_mode == "kv" and self.sample_prompts_te_outputs is not None and "" not in self.sample_prompts_te_outputs:
@@ -465,6 +470,7 @@ class MossImageEditNetworkTrainer(moss_image_train_network.MossImageNetworkTrain
             metadata["ss_ref_gate_binarize"] = bool(args.ref_gate_binarize)
         metadata["ss_ref_dropout_rate"] = args.ref_dropout_rate
         metadata["ss_ref_rope_r"] = args.ref_rope_r
+        metadata["ss_ref_rope_w_offset"] = args.ref_rope_w_offset
         ref_resolution = getattr(args, "ref_resolution", None)
         metadata["ss_ref_resolution"] = None if ref_resolution is None else f"{ref_resolution[0]}x{ref_resolution[1]}"
         metadata["ss_cache_ref_latents"] = bool(args.cache_ref_latents)
@@ -583,6 +589,19 @@ def add_moss_image_edit_arguments(parser: argparse.ArgumentParser):
         " used at inference (saved in the metadata)"
         " / 参照トークンの 4D RoPE の r 座標（ベースモデルは常に 0。デフォルトの 1.0 は未使用軸でのオフセット、0.0 は画像トークンと同じ位置）。"
         "推論時も同じ値を使うこと（メタデータに保存される）",
+    )
+    parser.add_argument(
+        "--ref_rope_w_offset",
+        type=float,
+        default=0.0,
+        help="offset of the reference tokens on the w (horizontal) axis of the RoPE, in units of the side-by-side distance:"
+        " 0.0 (default) places the reference at the same positions as the image (for references aligned with the target, e.g."
+        " inpainting), 1.0 places it right next to the image (to the right, no overlap; for references which are not aligned"
+        " with the target, e.g. character references), a negative value places it to the left. The same value must be used at"
+        " inference (saved in the metadata)"
+        " / 参照トークンの RoPE の w（水平）方向のオフセット。単位は「横に並べる距離」。0.0（デフォルト）は画像と同じ位置"
+        "（inpainting など目標と位置が揃った参照向け）、1.0 は画像のすぐ右隣（重なりなし。キャラクター参照など目標と位置が"
+        "揃っていない参照向け）、負の値は左側。推論時も同じ値を使うこと（メタデータに保存される）",
     )
     parser.add_argument(
         "--ref_mask_source",

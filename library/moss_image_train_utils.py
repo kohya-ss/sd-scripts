@@ -277,6 +277,7 @@ def generate_latents(
     ref_rope_r: float = 1.0,
     ref_kv: Optional[list] = None,
     ref_gate: Optional["ReferenceGate"] = None,
+    ref_rope_w_offset: float = 0.0,
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32).
 
@@ -286,6 +287,8 @@ def generate_latents(
     `compute_reference_kv`, one-way reference) is given to both the conditional and the unconditional branch. With a
     `ref_gate` (learned reference gate table) the reference K/V of each block are gated per step according to the
     timestep band (binarized tables skip the closed blocks, continuous tables use the bias path of the attention).
+    `ref_rope_w_offset` (--ref_rope_w_offset, 1.0 = the reference next to the image) applies to `ref`; with `ref_kv` it is
+    already in the cached keys (`compute_reference_kv`).
     """
     generator = torch.Generator(device="cpu")
     if seed is not None:
@@ -303,8 +306,10 @@ def generate_latents(
     sigmas = get_sampling_sigmas(steps, flow_shift).to(device)
     num_steps = len(sigmas) - 1
 
+    ref_w_offset = 0.0  # tokens
     if ref is not None:
         ref = ref.to(device, dtype=dit.dtype)
+        ref_w_offset = moss_image_models.reference_w_offset(ref_rope_w_offset, latents.shape[-1], ref.shape[-1])
     with torch.no_grad(), tqdm(total=num_steps, desc="Denoising steps", disable=not show_progress) as pbar:
         for i in range(num_steps):
             timestep = (sigmas[i] * NUM_TRAIN_TIMESTEPS).expand(latents.shape[0])
@@ -313,7 +318,15 @@ def generate_latents(
             if ref_kv is not None and ref_gate is not None:
                 step_kv, step_gate = moss_image_ref_gate.resolve_block_gates(ref_kv, ref_gate.log_gates(timestep))
             prediction = dit(
-                x, timestep, positive, positive_mask, ref=ref, ref_rope_r=ref_rope_r, ref_kv=step_kv, ref_gate=step_gate
+                x,
+                timestep,
+                positive,
+                positive_mask,
+                ref=ref,
+                ref_rope_r=ref_rope_r,
+                ref_kv=step_kv,
+                ref_gate=step_gate,
+                ref_w_offset=ref_w_offset,
             ).float()
             if do_cfg:
                 uncond = dit(
@@ -326,6 +339,7 @@ def generate_latents(
                     ref_rope_r=ref_rope_r,
                     ref_kv=step_kv,
                     ref_gate=step_gate,
+                    ref_w_offset=ref_w_offset,
                 ).float()
                 prediction = uncond + guidance_scale * (prediction - uncond)
             latents = euler_step(latents, prediction, sigmas, i)
@@ -346,18 +360,30 @@ def compute_reference_kv(
     ref_rope_r: float = 1.0,
     blocks: Optional[Sequence[int]] = None,
     enable_grad: bool = False,
+    ref_rope_w_offset: float = 0.0,
+    image_width: Optional[int] = None,
 ) -> list:
     """Cached reference K/V for the one-way reference (editing, --ref_mode kv): one forward of the clean reference latents
     [B, 128, Hr/16, Wr/16] with the empty prompt embeddings and the fixed `ref_timestep` (sigma * 1000). `enable_grad`
     lets the gradients flow through the reference forward (training with --ref_kv_lora on). The result depends only on the
-    reference image (and the LoRA), so it is computed once per image at inference and shared by all steps."""
+    reference image (and the LoRA), so it is computed once per image at inference and shared by all steps.
+
+    `ref_rope_w_offset` (--ref_rope_w_offset, 1.0 = the reference next to the image) needs `image_width`, the width of the
+    generated image in tokens (W/16): the cached keys are then specific to that width."""
+    ref_w_offset = 0.0  # tokens
+    if ref_rope_w_offset != 0.0:
+        if image_width is None:
+            raise ValueError("image_width is required with ref_rope_w_offset")
+        ref_w_offset = moss_image_models.reference_w_offset(ref_rope_w_offset, image_width, ref.shape[-1])
     batch = ref.shape[0]
     timesteps = torch.full((batch,), float(ref_timestep), dtype=torch.float32, device=ref.device)
     if uncond_embeds.shape[0] == 1 and batch > 1:
         uncond_embeds = uncond_embeds.expand(batch, -1, -1)
         uncond_mask = None if uncond_mask is None else uncond_mask.expand(batch, -1)
     with torch.set_grad_enabled(enable_grad):
-        return dit.forward_ref_kv(ref, timesteps, uncond_embeds.to(ref.device), uncond_mask, ref_rope_r=ref_rope_r, blocks=blocks)
+        return dit.forward_ref_kv(
+            ref, timesteps, uncond_embeds.to(ref.device), uncond_mask, ref_rope_r=ref_rope_r, blocks=blocks, ref_w_offset=ref_w_offset
+        )
 
 
 def downsample_mask_to_latents(mask: torch.Tensor) -> torch.Tensor:
@@ -592,6 +618,7 @@ def _sample_image_inference(
     ref_image_path = prompt_dict.get("controlnet_image")  # `--cn`: reference image (editing)
     ref_mask_path = prompt_dict.get("mask_image")  # `--mk`: optional hole mask (255 = hole)
     ref_rope_r = float(getattr(args, "ref_rope_r", 1.0))
+    ref_rope_w_offset = float(getattr(args, "ref_rope_w_offset", 0.0))
     ref_mask_from_alpha = getattr(args, "ref_mask_source", "none") == "alpha"
     ref_mode = getattr(args, "ref_mode", "kv")
 
@@ -610,7 +637,11 @@ def _sample_image_inference(
     logger.info(
         f"  prompt: {prompt}, negative: {negative_prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, "
         f"flow_shift: {flow_shift}, uncond skip layers: {uncond_skip_layers}, seed: {seed}"
-        + ("" if ref_image_path is None else f", reference image: {ref_image_path} (mode: {ref_mode}, rope r: {ref_rope_r})")
+        + (
+            ""
+            if ref_image_path is None
+            else f", reference image: {ref_image_path} (mode: {ref_mode}, rope r: {ref_rope_r}, rope w offset: {ref_rope_w_offset})"
+        )
     )
 
     # Encode prompt: [prompt_embeds [1, L, C], attn_mask [1, L]]
@@ -675,6 +706,8 @@ def _sample_image_inference(
                 uncond[1],
                 ref_rope_r,
                 parse_skip_layers(getattr(args, "ref_kv_blocks", None)) or None,
+                ref_rope_w_offset=ref_rope_w_offset,
+                image_width=width // 16,
             )
         ref = None
 
@@ -697,6 +730,7 @@ def _sample_image_inference(
         ref_rope_r=ref_rope_r,
         ref_kv=ref_kv,
         ref_gate=ref_gate if ref_kv is not None else None,
+        ref_rope_w_offset=ref_rope_w_offset,
     )
     del ref_kv
 
