@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -282,6 +283,100 @@ def test_disabled_commands_are_answered_with_the_reason(controller):
     controller.process_commands({"save": lambda command: pytest.fail("called")}, step=1)
     result = read_command_result(controller.run_dir, "1_save.json")
     assert (result["status"], result["error"]) == ("error", "commands are not supported in multi-process training")
+
+
+def make_pause_handlers(controller, calls):
+    def pause(command):
+        if controller.paused:
+            raise run_control.CommandError("the training is already paused")
+        calls.append("pause")
+        controller.set_paused(True, step=3)
+        return {"vram_after": []}
+
+    def resume(command):
+        if not controller.paused:
+            raise run_control.CommandError("the training is not paused")
+        calls.append("resume")
+        return {"paused_sec": controller.set_paused(False, step=3)}
+
+    def stop(command):
+        calls.append("stop")
+        controller.request_stop()
+
+    return {"pause": pause, "resume": resume, "stop": stop, "save": lambda command: calls.append("save")}
+
+
+def test_pause_and_resume(controller, monkeypatch):
+    monkeypatch.setattr(run_control, "PAUSE_POLL_INTERVAL_SEC", 0.01)
+    calls = []
+    handlers = make_pause_handlers(controller, calls)
+    controller.on_epoch_start(epoch=1)
+    controller.on_step_end(global_step=3, loss=0.5, average_loss=0.5)
+
+    put_command(controller.run_dir, "1_pause.json", {"command": "pause"})
+    put_command(controller.run_dir, "2_save.json", {"command": "save"})  # waits until the training is resumed
+    controller.process_commands(handlers, step=3)
+    assert controller.paused
+    assert calls == ["pause"]  # the processing ends at the pause
+    status = read_status(controller.run_dir)
+    assert status["state"] == "paused" and status["paused_since"] is not None
+
+    # the "user" sends pause again and then resume, while the training waits
+    def send_later():
+        time.sleep(0.1)
+        put_command(controller.run_dir, "3_pause.json", {"command": "pause"})
+        time.sleep(0.1)
+        put_command(controller.run_dir, "4_resume.json", {"command": "resume"})
+
+    thread = threading.Thread(target=send_later)
+    thread.start()
+    controller.wait_while_paused(handlers, step=3)  # blocks until resume
+    thread.join()
+
+    assert not controller.paused
+    assert calls == ["pause", "resume"]  # save is not executed while paused
+    assert read_command_result(controller.run_dir, "3_pause.json")["error"] == "the training is already paused"
+    assert read_command_result(controller.run_dir, "4_resume.json")["result"]["paused_sec"] >= 0.1
+    status = read_status(controller.run_dir)
+    assert status["state"] == "running" and status["paused_since"] is None
+
+    controller.process_commands(handlers, step=4)  # the next step boundary
+    assert calls == ["pause", "resume", "save"]
+
+    events = [e["event"] for e in read_events(controller.run_dir) if e["event"] in ("paused", "resumed")]
+    assert events == ["paused", "resumed"]
+
+    put_command(controller.run_dir, "5_resume.json", {"command": "resume"})
+    controller.process_commands(handlers, step=5)
+    assert read_command_result(controller.run_dir, "5_resume.json")["error"] == "the training is not paused"
+
+
+def test_stop_while_paused(controller, monkeypatch):
+    monkeypatch.setattr(run_control, "PAUSE_POLL_INTERVAL_SEC", 0.01)
+    calls = []
+    handlers = make_pause_handlers(controller, calls)
+    put_command(controller.run_dir, "1_pause.json", {"command": "pause"})
+    put_command(controller.run_dir, "2_stop.json", {"command": "stop"})
+    controller.process_commands(handlers, step=3)
+    controller.wait_while_paused(handlers, step=3)  # returns because of the stop
+    assert calls == ["pause", "stop"]
+    assert controller.stop_requested
+
+
+def test_paused_time_is_not_counted_for_the_eta(controller):
+    controller.on_step_end(global_step=1, loss=0.5, average_loss=0.5)
+    time.sleep(0.05)
+    controller.on_step_end(global_step=2, loss=0.5, average_loss=0.5)
+    eta_before = read_status(controller.run_dir)["speed"]["eta_sec"]  # 8 steps left at about 0.05 s/step
+
+    controller.set_paused(True, step=2)
+    controller._paused_since -= 100.0  # paused for 100 seconds
+    assert controller.set_paused(False, step=2) >= 100.0
+    time.sleep(0.05)
+    controller.on_step_end(global_step=3, loss=0.5, average_loss=0.5)
+    status = read_status(controller.run_dir)
+    assert status["speed"]["eta_sec"] < eta_before + 5.0
+    assert status["speed"]["sec_per_step"] < 5.0  # the speed is measured from the resume
 
 
 def test_commands_sent_before_the_run_are_expired(tmp_path, monkeypatch):

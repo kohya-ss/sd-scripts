@@ -232,6 +232,57 @@ class NetworkTrainer:
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoder, unet):
         sampling.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet)
 
+    # region pause (run control)
+
+    def verify_pause_supported(self, args: argparse.Namespace, accelerator: Accelerator) -> None:
+        """Raises ValueError with the reason if the training cannot be paused in this configuration."""
+        if getattr(self, "_replicas", None):
+            raise ValueError("pause is not supported in replica training (--replica_devices)")
+        if getattr(args, "deepspeed", False):
+            raise ValueError("pause is not supported with DeepSpeed")
+        if getattr(self, "is_swapping_blocks", False) and getattr(args, "block_swap_h2d_only", False):
+            # the H2D-only offloader places the resident blocks on the device only once, and keeps the CPU masters of the
+            # streamed weights by itself. moving the model as a whole breaks it
+            raise ValueError("pause is not supported with --block_swap_h2d_only yet")
+
+    def offload_models_for_pause(self, args: argparse.Namespace, accelerator: Accelerator, unet, text_encoders, vae) -> list:
+        """Move the base models from the accelerator device to CPU to free the VRAM while the training is paused.
+
+        Returns the information for `restore_models_after_pause`. The network (LoRA) and the state of the optimizer are
+        small compared with the base models and stay on the device.
+        """
+        restore_info = []
+        unet_model = accelerator.unwrap_model(unet)
+        if getattr(self, "is_swapping_blocks", False):
+            # a part of the blocks is on the device. the device placement is restored by the methods for block swap
+            unet_model.to("cpu")
+            restore_info.append(("block_swap", unet_model, accelerator.device))
+            models = []
+        else:
+            models = [unet_model]
+        models += [accelerator.unwrap_model(t_enc) for t_enc in text_encoders if t_enc is not None]
+        if vae is not None:
+            models.append(vae)
+
+        for model in models:
+            param = next(model.parameters(), None)
+            if param is None or param.device.type not in ("cuda", "xpu", "mps"):
+                continue  # already on CPU (or not a real device)
+            device = param.device
+            model.to("cpu")
+            restore_info.append(("to", model, device))
+        return restore_info
+
+    def restore_models_after_pause(self, args: argparse.Namespace, accelerator: Accelerator, restore_info: list) -> None:
+        for kind, model, device in restore_info:
+            if kind == "block_swap":
+                model.move_to_device_except_swap_blocks(device)
+                model.prepare_block_swap_before_forward()
+            else:
+                model.to(device)
+
+    # endregion
+
     # region SD/SDXL
 
     @staticmethod
@@ -1705,11 +1756,38 @@ class NetworkTrainer:
             run_controller.request_stop()
             return result
 
+        pause_restore_info = []
+
+        def command_pause(command: dict) -> dict:
+            nonlocal pause_restore_info
+            if run_controller.paused:
+                raise run_control.CommandError("the training is already paused")
+            try:
+                self.verify_pause_supported(args, accelerator)
+            except ValueError as e:
+                raise run_control.CommandError(str(e))
+            vram_before = run_controller.current_vram()
+            pause_restore_info = self.offload_models_for_pause(args, accelerator, unet, text_encoders, vae)
+            clean_memory_on_device(accelerator.device)
+            run_controller.set_paused(True, step=global_step)
+            return {"vram_before": vram_before, "vram_after": run_controller.current_vram()}
+
+        def command_resume(command: dict) -> dict:
+            nonlocal pause_restore_info
+            if not run_controller.paused:
+                raise run_control.CommandError("the training is not paused")
+            self.restore_models_after_pause(args, accelerator, pause_restore_info)
+            pause_restore_info = []
+            paused_sec = run_controller.set_paused(False, step=global_step)
+            return {"paused_sec": paused_sec}
+
         command_handlers = {
             "sample": command_sample,
             "save": command_save,
             "save_state": command_save_state,
             "stop": command_stop,
+            "pause": command_pause,
+            "resume": command_resume,
         }
 
         for epoch in range(epoch_to_start, num_train_epochs):
@@ -1833,6 +1911,10 @@ class NetworkTrainer:
                                 self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
 
                     run_controller.process_commands(command_handlers, step=global_step)
+                    if run_controller.paused:
+                        # the models are offloaded by the pause command. wait for the resume (or stop) command
+                        run_controller.wait_while_paused(command_handlers, step=global_step)
+                        progress_bar.unpause()
                     optimizer_train_fn()
 
                 current_loss = loss.detach().item()

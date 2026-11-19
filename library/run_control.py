@@ -58,6 +58,10 @@ COMMANDS_DONE_DIR = "done"  # in COMMANDS_DIR. the processed commands are moved 
 # a command file which cannot be parsed is retried for this time, in case it is still being written
 COMMAND_PARSE_GRACE_SEC = 2.0
 
+# while the training is paused, only these commands are executed. the others wait until the training is resumed
+COMMANDS_WHILE_PAUSED = ["resume", "stop", "pause"]
+PAUSE_POLL_INTERVAL_SEC = 0.5
+
 # key of the batch dict in which the step and the epoch of the batch are kept for the per-sample loss log
 BATCH_TAG_KEY = "run_control_step_epoch"
 
@@ -290,6 +294,8 @@ class RunController:
         # commands
         self._stop_requested = False
         self._commands_disabled_reason: Optional[str] = None
+        self._paused_since: Optional[float] = None
+        self._paused_total = 0.0  # seconds, excluded from the ETA
         self._processed_commands: set[str] = set()  # not to run a command twice if its file could not be removed
 
     @property
@@ -396,6 +402,7 @@ class RunController:
             "last_state": None,
             "last_sample": None,
             "last_command": None,
+            "paused_since": None,
             "anomalies": {},
             "error": None,
         }
@@ -542,9 +549,9 @@ class RunController:
                 status["timing"]["data_wait_sec_per_batch"] = self._window_data_wait / self._window_batches
                 status["timing"]["data_wait_ratio"] = min(1.0, self._window_data_wait / window_sec)
 
-        # ETA is from the average since the first step, which includes the time for sampling and saving
+        # ETA is from the average since the first step, which includes the time for sampling and saving (not the pauses)
         total_steps = global_step - self._first_step
-        total_sec = now - self._first_step_time
+        total_sec = now - self._first_step_time - self._paused_total
         max_train_steps = status["progress"]["max_train_steps"]
         if total_steps > 0 and total_sec > 0 and max_train_steps is not None:
             speed["eta_sec"] = max(0, max_train_steps - global_step) * total_sec / total_steps
@@ -687,6 +694,53 @@ class RunController:
     def request_stop(self):
         self._stop_requested = True
 
+    @property
+    def paused(self) -> bool:
+        return self._paused_since is not None
+
+    def set_paused(self, paused: bool, *, step: int) -> Optional[float]:
+        """Record that the training is paused / resumed. Returns the paused seconds when resumed.
+        The training script offloads / restores the models, and calls `wait_while_paused` after pausing."""
+        if not self.enabled or not self._started or paused == self.paused:
+            return None
+        now = time.time()
+        if paused:
+            self._paused_since = now
+            self._status["state"] = "paused"
+            self._status["paused_since"] = now
+            self.log_event("paused", step=step)
+            self._write_status(force=True)
+            return None
+
+        paused_sec = now - self._paused_since
+        self._paused_since = None
+        self._paused_total += paused_sec
+        self._status["state"] = "running"
+        self._status["paused_since"] = None
+        # the paused time must not be counted for the speed and for the wait for the data
+        self._window_step = self._status["progress"]["global_step"]
+        self._window_time = now
+        self._window_batches = 0
+        self._window_data_wait = 0.0
+        self._last_step_end = None
+        self.log_event("resumed", step=step, paused_sec=paused_sec)
+        self._write_status(force=True)
+        return paused_sec
+
+    def wait_while_paused(self, handlers: dict[str, Callable[[dict], Optional[dict]]], *, step: int):
+        """Block until the training is resumed or stopped by a command. Only the commands in COMMANDS_WHILE_PAUSED
+        are executed here; the others are left and executed after the training is resumed."""
+        while self.paused and not self._stop_requested:
+            self.process_commands(handlers, step=step, only=COMMANDS_WHILE_PAUSED)
+            if not self.paused or self._stop_requested:
+                break
+            self._write_status(force=False)  # keeps `updated_at` fresh, so that readers know the process is alive
+            time.sleep(PAUSE_POLL_INTERVAL_SEC)
+
+    def current_vram(self) -> list[dict]:
+        """The same as `vram` in the status."""
+        return self._get_vram()
+
     def disable_commands(self, reason: str):
         """Commands are answered with the error `reason` instead of being executed."""
         self._commands_disabled_reason = reason
@@ -731,7 +785,9 @@ class RunController:
         for name in self._list_command_files():
             self._finish_command(name, None, "expired", step=self._status["progress"]["global_step"], error=reason)
 
-    def process_commands(self, handlers: dict[str, Callable[[dict], Optional[dict]]], *, step: int):
+    def process_commands(
+        self, handlers: dict[str, Callable[[dict], Optional[dict]]], *, step: int, only: Optional[list[str]] = None
+    ):
         """Execute the command files in the commands directory. Call at a step boundary, after the optimizer step.
 
         A command file is a JSON object with `command` (the name) and the arguments of the command. `handlers` maps
@@ -739,6 +795,9 @@ class RunController:
         A handler raises CommandError if the command cannot be executed as requested: the error is reported to the
         sender and the training continues. Other exceptions are reported and raised again, the same as a failure of
         the scheduled sampling or saving: the training may be in the middle of the operation and cannot continue.
+
+        If `only` is given, the other commands are left in the directory for a later call.
+        The processing ends after a command which stops or pauses the training; the rest is left.
         """
         if not self.enabled or not self._started or self._finished:
             return
@@ -759,6 +818,8 @@ class RunController:
                 continue  # may be still being written. retried at the next step
 
             command_name = command["command"]
+            if only is not None and command_name not in only:
+                continue
             if self._commands_disabled_reason is not None:
                 self._finish_command(name, command, "error", step=step, error=self._commands_disabled_reason)
                 continue
@@ -769,6 +830,7 @@ class RunController:
                 error = f"unknown command `{command_name}`. available commands: {', '.join(sorted(handlers))}"
                 self._finish_command(name, command, "error", step=step, error=error)
                 continue
+            was_paused = self.paused
             try:
                 result = handler(command)
             except CommandError as e:
@@ -781,6 +843,8 @@ class RunController:
             self._finish_command(name, command, "ok", step=step, result=result or {})
             if self._stop_requested:
                 break  # the rest is expired at the end of the training
+            if self.paused != was_paused:
+                break  # paused: the rest waits. resumed: the rest is executed at the next step boundary
         self._write_status(force=False)
 
     # endregion

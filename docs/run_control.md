@@ -81,6 +81,10 @@ python tools/run_control_cli.py output/my_lora_run save_state
 # save the model and the state, and end the training
 python tools/run_control_cli.py output/my_lora_run stop
 
+# free the VRAM for a while, then continue
+python tools/run_control_cli.py output/my_lora_run pause
+python tools/run_control_cli.py output/my_lora_run resume
+
 # print status.json
 python tools/run_control_cli.py output/my_lora_run status
 ```
@@ -91,6 +95,8 @@ python tools/run_control_cli.py output/my_lora_run status
 | `save` | Save the model with the name of the current step (`<output_name>-step00001234.safetensors`) | `path` |
 | `save_state` | Save the state with the name of the current step. `--save_state` is not needed | `path` |
 | `stop` | Save the model and the state with the name of the current step (skip with `--no_save` / `--no_save_state`), then end the training normally | `checkpoint`, `state` |
+| `pause` | Move the base models to CPU to free the VRAM, and wait. The process and all its state stay as they are | `vram_before`, `vram_after` |
+| `resume` | Move the models back and continue a paused training | `paused_sec` |
 
 Common options: `--no_wait` returns without waiting for the result, `--timeout` is the time to wait in seconds (default 3600; the command is not canceled by the timeout). The exit code is 0 if the command is done, 1 if it failed or was not executed, 2 for the timeout.
 
@@ -114,6 +120,8 @@ Notes:
 | `save` | 現在のステップの名前（`<output_name>-step00001234.safetensors`）でモデルを保存します | `path` |
 | `save_state` | 現在のステップの名前で state を保存します。`--save_state` の指定は不要です | `path` |
 | `stop` | 現在のステップの名前でモデルと state を保存し（`--no_save` / `--no_save_state` で省略可）、学習を正常に終了します | `checkpoint`、`state` |
+| `pause` | ベースモデルを CPU に移して VRAM を空け、待機します。プロセスとその状態はそのまま残ります | `vram_before`、`vram_after` |
+| `resume` | モデルを元に戻し、一時停止中の学習を続けます | `paused_sec` |
 
 共通オプション: `--no_wait` は結果を待たずに戻ります。`--timeout` は待つ時間（秒）です（デフォルト 3600。タイムアウトしてもコマンドは取り消されません）。終了コードは、完了で 0、失敗または未実行で 1、タイムアウトで 2 です。
 
@@ -127,6 +135,32 @@ Notes:
 - コマンドは送った順に 1 つずつ実行されます。学習の開始前に送られたコマンドと、学習の終了時にまだ実行されていないコマンドは実行されません（結果の status は `expired` になります）。
 - マルチプロセス学習（`accelerate launch --multi_gpu`）では、現時点ではコマンドを受け付けません。レプリカ学習（`--replica_devices`）には対応しています。
 
+### Pausing / 一時停止
+
+`pause` frees the VRAM without ending the process, for example to use the GPU for something else for a while. `resume` continues the training from the same point; nothing has to be loaded again, and the training goes on exactly as if it had not been paused.
+
+- The base models on the GPU (the U-Net / DiT, and the text encoders and the VAE if they are on the GPU) are moved to CPU, and the cache of PyTorch is released. `vram_before` and `vram_after` in the result show the memory of PyTorch before and after (the same format as `vram` in `status.json`).
+- **Not everything is freed.** The network (LoRA) and the state of the optimizer stay on the GPU; they are small in LoRA training. The CUDA context of the process (a few hundred MB, not included in `vram_after`) also stays. For example, an Anima LoRA training went from about 4.2GB to 0.14GB allocated by PyTorch.
+- The models need the main memory (RAM) while they are on CPU.
+- While paused, `state` in `status.json` is `paused`, and `updated_at` keeps being updated. Only `resume` and `stop` are executed; other commands wait until the training is resumed. `stop` works while paused (the model and the state are saved, then the training ends).
+- Moving the models takes time in proportion to their size, both for `pause` and for `resume`.
+- The paused time is not counted for the speed and the ETA.
+- Not supported yet: `--block_swap_h2d_only` (the usual block swap, `--blocks_to_swap` without it, is supported), replica training (`--replica_devices`) and DeepSpeed. `pause` returns an error in these cases and the training continues.
+
+To free everything including the CUDA context and the RAM, use `stop` and continue later with `--resume` instead.
+
+`pause` は、プロセスを終了せずに VRAM を空けます。GPU をしばらく別の用途に使いたいときなどに使います。`resume` で同じ地点から学習を続けます。何も読み込み直す必要はなく、学習は一時停止しなかった場合とまったく同じように進みます。
+
+- GPU 上のベースモデル（U-Net / DiT。Text Encoder と VAE も GPU 上にあれば対象）を CPU に移し、PyTorch のキャッシュを解放します。結果の `vram_before` と `vram_after` は、その前後の PyTorch のメモリです（`status.json` の `vram` と同じ形式）。
+- **すべてが解放されるわけではありません。** ネットワーク（LoRA）と optimizer の状態は GPU に残ります（LoRA 学習では小さいものです）。プロセスの CUDA コンテキスト（数百 MB。`vram_after` には含まれません）も残ります。例として、Anima の LoRA 学習では PyTorch の確保量が約 4.2GB から 0.14GB になりました。
+- CPU に移している間、モデルの分のメインメモリ（RAM）が必要です。
+- 一時停止中は `status.json` の `state` が `paused` になり、`updated_at` は更新され続けます。実行されるのは `resume` と `stop` だけで、他のコマンドは再開まで待たされます。`stop` は一時停止中でも使えます（モデルと state を保存して学習を終了します）。
+- モデルの移動には、`pause` と `resume` のどちらでも、モデルの大きさに応じた時間がかかります。
+- 一時停止していた時間は、速度と ETA の計算に含まれません。
+- 未対応: `--block_swap_h2d_only`（通常の block swap、つまりこのオプションなしの `--blocks_to_swap` には対応しています）、レプリカ学習（`--replica_devices`）、DeepSpeed。これらの場合 `pause` はエラーを返し、学習は続きます。
+
+CUDA コンテキストや RAM も含めてすべてを解放したい場合は、代わりに `stop` を使い、後で `--resume` で続きを学習してください。
+
 ### Command files / コマンドファイル
 
 The CLI is a thin wrapper: a command is a JSON file in `<run directory>/commands/`, so any program (or an AI agent) can send commands by writing files.
@@ -139,6 +173,8 @@ The CLI is a thin wrapper: a command is a JSON file in `<run directory>/commands
 {"command": "save"}
 {"command": "save_state"}
 {"command": "stop", "save": true, "save_state": true}
+{"command": "pause"}
+{"command": "resume"}
 ```
 
 For `sample`, `overrides` uses the keys of the prompt: `width`, `height`, `seed`, `sample_steps`, `scale`, `negative_prompt` and so on.
@@ -196,7 +232,7 @@ CLI は薄いラッパーです。コマンドの実体は `<実行ディレク�
 
 | Field | Description |
 |---|---|
-| `state` | `starting` (before the first step, including the first sample generation), `running`, `finished`, `stopped` (ended by the `stop` command), `failed` (ended by an exception, see `error`), `interrupted` (Ctrl+C), `aborted` (exited before the training finished without an exception) |
+| `state` | `starting` (before the first step, including the first sample generation), `running`, `paused` (by the `pause` command, see `paused_since`), `finished`, `stopped` (ended by the `stop` command), `failed` (ended by an exception, see `error`), `interrupted` (Ctrl+C), `aborted` (exited before the training finished without an exception) |
 | `updated_at` | Unix time of the last update. All times in the files are Unix time in seconds |
 | `progress` | `global_step` is the number of optimizer steps. `epoch` is the current epoch, starting from 1 (`0` before the first epoch) |
 | `loss` | Loss of the last batch and its moving average (the same values as the progress bar and TensorBoard). `null` if the value is not finite |
@@ -216,7 +252,7 @@ If the process is killed (e.g. from the task manager, or by the out-of-memory ki
 
 | フィールド | 説明 |
 |---|---|
-| `state` | `starting`（最初のステップの前。最初のサンプル生成を含む）、`running`、`finished`、`stopped`（`stop` コマンドで終了）、`failed`（例外で終了。`error` を参照）、`interrupted`（Ctrl+C）、`aborted`（例外なしで学習完了前に終了） |
+| `state` | `starting`（最初のステップの前。最初のサンプル生成を含む）、`running`、`paused`（`pause` コマンドで一時停止中。`paused_since` を参照）、`finished`、`stopped`（`stop` コマンドで終了）、`failed`（例外で終了。`error` を参照）、`interrupted`（Ctrl+C）、`aborted`（例外なしで学習完了前に終了） |
 | `updated_at` | 最後に更新した Unix 時刻。ファイル内の時刻はすべて秒単位の Unix 時刻です |
 | `progress` | `global_step` は optimizer のステップ数。`epoch` は現在の epoch で 1 から始まります（最初の epoch の前は `0`） |
 | `loss` | 最後のバッチの loss とその移動平均（プログレスバーや TensorBoard と同じ値）。有限の値でないときは `null` |
@@ -250,6 +286,7 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 | `samples_generated` | `dir`, `files` | Sample images are generated |
 | `epoch_end` | `average_loss` | An epoch ends, after saving and sampling |
 | `anomaly` | `kind`, ... | The first non-finite loss of the run. Later ones are only counted in `status.json` |
+| `paused`, `resumed` | `paused_sec` (for `resumed`) | The training is paused / resumed by a command |
 | `command_received` | `file`, `command` | A command is read and its execution starts |
 | `command_finished` | `file`, `command`, `status`, `result` or `error` | A command is processed. The same content as the result file |
 | `run_end` | `state`, `error` | The training ends. `state` and `error` are the same as in `status.json` |
@@ -264,6 +301,7 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 | `samples_generated` | `dir`、`files` | サンプル画像の生成 |
 | `epoch_end` | `average_loss` | epoch の終了（保存とサンプル生成の後） |
 | `anomaly` | `kind` など | その実行で最初の非有限 loss。2 回目以降は `status.json` の回数にのみ反映されます |
+| `paused`、`resumed` | `paused_sec`（`resumed` のみ） | コマンドによる学習の一時停止 / 再開 |
 | `command_received` | `file`、`command` | コマンドを読み取り、実行を開始 |
 | `command_finished` | `file`、`command`、`status`、`result` または `error` | コマンドの処理完了。結果ファイルと同じ内容です |
 | `run_end` | `state`、`error` | 学習の終了。`state` と `error` は `status.json` と同じです |

@@ -14,6 +14,8 @@ Usage:
     python tools/run_control_cli.py <run directory> save
     python tools/run_control_cli.py <run directory> save_state
     python tools/run_control_cli.py <run directory> stop
+    python tools/run_control_cli.py <run directory> pause
+    python tools/run_control_cli.py <run directory> resume
 
 Exit code: 0 = done, 1 = the command failed or was not executed, 2 = timeout while waiting for the result.
 """
@@ -132,6 +134,9 @@ def setup_parser() -> argparse.ArgumentParser:
     p = add_command_parser("stop", "save the model and the state with the name of the current step, and end the training")
     p.add_argument("--no_save", action="store_true", help="do not save the model")
     p.add_argument("--no_save_state", action="store_true", help="do not save the state")
+
+    add_command_parser("pause", "move the models to CPU to free the VRAM, and wait for `resume` (or `stop`)")
+    add_command_parser("resume", "move the models back and continue a paused training")
     return parser
 
 
