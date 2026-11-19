@@ -208,12 +208,29 @@ python tools/analyze_run_loss.py output/my_lora_run --top 50 --min_count 5
 python tools/analyze_run_loss.py output/my_lora_run --json > loss_summary.json
 ```
 
-The loss depends strongly on the timestep, so the raw loss cannot be compared between samples. The script uses the *residual* instead: the relative difference from the mean loss of the samples in the same timestep bin (0 = average, +0.5 = 50% higher than the average at that noise level).
+### What the residual is
+
+The loss of a sample depends strongly on the timestep (the noise level) which was randomly drawn for it. For example, the loss at one timestep may be around 0.15 for every image, and around 0.35 at another. A loss of 0.30 is therefore high at the former timestep and low at the latter, and an image may look "hard" only because it happened to get timesteps with a high loss. The raw loss cannot be compared between samples or between images.
+
+The script uses the *residual* instead. It answers the question "how high is this loss compared with the other samples at a similar timestep?":
+
+1. The range of the timesteps is divided into bins (10 by default), and the mean loss of all samples in each bin is calculated.
+2. The residual of a sample is `loss / (mean loss of its bin) - 1`.
+
+| Residual | Meaning |
+|---|---|
+| `0` | The same as the average at that noise level |
+| `+0.5` | 50% higher than the average at that noise level (harder than the others) |
+| `-0.2` | 20% lower than the average at that noise level (easier than the others) |
+
+For example, if the mean loss of a bin is 0.20, a sample with the loss 0.30 in that bin has the residual `0.30 / 0.20 - 1 = +0.5`. The `mean_residual` of an image, a resolution and so on is the mean of the residuals of its samples.
+
+The residual is relative to the other samples of the same training: it tells which images are harder or easier than the others, not whether the training as a whole is going well. It is also still noisy when the number of the samples is small, because the timestep is not the only random factor (the noise itself is random too).
 
 It prints:
 
 - The loss by timestep, by resolution, by batch size and by directory of the images.
-- The images with the highest and the lowest residual. `slope` is the change of the residual per epoch (calculated when the image has three or more epochs). A high residual which does not go down may indicate a problem of the image or its caption, for example a mismatch between them; a high residual which is going down is an image that is being learned.
+- The images with the highest and the lowest mean residual. `slope` is the change of the residual per epoch (calculated when the image has three or more epochs). A high residual which does not go down may indicate a problem of the image or its caption, for example a mismatch between them; a high residual which is going down is an image that is being learned.
 
 | Option | Description |
 |---|---|
@@ -228,7 +245,24 @@ This is one way to look at the log, intended as a starting point. The log is pla
 
 `tools/analyze_run_loss.py` は `loss.jsonl` を集計します。ファイルを読むだけで、Python の標準ライブラリしか使わないため、学習の実行中や別のマシンでも実行できます。
 
-loss は timestep に強く依存するため、生の loss はサンプル間で比較できません。このスクリプトは代わりに *残差* を使います。同じ timestep 帯のサンプルの平均 loss からの相対的な差です（0 = 平均、+0.5 = そのノイズレベルの平均より 50% 高い）。
+### 残差とは
+
+サンプルの loss は、そのサンプルにランダムに割り当てられた timestep（ノイズの強さ）に強く依存します。たとえば、ある timestep ではどの画像でも loss が 0.15 前後、別の timestep では 0.35 前後、ということが起こります。このとき 0.30 という loss は、前者の timestep では高く、後者では低い値です。たまたま loss の高い timestep が割り当てられただけの画像が「難しい画像」に見えてしまうため、生の loss はサンプル間や画像間で比較できません。
+
+そこで、このスクリプトは代わりに *残差* を使います。「同じくらいの timestep の他のサンプルと比べて、この loss はどのくらい高いか」を表す値です。
+
+1. timestep の範囲をいくつかの帯（デフォルトは 10）に分け、帯ごとに全サンプルの平均 loss を求めます。
+2. サンプルの残差は `loss / (そのサンプルが属する帯の平均 loss) - 1` です。
+
+| 残差 | 意味 |
+|---|---|
+| `0` | そのノイズレベルの平均と同じ |
+| `+0.5` | そのノイズレベルの平均より 50% 高い（他より難しい） |
+| `-0.2` | そのノイズレベルの平均より 20% 低い（他より易しい） |
+
+たとえば、ある帯の平均 loss が 0.20 のとき、その帯で loss が 0.30 だったサンプルの残差は `0.30 / 0.20 - 1 = +0.5` です。画像や解像度などの `mean_residual` は、それに属するサンプルの残差の平均です。
+
+残差は、同じ学習の中の他のサンプルとの相対的な値です。どの画像が他より難しいか易しいかは分かりますが、学習全体がうまく進んでいるかどうかは分かりません。また、ランダムな要素は timestep だけではない（ノイズそのものもランダム）ため、サンプル数が少ないうちは残差もばらつきます。
 
 出力内容:
 
