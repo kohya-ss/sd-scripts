@@ -29,6 +29,7 @@ The shared training utilities (formerly a single large `train_util.py`) are spli
 | `library/hidden_states.py` | Text encoder hidden-state extraction (`get_hidden_states`, `get_hidden_states_sdxl`) |
 | `library/sampling.py` | Sample image generation during training (`sample_images`, prompt parsing) |
 | `library/logging_util.py` | `init_trackers` (TensorBoard / W&B), `LossRecorder` |
+| `library/run_control.py` | `RunController` for `--run_control`: writes `manifest.json` / `status.json` / `events.jsonl` to `<output_dir>/<output_name>_run` so the training can be observed from outside. Training loops call its hooks at step / epoch boundaries. See `docs/run_control.md` |
 | `library/train_util.py` | **Backward-compatibility shim only.** Re-exports the names above for external forks; do not add code here |
 
 Import conventions:

@@ -245,6 +245,8 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
             logger.info(f"removing old state: {state_dir_old}")
             shutil.rmtree(state_dir_old)
 
+    return state_dir
+
 
 def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
@@ -271,6 +273,8 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
                 logger.info(f"removing old state: {state_dir_old}")
                 shutil.rmtree(state_dir_old)
 
+    return state_dir
+
 
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
@@ -285,6 +289,8 @@ def save_state_on_train_end(args: argparse.Namespace, accelerator):
     if args.save_state_to_huggingface:
         logger.info("uploading last state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + LAST_STATE_NAME.format(model_name))
+
+    return state_dir
 
 
 def save_sd_model_on_train_end(
