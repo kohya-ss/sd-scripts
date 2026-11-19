@@ -557,6 +557,8 @@ class NetworkTrainer:
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
         loss = loss.mean(dim=list(range(1, loss.ndim)))  # mean over all dims except batch
+        if is_train:
+            self.run_controller.record_sample_losses(batch, timesteps, loss)  # before loss_weights and post_process_loss
 
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
         loss = loss * loss_weights
@@ -1667,7 +1669,7 @@ class NetworkTrainer:
                 if initial_step > 0:
                     initial_step -= 1
                     continue
-                run_controller.on_batch_fetched()
+                run_controller.on_batch_fetched(batch, global_step=global_step)
 
                 with accelerator.accumulate(training_model):
                     on_step_start_for_network(text_encoder, unet)
