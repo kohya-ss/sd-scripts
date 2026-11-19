@@ -1408,8 +1408,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
 
-        if self.debug_dataset:
-            example["image_keys"] = bucket[image_index : image_index + self.batch_size]
+        # for debug_dataset and the per-sample loss log of run control
+        example["image_keys"] = bucket[image_index : image_index + bucket_batch_size]
         return example
 
     @staticmethod

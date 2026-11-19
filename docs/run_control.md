@@ -15,6 +15,7 @@ The files are written to the *run directory* `<output_dir>/<output_name>_run`:
 | `manifest.json` | Resolved arguments, dataset summary, environment | Once at start |
 | `status.json` | Current snapshot: state, step, loss, learning rate, speed, ETA, VRAM, last outputs | Overwritten about every 5 seconds |
 | `events.jsonl` | Run start/end, checkpoints, states, sample images, anomalies. One JSON object per line | Appended |
+| `loss.jsonl` | Loss of each training sample with its image, timestep and resolution. One JSON object per line | Appended |
 
 This is observation only: the training itself does not change, and no file is written unless the option is specified. Sending commands to the running training (sample generation, saving, stopping) is planned as a later addition on the same directory.
 
@@ -29,6 +30,7 @@ Supported: the LoRA training scripts based on `train_network.py` (`train_network
 | `manifest.json` | 解決済みの引数、データセットの集計、実行環境 | 開始時に 1 回 |
 | `status.json` | 現在のスナップショット: 状態、ステップ、loss、学習率、速度、ETA、VRAM、最後の出力 | 約 5 秒ごとに上書き |
 | `events.jsonl` | 開始と終了、チェックポイント、state、サンプル画像、異常。1 行に 1 つの JSON オブジェクト | 追記 |
+| `loss.jsonl` | 学習した各サンプルの loss と、その画像、timestep、解像度。1 行に 1 つの JSON オブジェクト | 追記 |
 
 これは観測のみの機能です。学習そのものは変わらず、オプションを指定しない限りファイルは書き出されません。実行中の学習へのコマンド送信（サンプル生成、保存、停止）は、同じディレクトリへの追加として今後対応する予定です。
 
@@ -52,11 +54,11 @@ cat output/my_lora_run/status.json
 tail -f output/my_lora_run/events.jsonl
 ```
 
-**Note:** Unlike the TensorBoard logs, which are kept in a separate directory for each run, the run directory is reused if the training is started again with the same `output_dir` and `output_name` (the saved models are overwritten in the same way). `manifest.json` and `status.json` of the previous run are then overwritten; only `events.jsonl` is appended. Copy or rename the run directory before starting if the files of the previous run should be kept. Each run has its own `run_id`, which is in every file and every event, so the events of each run can be told apart.
+**Note:** Unlike the TensorBoard logs, which are kept in a separate directory for each run, the run directory is reused if the training is started again with the same `output_dir` and `output_name` (the saved models are overwritten in the same way). `manifest.json` and `status.json` of the previous run are then overwritten; `events.jsonl` and `loss.jsonl` are appended. Copy or rename the run directory before starting if the files of the previous run should be kept. Each run has its own `run_id`, which is in every file and every event, so the events of each run can be told apart (in `loss.jsonl`, each run starts with a line which has its `run_id`).
 
 学習コマンドに `--run_control` を追加します。ファイルは上の例では `output/my_lora_run/` に出力されます。
 
-**注意:** 実行ごとに別のディレクトリに残る TensorBoard のログとは異なり、同じ `output_dir` と `output_name` で再度学習を始めると、実行ディレクトリは再利用されます（保存されるモデルが上書きされるのと同じです）。このとき前回の `manifest.json` と `status.json` は上書きされ、`events.jsonl` だけが追記されます。前回のファイルを残したい場合は、開始前に実行ディレクトリをコピーするか名前を変更してください。実行ごとに固有の `run_id` がすべてのファイルとイベントに含まれるので、イベントは実行ごとに区別できます。
+**注意:** 実行ごとに別のディレクトリに残る TensorBoard のログとは異なり、同じ `output_dir` と `output_name` で再度学習を始めると、実行ディレクトリは再利用されます（保存されるモデルが上書きされるのと同じです）。このとき前回の `manifest.json` と `status.json` は上書きされ、`events.jsonl` と `loss.jsonl` には追記されます。前回のファイルを残したい場合は、開始前に実行ディレクトリをコピーするか名前を変更してください。実行ごとに固有の `run_id` がすべてのファイルとイベントに含まれるので、イベントは実行ごとに区別できます（`loss.jsonl` では、各実行の最初にその `run_id` を持つ行があります）。
 
 ## status.json
 
@@ -151,6 +153,99 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 | `anomaly` | `kind` など | その実行で最初の非有限 loss。2 回目以降は `status.json` の回数にのみ反映されます |
 | `run_end` | `state`、`error` | 学習の終了。`state` と `error` は `status.json` と同じです |
 
+## loss.jsonl
+
+The loss of each training sample, one line per sample. With this log the training can be examined per image, per resolution, per timestep and so on after (or during) the training. The recording is done in the training; the analysis is left to external tools (see the next section).
+
+The first line of each run has `run_id` only. The lines after it belong to that run.
+
+```json
+{"run_id": "20261119-213416-23004", "ts": 1795091656.95}
+{"step": 1, "epoch": 1, "image": "/path/to/img0.png", "timestep": 0.6127, "loss": 0.1795, "width": 640, "height": 384, "batch_size": 2, "loss_weight": 1.0}
+```
+
+| Field | Description |
+|---|---|
+| `step` | The optimizer step to which the sample contributes, starting from 1. With gradient accumulation, several batches have the same step |
+| `epoch` | Epoch, starting from 1 |
+| `image` | Key of the image in the dataset: the path of the image file, or the key in the metadata file |
+| `timestep` | Timestep of the sample. The scale depends on the model (e.g. 0 to 1000 for SD / SDXL, 0 to 1 for Anima). `null` if it is not available per sample |
+| `loss` | Loss of the sample, averaged over the pixels (tokens) of the sample. The weighting by the timestep of the model (`--weighting_scheme`) and the masked loss are included; `loss_weight` and the weightings applied after it (e.g. `--min_snr_gamma`) are not. `null` if the value is not finite |
+| `width`, `height` | Resolution of the sample (the bucket resolution) in pixels |
+| `batch_size` | Number of samples in the batch of the sample |
+| `loss_weight` | Weight of the sample in the batch: `--prior_loss_weight` for regularization images, 1 for the others |
+
+The lines are written together with `status.json`, about every 5 seconds, so the last few steps may be missing if the process is killed. The size of the file is about 200 bytes plus the length of the image path per sample (e.g. about 10MB for 10,000 steps with batch size 4).
+
+Each image is trained only once per epoch (times the number of repeats) with a random timestep, so the loss of one image is noisy. Take the number of the lines of the image into account when comparing images.
+
+学習した各サンプルの loss を、1 サンプル 1 行で記録します。このログにより、学習後（または学習中）に、画像別、解像度別、timestep 別などで学習の様子を調べられます。記録は学習側で行い、分析は外部のツールに任せます（次の節を参照）。
+
+各実行の最初の行は `run_id` だけを持ちます。それ以降の行がその実行のものです。
+
+| フィールド | 説明 |
+|---|---|
+| `step` | そのサンプルが寄与する optimizer のステップ（1 から）。gradient accumulation では複数のバッチが同じステップになります |
+| `epoch` | epoch（1 から） |
+| `image` | データセット内の画像のキー。画像ファイルのパス、またはメタデータファイル内のキーです |
+| `timestep` | そのサンプルの timestep。スケールはモデルによって異なります（SD / SDXL は 0〜1000、Anima は 0〜1 など）。サンプル単位で得られない場合は `null` |
+| `loss` | そのサンプルの loss（サンプル内の画素（トークン）で平均した値）。モデルの timestep による重みづけ（`--weighting_scheme`）と masked loss は含まれ、`loss_weight` とその後に適用される重みづけ（`--min_snr_gamma` など）は含まれません。有限の値でないときは `null` |
+| `width`、`height` | そのサンプルの解像度（バケットの解像度）。ピクセル単位です |
+| `batch_size` | そのサンプルが属するバッチのサンプル数 |
+| `loss_weight` | バッチ内でのサンプルの重み。正則化画像は `--prior_loss_weight`、それ以外は 1 です |
+
+行は `status.json` と同時（約 5 秒ごと）に書き込まれるため、プロセスが強制終了された場合は最後の数ステップ分が欠けることがあります。ファイルサイズは 1 サンプルあたり約 200 バイトに画像パスの長さを加えた程度です（バッチサイズ 4 で 10,000 ステップなら約 10MB）。
+
+各画像は 1 epoch に 1 回（× repeats 回）、ランダムな timestep でしか学習されないため、1 枚の画像の loss はばらつきが大きくなります。画像同士を比べるときは、その画像の行数も考慮してください。
+
+## Analyzing the Loss Log / loss ログの分析
+
+`tools/analyze_run_loss.py` summarizes `loss.jsonl`. It only reads the file and needs only the Python standard library, so it can also be run while the training is running, or on another machine.
+
+```bash
+python tools/analyze_run_loss.py output/my_lora_run
+python tools/analyze_run_loss.py output/my_lora_run --top 50 --min_count 5
+python tools/analyze_run_loss.py output/my_lora_run --json > loss_summary.json
+```
+
+The loss depends strongly on the timestep, so the raw loss cannot be compared between samples. The script uses the *residual* instead: the relative difference from the mean loss of the samples in the same timestep bin (0 = average, +0.5 = 50% higher than the average at that noise level).
+
+It prints:
+
+- The loss by timestep, by resolution, by batch size and by directory of the images.
+- The images with the highest and the lowest residual. `slope` is the change of the residual per epoch (calculated when the image has three or more epochs). A high residual which does not go down may indicate a problem of the image or its caption, for example a mismatch between them; a high residual which is going down is an image that is being learned.
+
+| Option | Description |
+|---|---|
+| `--run_id` | Run to analyze. The default is the last run in the file |
+| `--all_runs` | Analyze all runs in the file together, e.g. for a resumed training |
+| `--top` | Number of images in the highest / lowest lists (default 20) |
+| `--min_count` | Images with fewer lines than this are not listed (default 3) |
+| `--timestep_bins` | Number of timestep bins for the residual (default 10) |
+| `--json` | Print the full result, including all images, as JSON |
+
+This is one way to look at the log, intended as a starting point. The log is plain JSON Lines, so any other analysis is easy to write, or to ask an AI agent for.
+
+`tools/analyze_run_loss.py` は `loss.jsonl` を集計します。ファイルを読むだけで、Python の標準ライブラリしか使わないため、学習の実行中や別のマシンでも実行できます。
+
+loss は timestep に強く依存するため、生の loss はサンプル間で比較できません。このスクリプトは代わりに *残差* を使います。同じ timestep 帯のサンプルの平均 loss からの相対的な差です（0 = 平均、+0.5 = そのノイズレベルの平均より 50% 高い）。
+
+出力内容:
+
+- timestep 別、解像度別、バッチサイズ別、画像のディレクトリ別の loss。
+- 残差が最も高い画像と最も低い画像。`slope` は 1 epoch あたりの残差の変化です（その画像に 3 epoch 以上の記録があるときに計算します）。残差が高いまま下がらない画像は、画像またはキャプションに問題がある可能性があります（両者の不一致など）。残差が高くても下がっている画像は、学習が進んでいる途中の画像です。
+
+| オプション | 説明 |
+|---|---|
+| `--run_id` | 分析する実行。省略時はファイル内の最後の実行 |
+| `--all_runs` | ファイル内のすべての実行をまとめて分析します（学習を再開した場合など） |
+| `--top` | 残差の高い / 低い画像の一覧に表示する枚数（デフォルト 20） |
+| `--min_count` | 行数がこれより少ない画像は一覧に表示しません（デフォルト 3） |
+| `--timestep_bins` | 残差の計算に使う timestep 帯の数（デフォルト 10） |
+| `--json` | すべての画像を含む結果全体を JSON で出力します |
+
+これはログの見方のひとつで、出発点として用意したものです。ログは通常の JSON Lines なので、他の分析も簡単に書けますし、AI エージェントに依頼することもできます。
+
 ## manifest.json
 
 | Field | Description |
@@ -181,10 +276,10 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 
 - `manifest.json` and `status.json` are written to a temporary file and then renamed, so a reader never sees a partially written file.
 - On Windows, the rename fails while another process has `status.json` open. The update is then skipped and retried at the next step, so open the file only briefly (read it and close it).
-- `events.jsonl` is only appended. A reader can remember the position and read the new lines.
+- `events.jsonl` and `loss.jsonl` are only appended. A reader can remember the position and read the new lines. The last line may be incomplete while it is being written.
 - Errors in writing these files never stop the training. A warning is shown once.
 
 - `manifest.json` と `status.json` は一時ファイルに書いてからリネームするため、書きかけのファイルが読まれることはありません。
 - Windows では、他のプロセスが `status.json` を開いている間はリネームに失敗します。その場合は更新をスキップして次のステップで再試行するため、ファイルは短時間だけ開く（読んだらすぐ閉じる）ようにしてください。
-- `events.jsonl` は追記のみです。読む側は位置を覚えておき、新しい行だけを読めます。
+- `events.jsonl` と `loss.jsonl` は追記のみです。読む側は位置を覚えておき、新しい行だけを読めます。書き込み中は最後の行が不完全なことがあります。
 - これらのファイルの書き込みエラーで学習が止まることはありません。警告が 1 回表示されます。

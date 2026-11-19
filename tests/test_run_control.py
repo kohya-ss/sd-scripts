@@ -318,6 +318,85 @@ def test_no_accelerator_device(controller, monkeypatch):
     assert read_status(controller.run_dir)["vram"] == []
 
 
+def read_loss_rows(run_dir):
+    with open(os.path.join(run_dir, run_control.LOSS_FILE), encoding="utf-8") as f:
+        return [json.loads(line) for line in f]
+
+
+def make_batch(image_keys, sizes_hw=None):
+    import torch
+
+    batch = {"image_keys": image_keys, "loss_weights": torch.ones(len(image_keys))}
+    if sizes_hw is not None:
+        batch["target_sizes_hw"] = torch.LongTensor(sizes_hw)
+    return batch
+
+
+def test_sample_losses_are_recorded(controller):
+    import torch
+
+    controller.on_epoch_start(epoch=1)
+    batch = make_batch(["a.png", "b.png"], [[512, 768], [512, 768]])
+    controller.on_batch_fetched(batch, global_step=0)
+    losses = torch.tensor([0.25, 0.5], requires_grad=True)
+    controller.record_sample_losses(batch, torch.tensor([100, 900]), losses)
+    controller.on_step_end(global_step=1, loss=0.375, average_loss=0.375)  # written together with the status
+
+    rows = read_loss_rows(controller.run_dir)
+    assert rows[0]["run_id"] == controller.run_id and "image" not in rows[0]  # each run starts with its run_id
+    assert rows[1:] == [
+        {"step": 1, "epoch": 1, "image": "a.png", "timestep": 100.0, "loss": 0.25, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
+        {"step": 1, "epoch": 1, "image": "b.png", "timestep": 900.0, "loss": 0.5, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
+    ]
+
+
+def test_sample_losses_keep_the_step_of_their_batch(controller):
+    # in replica training a batch is processed later on another thread, when the next batch is already fetched
+    import torch
+
+    controller.on_epoch_start(epoch=1)
+    batch1 = make_batch(["a.png"])
+    batch2 = make_batch(["b.png"])
+    controller.on_batch_fetched(batch1, global_step=0)
+    controller.on_batch_fetched(batch2, global_step=1)
+    controller.on_epoch_start(epoch=2)
+    moved_batch1 = dict(batch1)  # a copy on another device
+    controller.record_sample_losses(batch2, torch.tensor([0.5]), torch.tensor([0.2]))
+    controller.record_sample_losses(moved_batch1, torch.tensor([0.5]), torch.tensor([0.1]))
+    controller.finish()  # the pending rows are written at the end
+
+    rows = read_loss_rows(controller.run_dir)[1:]
+    assert [(r["image"], r["step"], r["epoch"]) for r in rows] == [("b.png", 2, 1), ("a.png", 1, 1)]
+
+
+def test_sample_losses_with_missing_values(controller):
+    import torch
+
+    controller.record_sample_losses({"loss_weights": torch.ones(1)}, None, torch.tensor([0.1]))  # no image keys: skipped
+    batch = {"image_keys": ["a.png", "b.png"]}  # no size, no weight, not tagged
+    controller.record_sample_losses(batch, None, torch.tensor([0.1, float("nan")]))
+    controller.record_sample_losses(batch, torch.tensor(500), torch.tensor([0.1, 0.2]))  # timestep is not per sample
+    controller.finish()
+
+    rows = read_loss_rows(controller.run_dir)[1:]
+    assert len(rows) == 4
+    assert rows[0] == {
+        "step": None, "epoch": 0, "image": "a.png", "timestep": None, "loss": pytest.approx(0.1),
+        "width": None, "height": None, "batch_size": 2, "loss_weight": None,
+    }  # fmt: skip
+    assert rows[1]["loss"] is None  # non-finite
+    assert rows[2]["timestep"] is None
+
+
+def test_sample_losses_are_not_recorded_when_disabled():
+    import torch
+
+    rc = RunController(None)
+    rc.on_batch_fetched({"image_keys": ["a.png"]}, global_step=0)
+    rc.record_sample_losses({"image_keys": ["a.png"]}, None, torch.tensor([0.1]))
+    assert rc._pending_losses == []
+
+
 def test_to_json_safe():
     import numpy as np
     import torch

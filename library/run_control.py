@@ -6,6 +6,8 @@ can read while the training is running, without parsing TensorBoard event files:
 - ``manifest.json``: written once at start. Resolved arguments, dataset summary, environment.
 - ``status.json``: current snapshot (state, step, loss, lr, speed, ETA, VRAM, last outputs). Overwritten every few seconds.
 - ``events.jsonl``: append-only log, one JSON object per line (run start/end, checkpoints, states, samples, anomalies).
+- ``loss.jsonl``: append-only log of the loss of each training sample (image, timestep, loss, size). The analysis is
+  left to external tools, e.g. ``tools/analyze_run_loss.py``.
 
 Everything here is observation only and must never break the training: I/O errors are logged once and ignored.
 Only the main process writes; other processes get a disabled controller, whose methods do nothing.
@@ -44,6 +46,10 @@ RUN_DIR_SUFFIX = "_run"
 MANIFEST_FILE = "manifest.json"
 STATUS_FILE = "status.json"
 EVENTS_FILE = "events.jsonl"
+LOSS_FILE = "loss.jsonl"
+
+# key of the batch dict in which the step and the epoch of the batch are kept for the per-sample loss log
+BATCH_TAG_KEY = "run_control_step_epoch"
 
 SENSITIVE_ARGS = ["wandb_api_key", "huggingface_token"]
 REDACTED = "***"
@@ -264,6 +270,9 @@ class RunController:
         self._window_data_wait = 0.0
         self._last_step_end: Optional[float] = None
 
+        # per-sample losses, not yet written. (step, epoch, image keys, sizes, loss weights, timestep tensor, loss tensor)
+        self._pending_losses: list[tuple] = []
+
         # sample detection
         self._known_samples: set[str] = set()
         self._sample_dir_mtime: Optional[int] = None
@@ -294,11 +303,15 @@ class RunController:
             "epoch": self._epoch,
         }
         record.update(fields)
+        self._append_lines(EVENTS_FILE, [record])
+
+    def _append_lines(self, file_name: str, records: list[dict]):
         try:
-            with open(os.path.join(self.run_dir, EVENTS_FILE), "a", encoding="utf-8") as f:
-                f.write(json.dumps(to_json_safe(record), ensure_ascii=False, allow_nan=False) + "\n")
+            with open(os.path.join(self.run_dir, file_name), "a", encoding="utf-8") as f:
+                for record in records:
+                    f.write(json.dumps(to_json_safe(record), ensure_ascii=False, allow_nan=False) + "\n")
         except OSError as e:
-            self._warn_io_error(f"failed to write an event: {e}")
+            self._warn_io_error(f"failed to write to {file_name}: {e}")
 
     def _write_status(self, force: bool = False):
         if not self.enabled or not self._started:
@@ -306,6 +319,7 @@ class RunController:
         now = time.time()
         if not force and now - self._last_status_write < self.status_interval:
             return
+        self._flush_sample_losses()
         self._status["updated_at"] = now
         self._status["vram"] = self._get_vram()
         # if this fails (another process may be reading the file on Windows), it is retried at the next step
@@ -375,6 +389,8 @@ class RunController:
         self._scan_new_samples()
 
         self.log_event("run_start", step=0, run_dir=os.path.abspath(self.run_dir), manifest=MANIFEST_FILE)
+        # the file is appended over the runs, so each run starts with a line which has the run_id
+        self._append_lines(LOSS_FILE, [{"run_id": self.run_id, "ts": now}])
         self._write_status(force=True)
         self._install_exit_hooks()
         logger.info(f"run control is enabled. run directory: {self.run_dir}")
@@ -429,10 +445,17 @@ class RunController:
         self._epoch = epoch
         self._status["progress"]["epoch"] = epoch
 
-    def on_batch_fetched(self):
-        """Call at the top of the loop body, to measure the time waiting for the DataLoader."""
+    def on_batch_fetched(self, batch: Optional[dict] = None, *, global_step: Optional[int] = None):
+        """Call at the top of the loop body, to measure the time waiting for the DataLoader.
+
+        If `batch` and `global_step` (the number of optimizer steps done before this batch) are given, the batch is
+        tagged with the step and the epoch for `record_sample_losses`. The tag is kept in the batch because the batch
+        may be processed later on another thread (replica training).
+        """
         if not self.enabled or not self._started:
             return
+        if isinstance(batch, dict) and global_step is not None:
+            batch[BATCH_TAG_KEY] = (global_step + 1, self._epoch)
         if self._last_step_end is not None:
             self._window_data_wait += time.perf_counter() - self._last_step_end
             self._window_batches += 1
@@ -515,6 +538,74 @@ class RunController:
             self._window_time = now
             self._window_batches = 0
             self._window_data_wait = 0.0
+
+    def record_sample_losses(self, batch: dict, timesteps: Optional[torch.Tensor], losses: torch.Tensor):
+        """Call for each training batch with the loss of each sample, shape (B,), before it is averaged over the batch.
+
+        This only keeps the references to the (detached) tensors. They are converted and written to loss.jsonl later
+        together with the status, so that the training is not synchronized with the device here.
+        This may be called from another thread.
+        """
+        if not self.enabled or not self._started or self._finished:
+            return
+        image_keys = batch.get("image_keys")
+        if image_keys is None:
+            return  # the dataset does not provide the keys
+        step, epoch = batch.get(BATCH_TAG_KEY, (None, self._epoch))
+        sizes_hw = batch.get("target_sizes_hw")
+        self._pending_losses.append(
+            (
+                step,
+                epoch,
+                list(image_keys),
+                sizes_hw.tolist() if isinstance(sizes_hw, torch.Tensor) and not sizes_hw.is_cuda else sizes_hw,
+                batch.get("loss_weights"),
+                timesteps.detach() if isinstance(timesteps, torch.Tensor) else None,
+                losses.detach(),
+            )
+        )
+
+    def _flush_sample_losses(self):
+        if not self._pending_losses:
+            return
+        pending, self._pending_losses = self._pending_losses, []
+
+        def to_list(values, n):
+            if isinstance(values, torch.Tensor):
+                values = values.detach().float().reshape(-1).tolist() if values.numel() == n else None
+            if isinstance(values, (list, tuple)) and len(values) == n:
+                return list(values)
+            return [None] * n
+
+        rows = []
+        for step, epoch, image_keys, sizes_hw, loss_weights, timesteps, losses in pending:
+            try:
+                n = len(image_keys)
+                loss_values = to_list(losses, n)
+                timestep_values = to_list(timesteps, n)
+                weight_values = to_list(loss_weights, n)
+                if isinstance(sizes_hw, torch.Tensor):
+                    sizes_hw = sizes_hw.tolist()
+                if not isinstance(sizes_hw, (list, tuple)) or len(sizes_hw) != n:
+                    sizes_hw = [(None, None)] * n
+                for i in range(n):
+                    rows.append(
+                        {
+                            "step": step,
+                            "epoch": epoch,
+                            "image": image_keys[i],
+                            "timestep": timestep_values[i],
+                            "loss": loss_values[i],
+                            "width": sizes_hw[i][1],
+                            "height": sizes_hw[i][0],
+                            "batch_size": n,
+                            "loss_weight": weight_values[i],
+                        }
+                    )
+            except Exception:
+                pass  # e.g. the device is not usable any more after an error. the rows of this batch are lost
+        if rows:
+            self._append_lines(LOSS_FILE, rows)
 
     def on_epoch_end(self, *, global_step: int, average_loss: Optional[float] = None):
         """Call at the very end of each epoch, after saving and sampling."""
