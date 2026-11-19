@@ -51,6 +51,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+    - LoRA 学習スクリプトに `--run_control`（実験的機能）を追加しました。実行中の学習の状態を、`<output_dir>/<output_name>_run` に通常の JSON ファイルとして書き出します。`manifest.json`（解決済みの引数、データセットの集計、実行環境）、`status.json`（現在のステップ、loss、学習率、速度、ETA、VRAM、最後の出力）、`events.jsonl`（チェックポイント、state、サンプル画像、異常、終了時の状態とエラー）の 3 つです。TensorBoard のイベントファイルを解析しなくても、スクリプトや AI エージェントから学習を観測できます。現時点では観測のみで、実行中の学習へのコマンド送信は今後対応する予定です。詳細は[ドキュメント](./docs/run_control.md)をご覧ください。 [PR #2494](https://github.com/kohya-ss/sd-scripts/pull/2494)
     - MOSS-Image と Anima の学習に `--gradient_checkpointing_skip_blocks`（部分的な gradient checkpointing）を追加しました。末尾の N 個の transformer ブロックは backward で再計算せず activation を保持するため、余っている VRAM を速度に変換できます。VRAM 使用量とステップ時間は N に対して線形に変化します（デフォルトの `0` は従来どおりの動作）。最近の大きなモデルでは batch size を増やしてもスループットはほとんど向上しないため、24GB〜48GB の GPU で余った VRAM の使い道としてはこちらの方が有利なことが多いです。MOSS-Image の LoRA 学習（約 1MP、batch size 1、bf16）の実測では、`0` で 13.5GB / 1.29 s/step、`42`（全ブロック）で 55GB / 0.93 s/step、1 ブロックあたり約 1GB と 8.6 ms でした。`--compile`（ConvRot INT8）では 1 ブロックあたりの VRAM が約 0.6GB に下がります。Anima では `0` で 6.5GB / 0.85 s/step、`28` で 19.9GB / 0.53 s/step でした。表は [MOSS-Image](./docs/moss_image_train_network.md#71-vram-usage-optimization--vram-使用量の最適化) と [Anima](./docs/anima_train_network.md#71-vram-usage-optimization--vram使用量の最適化) のドキュメントをご覧ください。[PR #2485](https://github.com/kohya-ss/sd-scripts/pull/2485)
     - Anima と MOSS-Image の LoRA 学習に、1 プロセスでのマルチ GPU 学習（`--replica_devices`、実験的機能）を追加しました。DDP を使わず、1 つの Python プロセスがマスターと追加 GPU ごとのレプリカを駆動します。`accelerate launch --multi_gpu`、`torchrun`、NCCL / gloo が不要なため、Windows でもマルチ GPU の LoRA 学習ができます。`--cache_latents`、`--cache_text_encoder_outputs`、`--network_train_unet_only` が必須で、`train_batch_size` は DDP と同様にデバイスごとの値です。詳細は[ドキュメント](./docs/replica_training.md)をご覧ください。
         - 開発者向け: `train_network.py` の `NetworkTrainer.create_network`（引数からのネットワーク生成）と `NetworkTrainer.forward_backward`（1 micro-step）がオーバーライド可能なメソッドとして追加されました。レプリカ学習（`library/replica_trainer.py`）はモデルごとの trainer クラスの前に合成される mixin です。
@@ -164,6 +165,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
 * [インペインティング学習](./docs/inpainting_training.md)
 * [1プロセスでのマルチGPU学習（レプリカ学習）](./docs/replica_training.md)
+* [実行中の学習の観測（Run Control）](./docs/run_control.md)
 
 ### その他のドキュメント
 

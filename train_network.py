@@ -39,6 +39,7 @@ import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
 import library.sampling as sampling
+import library.run_control as run_control
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
@@ -67,6 +68,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.run_controller = run_control.RunController(None)  # disabled until train() creates the real one
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -964,6 +966,7 @@ class NetworkTrainer:
         metadata_to_save.update(sai_metadata)
 
         unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+        self.run_controller.record_checkpoint(ckpt_file, step=steps)
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 
@@ -1480,6 +1483,23 @@ class NetworkTrainer:
             use_dreambooth_method=use_dreambooth_method,
         )
 
+        # observation of the training from outside. no-op unless --run_control is specified
+        self.run_controller = run_control.create_run_controller(args, is_main_process)
+        if self.run_controller.enabled:
+            manifest = run_control.build_manifest(
+                args,
+                self._metadata,
+                training={
+                    "max_train_steps": args.max_train_steps,
+                    "num_train_epochs": num_train_epochs,
+                    "num_batches_per_epoch": len(train_dataloader),
+                    "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                    "num_processes": accelerator.num_processes,
+                },
+            )
+            self.run_controller.start(manifest, max_train_steps=args.max_train_steps, num_train_epochs=num_train_epochs)
+        run_controller = self.run_controller
+
         # calculate steps to skip when resuming or starting from a specific step
         initial_step = 0
         if args.initial_epoch is not None or args.initial_step is not None:
@@ -1558,6 +1578,7 @@ class NetworkTrainer:
         # For --sample_at_first
         optimizer_eval_fn()
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        run_controller.check_new_samples(step=global_step)
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
@@ -1629,6 +1650,7 @@ class NetworkTrainer:
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
+            run_controller.on_epoch_start(epoch=epoch + 1)
 
             self._metadata["ss_epoch"] = str(epoch + 1)
 
@@ -1645,6 +1667,7 @@ class NetworkTrainer:
                 if initial_step > 0:
                     initial_step -= 1
                     continue
+                run_controller.on_batch_fetched()
 
                 with accelerator.accumulate(training_model):
                     on_step_start_for_network(text_encoder, unet)
@@ -1717,6 +1740,7 @@ class NetworkTrainer:
                     self.sample_images(
                         accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
                     )
+                    run_controller.check_new_samples(step=global_step)
                     progress_bar.unpause()
 
                     # 指定ステップごとにモデルを保存
@@ -1735,7 +1759,8 @@ class NetworkTrainer:
                             )
 
                             if args.save_state:
-                                checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step)
+                                state_dir = checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step)
+                                run_controller.record_state(state_dir, step=global_step)
 
                             remove_step_no = checkpoint_io.get_remove_step_no(args, global_step)
                             if remove_step_no is not None:
@@ -1749,8 +1774,9 @@ class NetworkTrainer:
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
-                if is_tracking:
-                    logs = self.generate_step_logs(
+                step_logs = None
+                if is_tracking or run_controller.enabled:
+                    step_logs = self.generate_step_logs(
                         args,
                         current_loss,
                         avr_loss,
@@ -1763,7 +1789,8 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
-                    self.step_logging(accelerator, logs, global_step, epoch + 1)
+                    if is_tracking:
+                        self.step_logging(accelerator, step_logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
                 # for example, if validate_every_n_steps=100, validate at step 100, 200, 300, ...
@@ -1805,6 +1832,8 @@ class NetworkTrainer:
                     optimizer_train_fn()
                     accelerator.unwrap_model(network).train()
                     progress_bar.unpause()
+
+                run_controller.on_step_end(global_step=global_step, loss=current_loss, average_loss=avr_loss, logs=step_logs)
 
                 if global_step >= args.max_train_steps:
                     break
@@ -1881,11 +1910,14 @@ class NetworkTrainer:
                         self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
 
                     if args.save_state:
-                        checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
+                        state_dir = checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
+                        run_controller.record_state(state_dir, step=global_step)
 
             self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+            run_controller.check_new_samples(step=global_step)
             progress_bar.unpause()
             optimizer_train_fn()
+            run_controller.on_epoch_end(global_step=global_step, average_loss=loss_recorder.moving_average)
 
             # end of epoch
 
@@ -1899,7 +1931,8 @@ class NetworkTrainer:
         optimizer_eval_fn()
 
         if is_main_process and (args.save_state or args.save_state_on_train_end):
-            checkpoint_io.save_state_on_train_end(args, accelerator)
+            state_dir = checkpoint_io.save_state_on_train_end(args, accelerator)
+            run_controller.record_state(state_dir, step=global_step)
 
         if is_main_process:
             ckpt_name = checkpoint_io.get_last_ckpt_name(args, "." + args.save_model_as)
@@ -1916,6 +1949,8 @@ class NetworkTrainer:
 
             logger.info("model saved.")
 
+        run_controller.finish()
+
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -1930,6 +1965,7 @@ def setup_parser() -> argparse.ArgumentParser:
     args_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
+    run_control.add_run_control_arguments(parser)
 
     parser.add_argument(
         "--cpu_offload_checkpointing",

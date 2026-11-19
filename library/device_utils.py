@@ -70,6 +70,78 @@ def synchronize_device(device: Optional[Union[str, torch.device]]):
         torch.mps.synchronize()
 
 
+def get_device_descriptions() -> list[dict]:
+    r"""
+    Returns the accelerator devices (CUDA / XPU / MPS) as a list of `{"device", "name", "total_memory"}` for logging.
+    `device` is the device string in PyTorch such as "cuda:0". `total_memory` is in bytes, None if it is unknown.
+    """
+    devices = []
+    if HAS_CUDA:
+        for i in range(torch.cuda.device_count()):
+            try:
+                props = torch.cuda.get_device_properties(i)
+                devices.append({"device": f"cuda:{i}", "name": props.name, "total_memory": props.total_memory})
+            except Exception:
+                pass
+    if HAS_XPU:
+        for i in range(torch.xpu.device_count()):
+            try:
+                props = torch.xpu.get_device_properties(i)
+                total_memory = getattr(props, "total_memory", None)
+                devices.append({"device": f"xpu:{i}", "name": torch.xpu.get_device_name(i), "total_memory": total_memory})
+            except Exception:
+                pass
+    if HAS_MPS:
+        try:
+            total_memory = torch.mps.recommended_max_memory()
+        except Exception:
+            total_memory = None
+        devices.append({"device": "mps", "name": "Apple MPS", "total_memory": total_memory})
+    return devices
+
+
+def get_device_memory_stats() -> list[dict]:
+    r"""
+    Returns the memory used by this process on each accelerator device (CUDA / XPU / MPS), as a list of
+    `{"device", "allocated", "reserved", "peak_allocated"}` in bytes. A value is None if the backend does not provide it.
+    CUDA / XPU devices which this process does not use are omitted. Returns an empty list on CPU.
+    """
+    stats = []
+    for device_type, available in [("cuda", HAS_CUDA), ("xpu", HAS_XPU)]:
+        if not available:
+            continue
+        backend = getattr(torch, device_type)
+        try:
+            for i in range(backend.device_count()):
+                reserved = backend.memory_reserved(i)
+                peak = backend.max_memory_allocated(i)
+                if reserved == 0 and peak == 0:
+                    continue  # this process does not use the device
+                stats.append(
+                    {
+                        "device": f"{device_type}:{i}",
+                        "allocated": backend.memory_allocated(i),
+                        "reserved": reserved,
+                        "peak_allocated": peak,
+                    }
+                )
+        except Exception:
+            pass  # the memory functions are not available in this version of the backend
+    if HAS_MPS:
+        try:
+            stats.append(
+                {
+                    "device": "mps",
+                    "allocated": torch.mps.current_allocated_memory(),
+                    "reserved": torch.mps.driver_allocated_memory(),
+                    "peak_allocated": None,  # MPS does not track the peak
+                }
+            )
+        except Exception:
+            pass
+    return stats
+
+
 @functools.lru_cache(maxsize=None)
 def get_preferred_device() -> torch.device:
     r"""
