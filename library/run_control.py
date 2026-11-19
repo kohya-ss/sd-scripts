@@ -9,7 +9,11 @@ can read while the training is running, without parsing TensorBoard event files:
 - ``loss.jsonl``: append-only log of the loss of each training sample (image, timestep, loss, size). The analysis is
   left to external tools, e.g. ``tools/analyze_run_loss.py``.
 
-Everything here is observation only and must never break the training: I/O errors are logged once and ignored.
+The training can also be controlled from outside: command files (JSON) put into ``commands/`` are executed at the
+next step boundary, and the result is written to ``commands/done/``. The commands themselves (sample, save, stop ...)
+are handlers given by the training script. ``tools/run_control_cli.py`` sends commands from the command line.
+
+Writing these files must never break the training: I/O errors are logged once and ignored.
 Only the main process writes; other processes get a disabled controller, whose methods do nothing.
 
 See ``docs/run_control.md`` for the file formats.
@@ -17,6 +21,7 @@ See ``docs/run_control.md`` for the file formats.
 
 import argparse
 import atexit
+import contextlib
 import datetime
 import importlib.metadata
 import json
@@ -26,7 +31,7 @@ import platform
 import sys
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import torch
 
@@ -47,6 +52,11 @@ MANIFEST_FILE = "manifest.json"
 STATUS_FILE = "status.json"
 EVENTS_FILE = "events.jsonl"
 LOSS_FILE = "loss.jsonl"
+COMMANDS_DIR = "commands"  # command files (*.json) are put here from outside
+COMMANDS_DONE_DIR = "done"  # in COMMANDS_DIR. the processed commands are moved here with the result
+
+# a command file which cannot be parsed is retried for this time, in case it is still being written
+COMMAND_PARSE_GRACE_SEC = 2.0
 
 # key of the batch dict in which the step and the epoch of the batch are kept for the per-sample loss log
 BATCH_TAG_KEY = "run_control_step_epoch"
@@ -73,7 +83,11 @@ PACKAGES_IN_MANIFEST = [
 ]
 
 TRACEBACK_MAX_LINES = 30
-SAMPLE_DIR_SETTLE_NS = 2 * 1000**3
+
+
+class CommandError(Exception):
+    """Raised by a command handler when the command cannot be executed as requested (e.g. invalid arguments), before
+    anything is changed in the training. The message is returned to the sender and the training continues."""
 
 
 def add_run_control_arguments(parser: argparse.ArgumentParser):
@@ -238,15 +252,14 @@ def create_run_controller(args: argparse.Namespace, is_main_process: bool = True
     """Returns an enabled controller only if `--run_control` is specified and this is the main process."""
     if not getattr(args, "run_control", False) or not is_main_process:
         return RunController(None)
-    return RunController(get_run_dir(args), sample_dir=get_sample_dir(args))
+    return RunController(get_run_dir(args))
 
 
 class RunController:
     """Writes the status and the events of a training run. All methods are no-op if `run_dir` is None."""
 
-    def __init__(self, run_dir: Optional[str], *, sample_dir: Optional[str] = None, status_interval: float = 5.0):
+    def __init__(self, run_dir: Optional[str], *, status_interval: float = 5.0):
         self.run_dir = run_dir
-        self.sample_dir = sample_dir
         self.status_interval = status_interval
 
         self.run_id: Optional[str] = None
@@ -270,13 +283,14 @@ class RunController:
         self._window_data_wait = 0.0
         self._last_step_end: Optional[float] = None
 
-        # per-sample losses, not yet written. (step, epoch, image keys, sizes, loss weights, timestep tensor, loss tensor)
+        # per-sample losses, not yet written.
+        # (step, epoch, image keys, sizes, loss weights, (dataset, subset) indices, timestep tensor, loss tensor)
         self._pending_losses: list[tuple] = []
 
-        # sample detection
-        self._known_samples: set[str] = set()
-        self._sample_dir_mtime: Optional[int] = None
-        self._sample_dir_scan_time = 0
+        # commands
+        self._stop_requested = False
+        self._commands_disabled_reason: Optional[str] = None
+        self._processed_commands: set[str] = set()  # not to run a command twice if its file could not be removed
 
     @property
     def enabled(self) -> bool:
@@ -381,12 +395,13 @@ class RunController:
             "last_checkpoint": None,
             "last_state": None,
             "last_sample": None,
+            "last_command": None,
             "anomalies": {},
             "error": None,
         }
 
-        # samples which exist before the run are not reported
-        self._scan_new_samples()
+        # commands which were sent before this run started must not be executed (e.g. `stop` for the previous run)
+        self._expire_pending_commands("the command was sent before the training started")
 
         self.log_event("run_start", step=0, run_dir=os.path.abspath(self.run_dir), manifest=MANIFEST_FILE)
         # the file is appended over the runs, so each run starts with a line which has the run_id
@@ -396,10 +411,11 @@ class RunController:
         logger.info(f"run control is enabled. run directory: {self.run_dir}")
 
     def finish(self, state: str = "finished"):
-        """Write the final status. `state` is one of `finished`, `failed`, `interrupted`, `aborted`."""
+        """Write the final status. `state` is one of `finished`, `stopped`, `failed`, `interrupted`, `aborted`."""
         if not self.enabled or not self._started or self._finished:
             return
         self._finished = True
+        self._expire_pending_commands("the training ended before the command was executed")
         self._status["state"] = state
         self._status["error"] = self._error
         self._update_speed(time.time(), end_of_window=False)
@@ -553,6 +569,7 @@ class RunController:
             return  # the dataset does not provide the keys
         step, epoch = batch.get(BATCH_TAG_KEY, (None, self._epoch))
         sizes_hw = batch.get("target_sizes_hw")
+        subset_indices = batch.get("subset_indices")
         self._pending_losses.append(
             (
                 step,
@@ -560,6 +577,7 @@ class RunController:
                 list(image_keys),
                 sizes_hw.tolist() if isinstance(sizes_hw, torch.Tensor) and not sizes_hw.is_cuda else sizes_hw,
                 batch.get("loss_weights"),
+                list(subset_indices) if subset_indices is not None else None,
                 timesteps.detach() if isinstance(timesteps, torch.Tensor) else None,
                 losses.detach(),
             )
@@ -578,7 +596,7 @@ class RunController:
             return [None] * n
 
         rows = []
-        for step, epoch, image_keys, sizes_hw, loss_weights, timesteps, losses in pending:
+        for step, epoch, image_keys, sizes_hw, loss_weights, subset_indices, timesteps, losses in pending:
             try:
                 n = len(image_keys)
                 loss_values = to_list(losses, n)
@@ -588,12 +606,16 @@ class RunController:
                     sizes_hw = sizes_hw.tolist()
                 if not isinstance(sizes_hw, (list, tuple)) or len(sizes_hw) != n:
                     sizes_hw = [(None, None)] * n
+                if subset_indices is None or len(subset_indices) != n:
+                    subset_indices = [(None, None)] * n
                 for i in range(n):
                     rows.append(
                         {
                             "step": step,
                             "epoch": epoch,
                             "image": image_keys[i],
+                            "dataset": subset_indices[i][0],
+                            "subset": subset_indices[i][1],
                             "timestep": timestep_values[i],
                             "loss": loss_values[i],
                             "width": sizes_hw[i][1],
@@ -631,47 +653,134 @@ class RunController:
         self.log_event("state_saved", step=step, path=path)
         self._write_status(force=True)
 
-    def _scan_new_samples(self) -> list[str]:
-        """Returns the files newly added to the sample directory since the last call."""
-        if self.sample_dir is None:
-            return []
-        try:
-            mtime = os.stat(self.sample_dir).st_mtime_ns
-            # This is called at every step, so the directory is listed only if its modification time has changed.
-            # The same modification time is trusted only if the last listing was clearly later than it, because
-            # a file added within the timestamp granularity right after the listing does not change the time.
-            settled = self._sample_dir_scan_time - mtime > SAMPLE_DIR_SETTLE_NS
-            if mtime == self._sample_dir_mtime and settled:
-                return []  # no file is added or removed
-            scan_time = time.time_ns()
-            files = set(os.listdir(self.sample_dir))
-        except OSError:
-            return []  # the directory does not exist yet
-        self._sample_dir_mtime = mtime
-        self._sample_dir_scan_time = scan_time
-        new_files = sorted(files - self._known_samples)
-        self._known_samples = files
-        return new_files
-
-    def check_new_samples(self, *, step: int):
-        """Call after the sampling function, which decides by itself whether it generates images at this step.
-
-        The generated images are detected by watching the sample directory, so this works for every model.
-        """
+    @contextlib.contextmanager
+    def watch_samples(self, *, step: int):
+        """Wrap a call of the sampling function, which decides by itself whether it generates images at this step.
+        The images saved in the context are recorded."""
         if not self.enabled or not self._started:
+            yield
             return
-        new_files = self._scan_new_samples()
-        if not new_files:
+        import library.sampling as sampling  # heavy import, and the training scripts have it anyway
+
+        with sampling.collect_saved_samples() as saved:
+            yield
+        self.record_samples(saved, step=step)
+
+    def record_samples(self, paths: list[str], *, step: int):
+        if not self.enabled or not self._started or not paths:
             return
-        sample_dir = os.path.abspath(self.sample_dir)
-        self._status["last_sample"] = {
-            "dir": sample_dir,
-            "files": new_files,
+        sample_dir = os.path.abspath(os.path.dirname(paths[0]))
+        files = [os.path.basename(path) for path in paths]
+        self._status["last_sample"] = {"dir": sample_dir, "files": files, "step": step, "epoch": self._epoch, "time": time.time()}
+        self.log_event("samples_generated", step=step, dir=sample_dir, files=files)
+        self._write_status(force=True)
+
+    # endregion
+
+    # region commands
+
+    @property
+    def stop_requested(self) -> bool:
+        """True after `request_stop`. The training loop should end the training without the final save."""
+        return self._stop_requested
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def disable_commands(self, reason: str):
+        """Commands are answered with the error `reason` instead of being executed."""
+        self._commands_disabled_reason = reason
+
+    def _list_command_files(self) -> list[str]:
+        try:
+            with os.scandir(os.path.join(self.run_dir, COMMANDS_DIR)) as it:
+                names = [e.name for e in it if e.name.endswith(".json") and e.is_file()]
+        except OSError:
+            return []  # the directory does not exist: no command was sent
+        return sorted(name for name in names if name not in self._processed_commands)
+
+    def _finish_command(self, name: str, command: Optional[dict], status: str, *, step: int, **fields):
+        """Write the result to the done directory and remove the command file."""
+        now = time.time()
+        commands_dir = os.path.join(self.run_dir, COMMANDS_DIR)
+        record = {
+            "run_id": self.run_id,
+            "command": command,
+            "status": status,
             "step": step,
             "epoch": self._epoch,
-            "time": time.time(),
+            "finished_at": now,
+            **fields,
         }
-        self.log_event("samples_generated", step=step, dir=sample_dir, files=new_files)
-        self._write_status(force=True)
+        self._processed_commands.add(name)
+        try:
+            os.makedirs(os.path.join(commands_dir, COMMANDS_DONE_DIR), exist_ok=True)
+            if not write_json_atomic(os.path.join(commands_dir, COMMANDS_DONE_DIR, name), record):
+                self._warn_io_error(f"failed to write the result of the command {name}")
+            os.remove(os.path.join(commands_dir, name))
+        except OSError as e:
+            self._warn_io_error(f"failed to finish the command {name}: {e}")
+
+        command_name = command.get("command") if isinstance(command, dict) else None
+        self._status["last_command"] = {"file": name, "command": command_name, "status": status, "step": step, "time": now}
+        self.log_event("command_finished", step=step, file=name, command=command_name, status=status, **fields)
+
+    def _expire_pending_commands(self, reason: str):
+        if not self.enabled or not self._started:
+            return
+        for name in self._list_command_files():
+            self._finish_command(name, None, "expired", step=self._status["progress"]["global_step"], error=reason)
+
+    def process_commands(self, handlers: dict[str, Callable[[dict], Optional[dict]]], *, step: int):
+        """Execute the command files in the commands directory. Call at a step boundary, after the optimizer step.
+
+        A command file is a JSON object with `command` (the name) and the arguments of the command. `handlers` maps
+        the command name to a function which takes the command dict and returns the result dict.
+        A handler raises CommandError if the command cannot be executed as requested: the error is reported to the
+        sender and the training continues. Other exceptions are reported and raised again, the same as a failure of
+        the scheduled sampling or saving: the training may be in the middle of the operation and cannot continue.
+        """
+        if not self.enabled or not self._started or self._finished:
+            return
+        for name in self._list_command_files():
+            path = os.path.join(self.run_dir, COMMANDS_DIR, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    command = json.load(f)
+                if not isinstance(command, dict) or not isinstance(command.get("command"), str):
+                    raise ValueError("a command must be a JSON object with `command`")
+            except (OSError, ValueError) as e:
+                try:
+                    age = time.time() - os.stat(path).st_mtime
+                except OSError:
+                    continue  # removed by the sender
+                if age >= COMMAND_PARSE_GRACE_SEC:
+                    self._finish_command(name, None, "error", step=step, error=f"invalid command file: {e}")
+                continue  # may be still being written. retried at the next step
+
+            command_name = command["command"]
+            if self._commands_disabled_reason is not None:
+                self._finish_command(name, command, "error", step=step, error=self._commands_disabled_reason)
+                continue
+            self.log_event("command_received", step=step, file=name, command=command_name)
+            logger.info(f"run control: command `{command_name}` ({name}) at step {step}")
+            handler = handlers.get(command_name)
+            if handler is None:
+                error = f"unknown command `{command_name}`. available commands: {', '.join(sorted(handlers))}"
+                self._finish_command(name, command, "error", step=step, error=error)
+                continue
+            try:
+                result = handler(command)
+            except CommandError as e:
+                logger.warning(f"run control: command `{command_name}` was not executed: {e}")
+                self._finish_command(name, command, "error", step=step, error=str(e))
+                continue
+            except BaseException as e:
+                self._finish_command(name, command, "error", step=step, error=f"{type(e).__name__}: {e}")
+                raise
+            self._finish_command(name, command, "ok", step=step, result=result or {})
+            if self._stop_requested:
+                break  # the rest is expired at the end of the training
+        self._write_status(force=False)
 
     # endregion

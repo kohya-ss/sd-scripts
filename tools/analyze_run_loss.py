@@ -4,7 +4,7 @@ The loss of a sample depends strongly on the timestep which was drawn for it, so
 between samples. This script therefore uses the *residual*: the relative difference from the mean loss of the samples
 in the same timestep bin (0 = average, +0.5 = 50% higher than the average at that noise level).
 
-It prints the loss by timestep, by resolution, by batch size and by directory, and the images with the highest and the
+It prints the loss by timestep, by resolution, by batch size, by subset and by directory, and the images with the highest and the
 lowest residual. For each image, `slope` is the change of the residual per epoch: a high residual which does not
 decrease may indicate a problem of the image or its caption, but an image is seen only once per epoch (times the number
 of repeats), so the numbers are noisy when `count` is small.
@@ -149,6 +149,13 @@ def resolution_key(row: dict) -> str:
     return f"{row['width']}x{row['height']}"
 
 
+def subset_key(row: dict) -> str:
+    """`dataset-subset`: the indices in `metadata.ss_datasets` of manifest.json."""
+    if row.get("dataset") is None or row.get("subset") is None:
+        return "(unknown)"
+    return f"{row['dataset']}-{row['subset']}"
+
+
 def analyze(rows: list[dict], num_bins: int = 10) -> dict:
     """Returns the summary and the tables. `rows` is modified (`bin` and `residual` are added)."""
     timestep_bins = add_residuals(rows, num_bins)
@@ -159,6 +166,8 @@ def analyze(rows: list[dict], num_bins: int = 10) -> dict:
     by_batch_size.sort(key=lambda x: (x["batch_size"] is None, x["batch_size"]))
     by_directory = group_table(rows, lambda r: os.path.dirname(str(r["image"])), "directory")
     by_directory.sort(key=lambda x: x["directory"])
+    by_subset = group_table(rows, subset_key, "subset")
+    by_subset.sort(key=lambda x: x["subset"])
 
     steps = [r["step"] for r in rows if r.get("step") is not None]
     epochs = [r["epoch"] for r in rows if r.get("epoch") is not None]
@@ -175,6 +184,7 @@ def analyze(rows: list[dict], num_bins: int = 10) -> dict:
         "by_timestep": timestep_bins,
         "by_resolution": by_resolution,
         "by_batch_size": by_batch_size,
+        "by_subset": by_subset,
         "by_directory": by_directory,
         "by_image": image_table(rows),
     }
@@ -214,6 +224,7 @@ def print_report(run_id: str, result: dict, top: int, min_count: int):
     group_columns = ["count", "images", "mean_loss", "mean_residual"]
     print_table("Loss by resolution", result["by_resolution"], ["resolution"] + group_columns)
     print_table("Loss by batch size", result["by_batch_size"], ["batch_size"] + group_columns)
+    print_table("Loss by subset (dataset-subset)", result["by_subset"], ["subset"] + group_columns)
     print_table("Loss by directory", result["by_directory"], ["directory"] + group_columns)
 
     images = [x for x in result["by_image"] if x["count"] >= min_count]

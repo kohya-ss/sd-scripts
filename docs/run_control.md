@@ -1,4 +1,4 @@
-# Observing a Running Training (Run Control) / 実行中の学習の観測（Run Control）
+# Observing and Controlling a Running Training (Run Control) / 実行中の学習の観測と操作（Run Control）
 
 > **Experimental.** This feature is new. The file formats may change; `schema_version` in the files is incremented when they change incompatibly.
 >
@@ -16,8 +16,9 @@ The files are written to the *run directory* `<output_dir>/<output_name>_run`:
 | `status.json` | Current snapshot: state, step, loss, learning rate, speed, ETA, VRAM, last outputs | Overwritten about every 5 seconds |
 | `events.jsonl` | Run start/end, checkpoints, states, sample images, anomalies. One JSON object per line | Appended |
 | `loss.jsonl` | Loss of each training sample with its image, timestep and resolution. One JSON object per line | Appended |
+| `commands/` | Commands to the training (sample generation, saving, stopping) are put here as JSON files; the results are written to `commands/done/` | By the sender / the training |
 
-This is observation only: the training itself does not change, and no file is written unless the option is specified. Sending commands to the running training (sample generation, saving, stopping) is planned as a later addition on the same directory.
+Nothing changes in the training unless the option is specified, and the files only record the training. The exception is `commands/`: the training can be controlled from outside by putting command files there (see [Sending Commands](#sending-commands--コマンドの送信)).
 
 Supported: the LoRA training scripts based on `train_network.py` (`train_network.py`, `sdxl_train_network.py`, `sd3_train_network.py`, `flux_train_network.py`, `lumina_train_network.py`, `hunyuan_image_train_network.py`, `anima_train_network.py`, `moss_image_train_network.py`). With multi-process training (`accelerate launch --multi_gpu`), only the main process writes.
 
@@ -31,8 +32,9 @@ Supported: the LoRA training scripts based on `train_network.py` (`train_network
 | `status.json` | 現在のスナップショット: 状態、ステップ、loss、学習率、速度、ETA、VRAM、最後の出力 | 約 5 秒ごとに上書き |
 | `events.jsonl` | 開始と終了、チェックポイント、state、サンプル画像、異常。1 行に 1 つの JSON オブジェクト | 追記 |
 | `loss.jsonl` | 学習した各サンプルの loss と、その画像、timestep、解像度。1 行に 1 つの JSON オブジェクト | 追記 |
+| `commands/` | 学習へのコマンド（サンプル生成、保存、停止）を JSON ファイルとして置く場所。結果は `commands/done/` に書かれます | 送信側 / 学習側 |
 
-これは観測のみの機能です。学習そのものは変わらず、オプションを指定しない限りファイルは書き出されません。実行中の学習へのコマンド送信（サンプル生成、保存、停止）は、同じディレクトリへの追加として今後対応する予定です。
+オプションを指定しない限り学習には何の変化もなく、これらのファイルは学習を記録するだけです。例外は `commands/` で、ここにコマンドファイルを置くと外部から学習を操作できます（[コマンドの送信](#sending-commands--コマンドの送信)を参照）。
 
 対応スクリプト: `train_network.py` を基にした LoRA 学習スクリプト（`train_network.py`、`sdxl_train_network.py`、`sd3_train_network.py`、`flux_train_network.py`、`lumina_train_network.py`、`hunyuan_image_train_network.py`、`anima_train_network.py`、`moss_image_train_network.py`）。マルチプロセス学習（`accelerate launch --multi_gpu`）では、メインプロセスだけが書き込みます。
 
@@ -60,6 +62,112 @@ tail -f output/my_lora_run/events.jsonl
 
 **注意:** 実行ごとに別のディレクトリに残る TensorBoard のログとは異なり、同じ `output_dir` と `output_name` で再度学習を始めると、実行ディレクトリは再利用されます（保存されるモデルが上書きされるのと同じです）。このとき前回の `manifest.json` と `status.json` は上書きされ、`events.jsonl` と `loss.jsonl` には追記されます。前回のファイルを残したい場合は、開始前に実行ディレクトリをコピーするか名前を変更してください。実行ごとに固有の `run_id` がすべてのファイルとイベントに含まれるので、イベントは実行ごとに区別できます（`loss.jsonl` では、各実行の最初にその `run_id` を持つ行があります）。
 
+## Sending Commands / コマンドの送信
+
+A training running with `--run_control` accepts commands from outside. A command is executed after the next optimizer step, so the training is at a consistent point, and the training continues after it (except `stop`).
+
+`tools/run_control_cli.py` sends a command, waits for the result and prints it as JSON. It needs only the Python standard library.
+
+```bash
+# generate sample images now, with the current weights
+python tools/run_control_cli.py output/my_lora_run sample                       # all prompts in the prompt file
+python tools/run_control_cli.py output/my_lora_run sample --index 0 2 --seed 42 # the 1st and the 3rd prompts, with another seed
+python tools/run_control_cli.py output/my_lora_run sample --prompt "a cat on the sofa --w 1024 --h 1024 --d 1"
+
+# save the model / the state now
+python tools/run_control_cli.py output/my_lora_run save
+python tools/run_control_cli.py output/my_lora_run save_state
+
+# save the model and the state, and end the training
+python tools/run_control_cli.py output/my_lora_run stop
+
+# print status.json
+python tools/run_control_cli.py output/my_lora_run status
+```
+
+| Command | Action | Result |
+|---|---|---|
+| `sample` | Generate sample images with the current weights. `--index`: prompts in the prompt file (`--sample_prompts`) by position, from 0. `--prompt`: prompts in the syntax of the prompt file (`--w`, `--h`, `--d`, `--s`, `--l`, `--n` ...). Both can be given; without them, all prompts in the prompt file. `--seed`, `--steps`, `--width`, `--height`, `--scale`, `--negative_prompt` are applied to all prompts of the command | `files`: paths of the images |
+| `save` | Save the model with the name of the current step (`<output_name>-step00001234.safetensors`) | `path` |
+| `save_state` | Save the state with the name of the current step. `--save_state` is not needed | `path` |
+| `stop` | Save the model and the state with the name of the current step (skip with `--no_save` / `--no_save_state`), then end the training normally | `checkpoint`, `state` |
+
+Common options: `--no_wait` returns without waiting for the result, `--timeout` is the time to wait in seconds (default 3600; the command is not canceled by the timeout). The exit code is 0 if the command is done, 1 if it failed or was not executed, 2 for the timeout.
+
+Notes:
+
+- **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt (or `--negative_prompt` with another negative prompt) is then rejected with an error before the generation starts, and the training continues. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases.
+- The images of the `sample` command are saved to the same directory as the usual sample images. Their file names have numbers from 100 (`..._000123_100_...png`), not to overwrite the scheduled sample images of the same step.
+- `stop` does not save the model with the final name (`<output_name>.safetensors`), so that a stopped training is not taken as a finished one. `state` in `status.json` becomes `stopped`. The saved state can be used with `--resume` to continue the training.
+- A model saved by `save` or `stop` is not counted for `--save_last_n_steps`; it is not removed automatically.
+- If a command cannot be executed as requested (unknown command, index out of range, prompt which cannot be encoded), it is rejected before anything is done: the error is returned and the training continues. An unexpected error in a command (e.g. out of memory during the sample generation) ends the training, the same as an error in the scheduled sample generation or saving.
+- Commands are executed one at a time in the order they were sent. Commands sent before the training started, and commands not yet executed when the training ends, are not executed (the result has the status `expired`).
+- Commands are not accepted in multi-process training (`accelerate launch --multi_gpu`) for now. Replica training (`--replica_devices`) is supported.
+
+`--run_control` で実行中の学習は、外部からのコマンドを受け付けます。コマンドは次の optimizer ステップの後に実行されるため、学習は整合性のある地点で処理され、コマンドの後も学習は続きます（`stop` を除く）。
+
+`tools/run_control_cli.py` はコマンドを送り、結果を待って JSON で表示します。Python の標準ライブラリだけで動きます。
+
+| コマンド | 動作 | 結果 |
+|---|---|---|
+| `sample` | 現在の重みでサンプル画像を生成します。`--index`: プロンプトファイル（`--sample_prompts`）内のプロンプトを位置（0 から）で指定します。`--prompt`: プロンプトファイルと同じ書式（`--w`、`--h`、`--d`、`--s`、`--l`、`--n` など）のプロンプトです。両方指定でき、どちらも省略するとプロンプトファイルのすべてのプロンプトを使います。`--seed`、`--steps`、`--width`、`--height`、`--scale`、`--negative_prompt` は、そのコマンドのすべてのプロンプトに適用されます | `files`: 画像のパス |
+| `save` | 現在のステップの名前（`<output_name>-step00001234.safetensors`）でモデルを保存します | `path` |
+| `save_state` | 現在のステップの名前で state を保存します。`--save_state` の指定は不要です | `path` |
+| `stop` | 現在のステップの名前でモデルと state を保存し（`--no_save` / `--no_save_state` で省略可）、学習を正常に終了します | `checkpoint`、`state` |
+
+共通オプション: `--no_wait` は結果を待たずに戻ります。`--timeout` は待つ時間（秒）です（デフォルト 3600。タイムアウトしてもコマンドは取り消されません）。終了コードは、完了で 0、失敗または未実行で 1、タイムアウトで 2 です。
+
+注意点:
+
+- **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定する（または別のネガティブプロンプトを `--negative_prompt` で指定する）と、生成を始める前にエラーとして拒否され、学習は続きます。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。
+- `sample` コマンドの画像は、通常のサンプル画像と同じディレクトリに保存されます。同じステップの定期サンプル画像を上書きしないよう、ファイル名の番号は 100 から始まります（`..._000123_100_...png`）。
+- `stop` は最終的な名前（`<output_name>.safetensors`）ではモデルを保存しません。途中で止めた学習が、完了した学習と区別できるようにするためです。`status.json` の `state` は `stopped` になります。保存された state は `--resume` に指定して学習を再開できます。
+- `save` や `stop` で保存したモデルは `--save_last_n_steps` の対象外で、自動では削除されません。
+- コマンドを指示どおりに実行できない場合（不明なコマンド、範囲外の番号、エンコードできないプロンプト）は、何も実行する前に拒否します。エラーを返して学習を続けます。コマンド中の予期しないエラー（サンプル生成中のメモリ不足など）では学習が終了します。これは定期的なサンプル生成や保存でのエラーと同じ扱いです。
+- コマンドは送った順に 1 つずつ実行されます。学習の開始前に送られたコマンドと、学習の終了時にまだ実行されていないコマンドは実行されません（結果の status は `expired` になります）。
+- マルチプロセス学習（`accelerate launch --multi_gpu`）では、現時点ではコマンドを受け付けません。レプリカ学習（`--replica_devices`）には対応しています。
+
+### Command files / コマンドファイル
+
+The CLI is a thin wrapper: a command is a JSON file in `<run directory>/commands/`, so any program (or an AI agent) can send commands by writing files.
+
+1. Write the command to a temporary name in `commands/` and rename it to `<name>.json` (the training reads `*.json` only; the rename makes sure that it never reads a partially written file). Commands are executed in the order of the file names; the CLI uses `<time in nanoseconds>_<command>.json`.
+2. The training executes the command, writes the result to `commands/done/<name>.json` and removes the command file.
+
+```json
+{"command": "sample", "prompts": ["a cat on the sofa --w 1024 --h 1024"], "indices": [0], "overrides": {"seed": 42}}
+{"command": "save"}
+{"command": "save_state"}
+{"command": "stop", "save": true, "save_state": true}
+```
+
+For `sample`, `overrides` uses the keys of the prompt: `width`, `height`, `seed`, `sample_steps`, `scale`, `negative_prompt` and so on.
+
+The result file:
+
+```json
+{
+  "run_id": "20261119-222538-32888",
+  "command": {"command": "sample", "indices": [0], "overrides": {"seed": 5}},
+  "status": "ok",
+  "step": 4,
+  "epoch": 1,
+  "finished_at": 1795094750.47,
+  "result": {"files": ["/path/to/output/sample/my_lora_000004_100_20261119222550_5.png"]}
+}
+```
+
+`status` is `ok`, `error` (with `error`: the message) or `expired`. `step` and `epoch` are the ones at which the command was executed.
+
+CLI は薄いラッパーです。コマンドの実体は `<実行ディレクトリ>/commands/` に置く JSON ファイルなので、任意のプログラム（や AI エージェント）がファイルを書くだけでコマンドを送れます。
+
+1. コマンドを `commands/` 内の一時的な名前で書き、`<名前>.json` にリネームします（学習側は `*.json` だけを読みます。リネームにより、書きかけのファイルが読まれることはありません）。コマンドはファイル名の順に実行されます。CLI は `<ナノ秒単位の時刻>_<コマンド>.json` という名前を使います。
+2. 学習側はコマンドを実行し、結果を `commands/done/<名前>.json` に書いて、コマンドファイルを削除します。
+
+`sample` の `overrides` には、プロンプトのキー（`width`、`height`、`seed`、`sample_steps`、`scale`、`negative_prompt` など）を使います。
+
+結果ファイルの `status` は `ok`、`error`（`error` にメッセージ）、`expired` のいずれかです。`step` と `epoch` はコマンドを実行した時点の値です。
+
 ## status.json
 
 ```json
@@ -80,6 +188,7 @@ tail -f output/my_lora_run/events.jsonl
   "last_checkpoint": {"path": "...", "step": 100, "epoch": 1, "time": 1795079980.66},
   "last_state": {"path": "...", "step": 100, "epoch": 1, "time": 1795079980.93},
   "last_sample": {"dir": "...", "files": ["..."], "step": 100, "epoch": 1, "time": 1795079985.28},
+  "last_command": {"file": "1795094752976095000_save.json", "command": "save", "status": "ok", "step": 100, "time": 1795079990.11},
   "anomalies": {},
   "error": null
 }
@@ -87,7 +196,7 @@ tail -f output/my_lora_run/events.jsonl
 
 | Field | Description |
 |---|---|
-| `state` | `starting` (before the first step, including the first sample generation), `running`, `finished`, `failed` (ended by an exception, see `error`), `interrupted` (Ctrl+C), `aborted` (exited before the training finished without an exception) |
+| `state` | `starting` (before the first step, including the first sample generation), `running`, `finished`, `stopped` (ended by the `stop` command), `failed` (ended by an exception, see `error`), `interrupted` (Ctrl+C), `aborted` (exited before the training finished without an exception) |
 | `updated_at` | Unix time of the last update. All times in the files are Unix time in seconds |
 | `progress` | `global_step` is the number of optimizer steps. `epoch` is the current epoch, starting from 1 (`0` before the first epoch) |
 | `loss` | Loss of the last batch and its moving average (the same values as the progress bar and TensorBoard). `null` if the value is not finite |
@@ -97,6 +206,7 @@ tail -f output/my_lora_run/events.jsonl
 | `timing` | Time spent waiting for the next batch from the DataLoader, per batch and as the ratio to the total time. A high ratio means that data loading is the bottleneck |
 | `vram` | Memory of each device used by this process, as reported by PyTorch (`memory_allocated`, `memory_reserved`, `max_memory_allocated`). `device` is the device name in PyTorch, e.g. `cuda:0`. CUDA, XPU and MPS are supported; a value which the backend does not provide is `null` (MPS has no peak), and the list is empty on CPU |
 | `last_checkpoint`, `last_state`, `last_sample` | The last saved model, the last saved state and the last generated sample images |
+| `last_command` | The last processed command: the file name, the command, the status (`ok`, `error`, `expired`) and the step |
 | `anomalies` | Count by kind. Currently `non_finite_loss` (the loss was NaN or infinity) |
 | `error` | `type`, `message` and the last lines of `traceback` when the state is `failed` or `interrupted` |
 
@@ -106,7 +216,7 @@ If the process is killed (e.g. from the task manager, or by the out-of-memory ki
 
 | フィールド | 説明 |
 |---|---|
-| `state` | `starting`（最初のステップの前。最初のサンプル生成を含む）、`running`、`finished`、`failed`（例外で終了。`error` を参照）、`interrupted`（Ctrl+C）、`aborted`（例外なしで学習完了前に終了） |
+| `state` | `starting`（最初のステップの前。最初のサンプル生成を含む）、`running`、`finished`、`stopped`（`stop` コマンドで終了）、`failed`（例外で終了。`error` を参照）、`interrupted`（Ctrl+C）、`aborted`（例外なしで学習完了前に終了） |
 | `updated_at` | 最後に更新した Unix 時刻。ファイル内の時刻はすべて秒単位の Unix 時刻です |
 | `progress` | `global_step` は optimizer のステップ数。`epoch` は現在の epoch で 1 から始まります（最初の epoch の前は `0`） |
 | `loss` | 最後のバッチの loss とその移動平均（プログレスバーや TensorBoard と同じ値）。有限の値でないときは `null` |
@@ -116,6 +226,7 @@ If the process is killed (e.g. from the task manager, or by the out-of-memory ki
 | `timing` | DataLoader から次のバッチを待った時間（バッチあたり、および全体に対する割合）。割合が高い場合はデータ読み込みがボトルネックです |
 | `vram` | このプロセスが使っている各デバイスのメモリ（PyTorch の `memory_allocated`、`memory_reserved`、`max_memory_allocated`）。`device` は `cuda:0` のような PyTorch 上のデバイス名です。CUDA、XPU、MPS に対応しています。バックエンドが提供しない値は `null` になり（MPS にはピーク値がありません）、CPU では空のリストになります |
 | `last_checkpoint`、`last_state`、`last_sample` | 最後に保存したモデル、最後に保存した state、最後に生成したサンプル画像 |
+| `last_command` | 最後に処理したコマンド: ファイル名、コマンド、status（`ok`、`error`、`expired`）、ステップ |
 | `anomalies` | 種類ごとの回数。現在は `non_finite_loss`（loss が NaN または無限大）のみ |
 | `error` | `state` が `failed` または `interrupted` のときの `type`、`message`、`traceback` の末尾 |
 
@@ -139,6 +250,8 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 | `samples_generated` | `dir`, `files` | Sample images are generated |
 | `epoch_end` | `average_loss` | An epoch ends, after saving and sampling |
 | `anomaly` | `kind`, ... | The first non-finite loss of the run. Later ones are only counted in `status.json` |
+| `command_received` | `file`, `command` | A command is read and its execution starts |
+| `command_finished` | `file`, `command`, `status`, `result` or `error` | A command is processed. The same content as the result file |
 | `run_end` | `state`, `error` | The training ends. `state` and `error` are the same as in `status.json` |
 
 すべての行に `ts`（Unix 時刻）、`time`（ISO 8601 形式のローカル時刻）、`run_id`、`event`、`step`（optimizer のステップ数）、`epoch`（現在の epoch。1 から始まり、最初の epoch の前は `0`）があります。
@@ -151,6 +264,8 @@ Every line has `ts` (Unix time), `time` (local time in ISO 8601), `run_id`, `eve
 | `samples_generated` | `dir`、`files` | サンプル画像の生成 |
 | `epoch_end` | `average_loss` | epoch の終了（保存とサンプル生成の後） |
 | `anomaly` | `kind` など | その実行で最初の非有限 loss。2 回目以降は `status.json` の回数にのみ反映されます |
+| `command_received` | `file`、`command` | コマンドを読み取り、実行を開始 |
+| `command_finished` | `file`、`command`、`status`、`result` または `error` | コマンドの処理完了。結果ファイルと同じ内容です |
 | `run_end` | `state`、`error` | 学習の終了。`state` と `error` は `status.json` と同じです |
 
 ## loss.jsonl
@@ -161,7 +276,7 @@ The first line of each run has `run_id` only. The lines after it belong to that 
 
 ```json
 {"run_id": "20261119-213416-23004", "ts": 1795091656.95}
-{"step": 1, "epoch": 1, "image": "/path/to/img0.png", "timestep": 0.6127, "loss": 0.1795, "width": 640, "height": 384, "batch_size": 2, "loss_weight": 1.0}
+{"step": 1, "epoch": 1, "image": "/path/to/img0.png", "dataset": 0, "subset": 0, "timestep": 0.6127, "loss": 0.1795, "width": 640, "height": 384, "batch_size": 2, "loss_weight": 1.0}
 ```
 
 | Field | Description |
@@ -169,6 +284,7 @@ The first line of each run has `run_id` only. The lines after it belong to that 
 | `step` | The optimizer step to which the sample contributes, starting from 1. With gradient accumulation, several batches have the same step |
 | `epoch` | Epoch, starting from 1 |
 | `image` | Key of the image in the dataset: the path of the image file, or the key in the metadata file |
+| `dataset`, `subset` | Index of the dataset, and index of the subset in the dataset, from 0. They are the positions in `metadata.ss_datasets` of `manifest.json`: `ss_datasets[dataset].subsets[subset]` has the settings of the subset (`image_dir`, `num_repeats`, `is_reg` ...). `null` if they are not available |
 | `timestep` | Timestep of the sample. The scale depends on the model (e.g. 0 to 1000 for SD / SDXL, 0 to 1 for Anima). `null` if it is not available per sample |
 | `loss` | Loss of the sample, averaged over the pixels (tokens) of the sample. The weighting by the timestep of the model (`--weighting_scheme`) and the masked loss are included; `loss_weight` and the weightings applied after it (e.g. `--min_snr_gamma`) are not. `null` if the value is not finite |
 | `width`, `height` | Resolution of the sample (the bucket resolution) in pixels |
@@ -188,6 +304,7 @@ Each image is trained only once per epoch (times the number of repeats) with a r
 | `step` | そのサンプルが寄与する optimizer のステップ（1 から）。gradient accumulation では複数のバッチが同じステップになります |
 | `epoch` | epoch（1 から） |
 | `image` | データセット内の画像のキー。画像ファイルのパス、またはメタデータファイル内のキーです |
+| `dataset`、`subset` | データセットの番号と、そのデータセット内での subset の番号（0 から）。`manifest.json` の `metadata.ss_datasets` 内の位置に対応し、`ss_datasets[dataset].subsets[subset]` にその subset の設定（`image_dir`、`num_repeats`、`is_reg` など）があります。得られない場合は `null` |
 | `timestep` | そのサンプルの timestep。スケールはモデルによって異なります（SD / SDXL は 0〜1000、Anima は 0〜1 など）。サンプル単位で得られない場合は `null` |
 | `loss` | そのサンプルの loss（サンプル内の画素（トークン）で平均した値）。モデルの timestep による重みづけ（`--weighting_scheme`）と masked loss は含まれ、`loss_weight` とその後に適用される重みづけ（`--min_snr_gamma` など）は含まれません。有限の値でないときは `null` |
 | `width`、`height` | そのサンプルの解像度（バケットの解像度）。ピクセル単位です |
@@ -229,7 +346,7 @@ The residual is relative to the other samples of the same training: it tells whi
 
 It prints:
 
-- The loss by timestep, by resolution, by batch size and by directory of the images.
+- The loss by timestep, by resolution, by batch size, by subset (`dataset-subset`) and by directory of the images.
 - The images with the highest and the lowest mean residual. `slope` is the change of the residual per epoch (calculated when the image has three or more epochs). A high residual which does not go down may indicate a problem of the image or its caption, for example a mismatch between them; a high residual which is going down is an image that is being learned.
 
 | Option | Description |
@@ -266,7 +383,7 @@ This is one way to look at the log, intended as a starting point. The log is pla
 
 出力内容:
 
-- timestep 別、解像度別、バッチサイズ別、画像のディレクトリ別の loss。
+- timestep 別、解像度別、バッチサイズ別、subset 別（`データセット番号-subset 番号`）、画像のディレクトリ別の loss。
 - 残差が最も高い画像と最も低い画像。`slope` は 1 epoch あたりの残差の変化です（その画像に 3 epoch 以上の記録があるときに計算します）。残差が高いまま下がらない画像は、画像またはキャプションに問題がある可能性があります（両者の不一致など）。残差が高くても下がっている画像は、学習が進んでいる途中の画像です。
 
 | オプション | 説明 |
