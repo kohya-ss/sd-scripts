@@ -248,7 +248,8 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
     return state_dir
 
 
-def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+def save_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+    """Save the state with the name of the step. Returns the directory. Old states are not removed."""
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
     logger.info("")
@@ -260,6 +261,12 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
     if args.save_state_to_huggingface:
         logger.info("uploading state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + STEP_STATE_NAME.format(model_name, step_no))
+    return state_dir
+
+
+def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
+    state_dir = save_state_stepwise(args, accelerator, step_no)
 
     last_n_steps = args.save_last_n_steps_state if args.save_last_n_steps_state else args.save_last_n_steps
     if last_n_steps is not None:

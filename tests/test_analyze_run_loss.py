@@ -19,6 +19,8 @@ def write_log(path, runs):
 
 def make_row(image, epoch, timestep, loss, size=(512, 512), batch_size=2):
     return {
+        "dataset": 0,
+        "subset": 1 if image.startswith("dir_b") else 0,
         "step": epoch,
         "epoch": epoch,
         "image": image,
@@ -84,6 +86,7 @@ def test_group_tables():
     assert by_resolution["768x512"]["mean_residual"] > by_resolution["512x512"]["mean_residual"]
 
     assert [x["directory"] for x in result["by_directory"]] == ["dir_a", "dir_b"]
+    assert [(x["subset"], x["images"]) for x in result["by_subset"]] == [("0-0", 2), ("0-1", 2)]
     assert [x["batch_size"] for x in result["by_batch_size"]] == [2]
 
 
@@ -97,6 +100,7 @@ def test_rows_without_timestep_or_size():
     result = analyze_run_loss.analyze(rows)
     assert result["by_image"][0]["mean_residual"] == pytest.approx(0.0)
     assert result["by_resolution"][0]["resolution"] == "(unknown)"
+    assert result["by_subset"][0]["subset"] == "(unknown)"
 
 
 def test_main_prints_report_and_json(tmp_path, monkeypatch, capsys):

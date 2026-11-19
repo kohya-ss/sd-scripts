@@ -21,12 +21,13 @@ module.
 """
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 import re
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, Union
 
 import toml
 import torch
@@ -275,6 +276,127 @@ def load_prompts(prompt_file: str) -> List[Dict]:
     return prompts
 
 
+# region shared by the sampling functions of all models
+
+# When not None, the sampling functions generate these prompts regardless of the step / epoch and the prompt file.
+# The training is single-threaded around the sampling, so plain module variables are enough.
+_forced_prompts: Optional[List[Dict]] = None
+_saved_sample_collectors: List[List[str]] = []
+
+# The file names of the forced samples use numbers from this, not to overwrite the scheduled samples of the same step
+FORCED_PROMPT_ENUM_OFFSET = 100
+
+
+def should_sample_images(args: argparse.Namespace, epoch: Optional[int], steps: int) -> bool:
+    """Whether to generate sample images now. `epoch` is None for the call at each step, the epoch number at the epoch end."""
+    if _forced_prompts is not None:
+        return True
+    if steps == 0:
+        return bool(args.sample_at_first)
+    if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
+        return False
+    if args.sample_every_n_epochs is not None:
+        # sample_every_n_steps is ignored
+        return epoch is not None and epoch % args.sample_every_n_epochs == 0
+    return steps % args.sample_every_n_steps == 0 and epoch is None  # divisible, and not the end of an epoch
+
+
+def has_sample_prompts(args: argparse.Namespace) -> bool:
+    if _forced_prompts is not None:
+        return True
+    return args.sample_prompts is not None and os.path.isfile(args.sample_prompts)
+
+
+def get_sample_prompts(args: argparse.Namespace) -> List[Dict]:
+    """The prompts to generate now: the prompt file, or the forced prompts."""
+    if _forced_prompts is not None:
+        return [dict(p) for p in _forced_prompts]
+    return load_prompts(args.sample_prompts)
+
+
+def notify_sample_saved(path: str) -> None:
+    """The sampling functions call this for each saved image."""
+    for collector in _saved_sample_collectors:
+        collector.append(path)
+
+
+@contextlib.contextmanager
+def collect_saved_samples():
+    """Yields a list to which the paths of the images saved in the context are added."""
+    collector: List[str] = []
+    _saved_sample_collectors.append(collector)
+    try:
+        yield collector
+    finally:
+        for i, c in enumerate(_saved_sample_collectors):
+            if c is collector:
+                del _saved_sample_collectors[i]
+                break
+
+
+@contextlib.contextmanager
+def force_sample_prompts(prompts: List[Dict]):
+    """In the context, the sampling functions generate `prompts` (prompt dicts) at any step."""
+    global _forced_prompts
+    previous = _forced_prompts
+    _forced_prompts = prompts
+    try:
+        yield
+    finally:
+        _forced_prompts = previous
+
+
+def build_forced_prompts(
+    args: argparse.Namespace,
+    prompts: Optional[List[Union[str, Dict]]] = None,
+    indices: Optional[List[int]] = None,
+    overrides: Optional[Dict] = None,
+) -> List[Dict]:
+    """Build the prompt dicts for a sampling request from outside of the training schedule.
+
+    Args:
+        prompts: prompt lines in the syntax of the prompt file (e.g. "a cat --w 1024 --h 1024 --d 1"), or prompt dicts.
+        indices: indices of the prompts in the prompt file (`--sample_prompts`), starting from 0.
+        overrides: values to set to every prompt, with the keys of the prompt dict (`width`, `height`, `seed`,
+            `sample_steps`, `scale`, `negative_prompt`, ...). None values are ignored.
+
+    If neither `prompts` nor `indices` is given, all prompts in the prompt file are used.
+    Raises ValueError if the request is not valid.
+    """
+    result: List[Dict] = []
+
+    if indices or not prompts:
+        if args.sample_prompts is None or not os.path.isfile(args.sample_prompts):
+            raise ValueError("the prompt file (--sample_prompts) is required unless prompts are given")
+        file_prompts = load_prompts(args.sample_prompts)
+        if indices:
+            for index in indices:
+                if not isinstance(index, int) or isinstance(index, bool) or not (0 <= index < len(file_prompts)):
+                    raise ValueError(f"index {index} is out of range. the prompt file has {len(file_prompts)} prompts")
+                result.append(dict(file_prompts[index]))
+        else:
+            result.extend(file_prompts)
+
+    for prompt in prompts or []:
+        if isinstance(prompt, str):
+            result.append(line_to_prompt_dict(prompt))
+        elif isinstance(prompt, dict):
+            result.append(dict(prompt))
+        else:
+            raise ValueError(f"a prompt must be a string or a dict: {prompt!r}")
+
+    for i, prompt_dict in enumerate(result):
+        if overrides:
+            if not isinstance(overrides, dict):
+                raise ValueError("overrides must be a dict")
+            prompt_dict.update({k: v for k, v in overrides.items() if v is not None})
+        prompt_dict["enum"] = FORCED_PROMPT_ENUM_OFFSET + i
+    return result
+
+
+# endregion
+
+
 def sample_images_common(
     pipe_class,
     accelerator: Accelerator,
@@ -294,23 +416,12 @@ def sample_images_common(
     TODO Use strategies here
     """
 
-    if steps == 0:
-        if not args.sample_at_first:
-            return
-    else:
-        if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
-            return
-        if args.sample_every_n_epochs is not None:
-            # sample_every_n_steps は無視する
-            if epoch is None or epoch % args.sample_every_n_epochs != 0:
-                return
-        else:
-            if steps % args.sample_every_n_steps != 0 or epoch is not None:  # steps is not divisible or end of epoch
-                return
+    if not should_sample_images(args, epoch, steps):
+        return
 
     logger.info("")
     logger.info(f"generating sample images at step / サンプル画像生成 ステップ: {steps}")
-    if not os.path.isfile(args.sample_prompts):
+    if not has_sample_prompts(args):
         logger.error(f"No prompt file / プロンプトファイルがありません: {args.sample_prompts}")
         return
 
@@ -327,7 +438,7 @@ def sample_images_common(
         text_encoder = accelerator.unwrap_model(text_encoder)
 
     # read prompts
-    prompts = load_prompts(args.sample_prompts)
+    prompts = get_sample_prompts(args)
 
     default_scheduler = get_my_scheduler(sample_sampler=args.sample_sampler, v_parameterization=args.v_parameterization)
 
@@ -500,7 +611,9 @@ def sample_image_inference(
     seed_suffix = "" if seed is None else f"_{seed}"
     i: int = prompt_dict["enum"]
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
-    image.save(os.path.join(save_dir, img_filename))
+    img_path = os.path.join(save_dir, img_filename)
+    image.save(img_path)
+    notify_sample_saved(img_path)
 
     # send images to wandb if enabled
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:

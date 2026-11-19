@@ -28,8 +28,7 @@ def read_status(run_dir):
 def controller(tmp_path, monkeypatch):
     # do not leave hooks in the test process
     monkeypatch.setattr(RunController, "_install_exit_hooks", lambda self: None)
-    sample_dir = tmp_path / "sample"
-    rc = RunController(str(tmp_path / "model_run"), sample_dir=str(sample_dir), status_interval=0.0)
+    rc = RunController(str(tmp_path / "model_run"), status_interval=0.0)
     rc.start({"script": "test"}, max_train_steps=10, num_train_epochs=2)
     return rc
 
@@ -52,7 +51,9 @@ def test_disabled_controller_writes_nothing(tmp_path):
         rc.on_step_end(global_step=1, loss=0.1, average_loss=0.1)
         rc.record_checkpoint("a.safetensors", step=1)
         rc.record_state("a-state", step=1)
-        rc.check_new_samples(step=1)
+        with rc.watch_samples(step=1):
+            pass
+        rc.process_commands({"save": lambda command: pytest.fail("called")}, step=1)
         rc.on_epoch_end(global_step=1)
         rc.finish()
     assert os.listdir(tmp_path) == []
@@ -149,45 +150,148 @@ def test_checkpoint_and_state_are_recorded(controller, tmp_path):
     assert [e["epoch"] for e in events] == [0, 1, 1]  # every event has the current epoch
 
 
-def test_new_samples_are_detected(controller):
-    sample_dir = controller.sample_dir
-    controller.check_new_samples(step=1)  # the directory does not exist yet
+def test_samples_saved_in_the_context_are_recorded(controller, tmp_path):
+    from library import sampling
+
+    controller.on_epoch_start(epoch=1)
+    with controller.watch_samples(step=1):
+        pass  # the sampling function did not generate images at this step
     assert read_status(controller.run_dir)["last_sample"] is None
 
-    os.makedirs(sample_dir)
-    for name in ["a_000002_00.png", "a_000002_01.png"]:
-        open(os.path.join(sample_dir, name), "w").close()
-    controller.check_new_samples(step=2)
+    with controller.watch_samples(step=2):
+        sampling.notify_sample_saved(str(tmp_path / "sample" / "a_000002_00.png"))
+        sampling.notify_sample_saved(str(tmp_path / "sample" / "a_000002_01.png"))
+    sampling.notify_sample_saved(str(tmp_path / "sample" / "outside.png"))  # not in the context
 
     last_sample = read_status(controller.run_dir)["last_sample"]
     assert last_sample["files"] == ["a_000002_00.png", "a_000002_01.png"]
-    assert last_sample["step"] == 2
-
-    controller.check_new_samples(step=3)  # nothing new
+    assert last_sample["dir"] == os.path.abspath(str(tmp_path / "sample"))
+    assert (last_sample["step"], last_sample["epoch"]) == (2, 1)
     samples = [e for e in read_events(controller.run_dir) if e["event"] == "samples_generated"]
     assert len(samples) == 1
 
 
-def test_sample_dir_is_not_listed_again_once_settled(controller, monkeypatch):
-    os.makedirs(controller.sample_dir)
-    controller.check_new_samples(step=1)
-    # pretend that the last listing was long after the last change of the directory
-    controller._sample_dir_scan_time += 10 * run_control.SAMPLE_DIR_SETTLE_NS
+def put_command(run_dir, name, command):
+    commands_dir = os.path.join(run_dir, run_control.COMMANDS_DIR)
+    os.makedirs(commands_dir, exist_ok=True)
+    path = os.path.join(commands_dir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(command if isinstance(command, str) else json.dumps(command))
+    return path
 
-    monkeypatch.setattr(run_control.os, "listdir", lambda path: pytest.fail("listed again"))
-    controller.check_new_samples(step=2)
+
+def read_command_result(run_dir, name):
+    return read_json(os.path.join(run_dir, run_control.COMMANDS_DIR, run_control.COMMANDS_DONE_DIR, name))
 
 
-def test_existing_samples_are_not_reported(tmp_path, monkeypatch):
+def test_commands_are_executed_in_order_and_results_are_written(controller):
+    calls = []
+
+    def save(command):
+        calls.append(command)
+        return {"path": "model-step00000003.safetensors"}
+
+    controller.process_commands({"save": save}, step=1)  # no commands directory yet
+    controller.on_epoch_start(epoch=1)
+    path2 = put_command(controller.run_dir, "0002_save.json", {"command": "save", "note": "second"})
+    path1 = put_command(controller.run_dir, "0001_save.json", {"command": "save", "note": "first"})
+    put_command(controller.run_dir, "0003_save.json.tmp", {"command": "save", "note": "being written"})
+    controller.process_commands({"save": save}, step=3)
+
+    assert [c["note"] for c in calls] == ["first", "second"]
+    assert not os.path.exists(path1) and not os.path.exists(path2)  # moved to the done directory
+    result = read_command_result(controller.run_dir, "0001_save.json")
+    assert result["status"] == "ok"
+    assert result["result"] == {"path": "model-step00000003.safetensors"}
+    assert result["command"] == {"command": "save", "note": "first"}
+    assert (result["step"], result["epoch"], result["run_id"]) == (3, 1, controller.run_id)
+
+    events = [(e["event"], e.get("status")) for e in read_events(controller.run_dir) if e["event"].startswith("command")]
+    assert events == [("command_received", None), ("command_finished", "ok")] * 2
+    assert read_status(controller.run_dir)["last_command"]["file"] == "0002_save.json"
+
+    controller.process_commands({"save": save}, step=4)  # nothing is executed twice
+    assert len(calls) == 2
+
+
+def test_command_errors_are_reported_and_training_continues(controller):
+    def sample(command):
+        raise ValueError("index 9 is out of range")
+
+    put_command(controller.run_dir, "1_sample.json", {"command": "sample", "indices": [9]})
+    put_command(controller.run_dir, "2_unknown.json", {"command": "pause"})
+    controller.process_commands({"sample": sample}, step=1)
+
+    result = read_command_result(controller.run_dir, "1_sample.json")
+    assert (result["status"], result["error"]) == ("error", "index 9 is out of range")
+    result = read_command_result(controller.run_dir, "2_unknown.json")
+    assert result["status"] == "error"
+    assert "unknown command `pause`" in result["error"] and "sample" in result["error"]
+
+
+def test_unexpected_error_of_a_command_is_reported_and_raised(controller):
+    def save(command):
+        raise RuntimeError("disk full")
+
+    put_command(controller.run_dir, "1_save.json", {"command": "save"})
+    with pytest.raises(RuntimeError):
+        controller.process_commands({"save": save}, step=1)
+    result = read_command_result(controller.run_dir, "1_save.json")
+    assert (result["status"], result["error"]) == ("error", "RuntimeError: disk full")
+
+
+def test_invalid_command_file_is_retried_then_rejected(controller, monkeypatch):
+    path = put_command(controller.run_dir, "1_save.json", '{"command": "sa')  # may be still being written
+    controller.process_commands({}, step=1)
+    assert os.path.exists(path)  # left for the next step
+
+    monkeypatch.setattr(run_control, "COMMAND_PARSE_GRACE_SEC", -1.0)  # negative: the clocks may differ a little
+    controller.process_commands({}, step=2)
+    assert not os.path.exists(path)
+    result = read_command_result(controller.run_dir, "1_save.json")
+    assert result["status"] == "error" and "invalid command file" in result["error"]
+
+    put_command(controller.run_dir, "2_list.json", "[1, 2]")
+    controller.process_commands({}, step=3)
+    assert "must be a JSON object" in read_command_result(controller.run_dir, "2_list.json")["error"]
+
+
+def test_stop_command_ends_the_processing_and_the_rest_expires(controller):
+    def stop(command):
+        controller.request_stop()
+        return {"checkpoint": "a.safetensors"}
+
+    put_command(controller.run_dir, "1_stop.json", {"command": "stop"})
+    put_command(controller.run_dir, "2_save.json", {"command": "save"})
+    assert not controller.stop_requested
+    controller.process_commands({"stop": stop, "save": lambda command: pytest.fail("called after stop")}, step=5)
+    assert controller.stop_requested
+
+    controller.finish("stopped")
+    assert read_status(controller.run_dir)["state"] == "stopped"
+    result = read_command_result(controller.run_dir, "2_save.json")
+    assert result["status"] == "expired"
+    controller.process_commands({"save": lambda command: pytest.fail("called after finish")}, step=6)
+
+
+def test_disabled_commands_are_answered_with_the_reason(controller):
+    controller.disable_commands("commands are not supported in multi-process training")
+    put_command(controller.run_dir, "1_save.json", {"command": "save"})
+    controller.process_commands({"save": lambda command: pytest.fail("called")}, step=1)
+    result = read_command_result(controller.run_dir, "1_save.json")
+    assert (result["status"], result["error"]) == ("error", "commands are not supported in multi-process training")
+
+
+def test_commands_sent_before_the_run_are_expired(tmp_path, monkeypatch):
     monkeypatch.setattr(RunController, "_install_exit_hooks", lambda self: None)
-    sample_dir = tmp_path / "sample"
-    sample_dir.mkdir()
-    (sample_dir / "old.png").touch()
-    rc = RunController(str(tmp_path / "run"), sample_dir=str(sample_dir), status_interval=0.0)
+    run_dir = str(tmp_path / "run")
+    put_command(run_dir, "1_stop.json", {"command": "stop"})  # e.g. sent to the previous run after it ended
+    rc = RunController(run_dir, status_interval=0.0)
     rc.start({})
-    (sample_dir / "new.png").touch()
-    rc.check_new_samples(step=1)
-    assert read_status(rc.run_dir)["last_sample"]["files"] == ["new.png"]
+    rc.process_commands({"stop": lambda command: pytest.fail("called")}, step=1)
+    result = read_command_result(run_dir, "1_stop.json")
+    assert result["status"] == "expired"
+    assert "before the training started" in result["error"]
 
 
 def test_finish_and_exit_states(controller):
@@ -327,6 +431,7 @@ def make_batch(image_keys, sizes_hw=None):
     import torch
 
     batch = {"image_keys": image_keys, "loss_weights": torch.ones(len(image_keys))}
+    batch["subset_indices"] = [(0, i) for i in range(len(image_keys))]
     if sizes_hw is not None:
         batch["target_sizes_hw"] = torch.LongTensor(sizes_hw)
     return batch
@@ -345,8 +450,8 @@ def test_sample_losses_are_recorded(controller):
     rows = read_loss_rows(controller.run_dir)
     assert rows[0]["run_id"] == controller.run_id and "image" not in rows[0]  # each run starts with its run_id
     assert rows[1:] == [
-        {"step": 1, "epoch": 1, "image": "a.png", "timestep": 100.0, "loss": 0.25, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
-        {"step": 1, "epoch": 1, "image": "b.png", "timestep": 900.0, "loss": 0.5, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
+        {"step": 1, "epoch": 1, "image": "a.png", "dataset": 0, "subset": 0, "timestep": 100.0, "loss": 0.25, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
+        {"step": 1, "epoch": 1, "image": "b.png", "dataset": 0, "subset": 1, "timestep": 900.0, "loss": 0.5, "width": 768, "height": 512, "batch_size": 2, "loss_weight": 1.0},
     ]
 
 
@@ -381,7 +486,7 @@ def test_sample_losses_with_missing_values(controller):
     rows = read_loss_rows(controller.run_dir)[1:]
     assert len(rows) == 4
     assert rows[0] == {
-        "step": None, "epoch": 0, "image": "a.png", "timestep": None, "loss": pytest.approx(0.1),
+        "step": None, "epoch": 0, "image": "a.png", "dataset": None, "subset": None, "timestep": None, "loss": pytest.approx(0.1),
         "width": None, "height": None, "batch_size": 2, "loss_weight": None,
     }  # fmt: skip
     assert rows[1]["loss"] is None  # non-finite

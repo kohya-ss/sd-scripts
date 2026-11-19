@@ -971,6 +971,7 @@ class NetworkTrainer:
         self.run_controller.record_checkpoint(ckpt_file, step=steps)
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
+        return ckpt_file
 
     def _remove_model(self, *, args: argparse.Namespace, accelerator: Accelerator, old_ckpt_name: str):
         old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
@@ -1501,6 +1502,9 @@ class NetworkTrainer:
             )
             self.run_controller.start(manifest, max_train_steps=args.max_train_steps, num_train_epochs=num_train_epochs)
         run_controller = self.run_controller
+        if accelerator.num_processes > 1:
+            # the commands would have to be synchronized between the processes
+            run_controller.disable_commands("commands are not supported in multi-process training")
 
         # calculate steps to skip when resuming or starting from a specific step
         initial_step = 0
@@ -1579,8 +1583,8 @@ class NetworkTrainer:
 
         # For --sample_at_first
         optimizer_eval_fn()
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
-        run_controller.check_new_samples(step=global_step)
+        with run_controller.watch_samples(step=global_step):
+            self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
@@ -1648,6 +1652,59 @@ class NetworkTrainer:
                 elif accelerator.device.type == "mps":
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
+
+        # commands from outside (run control). They are executed after an optimizer step, in the eval mode of the optimizer.
+        # `global_step` and `epoch` are the values at that time.
+        def command_sample(command: dict) -> dict:
+            prompts = sampling.build_forced_prompts(args, command.get("prompts"), command.get("indices"), command.get("overrides"))
+            with sampling.force_sample_prompts(prompts), sampling.collect_saved_samples() as saved:
+                self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+            progress_bar.unpause()
+            run_controller.record_samples(saved, step=global_step)
+            if len(saved) == 0:
+                raise ValueError(
+                    "no image was generated. A prompt or a negative prompt which is not in the prompt file (--sample_prompts)"
+                    " cannot be used when the text encoder is not loaded (e.g. with --cache_text_encoder_outputs)"
+                )
+            result = {"files": [os.path.abspath(path) for path in saved]}
+            if len(saved) < len(prompts):
+                result["warning"] = f"only {len(saved)} of {len(prompts)} images were generated. see the log of the training"
+            return result
+
+        def command_save(command: dict) -> dict:
+            ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+            ckpt_file = self._save_model(
+                args=args,
+                accelerator=accelerator,
+                save_dtype=save_dtype,
+                ckpt_name=ckpt_name,
+                unwrapped_nw=accelerator.unwrap_model(network),
+                steps=global_step,
+                epoch_no=epoch,
+            )
+            return {"path": os.path.abspath(ckpt_file)}
+
+        def command_save_state(command: dict) -> dict:
+            state_dir = checkpoint_io.save_state_stepwise(args, accelerator, global_step)
+            run_controller.record_state(state_dir, step=global_step)
+            return {"path": os.path.abspath(state_dir)}
+
+        def command_stop(command: dict) -> dict:
+            # the checkpoint and the state have the name of the step, so that they are not taken as the final ones
+            result = {}
+            if command.get("save", True):
+                result["checkpoint"] = command_save(command)["path"]
+            if command.get("save_state", True):
+                result["state"] = command_save_state(command)["path"]
+            run_controller.request_stop()
+            return result
+
+        command_handlers = {
+            "sample": command_sample,
+            "save": command_save,
+            "save_state": command_save_state,
+            "stop": command_stop,
+        }
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
@@ -1739,10 +1796,10 @@ class NetworkTrainer:
                     global_step += 1
 
                     optimizer_eval_fn()
-                    self.sample_images(
-                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
-                    )
-                    run_controller.check_new_samples(step=global_step)
+                    with run_controller.watch_samples(step=global_step):
+                        self.sample_images(
+                            accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                        )
                     progress_bar.unpause()
 
                     # 指定ステップごとにモデルを保存
@@ -1768,6 +1825,8 @@ class NetworkTrainer:
                             if remove_step_no is not None:
                                 remove_ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
+
+                    run_controller.process_commands(command_handlers, step=global_step)
                     optimizer_train_fn()
 
                 current_loss = loss.detach().item()
@@ -1837,8 +1896,11 @@ class NetworkTrainer:
 
                 run_controller.on_step_end(global_step=global_step, loss=current_loss, average_loss=avr_loss, logs=step_logs)
 
-                if global_step >= args.max_train_steps:
+                if global_step >= args.max_train_steps or run_controller.stop_requested:
                     break
+
+            if run_controller.stop_requested:
+                break  # skip the validation, the saving and the sampling at the end of the epoch
 
             # EPOCH VALIDATION
             should_validate_epoch = (
@@ -1915,13 +1977,22 @@ class NetworkTrainer:
                         state_dir = checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
                         run_controller.record_state(state_dir, step=global_step)
 
-            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
-            run_controller.check_new_samples(step=global_step)
+            with run_controller.watch_samples(step=global_step):
+                self.sample_images(
+                    accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                )
             progress_bar.unpause()
             optimizer_train_fn()
             run_controller.on_epoch_end(global_step=global_step, average_loss=loss_recorder.moving_average)
 
             # end of epoch
+
+        if run_controller.stop_requested:
+            # stopped by a command. the model and the state were saved by the command with the name of the step
+            accelerator.end_training()
+            run_controller.finish("stopped")
+            logger.info(f"training is stopped by a command at step {global_step}")
+            return
 
         # metadata["ss_epoch"] = str(num_train_epochs)
         self._metadata["ss_training_finished_at"] = str(time.time())
