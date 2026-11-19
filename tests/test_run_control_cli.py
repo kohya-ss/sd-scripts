@@ -113,6 +113,15 @@ def test_error_result_gives_exit_code_1(controller, monkeypatch, capsys):
     assert result["status"] == "error"
 
 
+def test_pause_and_resume_commands(controller, monkeypatch, capsys):
+    for command in ["pause", "resume"]:
+        code, out, _ = run_cli(monkeypatch, capsys, controller.run_dir, command, "--no_wait")
+        assert code == 0
+        name = json.loads(out)["file"]
+        sent = json.load(open(os.path.join(controller.run_dir, run_control.COMMANDS_DIR, name), encoding="utf-8"))
+        assert sent == {"command": command}
+
+
 def test_timeout(controller, monkeypatch, capsys):
     code, _, err = run_cli(monkeypatch, capsys, controller.run_dir, "save", "--timeout", "0.05")
     assert code == 2
