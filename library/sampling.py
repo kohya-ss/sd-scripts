@@ -394,6 +394,25 @@ def build_forced_prompts(
     return result
 
 
+def verify_forced_prompts_are_cached(prompts: List[Dict], cached_outputs: Dict) -> None:
+    """Raises ValueError if a prompt or a negative prompt is not in the cached text encoder outputs.
+
+    When the text encoder outputs of the prompt file were cached at the start of the training, the text encoder may not
+    be in memory any more, and the sampling functions cannot encode other prompts (some of them fail in the middle of
+    the sampling). `cached_outputs` is the dict of the cached outputs, whose keys are the prompts.
+    """
+    for prompt_dict in prompts:
+        texts = [("prompt", prompt_dict.get("prompt", ""))]
+        if prompt_dict.get("negative_prompt") is not None:
+            texts.append(("negative prompt", prompt_dict["negative_prompt"]))
+        for kind, text in texts:
+            if text not in cached_outputs:
+                raise ValueError(
+                    f"the {kind} `{text}` is not in the prompt file (--sample_prompts). Only the prompts and the negative prompts"
+                    " of the prompt file can be used, because the text encoder outputs are cached"
+                )
+
+
 # endregion
 
 

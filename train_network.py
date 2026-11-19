@@ -1656,16 +1656,22 @@ class NetworkTrainer:
         # commands from outside (run control). They are executed after an optimizer step, in the eval mode of the optimizer.
         # `global_step` and `epoch` are the values at that time.
         def command_sample(command: dict) -> dict:
-            prompts = sampling.build_forced_prompts(args, command.get("prompts"), command.get("indices"), command.get("overrides"))
+            # check everything before the sampling starts: an error in the middle of the sampling cannot be recovered
+            try:
+                prompts = sampling.build_forced_prompts(
+                    args, command.get("prompts"), command.get("indices"), command.get("overrides")
+                )
+                cached_te_outputs = getattr(self, "sample_prompts_te_outputs", None)
+                if cached_te_outputs is not None:
+                    sampling.verify_forced_prompts_are_cached(prompts, cached_te_outputs)
+            except ValueError as e:
+                raise run_control.CommandError(str(e))
             with sampling.force_sample_prompts(prompts), sampling.collect_saved_samples() as saved:
                 self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
             progress_bar.unpause()
             run_controller.record_samples(saved, step=global_step)
             if len(saved) == 0:
-                raise ValueError(
-                    "no image was generated. A prompt or a negative prompt which is not in the prompt file (--sample_prompts)"
-                    " cannot be used when the text encoder is not loaded (e.g. with --cache_text_encoder_outputs)"
-                )
+                raise run_control.CommandError("no image was generated. see the log of the training")
             result = {"files": [os.path.abspath(path) for path in saved]}
             if len(saved) < len(prompts):
                 result["warning"] = f"only {len(saved)} of {len(prompts)} images were generated. see the log of the training"

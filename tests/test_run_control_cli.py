@@ -106,7 +106,7 @@ def test_error_result_gives_exit_code_1(controller, monkeypatch, capsys):
     assert command == {"command": "stop", "save": True, "save_state": False}
 
     def stop(command):
-        raise ValueError("cannot stop")
+        raise run_control.CommandError("cannot stop")
 
     controller.process_commands({"stop": stop}, step=2)
     result = run_control_cli.wait_for_result(controller.run_dir, name, timeout=1.0)

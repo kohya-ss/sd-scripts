@@ -216,7 +216,7 @@ def test_commands_are_executed_in_order_and_results_are_written(controller):
 
 def test_command_errors_are_reported_and_training_continues(controller):
     def sample(command):
-        raise ValueError("index 9 is out of range")
+        raise run_control.CommandError("index 9 is out of range")
 
     put_command(controller.run_dir, "1_sample.json", {"command": "sample", "indices": [9]})
     put_command(controller.run_dir, "2_unknown.json", {"command": "pause"})
@@ -229,15 +229,17 @@ def test_command_errors_are_reported_and_training_continues(controller):
     assert "unknown command `pause`" in result["error"] and "sample" in result["error"]
 
 
-def test_unexpected_error_of_a_command_is_reported_and_raised(controller):
+@pytest.mark.parametrize("error", [RuntimeError("disk full"), ValueError("not enough values to unpack")])
+def test_unexpected_error_of_a_command_is_reported_and_raised(controller, error):
+    # only CommandError means that nothing was changed. e.g. a ValueError in the middle of the sampling must not be ignored
     def save(command):
-        raise RuntimeError("disk full")
+        raise error
 
     put_command(controller.run_dir, "1_save.json", {"command": "save"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(type(error)):
         controller.process_commands({"save": save}, step=1)
     result = read_command_result(controller.run_dir, "1_save.json")
-    assert (result["status"], result["error"]) == ("error", "RuntimeError: disk full")
+    assert (result["status"], result["error"]) == ("error", f"{type(error).__name__}: {error}")
 
 
 def test_invalid_command_file_is_retried_then_rejected(controller, monkeypatch):

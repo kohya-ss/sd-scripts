@@ -85,6 +85,11 @@ PACKAGES_IN_MANIFEST = [
 TRACEBACK_MAX_LINES = 30
 
 
+class CommandError(Exception):
+    """Raised by a command handler when the command cannot be executed as requested (e.g. invalid arguments), before
+    anything is changed in the training. The message is returned to the sender and the training continues."""
+
+
 def add_run_control_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--run_control",
@@ -731,9 +736,9 @@ class RunController:
 
         A command file is a JSON object with `command` (the name) and the arguments of the command. `handlers` maps
         the command name to a function which takes the command dict and returns the result dict.
-        A handler raises ValueError if the command cannot be executed as requested: the error is reported to the sender
-        and the training continues. Other exceptions are reported and raised again, the same as a failure of
-        the scheduled sampling or saving.
+        A handler raises CommandError if the command cannot be executed as requested: the error is reported to the
+        sender and the training continues. Other exceptions are reported and raised again, the same as a failure of
+        the scheduled sampling or saving: the training may be in the middle of the operation and cannot continue.
         """
         if not self.enabled or not self._started or self._finished:
             return
@@ -766,7 +771,7 @@ class RunController:
                 continue
             try:
                 result = handler(command)
-            except ValueError as e:
+            except CommandError as e:
                 logger.warning(f"run control: command `{command_name}` was not executed: {e}")
                 self._finish_command(name, command, "error", step=step, error=str(e))
                 continue

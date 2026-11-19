@@ -96,11 +96,11 @@ Common options: `--no_wait` returns without waiting for the result, `--timeout` 
 
 Notes:
 
-- **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt then fails with an error and no image is generated. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases.
+- **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt (or `--negative_prompt` with another negative prompt) is then rejected with an error before the generation starts, and the training continues. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases.
 - The images of the `sample` command are saved to the same directory as the usual sample images. Their file names have numbers from 100 (`..._000123_100_...png`), not to overwrite the scheduled sample images of the same step.
 - `stop` does not save the model with the final name (`<output_name>.safetensors`), so that a stopped training is not taken as a finished one. `state` in `status.json` becomes `stopped`. The saved state can be used with `--resume` to continue the training.
 - A model saved by `save` or `stop` is not counted for `--save_last_n_steps`; it is not removed automatically.
-- If a command cannot be executed as requested (unknown command, index out of range, prompt which cannot be encoded), the error is returned and the training continues. An unexpected error in a command (e.g. out of memory during the sample generation) ends the training, the same as an error in the scheduled sample generation or saving.
+- If a command cannot be executed as requested (unknown command, index out of range, prompt which cannot be encoded), it is rejected before anything is done: the error is returned and the training continues. An unexpected error in a command (e.g. out of memory during the sample generation) ends the training, the same as an error in the scheduled sample generation or saving.
 - Commands are executed one at a time in the order they were sent. Commands sent before the training started, and commands not yet executed when the training ends, are not executed (the result has the status `expired`).
 - Commands are not accepted in multi-process training (`accelerate launch --multi_gpu`) for now. Replica training (`--replica_devices`) is supported.
 
@@ -119,11 +119,11 @@ Notes:
 
 注意点:
 
-- **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定するとエラーになり、画像は生成されません。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。
+- **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定する（または別のネガティブプロンプトを `--negative_prompt` で指定する）と、生成を始める前にエラーとして拒否され、学習は続きます。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。
 - `sample` コマンドの画像は、通常のサンプル画像と同じディレクトリに保存されます。同じステップの定期サンプル画像を上書きしないよう、ファイル名の番号は 100 から始まります（`..._000123_100_...png`）。
 - `stop` は最終的な名前（`<output_name>.safetensors`）ではモデルを保存しません。途中で止めた学習が、完了した学習と区別できるようにするためです。`status.json` の `state` は `stopped` になります。保存された state は `--resume` に指定して学習を再開できます。
 - `save` や `stop` で保存したモデルは `--save_last_n_steps` の対象外で、自動では削除されません。
-- コマンドを指示どおりに実行できない場合（不明なコマンド、範囲外の番号、エンコードできないプロンプト）は、エラーを返して学習を続けます。コマンド中の予期しないエラー（サンプル生成中のメモリ不足など）では学習が終了します。これは定期的なサンプル生成や保存でのエラーと同じ扱いです。
+- コマンドを指示どおりに実行できない場合（不明なコマンド、範囲外の番号、エンコードできないプロンプト）は、何も実行する前に拒否します。エラーを返して学習を続けます。コマンド中の予期しないエラー（サンプル生成中のメモリ不足など）では学習が終了します。これは定期的なサンプル生成や保存でのエラーと同じ扱いです。
 - コマンドは送った順に 1 つずつ実行されます。学習の開始前に送られたコマンドと、学習の終了時にまだ実行されていないコマンドは実行されません（結果の status は `expired` になります）。
 - マルチプロセス学習（`accelerate launch --multi_gpu`）では、現時点ではコマンドを受け付けません。レプリカ学習（`--replica_devices`）には対応しています。
 

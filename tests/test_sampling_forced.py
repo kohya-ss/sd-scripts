@@ -87,6 +87,15 @@ def test_build_forced_prompts_from_the_prompt_file(prompt_file):
             sampling.build_forced_prompts(args, indices=bad)
 
 
+def test_verify_forced_prompts_are_cached():
+    cached = {"a cat": object(), "": object(), "blurry": object()}
+    sampling.verify_forced_prompts_are_cached([{"prompt": "a cat"}, {"prompt": "a cat", "negative_prompt": "blurry"}], cached)
+    with pytest.raises(ValueError, match="the prompt `a dog`"):
+        sampling.verify_forced_prompts_are_cached([{"prompt": "a cat"}, {"prompt": "a dog"}], cached)
+    with pytest.raises(ValueError, match="the negative prompt `ugly`"):
+        sampling.verify_forced_prompts_are_cached([{"prompt": "a cat", "negative_prompt": "ugly"}], cached)
+
+
 def test_build_forced_prompts_from_text(prompt_file):
     args = make_args(sample_prompts=None)
     prompts = sampling.build_forced_prompts(args, prompts=["a bird --w 1024 --h 512 --d 3", {"prompt": "a fish", "scale": 4.0}])
