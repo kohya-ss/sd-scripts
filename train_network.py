@@ -236,14 +236,23 @@ class NetworkTrainer:
 
     def verify_pause_supported(self, args: argparse.Namespace, accelerator: Accelerator) -> None:
         """Raises ValueError with the reason if the training cannot be paused in this configuration."""
-        if getattr(self, "_replicas", None):
-            raise ValueError("pause is not supported in replica training (--replica_devices)")
         if getattr(args, "deepspeed", False):
             raise ValueError("pause is not supported with DeepSpeed")
         if getattr(self, "is_swapping_blocks", False) and getattr(args, "block_swap_h2d_only", False):
             # the H2D-only offloader places the resident blocks on the device only once, and keeps the CPU masters of the
             # streamed weights by itself. moving the model as a whole breaks it
             raise ValueError("pause is not supported with --block_swap_h2d_only yet")
+
+    def get_reason_to_keep_models_on_device_for_pause(self, args: argparse.Namespace) -> Optional[str]:
+        """Returns the reason if the training can be paused but the models cannot be moved to CPU, otherwise None.
+
+        The training then only waits: the VRAM is not freed.
+        """
+        if getattr(self, "_replicas", None):
+            # the replicas have their own models on the other devices. the threads of the replicas are idle when the
+            # commands are executed (after `all_reduce_network` and the optimizer step), so waiting is safe
+            return "the models stay on the devices in replica training (--replica_devices)"
+        return None
 
     def offload_models_for_pause(self, args: argparse.Namespace, accelerator: Accelerator, unet, text_encoders, vae) -> list:
         """Move the base models from the accelerator device to CPU to free the VRAM while the training is paused.
@@ -1783,10 +1792,17 @@ class NetworkTrainer:
             except ValueError as e:
                 raise run_control.CommandError(str(e))
             vram_before = run_controller.current_vram()
-            pause_restore_info = self.offload_models_for_pause(args, accelerator, unet, text_encoders, vae)
+            keep_reason = self.get_reason_to_keep_models_on_device_for_pause(args)
+            if keep_reason is None:
+                pause_restore_info = self.offload_models_for_pause(args, accelerator, unet, text_encoders, vae)
+            else:
+                pause_restore_info = []  # only wait
             clean_memory_on_device(accelerator.device)
             run_controller.set_paused(True, step=global_step)
-            return {"vram_before": vram_before, "vram_after": run_controller.current_vram()}
+            result = {"vram_before": vram_before, "vram_after": run_controller.current_vram()}
+            if keep_reason is not None:
+                result["warning"] = f"the training is paused, but the VRAM is not freed: {keep_reason}"
+            return result
 
         def command_resume(command: dict) -> dict:
             nonlocal pause_restore_info
