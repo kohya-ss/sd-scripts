@@ -116,3 +116,59 @@ def test_build_forced_prompts_from_text(prompt_file):
         sampling.build_forced_prompts(args, prompts=[1])
     with pytest.raises(ValueError):
         sampling.build_forced_prompts(args, prompts=["a bird"], overrides=["seed"])
+
+
+@pytest.fixture
+def prompt_file_with_reserved(tmp_path):
+    path = tmp_path / "prompts.txt"
+    path.write_text("a cat --s 20\na bird --n blurry --s 0\na dog\n", encoding="utf-8")
+    return str(path)
+
+
+def test_reserved_prompts_are_cached_but_not_scheduled(prompt_file_with_reserved):
+    args = make_args(sample_prompts=prompt_file_with_reserved)
+
+    # `--s 0` is kept as 0, and the prompt is loaded (the callers cache the text encoder outputs of the loaded prompts)
+    loaded = sampling.load_prompts(prompt_file_with_reserved)
+    assert [p["prompt"] for p in loaded] == ["a cat", "a bird", "a dog"]
+    assert [sampling.is_reserved_prompt(p) for p in loaded] == [False, True, False]
+
+    # the scheduled sampling skips it. `enum` is the position in the file, so the file names do not change
+    scheduled = sampling.get_sample_prompts(args)
+    assert [p["prompt"] for p in scheduled] == ["a cat", "a dog"]
+    assert [p["enum"] for p in scheduled] == [0, 2]
+
+
+def test_reserved_prompts_in_forced_sampling(prompt_file_with_reserved):
+    args = make_args(sample_prompts=prompt_file_with_reserved)
+
+    # without indices: the same prompts as the scheduled sampling
+    assert [p["prompt"] for p in sampling.build_forced_prompts(args)] == ["a cat", "a dog"]
+
+    # by index: generated with the default steps of the model (no `sample_steps`), or with the override
+    prompts = sampling.build_forced_prompts(args, indices=[1])
+    assert prompts[0]["prompt"] == "a bird" and prompts[0]["negative_prompt"] == "blurry"
+    assert "sample_steps" not in prompts[0]
+    prompts = sampling.build_forced_prompts(args, indices=[1, 0], overrides={"sample_steps": 12})
+    assert [p["sample_steps"] for p in prompts] == [12, 12]
+
+    # 0 steps is never passed to the sampling functions
+    prompts = sampling.build_forced_prompts(args, prompts=["a fish --s 0"], indices=[0], overrides={"sample_steps": 0})
+    assert all("sample_steps" not in p for p in prompts)
+
+
+def test_forced_sampling_of_a_prompt_file_with_reserved_prompts_only(tmp_path):
+    path = tmp_path / "prompts.txt"
+    path.write_text("a bird --s 0\n", encoding="utf-8")
+    args = make_args(sample_prompts=str(path))
+    assert sampling.get_sample_prompts(args) == []
+    with pytest.raises(ValueError, match="by index"):
+        sampling.build_forced_prompts(args)
+    assert [p["prompt"] for p in sampling.build_forced_prompts(args, indices=[0])] == ["a bird"]
+
+
+def test_reserved_prompt_in_dict_format(tmp_path):
+    path = tmp_path / "prompts.json"
+    path.write_text('[{"prompt": "a cat"}, {"prompt": "a bird", "sample_steps": 0}]', encoding="utf-8")
+    args = make_args(sample_prompts=str(path))
+    assert [p["prompt"] for p in sampling.get_sample_prompts(args)] == ["a cat"]

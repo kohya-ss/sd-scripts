@@ -95,7 +95,7 @@ python tools/run_control_cli.py output/my_lora_run status
 
 | Command | Action | Result |
 |---|---|---|
-| `sample` | Generate sample images with the current weights. `--index`: prompts in the prompt file (`--sample_prompts`) by position, from 0. `--prompt`: prompts in the syntax of the prompt file (`--w`, `--h`, `--d`, `--s`, `--l`, `--n` ...). Both can be given; without them, all prompts in the prompt file. `--seed`, `--steps`, `--width`, `--height`, `--scale`, `--negative_prompt` are applied to all prompts of the command | `files`: paths of the images |
+| `sample` | Generate sample images with the current weights. `--index`: prompts in the prompt file (`--sample_prompts`) by position, from 0. `--prompt`: prompts in the syntax of the prompt file (`--w`, `--h`, `--d`, `--s`, `--l`, `--n` ...). Both can be given; without them, all prompts in the prompt file except the reserved prompts (see the notes). `--seed`, `--steps`, `--width`, `--height`, `--scale`, `--negative_prompt` are applied to all prompts of the command | `files`: paths of the images |
 | `save` | Save the model with the name of the current step (`<output_name>-step00001234.safetensors`) | `path` |
 | `save_state` | Save the state with the name of the current step. `--save_state` is not needed | `path` |
 | `stop` | Save the model and the state with the name of the current step (skip with `--no_save` / `--no_save_state`), then end the training normally | `checkpoint`, `state` |
@@ -107,6 +107,7 @@ Common options: `--no_wait` returns without waiting for the result, `--timeout` 
 Notes:
 
 - **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt (or `--negative_prompt` with another negative prompt) is then rejected with an error before the generation starts, and the training continues. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases.
+- **Reserved prompts.** A prompt with `--s 0` (0 steps; `sample_steps = 0` in .toml / .json) in the prompt file is a *reserved prompt*: the scheduled sampling skips it, but it is encoded at the start like the other prompts. Put the prompts which may be wanted later into the prompt file in this way, and generate them with `sample --index` when needed. A reserved prompt is generated with the default number of steps of the model, or with `--steps`. The positions for `--index` count all prompts in the file, including the reserved ones, and the file names of the scheduled sample images do not change.
 - The images of the `sample` command are saved to the same directory as the usual sample images. Their file names have numbers from 100 (`..._000123_100_...png`), not to overwrite the scheduled sample images of the same step.
 - `stop` does not save the model with the final name (`<output_name>.safetensors`), so that a stopped training is not taken as a finished one. `state` in `status.json` becomes `stopped`. The saved state can be used with `--resume` to continue the training.
 - A model saved by `save` or `stop` is not counted for `--save_last_n_steps`; it is not removed automatically.
@@ -120,7 +121,7 @@ Notes:
 
 | コマンド | 動作 | 結果 |
 |---|---|---|
-| `sample` | 現在の重みでサンプル画像を生成します。`--index`: プロンプトファイル（`--sample_prompts`）内のプロンプトを位置（0 から）で指定します。`--prompt`: プロンプトファイルと同じ書式（`--w`、`--h`、`--d`、`--s`、`--l`、`--n` など）のプロンプトです。両方指定でき、どちらも省略するとプロンプトファイルのすべてのプロンプトを使います。`--seed`、`--steps`、`--width`、`--height`、`--scale`、`--negative_prompt` は、そのコマンドのすべてのプロンプトに適用されます | `files`: 画像のパス |
+| `sample` | 現在の重みでサンプル画像を生成します。`--index`: プロンプトファイル（`--sample_prompts`）内のプロンプトを位置（0 から）で指定します。`--prompt`: プロンプトファイルと同じ書式（`--w`、`--h`、`--d`、`--s`、`--l`、`--n` など）のプロンプトです。両方指定でき、どちらも省略すると、予備プロンプト（注意点を参照）を除く、プロンプトファイルのすべてのプロンプトを使います。`--seed`、`--steps`、`--width`、`--height`、`--scale`、`--negative_prompt` は、そのコマンドのすべてのプロンプトに適用されます | `files`: 画像のパス |
 | `save` | 現在のステップの名前（`<output_name>-step00001234.safetensors`）でモデルを保存します | `path` |
 | `save_state` | 現在のステップの名前で state を保存します。`--save_state` の指定は不要です | `path` |
 | `stop` | 現在のステップの名前でモデルと state を保存し（`--no_save` / `--no_save_state` で省略可）、学習を正常に終了します | `checkpoint`、`state` |
@@ -132,6 +133,7 @@ Notes:
 注意点:
 
 - **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定する（または別のネガティブプロンプトを `--negative_prompt` で指定する）と、生成を始める前にエラーとして拒否され、学習は続きます。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。
+- **予備プロンプト。** プロンプトファイル内で `--s 0`（ステップ数 0。.toml / .json では `sample_steps = 0`）を指定したプロンプトは *予備プロンプト* になります。定期的なサンプル生成では飛ばされますが、開始時に他のプロンプトと同じようにエンコードされます。後で使うかもしれないプロンプトはこの形でプロンプトファイルに入れておき、必要なときに `sample --index` で生成してください。予備プロンプトは、モデルのデフォルトのステップ数、または `--steps` で指定したステップ数で生成されます。`--index` の位置は予備プロンプトも含めたファイル内のすべてのプロンプトで数え、定期サンプル画像のファイル名は変わりません。
 - `sample` コマンドの画像は、通常のサンプル画像と同じディレクトリに保存されます。同じステップの定期サンプル画像を上書きしないよう、ファイル名の番号は 100 から始まります（`..._000123_100_...png`）。
 - `stop` は最終的な名前（`<output_name>.safetensors`）ではモデルを保存しません。途中で止めた学習が、完了した学習と区別できるようにするためです。`status.json` の `state` は `stopped` になります。保存された state は `--resume` に指定して学習を再開できます。
 - `save` や `stop` で保存したモデルは `--save_last_n_steps` の対象外で、自動では削除されません。
