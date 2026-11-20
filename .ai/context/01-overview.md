@@ -107,6 +107,7 @@ Located in `tools/` directory:
 - `tools/cache_text_encoder_outputs.py`: Pre-cache text encoder outputs
 - `tools/analyze_run_loss.py`: Summarize the per-sample loss log of `--run_control` (standard library only)
 - `tools/run_control_cli.py`: Send commands (sample / save / save_state / stop / pause / resume) to a training running with `--run_control` (standard library only)
+- `tools/run_control_sample_prompt.py`: Encode new prompts with the text encoder in its own process and send the outputs with a `sample` command, for a training which does not keep the text encoder in memory (Anima / MOSS-Image; needs the training environment). The file format and its verification are in `library/sampling.py` (`save_prompt_te_outputs` / `load_prompt_te_outputs` / `verify_prompt_te_outputs`)
 
 ## Development Notes
 

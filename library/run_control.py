@@ -745,6 +745,23 @@ class RunController:
         """Commands are answered with the error `reason` instead of being executed."""
         self._commands_disabled_reason = reason
 
+    def resolve_command_data_path(self, relative_path) -> str:
+        """Path of a data file which a command refers to. The file must be in the commands directory.
+
+        Raises CommandError if the path is not valid.
+        """
+        if not self.enabled or not isinstance(relative_path, str) or len(relative_path) == 0:
+            raise CommandError(f"the path of the data file is not valid: {relative_path!r}")
+        base = os.path.abspath(os.path.join(self.run_dir, COMMANDS_DIR))
+        path = os.path.abspath(os.path.join(base, relative_path))
+        try:
+            inside = os.path.commonpath([base, path]) == base and path != base
+        except ValueError:  # different drives
+            inside = False
+        if not inside:
+            raise CommandError(f"the data file must be in the commands directory of the run directory: {relative_path}")
+        return path
+
     def _list_command_files(self) -> list[str]:
         try:
             with os.scandir(os.path.join(self.run_dir, COMMANDS_DIR)) as it:

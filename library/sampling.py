@@ -429,6 +429,85 @@ def verify_forced_prompts_are_cached(prompts: List[Dict], cached_outputs: Dict) 
                 )
 
 
+# Text encoder outputs of prompts which are encoded outside of the training process (tools/run_control_sample_prompt.py)
+# and sent to it with a sampling request. The file is a safetensors file: the tensors of the i-th text have the keys
+# `<i>.<j>` (the j-th element of the return value of `TextEncodingStrategy.encode_tokens`), and the texts are in the metadata.
+PROMPT_TE_OUTPUTS_FORMAT = "sd-scripts-prompt-te-outputs"
+PROMPT_TE_OUTPUTS_VERSION = "1"
+
+
+def save_prompt_te_outputs(path: str, outputs: Dict[str, List[torch.Tensor]]) -> None:
+    """Save the text encoder outputs of prompts. The keys of `outputs` are the texts (prompts and negative prompts)."""
+    from safetensors.torch import save_file
+
+    texts = list(outputs.keys())
+    tensors = {}
+    for i, text in enumerate(texts):
+        for j, tensor in enumerate(outputs[text]):
+            if not isinstance(tensor, torch.Tensor):
+                raise ValueError(f"the text encoder outputs must be tensors: {type(tensor)}")
+            tensors[f"{i}.{j}"] = tensor.detach().to("cpu").contiguous()
+    metadata = {
+        "format": PROMPT_TE_OUTPUTS_FORMAT,
+        "version": PROMPT_TE_OUTPUTS_VERSION,
+        "texts": json.dumps(texts, ensure_ascii=False),
+    }
+    save_file(tensors, path, metadata=metadata)
+
+
+def load_prompt_te_outputs(path: str) -> Dict[str, List[torch.Tensor]]:
+    """Load the file written by `save_prompt_te_outputs`. The tensors are on CPU. Raises ValueError if the file is not valid."""
+    from safetensors import safe_open
+
+    try:
+        outputs: Dict[str, List[torch.Tensor]] = {}
+        with safe_open(path, framework="pt", device="cpu") as f:
+            metadata = f.metadata() or {}
+            if metadata.get("format") != PROMPT_TE_OUTPUTS_FORMAT or metadata.get("version") != PROMPT_TE_OUTPUTS_VERSION:
+                raise ValueError(f"not a file of text encoder outputs of prompts (version {PROMPT_TE_OUTPUTS_VERSION})")
+            texts = json.loads(metadata.get("texts", "null"))
+            if not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
+                raise ValueError("the texts in the metadata are not valid")
+            keys = set(f.keys())
+            for i, text in enumerate(texts):
+                tensors = []
+                while f"{i}.{len(tensors)}" in keys:
+                    tensors.append(f.get_tensor(f"{i}.{len(tensors)}"))
+                outputs[text] = tensors
+        return outputs
+    except ValueError as e:
+        raise ValueError(f"failed to load the text encoder outputs {path}: {e}")
+    except Exception as e:  # OSError, SafetensorError, ...
+        raise ValueError(f"failed to load the text encoder outputs {path}: {type(e).__name__}: {e}")
+
+
+def verify_prompt_te_outputs(outputs: Dict[str, List[torch.Tensor]], reference: List[torch.Tensor]) -> None:
+    """Raises ValueError if the text encoder outputs from outside do not have the same structure as `reference`.
+
+    `reference` is the outputs of a prompt which were encoded in the training process. Outputs of another model or of a
+    broken file would raise an error in the middle of the sampling, which ends the training, so they are rejected here.
+    The length of the sequence is not compared, because it depends on the prompt in some models.
+    """
+    for text, tensors in outputs.items():
+        if len(tensors) != len(reference):
+            raise ValueError(f"the text encoder outputs of `{text}` have {len(tensors)} tensors, expected {len(reference)}")
+        for j, (tensor, ref) in enumerate(zip(tensors, reference)):
+            ref = torch.as_tensor(ref)
+            name = f"the tensor {j} of the text encoder outputs of `{text}`"
+            if tensor.ndim != ref.ndim or tensor.ndim == 0:
+                raise ValueError(f"{name} has {tensor.ndim} dimensions, expected {ref.ndim}")
+            if tensor.shape[0] != ref.shape[0]:
+                raise ValueError(f"{name} has the batch size {tensor.shape[0]}, expected {ref.shape[0]}")
+            if tensor.numel() == 0:
+                raise ValueError(f"{name} is empty")
+            if tensor.ndim >= 3 and tensor.shape[2:] != ref.shape[2:]:
+                raise ValueError(f"{name} has the shape {tuple(tensor.shape)}, expected {tuple(ref.shape)} (except the length)")
+            if tensor.is_floating_point() != ref.is_floating_point():
+                raise ValueError(f"{name} has the dtype {tensor.dtype}, expected {ref.dtype}")
+            if tensor.is_floating_point() and not torch.isfinite(tensor.float()).all():
+                raise ValueError(f"{name} has non-finite values")
+
+
 # endregion
 
 

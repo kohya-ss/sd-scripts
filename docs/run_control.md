@@ -106,7 +106,7 @@ Common options: `--no_wait` returns without waiting for the result, `--timeout` 
 
 Notes:
 
-- **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt (or `--negative_prompt` with another negative prompt) is then rejected with an error before the generation starts, and the training continues. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases.
+- **Prompts which are not in the prompt file need the text encoder.** When the text encoder outputs are cached and the text encoder is not kept in memory (e.g. `--cache_text_encoder_outputs` with Anima, MOSS-Image, FLUX.1), only the prompts and negative prompts of the prompt file can be used; they were encoded at the start. `sample --prompt` with another prompt (or `--negative_prompt` with another negative prompt) is then rejected with an error before the generation starts, and the training continues. `--index` with `--seed`, `--steps`, `--width`, `--height` and `--scale` works in both cases. To generate a new prompt in this configuration, use `tools/run_control_sample_prompt.py`, which encodes the prompt outside of the training (see [New prompts without the text encoder in the training](#new-prompts-without-the-text-encoder-in-the-training--学習側に-text-encoder-がないときの新しいプロンプト)).
 - **Reserved prompts.** A prompt with `--s 0` (0 steps; `sample_steps = 0` in .toml / .json) in the prompt file is a *reserved prompt*: the scheduled sampling skips it, but it is encoded at the start like the other prompts. Put the prompts which may be wanted later into the prompt file in this way, and generate them with `sample --index` when needed. A reserved prompt is generated with the default number of steps of the model, or with `--steps`. The positions for `--index` count all prompts in the file, including the reserved ones, and the file names of the scheduled sample images do not change.
 - The images of the `sample` command are saved to the same directory as the usual sample images. Their file names have numbers from 100 (`..._000123_100_...png`), not to overwrite the scheduled sample images of the same step.
 - `stop` does not save the model with the final name (`<output_name>.safetensors`), so that a stopped training is not taken as a finished one. `state` in `status.json` becomes `stopped`. The saved state can be used with `--resume` to continue the training.
@@ -132,7 +132,7 @@ Notes:
 
 注意点:
 
-- **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定する（または別のネガティブプロンプトを `--negative_prompt` で指定する）と、生成を始める前にエラーとして拒否され、学習は続きます。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。
+- **プロンプトファイルにないプロンプトには Text Encoder が必要です。** Text Encoder の出力をキャッシュして Text Encoder をメモリに残さない構成（Anima、MOSS-Image、FLUX.1 での `--cache_text_encoder_outputs` など）では、プロンプトファイルにあるプロンプトとネガティブプロンプトしか使えません（これらは開始時にエンコード済みです）。この場合、別のプロンプトを `sample --prompt` で指定する（または別のネガティブプロンプトを `--negative_prompt` で指定する）と、生成を始める前にエラーとして拒否され、学習は続きます。`--index` と `--seed`、`--steps`、`--width`、`--height`、`--scale` の組み合わせは、どちらの構成でも使えます。この構成で新しいプロンプトを生成するには、学習の外でプロンプトをエンコードする `tools/run_control_sample_prompt.py` を使ってください（[学習側に Text Encoder がないときの新しいプロンプト](#new-prompts-without-the-text-encoder-in-the-training--学習側に-text-encoder-がないときの新しいプロンプト)を参照）。
 - **予備プロンプト。** プロンプトファイル内で `--s 0`（ステップ数 0。.toml / .json では `sample_steps = 0`）を指定したプロンプトは *予備プロンプト* になります。定期的なサンプル生成では飛ばされますが、開始時に他のプロンプトと同じようにエンコードされます。後で使うかもしれないプロンプトはこの形でプロンプトファイルに入れておき、必要なときに `sample --index` で生成してください。予備プロンプトは、モデルのデフォルトのステップ数、または `--steps` で指定したステップ数で生成されます。`--index` の位置は予備プロンプトも含めたファイル内のすべてのプロンプトで数え、定期サンプル画像のファイル名は変わりません。
 - `sample` コマンドの画像は、通常のサンプル画像と同じディレクトリに保存されます。同じステップの定期サンプル画像を上書きしないよう、ファイル名の番号は 100 から始まります（`..._000123_100_...png`）。
 - `stop` は最終的な名前（`<output_name>.safetensors`）ではモデルを保存しません。途中で止めた学習が、完了した学習と区別できるようにするためです。`status.json` の `state` は `stopped` になります。保存された state は `--resume` に指定して学習を再開できます。
@@ -167,6 +167,41 @@ To free everything including the CUDA context and the RAM, use `stop` and contin
 
 CUDA コンテキストや RAM も含めてすべてを解放したい場合は、代わりに `stop` を使い、後で `--resume` で続きを学習してください。
 
+### New prompts without the text encoder in the training / 学習側に Text Encoder がないときの新しいプロンプト
+
+When the text encoder outputs are cached, the training does not keep the text encoder in memory, and the `sample` command can only use the prompts of the prompt file. `tools/run_control_sample_prompt.py` generates a sample image of a new prompt in this configuration: it loads the text encoder in its own process, encodes the prompt, and sends the outputs to the training together with a `sample` command.
+
+```bash
+python tools/run_control_sample_prompt.py output/my_lora_run --prompt "a cat on the sofa --w 1024 --h 1024 --d 1"
+python tools/run_control_sample_prompt.py output/my_lora_run --prompt "a cat" "a dog" --seed 42 --steps 20 --device cuda
+```
+
+- Supported: Anima (`anima_train_network.py`) and MOSS-Image (`moss_image_train_network.py`).
+- Unlike `tools/run_control_cli.py`, this script needs the Python environment of the training. Run it in the same environment as the training.
+- The path and the settings of the text encoder are read from `manifest.json`. Nothing but the run directory and the prompts has to be specified.
+- `--prompt`, `--seed`, `--steps`, `--width`, `--height`, `--scale`, `--negative_prompt`, `--no_wait` and `--timeout` are the same as those of the `sample` command of `tools/run_control_cli.py`. The result and the exit code are also the same.
+- `--device` is the device for the text encoder. The default is `cpu`, because the GPU of the training is in use. Specify a GPU (e.g. `--device cuda`, `--device cuda:1`) only if it has enough free memory. On CPU, the text encoder runs in float32 and needs the main memory (RAM) for it.
+- For MOSS-Image, `--text_encoder_blocks_to_swap` reduces the VRAM of the text encoder on a GPU, the same as [the option of the training](./moss_image_train_network.md) (e.g. `--device cuda --text_encoder_blocks_to_swap 32`). The default is the setting of the training.
+- **An error in this script does not affect the training.** For example, if the text encoder does not fit in the memory, only this script fails, before anything is sent to the training.
+- The outputs stay registered in the training until it ends. The same prompt can then be used with the usual `sample --prompt` of `tools/run_control_cli.py`, without encoding it again.
+- The training must have been started with a prompt file (`--sample_prompts`), because the outputs from outside are checked against those of the prompt file (the number of the tensors and their shapes) before the sampling starts. Outputs which do not match are rejected with an error, and the training continues. A prompt file whose prompts are all reserved prompts (`--s 0`) is enough if the scheduled sampling is not needed.
+- The outputs are not exactly the same as those encoded in the training, because the device and the precision are different. The difference is small for the purpose of the sample images.
+- If the text encoder outputs are not cached in the training (the text encoder is in the training process), the script sends the usual `sample` command without encoding.
+
+Text Encoder の出力をキャッシュしている場合、学習側は Text Encoder をメモリに残さないため、`sample` コマンドではプロンプトファイルのプロンプトしか使えません。`tools/run_control_sample_prompt.py` は、この構成で新しいプロンプトのサンプル画像を生成します。自身のプロセスに Text Encoder を読み込んでプロンプトをエンコードし、その出力を `sample` コマンドと一緒に学習側に送ります。
+
+- 対応モデル: Anima（`anima_train_network.py`）と MOSS-Image（`moss_image_train_network.py`）。
+- `tools/run_control_cli.py` と異なり、このスクリプトには学習用の Python 環境が必要です。学習と同じ環境で実行してください。
+- Text Encoder のパスと設定は `manifest.json` から読み取ります。実行ディレクトリとプロンプト以外の指定は不要です。
+- `--prompt`、`--seed`、`--steps`、`--width`、`--height`、`--scale`、`--negative_prompt`、`--no_wait`、`--timeout` は、`tools/run_control_cli.py` の `sample` コマンドと同じです。結果と終了コードも同じです。
+- `--device` は Text Encoder を動かすデバイスです。学習中の GPU は使用中のため、デフォルトは `cpu` です。GPU（`--device cuda`、`--device cuda:1` など）は、メモリに十分な空きがある場合だけ指定してください。CPU では Text Encoder は float32 で動き、その分のメインメモリ（RAM）が必要です。
+- MOSS-Image では、`--text_encoder_blocks_to_swap` で GPU 上の Text Encoder の VRAM を減らせます。[学習時のオプション](./moss_image_train_network.md)と同じものです（例: `--device cuda --text_encoder_blocks_to_swap 32`）。デフォルトは学習時の設定です。
+- **このスクリプトでのエラーは学習に影響しません。** たとえば Text Encoder がメモリに収まらない場合、失敗するのはこのスクリプトだけで、学習側には何も送られません。
+- 送った出力は、学習が終わるまで学習側に登録されたままになります。同じプロンプトは、以降は再エンコードなしで、通常の `tools/run_control_cli.py` の `sample --prompt` で使えます。
+- 学習はプロンプトファイル（`--sample_prompts`）を指定して開始されている必要があります。外部から送られた出力は、サンプル生成を始める前に、プロンプトファイルの出力と照合されるためです（テンソルの個数と形状）。合わない出力はエラーとして拒否され、学習は続きます。定期的なサンプル生成が不要な場合は、すべてのプロンプトを予備プロンプト（`--s 0`）にしたプロンプトファイルで構いません。
+- デバイスと精度が異なるため、出力は学習側でエンコードしたものと完全には一致しません。サンプル画像の用途では小さな差です。
+- 学習側で Text Encoder の出力をキャッシュしていない場合（Text Encoder が学習プロセスにある場合）、このスクリプトはエンコードせずに通常の `sample` コマンドを送ります。
+
 ### Command files / コマンドファイル
 
 The CLI is a thin wrapper: a command is a JSON file in `<run directory>/commands/`, so any program (or an AI agent) can send commands by writing files.
@@ -184,6 +219,8 @@ The CLI is a thin wrapper: a command is a JSON file in `<run directory>/commands
 ```
 
 For `sample`, `overrides` uses the keys of the prompt: `width`, `height`, `seed`, `sample_steps`, `scale`, `negative_prompt` and so on.
+
+`sample` also accepts `te_outputs`: the path of a file of text encoder outputs for the prompts, relative to `commands/` (e.g. `"te_outputs": "te_outputs/<name>.safetensors"`). `tools/run_control_sample_prompt.py` writes this file; the format is described at `save_prompt_te_outputs` in `library/sampling.py`. The training removes the file after reading it.
 
 The result file:
 
@@ -207,6 +244,8 @@ CLI は薄いラッパーです。コマンドの実体は `<実行ディレク�
 2. 学習側はコマンドを実行し、結果を `commands/done/<名前>.json` に書いて、コマンドファイルを削除します。
 
 `sample` の `overrides` には、プロンプトのキー（`width`、`height`、`seed`、`sample_steps`、`scale`、`negative_prompt` など）を使います。
+
+`sample` には `te_outputs` も指定できます。プロンプトの Text Encoder 出力のファイルを、`commands/` からの相対パスで指定します（例: `"te_outputs": "te_outputs/<名前>.safetensors"`）。このファイルは `tools/run_control_sample_prompt.py` が書き出します。形式は `library/sampling.py` の `save_prompt_te_outputs` に記載しています。学習側は読み込んだ後にファイルを削除します。
 
 結果ファイルの `status` は `ok`、`error`（`error` にメッセージ）、`expired` のいずれかです。`step` と `epoch` はコマンドを実行した時点の値です。
 

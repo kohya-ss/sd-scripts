@@ -1713,9 +1713,25 @@ class NetworkTrainer:
                     args, command.get("prompts"), command.get("indices"), command.get("overrides")
                 )
                 cached_te_outputs = getattr(self, "sample_prompts_te_outputs", None)
+                if command.get("te_outputs") is not None:
+                    # text encoder outputs of the prompts, encoded outside. they stay registered until the training ends
+                    te_outputs_path = run_controller.resolve_command_data_path(command["te_outputs"])
+                    try:
+                        if not cached_te_outputs:
+                            raise ValueError(
+                                "text encoder outputs can be sent only when those of the prompt file are cached"
+                                " (--cache_text_encoder_outputs and --sample_prompts)"
+                            )
+                        te_outputs = sampling.load_prompt_te_outputs(te_outputs_path)
+                        sampling.verify_prompt_te_outputs(te_outputs, next(iter(cached_te_outputs.values())))
+                        for text, tensors in te_outputs.items():
+                            cached_te_outputs.setdefault(text, tensors)
+                    finally:
+                        if os.path.isfile(te_outputs_path):
+                            os.remove(te_outputs_path)
                 if cached_te_outputs is not None:
                     sampling.verify_forced_prompts_are_cached(prompts, cached_te_outputs)
-            except ValueError as e:
+            except (ValueError, OSError) as e:
                 raise run_control.CommandError(str(e))
             with sampling.force_sample_prompts(prompts), sampling.collect_saved_samples() as saved:
                 self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
