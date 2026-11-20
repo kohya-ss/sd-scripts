@@ -119,7 +119,8 @@ def setup_parser() -> argparse.ArgumentParser:
         " A prompt which is not in the prompt file needs the text encoder in the training process",
     )
     p.add_argument(
-        "--index", type=int, nargs="+", default=None, help="indices of the prompts in the prompt file (--sample_prompts), from 0"
+        "--index", type=int, nargs="+", default=None, help="indices of the prompts in the prompt file (--sample_prompts), from 0."
+        " Without --index and --prompt, all prompts except the reserved ones (--s 0) are generated",
     )
     p.add_argument("--seed", type=int, default=None, help="seed for all prompts of this command")
     p.add_argument("--steps", type=int, default=None, help="number of sampling steps for all prompts of this command")
