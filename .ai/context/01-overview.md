@@ -1,5 +1,7 @@
 This file provides the overview and guidance for developers working with the codebase, including setup instructions, architecture details, and common commands.
 
+If the task is to **run** a training for the user (start it, watch it, report on it) rather than to change the code, read `docs/agent_guide.md` first. It is not needed for development work.
+
 ## Project Architecture
 
 ### Core Training Framework

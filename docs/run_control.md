@@ -20,6 +20,8 @@ The files are written to the *run directory* `<output_dir>/<output_name>_run`:
 
 Nothing changes in the training unless the option is specified, and the files only record the training. The exception is `commands/`: the training can be controlled from outside by putting command files there (see [Sending Commands](#sending-commands--コマンドの送信)).
 
+For AI agents which start and watch a training, [agent_guide.md](./agent_guide.md) has the procedure and the pitfalls in a short form (in English).
+
 Supported: the LoRA training scripts based on `train_network.py` (`train_network.py`, `sdxl_train_network.py`, `sd3_train_network.py`, `flux_train_network.py`, `lumina_train_network.py`, `hunyuan_image_train_network.py`, `anima_train_network.py`, `moss_image_train_network.py`). With multi-process training (`accelerate launch --multi_gpu`), only the main process writes.
 
 `--run_control` を指定すると、学習中の状態を通常の JSON ファイルに書き出します。TensorBoard のイベントファイルを解析しなくても、人、スクリプト、AI エージェントが学習の様子を読み取れます。TensorBoard / W&B へのログ出力には影響せず、併用できます。
@@ -35,6 +37,8 @@ Supported: the LoRA training scripts based on `train_network.py` (`train_network
 | `commands/` | 学習へのコマンド（サンプル生成、保存、停止）を JSON ファイルとして置く場所。結果は `commands/done/` に書かれます | 送信側 / 学習側 |
 
 オプションを指定しない限り学習には何の変化もなく、これらのファイルは学習を記録するだけです。例外は `commands/` で、ここにコマンドファイルを置くと外部から学習を操作できます（[コマンドの送信](#sending-commands--コマンドの送信)を参照）。
+
+学習を起動して見守る AI エージェント向けに、手順と注意点を短くまとめた [agent_guide.md](./agent_guide.md)（英語）があります。
 
 対応スクリプト: `train_network.py` を基にした LoRA 学習スクリプト（`train_network.py`、`sdxl_train_network.py`、`sd3_train_network.py`、`flux_train_network.py`、`lumina_train_network.py`、`hunyuan_image_train_network.py`、`anima_train_network.py`、`moss_image_train_network.py`）。マルチプロセス学習（`accelerate launch --multi_gpu`）では、メインプロセスだけが書き込みます。
 
