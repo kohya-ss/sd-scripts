@@ -151,7 +151,8 @@ Notes:
 - While paused, `state` in `status.json` is `paused`, and `updated_at` keeps being updated. Only `resume` and `stop` are executed; other commands wait until the training is resumed. `stop` works while paused (the model and the state are saved, then the training ends).
 - Moving the models takes time in proportion to their size, both for `pause` and for `resume`.
 - The paused time is not counted for the speed and the ETA.
-- Not supported yet: `--block_swap_h2d_only` (the usual block swap, `--blocks_to_swap` without it, is supported), replica training (`--replica_devices`) and DeepSpeed. `pause` returns an error in these cases and the training continues.
+- In replica training (`--replica_devices`), `pause` only stops the training: the models stay on the devices and the VRAM is not freed (the result has a `warning`). It can be used to stop the load on the GPUs for a while.
+- Not supported yet: `--block_swap_h2d_only` (the usual block swap, `--blocks_to_swap` without it, is supported) and DeepSpeed. `pause` returns an error in these cases and the training continues.
 
 To free everything including the CUDA context and the RAM, use `stop` and continue later with `--resume` instead.
 
@@ -163,7 +164,8 @@ To free everything including the CUDA context and the RAM, use `stop` and contin
 - 一時停止中は `status.json` の `state` が `paused` になり、`updated_at` は更新され続けます。実行されるのは `resume` と `stop` だけで、他のコマンドは再開まで待たされます。`stop` は一時停止中でも使えます（モデルと state を保存して学習を終了します）。
 - モデルの移動には、`pause` と `resume` のどちらでも、モデルの大きさに応じた時間がかかります。
 - 一時停止していた時間は、速度と ETA の計算に含まれません。
-- 未対応: `--block_swap_h2d_only`（通常の block swap、つまりこのオプションなしの `--blocks_to_swap` には対応しています）、レプリカ学習（`--replica_devices`）、DeepSpeed。これらの場合 `pause` はエラーを返し、学習は続きます。
+- レプリカ学習（`--replica_devices`）では、`pause` は学習を止めるだけです。モデルは各デバイスに残り、VRAM は解放されません（結果に `warning` が入ります）。GPU の負荷をしばらく止めたいときに使えます。
+- 未対応: `--block_swap_h2d_only`（通常の block swap、つまりこのオプションなしの `--blocks_to_swap` には対応しています）、DeepSpeed。これらの場合 `pause` はエラーを返し、学習は続きます。
 
 CUDA コンテキストや RAM も含めてすべてを解放したい場合は、代わりに `stop` を使い、後で `--resume` で続きを学習してください。
 
