@@ -353,6 +353,31 @@ class BlockSwapConfig:
         )
 
 
+def attach_forward_streaming_hooks(offloader, blocks: list[nn.Module]) -> list:
+    """Drive a block-swap offloader from forward hooks.
+
+    For models whose forward loop does not call the offloader itself (e.g. a Hugging Face
+    text encoder): each block waits for its own weights before running and releases/prefetches
+    after it finishes. Forward-only offloaders handle the pass boundary (wrap-around preload)
+    internally. Hooks must be attached before any per-call hooks so the prefetch of the last
+    block runs first. Returns the hook handles so callers can detach them.
+    """
+    handles = []
+    for index, block in enumerate(blocks):
+
+        def _wait_hook(module, args, _index=index):
+            del module, args
+            offloader.wait_for_block(_index)
+
+        def _submit_hook(module, args, output, _index=index):
+            del module, args, output
+            offloader.submit_move_blocks_forward(blocks, _index)
+
+        handles.append(block.register_forward_pre_hook(_wait_hook))
+        handles.append(block.register_forward_hook(_submit_hook))
+    return handles
+
+
 def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, blocks_to_swap: int, config: BlockSwapConfig):
     """
     Create the block-swap offloader for one block list. This is the single place that selects the offloader
@@ -418,6 +443,9 @@ class _DirectCopier:
         """Pop the (start, end) transfer-timing events recorded for ``key`` (debug only)."""
         return self._xfer.pop(key, None)
 
+    def reserve(self, nbytes: int):
+        """No host staging: the pinned masters are copied directly."""
+
     def sync(self):
         self.copy_stream.synchronize()
 
@@ -459,8 +487,18 @@ class _StagedCopier:
         self._staging_free = None  # list[cuda.Event | None]: the H2D that last consumed each buffer
         self._rr = 0  # round-robin staging index (touched only on the worker thread)
 
+    def reserve(self, nbytes: int):
+        """Size the staging buffers for the largest block up front (streaming blocks may differ in size, e.g. hybrid
+        attention layers), so that they are not reallocated in the middle of a pass."""
+        self._ensure_staging(nbytes)
+
     def _ensure_staging(self, nbytes: int):
-        if self._staging is None:
+        # normally already sized by reserve(); growing is kept as a fallback for a larger block
+        if self._staging is None or self._staging[0].numel() < nbytes:
+            if self._staging is not None:
+                # buffers may still be read by an in-flight H2D: drain before freeing them
+                self._flush()
+                self.copy_stream.synchronize()
             self._staging = [torch.empty(nbytes, dtype=torch.uint8).pin_memory(device=self.device) for _ in range(self.num_staging)]
             self._staging_free = [None] * self.num_staging
 
@@ -468,7 +506,7 @@ class _StagedCopier:
         # runs on the worker thread: pageable->pinned memcpy, then enqueue the async pinned->device H2D
         idx = self._rr
         self._rr = (idx + 1) % self.num_staging
-        staging = self._staging[idx]
+        staging = self._staging[idx][: src_flat.numel()]
 
         free_ev = self._staging_free[idx]
         if free_ev is not None:
@@ -562,6 +600,9 @@ class LoRAStreamOffloader:
         buffer per streaming block and one GPU buffer per ring slot -- and the individual weights are
         dtype/shape views into it. Loading a block is therefore a single H2D ``copy_`` instead of one
         per Linear, which removes the per-tensor launch/driver overhead on PCIe/CPU-bound systems.
+      - Streaming blocks need not be homogeneous (e.g. the linear / full attention layers of a hybrid text
+        encoder): each block has its own layout, the ring slots are sized to the largest block, and the
+        ring views are built per (slot, block shape signature). Blocks with the same signature share them.
       - Eviction is free: repoint ``module.weight`` back to the CPU master (no transfer). A ring slot is
         overwritten only when its block is consumed, so the last ``B`` streamed blocks of a pass stay
         resident. On the reverse pass they are exactly the first blocks needed, so the forward<->backward
@@ -636,9 +677,11 @@ class LoRAStreamOffloader:
         # ---- runtime state (GPU buffers allocated lazily in prepare_block_devices_before_forward) ----
         self.cpu_master = {}  # block_idx -> [CPU (pinned) Parameter / buffer tensor per swap tensor] (views into cpu_flat)
         self.cpu_flat = {}  # block_idx -> flat (pinned) uint8 CPU tensor backing the masters
-        self.ring_param = None  # [slot] -> [GPU nn.Parameter / buffer tensor per swap tensor] (views into ring_flat)
-        self.ring_flat = None  # [slot] -> flat uint8 GPU tensor backing the ring params
-        self._layout = None  # ([byte offset per swap tensor], total bytes) shared by all streaming blocks
+        self.ring_flat = None  # [slot] -> flat uint8 GPU tensor backing the ring views, sized to the largest block
+        # (slot, signature) -> [GPU nn.Parameter / buffer tensor per swap tensor] (views into ring_flat[slot])
+        self._ring_views = {}
+        self._layouts = {}  # block_idx -> ([byte offset per swap tensor], total bytes)
+        self._signatures = {}  # block_idx -> ((shape, dtype, is_param) per swap tensor)
         self.in_slot = [None] * self.B  # slot -> block_idx currently bound to this slot (or None)
         self.free_event = [None] * self.B  # slot -> cuda.Event recording when compute finished using the slot
 
@@ -705,6 +748,20 @@ class LoRAStreamOffloader:
         offsets, _ = layout
         return [flat[off : off + w.numel() * w.element_size()].view(w.dtype).view(w.shape) for off, w in zip(offsets, weights)]
 
+    def _ring_tensors(self, slot: int, block_idx: int) -> list[torch.Tensor]:
+        """Ring views of ``slot`` laid out for ``block_idx``, built once per (slot, signature) and reused."""
+        key = (slot, self._signatures[block_idx])
+        views = self._ring_views.get(key)
+        if views is None:
+            weights = [t.data for t in self.cpu_master[block_idx]]
+            flat_views = self._flat_views(self.ring_flat[slot], weights, self._layouts[block_idx])
+            views = [
+                nn.Parameter(view, requires_grad=False) if is_param else view
+                for (_m, _name, is_param), view in zip(self._jobs(block_idx), flat_views)
+            ]
+            self._ring_views[key] = views
+        return views
+
     def _load(self, rank: int, slot: int, ctx: str = "fwd"):
         """Stream the streaming block at ``rank`` into ring ``slot`` (H2D only), repointing weights."""
         blk = self.stream_idx[rank]
@@ -712,7 +769,7 @@ class LoRAStreamOffloader:
         # already resident (e.g. ring survived a re-prepare): the slot content is still identical to the
         # immutable CPU master, so just rebind the weights to the ring -- no transfer needed
         if self.in_slot[slot] == blk:
-            self._bind(blk, self.ring_param[slot])
+            self._bind(blk, self._ring_tensors(slot, blk))
             return
 
         # evict the slot's current owner: repoint its weights back to the CPU master (no transfer)
@@ -725,9 +782,10 @@ class LoRAStreamOffloader:
         # counter: safe under gradient checkpointing (weights are re-read at recompute time, and a slot is
         # only overwritten after its free_event); without checkpointing autograd raises a version error
         # instead of silently using stale-saved weights -- which the old per-tensor `.data.copy_` hid.
-        self.copier.submit(blk, self.ring_flat[slot], self.cpu_flat[blk], self.free_event[slot])
+        nbytes = self._layouts[blk][1]
+        self.copier.submit(blk, self.ring_flat[slot][:nbytes], self.cpu_flat[blk], self.free_event[slot])
 
-        self._bind(blk, self.ring_param[slot])  # reference swap (no .data trick, no cudaMalloc)
+        self._bind(blk, self._ring_tensors(slot, blk))  # reference swap (no .data trick, no cudaMalloc)
         self.in_slot[slot] = blk
 
         if self.debug:
@@ -742,6 +800,23 @@ class LoRAStreamOffloader:
     def set_forward_only(self, forward_only: bool):
         self.copier.sync()
         self.forward_only = forward_only
+
+    def release_device_buffers(self):
+        """Repoint every streaming block to its CPU master and free the GPU ring.
+
+        After this the streamed tensors live only on the CPU, so the model can be moved as a whole (e.g. back to the
+        CPU after caching). A later ``prepare_block_devices_before_forward`` reallocates the ring.
+        """
+        if self.S == 0 or not self.cpu_master:
+            return
+        self.copier.sync()
+        for b in self.stream_idx:
+            self._bind(b, self.cpu_master[b])
+        self.in_slot = [None] * self.B
+        self.free_event = [None] * self.B
+        self.copier.reset()
+        self.ring_flat = None
+        self._ring_views = {}
 
     def __del__(self):
         if getattr(self, "supports_backward", False):
@@ -774,12 +849,13 @@ class LoRAStreamOffloader:
 
             jobs = self._jobs(i)
             tensors = [getattr(m, name).data for m, name, _ in jobs]
-            if self._layout is None:
-                self._layout = self._compute_layout(tensors)  # first streaming block defines the shared layout
-            flat = torch.empty(self._layout[1], dtype=torch.uint8, device=cpu_device)
+            layout = self._compute_layout(tensors)
+            self._layouts[i] = layout
+            self._signatures[i] = tuple((tuple(t.shape), t.dtype, is_param) for t, (_m, _name, is_param) in zip(tensors, jobs))
+            flat = torch.empty(layout[1], dtype=torch.uint8, device=cpu_device)
             if self.use_pinned_memory:
                 flat = flat.pin_memory(device=self.device)
-            views = self._flat_views(flat, tensors, self._layout)
+            views = self._flat_views(flat, tensors, layout)
             master = []
 
             if all(t.device.type == "cpu" for t in tensors):
@@ -820,27 +896,12 @@ class LoRAStreamOffloader:
             self.cpu_flat[i] = flat
             self.cpu_master[i] = master
 
-        # validate homogeneous streaming blocks (shared ring template)
-        template = self.cpu_master[self.stream_idx[0]]
-        for b in self.stream_idx[1:]:
-            assert len(self.cpu_master[b]) == len(template), f"block {b} has a different number of swap tensors"
-            for p, t in zip(self.cpu_master[b], template):
-                assert p.data.shape == t.data.shape and p.data.dtype == t.data.dtype, (
-                    f"block {b} swap-tensor shape/dtype differs from the streaming template"
-                )
-
-        # preallocate the GPU ring (once); copies happen into these flat buffers, never reallocated
-        if self.ring_param is None:
-            template_jobs = self._jobs(self.stream_idx[0])
-            template_weights = [p.data for p in template]
-            self.ring_flat = [torch.empty(self._layout[1], dtype=torch.uint8, device=self.device) for _ in range(self.B)]
-            self.ring_param = [
-                [
-                    nn.Parameter(view, requires_grad=False) if is_param else view
-                    for (_m, _name, is_param), view in zip(template_jobs, self._flat_views(flat, template_weights, self._layout))
-                ]
-                for flat in self.ring_flat
-            ]
+        # preallocate the GPU ring (once), sized to the largest streaming block; copies happen into these flat
+        # buffers, never reallocated. The per-block views are built lazily (see _ring_tensors)
+        if self.ring_flat is None:
+            ring_bytes = max(self._layouts[b][1] for b in self.stream_idx)
+            self.ring_flat = [torch.empty(ring_bytes, dtype=torch.uint8, device=self.device) for _ in range(self.B)]
+            self.copier.reserve(ring_bytes)  # host staging (if any) sized up front too: no reallocation mid-pass
 
         # reset transfer state and preload the first B streaming blocks. in_slot deliberately survives:
         # after a completed backward pass the ring already holds ranks 0..B-1, so these loads become

@@ -1076,9 +1076,25 @@ class Anima(nn.Module):
         self.final_layer.init_weights()
         self.t_embedding_norm.reset_parameters()
 
-    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False):
-        for block in self.blocks:
-            block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False, unsloth_offload: bool = False, skip_blocks: int = 0):
+        """Enable gradient checkpointing on the transformer blocks.
+
+        skip_blocks: the last `skip_blocks` blocks keep their activations instead of recomputing them in the backward pass
+        (partial gradient checkpointing). The blocks near the output are skipped because their activations are freed
+        first in the backward pass.
+        """
+        if not 0 <= skip_blocks <= self.num_blocks:
+            raise ValueError(f"skip_blocks must be between 0 and {self.num_blocks} (the number of blocks), got {skip_blocks}")
+        num_checkpointed = self.num_blocks - skip_blocks
+        for i, block in enumerate(self.blocks):
+            if i < num_checkpointed:
+                block.enable_gradient_checkpointing(cpu_offload=cpu_offload, unsloth_offload=unsloth_offload)
+            else:
+                block.disable_gradient_checkpointing()
+        logger.info(
+            f"Anima: Gradient checkpointing enabled. cpu_offload: {cpu_offload}, unsloth_offload: {unsloth_offload},"
+            f" checkpointed blocks: {num_checkpointed}/{self.num_blocks}"
+        )
 
     def disable_gradient_checkpointing(self):
         for block in self.blocks:

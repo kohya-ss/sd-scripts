@@ -132,21 +132,8 @@ def sample_images(
     Returns:
         None
     """
-    if global_step == 0:
-        if not args.sample_at_first:
-            return
-    else:
-        if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
-            return
-        if args.sample_every_n_epochs is not None:
-            # sample_every_n_steps は無視する
-            if epoch is None or epoch % args.sample_every_n_epochs != 0:
-                return
-        else:
-            if (
-                global_step % args.sample_every_n_steps != 0 or epoch is not None
-            ):  # steps is not divisible or end of epoch
-                return
+    if not sampling.should_sample_images(args, epoch, global_step):
+        return
 
     assert (
         args.sample_prompts is not None
@@ -157,7 +144,7 @@ def sample_images(
         f"generating sample images at step / サンプル画像生成 ステップ: {global_step}"
     )
     if (
-        not os.path.isfile(args.sample_prompts)
+        not sampling.has_sample_prompts(args)
         and sample_prompts_gemma2_outputs is None
     ):
         logger.error(
@@ -177,7 +164,7 @@ def sample_images(
     #     controlnet = accelerator.unwrap_model(controlnet)
     # print([(te.parameters().__next__().device if te is not None else None) for te in text_encoders])
 
-    prompts = sampling.load_prompts(args.sample_prompts)
+    prompts = sampling.get_sample_prompts(args)
 
     save_dir = args.output_dir + "/sample"
     os.makedirs(save_dir, exist_ok=True)
@@ -461,7 +448,9 @@ def sample_image_inference(
         seed_suffix = "" if seed is None else f"_{seed}"
         i: int = int(prompt_dict.get("enum", 0))
         img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
-        image.save(os.path.join(save_dir, img_filename))
+        img_path = os.path.join(save_dir, img_filename)
+        image.save(img_path)
+        sampling.notify_sample_saved(img_path)
 
         # send images to wandb if enabled
         if "wandb" in [tracker.name for tracker in accelerator.trackers]:

@@ -245,8 +245,11 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
             logger.info(f"removing old state: {state_dir_old}")
             shutil.rmtree(state_dir_old)
 
+    return state_dir
 
-def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+
+def save_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+    """Save the state with the name of the step. Returns the directory. Old states are not removed."""
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
     logger.info("")
@@ -258,6 +261,12 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
     if args.save_state_to_huggingface:
         logger.info("uploading state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + STEP_STATE_NAME.format(model_name, step_no))
+    return state_dir
+
+
+def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+    model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
+    state_dir = save_state_stepwise(args, accelerator, step_no)
 
     last_n_steps = args.save_last_n_steps_state if args.save_last_n_steps_state else args.save_last_n_steps
     if last_n_steps is not None:
@@ -270,6 +279,8 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
             if os.path.exists(state_dir_old):
                 logger.info(f"removing old state: {state_dir_old}")
                 shutil.rmtree(state_dir_old)
+
+    return state_dir
 
 
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
@@ -285,6 +296,8 @@ def save_state_on_train_end(args: argparse.Namespace, accelerator):
     if args.save_state_to_huggingface:
         logger.info("uploading last state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + LAST_STATE_NAME.format(model_name))
+
+    return state_dir
 
 
 def save_sd_model_on_train_end(

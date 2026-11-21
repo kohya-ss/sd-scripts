@@ -1,8 +1,8 @@
 """Tests for the H2D-only block swap (``LoRAStreamOffloader``) and its configuration / factory.
 
 The CPU-only tests cover ``BlockSwapConfig`` / ``create_offloader`` / the swap tensor selector. The CUDA tests run a
-small homogeneous block model through the offloader in training (forward + backward with gradient checkpointing) and
-forward-only modes and compare the results with a fully resident reference model.
+small block model (homogeneous, and with blocks of different sizes) through the offloader in training (forward +
+backward with gradient checkpointing) and forward-only modes and compare the results with a fully resident reference model.
 """
 
 import argparse
@@ -17,6 +17,7 @@ from library.custom_offloading_utils import (
     BlockSwapConfig,
     LoRAStreamOffloader,
     ModelOffloader,
+    attach_forward_streaming_hooks,
     create_offloader,
     default_swap_tensor_selector,
 )
@@ -25,11 +26,11 @@ cuda_only = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not a
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, mult: int = 2):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        self.fc1 = nn.Linear(dim, dim * 2)
-        self.fc2 = nn.Linear(dim * 2, dim)
+        self.fc1 = nn.Linear(dim, dim * mult)
+        self.fc2 = nn.Linear(dim * mult, dim)
         self.register_buffer("scale", torch.ones(1))
         self.gradient_checkpointing = False
 
@@ -60,9 +61,10 @@ class LoRAAdapter(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, num_blocks: int, dim: int = 32):
+    def __init__(self, num_blocks: int, dim: int = 32, mults=None):
         super().__init__()
-        self.blocks = nn.ModuleList([Block(dim) for _ in range(num_blocks)])
+        mults = mults or [2] * num_blocks
+        self.blocks = nn.ModuleList([Block(dim, mult) for mult in mults])
         self.adapters = nn.ModuleList([LoRAAdapter(b.fc1) for b in self.blocks])  # LoRA on fc1 of every block
         self.head = nn.Linear(dim, dim)
         self.offloader = None
@@ -402,3 +404,100 @@ def test_h2d_only_keyword_only_inputs_fail_loudly():
     x = torch.randn(1, 4, 32, device=device)
     with pytest.raises(RuntimeError):
         model(x).float().pow(2).mean().backward()
+
+
+# hybrid models (e.g. the linear / full attention layers of the Qwen3.5 text encoder) stream blocks of different sizes.
+# blocks_to_swap=3 of 8 streams blocks 1, 4, 6 (mult 2, 3, 2): the first loaded block is the smaller one, so the staging
+# buffers of the staged copier must be sized for the largest block up front.
+HETERO_MULTS = [3, 2, 3, 2, 3, 2, 3, 2]
+
+
+@cuda_only
+@pytest.mark.parametrize("use_pinned_memory", [False, True])
+@pytest.mark.parametrize("blocks_to_swap", [3, 8])
+def test_h2d_only_heterogeneous_blocks_training_matches_reference(blocks_to_swap, use_pinned_memory):
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    ref = Model(len(HETERO_MULTS), mults=HETERO_MULTS)
+    freeze_base(ref)
+    ref.gradient_checkpointing = True
+    swapped = copy.deepcopy(ref)
+    ref.to(device)
+
+    cfg = BlockSwapConfig(device, supports_backward=True, h2d_only=True, ring_size=2, use_pinned_memory=use_pinned_memory)
+    swapped.enable_block_swap(blocks_to_swap, cfg)
+    swapped.adapters.to(device)
+    swapped.head.to(device)
+    off = swapped.offloader
+    off.prepare_block_devices_before_forward(swapped.blocks)
+
+    # the ring is sized to the largest streaming block
+    assert len({off._signatures[b] for b in off.stream_idx}) == 2
+    assert off.ring_flat[0].numel() == max(off._layouts[b][1] for b in off.stream_idx)
+    if not use_pinned_memory:
+        assert all(buf.numel() == off.ring_flat[0].numel() for buf in off.copier._staging)
+
+    x = torch.randn(2, 5, 32, device=device)
+    for step in range(3):
+        ref.zero_grad(set_to_none=True)
+        swapped.zero_grad(set_to_none=True)
+        out_ref, grads_ref = _run_step(ref, x)
+        out_sw, grads_sw = _run_step(swapped, x)
+        torch.cuda.synchronize()
+        assert torch.allclose(out_ref, out_sw, atol=1e-5, rtol=1e-5), f"step {step}: output mismatch"
+        for g_ref, g_sw in zip(grads_ref, grads_sw):
+            assert torch.allclose(g_ref, g_sw, atol=1e-5, rtol=1e-5), f"step {step}: grad mismatch"
+        x = x + 0.1
+
+
+class HookDrivenModel(nn.Module):
+    """A model whose forward loop does not know about the offloader (like a Hugging Face text encoder)."""
+
+    def __init__(self, mults, dim: int = 32):
+        super().__init__()
+        self.blocks = nn.ModuleList([Block(dim, mult) for mult in mults])
+        self.head = nn.Linear(dim, dim)
+
+    def forward(self, x):
+        for block in self.blocks:
+            x = block(x)
+        return self.head(x)
+
+
+@cuda_only
+@pytest.mark.parametrize("blocks_to_swap", [3, 8])
+def test_h2d_only_forward_hooks_heterogeneous_and_release(blocks_to_swap):
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    ref = HookDrivenModel(HETERO_MULTS).requires_grad_(False)
+    swapped = copy.deepcopy(ref)
+    ref.to(device)
+
+    blocks = list(swapped.blocks)
+    off = LoRAStreamOffloader(
+        "block", blocks, len(blocks), blocks_to_swap, supports_backward=False, device=device, ring_size=2, use_pinned_memory=False
+    )
+    handles = attach_forward_streaming_hooks(off, blocks)
+    swapped.head.to(device)
+    off.prepare_block_devices_before_forward(blocks)
+
+    with torch.no_grad():
+        for _ in range(3):  # pass boundaries: wrap-around preload
+            x = torch.randn(2, 5, 32, device=device)
+            out_ref = ref(x)
+            out_sw = swapped(x)
+            torch.cuda.synchronize()
+            assert torch.allclose(out_ref, out_sw, atol=1e-5, rtol=1e-5)
+
+    # release: every streamed weight points to its CPU master and the whole model can be moved
+    for h in handles:
+        h.remove()
+    off.release_device_buffers()
+    assert off.ring_flat is None
+    for i in off.stream_idx:
+        assert blocks[i].fc1.weight.device.type == "cpu" and blocks[i].fc2.weight.device.type == "cpu"
+    swapped.to("cpu")
+    assert all(p.device.type == "cpu" for p in swapped.parameters())
+    x = torch.randn(2, 5, 32)
+    with torch.no_grad():
+        assert torch.allclose(ref(x.to(device)).cpu(), swapped(x), atol=1e-5, rtol=1e-5)

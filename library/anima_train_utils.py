@@ -16,6 +16,7 @@ from PIL import Image
 
 from library.device_utils import init_ipex, clean_memory_on_device, synchronize_device
 from library import anima_models, anima_utils, checkpoint_io, sampling, qwen_image_autoencoder_kl
+import library.args as args_util
 import library.compile_utils as compile_utils
 import library.model_io as model_io
 
@@ -144,6 +145,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Use the image-only 2D Qwen-Image VAE implementation. Official Qwen-Image VAE weights are converted on load."
         + " / 画像専用の2D Qwen-Image VAE実装を使用します。公式Qwen-Image VAEの重みはロード時に変換されます。",
     )
+    args_util.add_gradient_checkpointing_skip_blocks_argument(parser)
 
     # torch.compile (per-block compilation, Triton required) and CUDA performance switches
     compile_utils.add_compile_arguments(parser)
@@ -480,21 +482,11 @@ def sample_images(
         for injecting per-prompt state into wrapper modules (e.g. ControlNet-LLLite cond image).
         Signature: ``on_prompt_start(prompt_dict, accelerator)`` / ``on_prompt_end(prompt_dict)``.
     """
-    if steps == 0:
-        if not args.sample_at_first:
-            return
-    else:
-        if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
-            return
-        if args.sample_every_n_epochs is not None:
-            if epoch is None or epoch % args.sample_every_n_epochs != 0:
-                return
-        else:
-            if steps % args.sample_every_n_steps != 0 or epoch is not None:
-                return
+    if not sampling.should_sample_images(args, epoch, steps):
+        return
 
     logger.info(f"Generating sample images at step {steps}")
-    if not os.path.isfile(args.sample_prompts) and sample_prompts_te_outputs is None:
+    if not sampling.has_sample_prompts(args) and sample_prompts_te_outputs is None:
         logger.error(f"No prompt file: {args.sample_prompts}")
         return
 
@@ -507,7 +499,7 @@ def sample_images(
 
     distributed_state = PartialState()  # for multi gpu distributed inference. this is a singleton, so it's safe to use it here
 
-    prompts = sampling.load_prompts(args.sample_prompts)
+    prompts = sampling.get_sample_prompts(args)
     save_dir = os.path.join(args.output_dir, "sample")
     os.makedirs(save_dir, exist_ok=True)
 
@@ -709,7 +701,9 @@ def _sample_image_inference(
     seed_suffix = "" if seed is None else f"_{seed}"
     i = prompt_dict.get("enum", 0)
     img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
-    image.save(os.path.join(save_dir, img_filename))
+    img_path = os.path.join(save_dir, img_filename)
+    image.save(img_path)
+    sampling.notify_sample_saved(img_path)
 
     # Log to wandb if enabled
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:

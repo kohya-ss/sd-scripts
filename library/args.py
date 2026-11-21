@@ -635,6 +635,31 @@ def add_masked_loss_arguments(parser: argparse.ArgumentParser):
     )
 
 
+def add_gradient_checkpointing_skip_blocks_argument(parser: argparse.ArgumentParser):
+    """Partial gradient checkpointing for the models whose `enable_gradient_checkpointing` accepts `skip_blocks`."""
+    parser.add_argument(
+        "--gradient_checkpointing_skip_blocks",
+        type=int,
+        default=0,
+        help="number of the last transformer blocks that keep their activations instead of recomputing them in the backward pass"
+        " when --gradient_checkpointing is enabled. Each skipped block trades VRAM for speed. 0 (default) checkpoints all blocks."
+        " / --gradient_checkpointing 有効時に、backward で再計算せず activation を保持する末尾の transformer ブロック数。"
+        "スキップしたブロックの分だけ VRAM を使う代わりに速くなる。0（デフォルト）で全ブロックを checkpointing する",
+    )
+
+
+def verify_gradient_checkpointing_skip_blocks(args: argparse.Namespace):
+    """Validate --gradient_checkpointing_skip_blocks. It is ignored with a warning when gradient checkpointing is disabled."""
+    if args.gradient_checkpointing_skip_blocks < 0:
+        raise ValueError(f"--gradient_checkpointing_skip_blocks must be 0 or positive, got {args.gradient_checkpointing_skip_blocks}")
+    if args.gradient_checkpointing_skip_blocks > 0 and not args.gradient_checkpointing:
+        logger.warning(
+            "--gradient_checkpointing_skip_blocks is ignored because --gradient_checkpointing is not enabled"
+            " / --gradient_checkpointing が無効なため --gradient_checkpointing_skip_blocks は無視されます"
+        )
+        args.gradient_checkpointing_skip_blocks = 0
+
+
 def add_dit_training_arguments(parser: argparse.ArgumentParser):
     # Text encoder related arguments
     parser.add_argument(

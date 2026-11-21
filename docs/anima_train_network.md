@@ -140,6 +140,8 @@ If loss becomes NaN, ensure you are using PyTorch version 2.5 or higher.
 
 **Note:** `--vae_chunk_size`, `--vae_disable_cache`, and `--qwen_image_vae_2d` are custom options in this repository to reduce memory usage (and, for `--qwen_image_vae_2d`, also speed up) the Qwen-Image VAE.
 
+**Note for Windows:** With the default `--max_data_loader_n_workers` (8), the DataLoader worker processes are re-created at every epoch on Windows, which can make the training several times slower (the effect is large with small datasets). Specify a small number of workers together with `--persistent_data_loader_workers`, e.g. `--max_data_loader_n_workers 2 --persistent_data_loader_workers` (more workers do not make it faster). Note that `--persistent_data_loader_workers` cannot be combined with `--max_data_loader_n_workers 0`.
+
 <details>
 <summary>日本語</summary>
 
@@ -155,6 +157,8 @@ lossがNaNになる場合は、PyTorchのバージョンが2.5以上であるこ
 
 注意: `--vae_chunk_size`、`--vae_disable_cache`、`--qwen_image_vae_2d`は当リポジトリ独自のオプションで、Qwen-Image VAEのメモリ使用量を削減するために使用します（`--qwen_image_vae_2d`は高速化も兼ねます）。
 
+Windows での注意: `--max_data_loader_n_workers` のデフォルト（8）のままだと、Windows では DataLoader のワーカープロセスがエポックごとに再生成され、学習が数倍遅くなることがあります（データセットが小さいほど影響が大きい）。`--max_data_loader_n_workers 2 --persistent_data_loader_workers` のように、少ないワーカー数と `--persistent_data_loader_workers` を併せて指定してください（ワーカーを増やしても速くはなりません）。`--persistent_data_loader_workers` は `--max_data_loader_n_workers 0` とは併用できません。
+
 </details>
 
 ### 4.1. Explanation of Key Options / 主要なコマンドライン引数の解説
@@ -164,7 +168,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Model Options [Required] / モデル関連 [必須]
 
 * `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[Required]**
-  - Path to the Anima DiT model `.safetensors` file. The model config (channels, blocks, heads) is auto-detected from the state dict. ComfyUI format with `net.` prefix is supported.
+  - Path to the Anima DiT model `.safetensors` file. The number of Transformer blocks is inferred from the checkpoint, so variants which differ from Anima-Preview (28 blocks) only in the number of blocks, such as the community Anima-2.9B (40 blocks), can be loaded as well (these variants are not tested regularly). The other model settings are fixed. ComfyUI format with `net.` or `model.diffusion_model.` prefix is supported.
 * `--qwen3="<path to Qwen3-0.6B model>"` **[Required]**
   - Path to the Qwen3-0.6B text encoder. Can be a HuggingFace model directory or a single `.safetensors` file. The text encoder is always frozen during training.
 * `--vae="<path to Qwen-Image VAE model>"` **[Required]**
@@ -209,14 +213,16 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>`
-  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum values depend on model size:
+  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. The maximum is the number of blocks of the model minus 2:
     - 28-block model: max **26** (Anima-Preview)
-    - 36-block model: max **34**
+    - 40-block model: max **38** (e.g. Anima-2.9B)
   - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
     - 20-block model: max **18**
   - Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
 * `--unsloth_offload_checkpointing`
   - Offload activations to CPU RAM using async non-blocking transfers (faster than `--cpu_offload_checkpointing`). Cannot be combined with `--cpu_offload_checkpointing` or `--blocks_to_swap`.
+* `--gradient_checkpointing_skip_blocks=<integer>`
+  - Partial gradient checkpointing: the last N Transformer blocks keep their activations instead of recomputing them in the backward pass. Each skipped block uses more VRAM and saves the recomputation of one block, so the VRAM usage and the step time change linearly with N. `0` (default) checkpoints all blocks; the maximum is the number of blocks of the model (28 for Anima-Preview). Only effective with `--gradient_checkpointing` (ignored with a warning otherwise). Can be combined with `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` and `--compile`. See [Section 7.1](#71-vram-usage-optimization--vram使用量の最適化).
 * `--cache_text_encoder_outputs`
   - Cache Qwen3 text encoder outputs to reduce VRAM usage. Recommended when not training text encoder LoRA.
 * `--cache_text_encoder_outputs_to_disk`
@@ -244,7 +250,7 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 
 #### モデル関連 [必須]
 
-* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。モデルの設定はstate dictから自動検出されます。`net.`プレフィックス付きのComfyUIフォーマットもサポートしています。
+* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。Transformerブロック数はチェックポイントから推定されるため、Anima-Preview（28ブロック）とブロック数だけが異なる派生モデル（コミュニティ製のAnima-2.9B、40ブロックなど）も読み込めます（これらの派生モデルは定期的なテストの対象外です）。それ以外のモデル設定は固定です。`net.`または`model.diffusion_model.`プレフィックス付きのComfyUIフォーマットもサポートしています。
 * `--qwen3="<path to Qwen3-0.6B model>"` **[必須]** - Qwen3-0.6Bテキストエンコーダーのパスを指定します。HuggingFaceモデルディレクトリまたは単体の`.safetensors`ファイルが使用できます。
 * `--vae="<path to Qwen-Image VAE model>"` **[必須]** - Qwen-Image VAEモデルのパスを指定します。
 
@@ -280,6 +286,7 @@ LoRA学習の場合は、`--network_args`の`network_reg_lrs`を使用してく�
 * `--blocks_to_swap` - TransformerブロックをCPUとGPUでスワップしてVRAMを節約。`--cpu_offload_checkpointing`および`--unsloth_offload_checkpointing`とは併用できません。
   - `--block_swap_h2d_only`でLoRA学習向けの高速なH2D-onlyブロックスワップを有効にできます（`--gradient_checkpointing`が必須）。[ブロックスワップ](./block_swap.md)を参照してください。
 * `--unsloth_offload_checkpointing` - 非同期転送でアクティベーションをCPU RAMにオフロード。`--cpu_offload_checkpointing`および`--blocks_to_swap`とは併用できません。
+* `--gradient_checkpointing_skip_blocks` - 部分的なgradient checkpointing。末尾のN個のTransformerブロックはbackwardで再計算せずactivationを保持します。スキップしたブロック1個につきVRAMが増え、1ブロック分の再計算が省けるため、VRAM使用量とステップ時間はNに対して線形に変化します。`0`（デフォルト）で全ブロックをcheckpointing、最大値はモデルのブロック数（Anima-Previewは28）です。`--gradient_checkpointing`指定時のみ有効です（未指定時は警告を出して無視します）。`--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing`、`--compile`と併用できます。[7.1節](#71-vram-usage-optimization--vram使用量の最適化)も参照してください。
 * `--cache_text_encoder_outputs` - Qwen3の出力をキャッシュしてメモリ使用量を削減。
 * `--cache_latents`, `--cache_latents_to_disk` - Qwen-Image VAEの出力をキャッシュ。
 * `--vae_chunk_size` - Qwen-Image VAEのチャンク処理サイズ。メモリ使用量を削減しますが速度が低下します。デフォルトはチャンク処理なし。
@@ -452,6 +459,15 @@ Anima models can be large, so GPUs with limited VRAM may require optimization:
 
 - **`--gradient_checkpointing`**: Standard gradient checkpointing to reduce VRAM at the cost of compute.
 
+- **`--gradient_checkpointing_skip_blocks <number>`**: Partial gradient checkpointing. The last N blocks keep their activations instead of recomputing them in the backward pass, so spare VRAM can be converted into speed. Both the VRAM usage and the step time change linearly with N. Increase N until the training no longer fits. Measured with Anima (28 blocks) on an RTX PRO 6000 Blackwell, about 1MP images, batch size 1, LoRA dim 16, bf16, `--attn_mode flash`, latents and text encoder outputs cached (peak GPU memory during training as reported by `nvidia-smi`):
+
+  | `--gradient_checkpointing_skip_blocks` | 0 | 7 | 14 | 21 | 28 (no recomputation) |
+  |---|---|---|---|---|---|
+  | Peak VRAM | 6.5GB | 9.4GB | 12.9GB | 16.4GB | 19.9GB |
+  | Step time | 0.85s | 0.75s | 0.73s | 0.59s | 0.53s |
+
+  Each skipped block costs about 0.48GB at this resolution and saves about 3.5% of the step time. Larger batch sizes give little throughput gain with this model size, so skipping blocks is usually the better use of spare VRAM than increasing the batch size. The VRAM cost per block does not depend on the GPU: on an RTX 4090 (24GB, same settings) the peaks are 6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB and the step times 0.73s / 0.68s / 0.63s / 0.56s / 0.52s for `0` / `7` / `14` / `21` / `28`, so all blocks can be skipped on a 24GB GPU for a 30% faster step.
+
 - **`--cache_text_encoder_outputs`**: Caches Qwen3 outputs so the text encoder can be freed from VRAM during training.
 
 - **`--cache_latents`**: Caches Qwen-Image VAE outputs so the VAE can be freed from VRAM during training.
@@ -470,6 +486,7 @@ Animaモデルは大きい場合があるため、VRAMが限られたGPUでは�
 - `--blocks_to_swap`: CPUとGPU間でブロックをスワップ
 - `--unsloth_offload_checkpointing`: 非同期転送でアクティベーションをCPUにオフロード
 - `--gradient_checkpointing`: 標準的な勾配チェックポイント
+- `--gradient_checkpointing_skip_blocks`: 部分的なgradient checkpointing。末尾のN個のブロックはbackwardで再計算せずactivationを保持するため、余っているVRAMを速度に変換できます。VRAM使用量とステップ時間はNに対して線形に変化するので、学習が収まる範囲でNを増やしてください。Anima（28ブロック）、約1MPの画像、batch size 1、LoRA dim 16、bf16、`--attn_mode flash`、latentとText Encoder出力をキャッシュした場合の実測（RTX PRO 6000 Blackwell、`nvidia-smi`の学習中ピーク）は、`0`で6.5GB / 0.85秒、`7`で9.4GB / 0.75秒、`14`で12.9GB / 0.73秒、`21`で16.4GB / 0.59秒、`28`（再計算なし）で19.9GB / 0.53秒でした。1ブロックあたり約0.48GBでステップ時間が約3.5%短縮されます。このモデルサイズではbatch sizeを増やしてもスループットはほとんど向上しないため、余ったVRAMはbatch sizeよりもブロックのスキップに使う方が有利です。1ブロックあたりのVRAMはGPUによらず、RTX 4090（24GB、同じ設定）では`0` / `7` / `14` / `21` / `28`でピークが6.7GB / 9.6GB / 13.0GB / 16.5GB / 20.0GB、ステップ時間が0.73秒 / 0.68秒 / 0.63秒 / 0.56秒 / 0.52秒でした。24GBのGPUなら全ブロックをスキップでき、ステップ時間が30%短縮されます
 - `--cache_text_encoder_outputs`: Qwen3の出力をキャッシュ
 - `--cache_latents`: Qwen-Image VAEの出力をキャッシュ
 - Adafactorオプティマイザの使用

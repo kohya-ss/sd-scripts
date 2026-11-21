@@ -78,7 +78,7 @@ class MossImageTextEncodingStrategy(TextEncodingStrategy):
         """
         text_encoder = models[0]
         input_ids, attention_mask = tokens
-        device = next(text_encoder.parameters()).device
+        device = moss_image_utils.get_text_encoder_device(text_encoder)
         input_ids_list = [input_ids[i][attention_mask[i].bool()] for i in range(input_ids.shape[0])]
         embeds_list = moss_image_utils.encode_tokens(text_encoder, input_ids_list, device)
         prompt_embeds, attn_mask = moss_image_utils.pad_text_embeds(embeds_list)

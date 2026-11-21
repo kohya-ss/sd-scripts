@@ -82,6 +82,8 @@ def train(args):
         args.blocks_to_swap is None or args.blocks_to_swap == 0
     ) or not args.unsloth_offload_checkpointing, "blocks_to_swap is not supported with unsloth_offload_checkpointing"
 
+    args_util.verify_gradient_checkpointing_skip_blocks(args)
+
     cache_latents = args.cache_latents
     use_dreambooth_method = args.in_json is None
 
@@ -255,6 +257,7 @@ def train(args):
         dit.enable_gradient_checkpointing(
             cpu_offload=args.cpu_offload_checkpointing,
             unsloth_offload=args.unsloth_offload_checkpointing,
+            skip_blocks=args.gradient_checkpointing_skip_blocks,
         )
 
     train_dit = args.learning_rate != 0
