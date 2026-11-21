@@ -176,6 +176,8 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
             alpha = alphas[lora_module_name]
 
             scale = math.sqrt(alpha / base_alpha) * ratio
+            if concat:
+                scale *= math.sqrt(base_dims[lora_module_name] / dims[lora_module_name])
             scale = abs(scale) if "lora_up" in key else scale # マイナスの重みに対応する。
 
             if key in merged_sd:
@@ -191,6 +193,13 @@ def merge_lora_models(models, ratios, merge_dtype, concat=False, shuffle=False):
 
     # set alpha to sd
     for lora_module_name, alpha in base_alphas.items():
+        if concat:
+            dim = merged_sd[lora_module_name + ".lora_down.weight"].shape[0]
+            if dim != base_dims[lora_module_name]:
+                # Preserve the reference alpha/rank scale at the concatenated rank.
+                alpha *= dim / base_dims[lora_module_name]
+                base_dims[lora_module_name] = dim
+                base_alphas[lora_module_name] = alpha
         key = lora_module_name + ".alpha"
         merged_sd[key] = torch.tensor(alpha)
         if shuffle:
