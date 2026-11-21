@@ -140,6 +140,8 @@ If loss becomes NaN, ensure you are using PyTorch version 2.5 or higher.
 
 **Note:** `--vae_chunk_size`, `--vae_disable_cache`, and `--qwen_image_vae_2d` are custom options in this repository to reduce memory usage (and, for `--qwen_image_vae_2d`, also speed up) the Qwen-Image VAE.
 
+**Note for Windows:** With the default `--max_data_loader_n_workers` (8), the DataLoader worker processes are re-created at every epoch on Windows, which can make the training several times slower (the effect is large with small datasets). Specify a small number of workers together with `--persistent_data_loader_workers`, e.g. `--max_data_loader_n_workers 2 --persistent_data_loader_workers` (more workers do not make it faster). Note that `--persistent_data_loader_workers` cannot be combined with `--max_data_loader_n_workers 0`.
+
 <details>
 <summary>日本語</summary>
 
@@ -154,6 +156,8 @@ If loss becomes NaN, ensure you are using PyTorch version 2.5 or higher.
 lossがNaNになる場合は、PyTorchのバージョンが2.5以上であることを確認してください。
 
 注意: `--vae_chunk_size`、`--vae_disable_cache`、`--qwen_image_vae_2d`は当リポジトリ独自のオプションで、Qwen-Image VAEのメモリ使用量を削減するために使用します（`--qwen_image_vae_2d`は高速化も兼ねます）。
+
+Windows での注意: `--max_data_loader_n_workers` のデフォルト（8）のままだと、Windows では DataLoader のワーカープロセスがエポックごとに再生成され、学習が数倍遅くなることがあります（データセットが小さいほど影響が大きい）。`--max_data_loader_n_workers 2 --persistent_data_loader_workers` のように、少ないワーカー数と `--persistent_data_loader_workers` を併せて指定してください（ワーカーを増やしても速くはなりません）。`--persistent_data_loader_workers` は `--max_data_loader_n_workers 0` とは併用できません。
 
 </details>
 
