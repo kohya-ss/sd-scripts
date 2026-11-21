@@ -3,6 +3,7 @@
 import os
 from typing import Dict, List, Optional, Union
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from accelerate.utils import set_module_tensor_to_device  # kept for potential future use
 from accelerate import init_empty_weights
@@ -27,6 +28,27 @@ logger = logging.getLogger(__name__)
 FP8_OPTIMIZATION_TARGET_KEYS = ["blocks", ""]
 # ".embed." excludes Embedding in LLMAdapter
 FP8_OPTIMIZATION_EXCLUDE_KEYS = ["_embedder", "norm", "adaln", "final_layer", ".embed."]
+
+
+def get_anima_num_blocks(dit_path: str) -> int:
+    """Infer the DiT block count from the checkpoint keys.
+
+    Anima checkpoints otherwise share the fixed config, but some (e.g. the
+    2.9B preview) have more blocks than the default 28.
+    """
+    num_blocks = 0
+    with safe_open(dit_path, framework="pt", device="cpu") as f:
+        for key in f.keys():
+            if key.startswith("net."):
+                key = key[len("net.") :]
+            elif key.startswith("model.diffusion_model."):
+                key = key[len("model.diffusion_model.") :]
+            if not key.startswith("blocks."):
+                continue
+            index = key[len("blocks.") :].split(".", 1)[0]
+            if index.isdigit():
+                num_blocks = max(num_blocks, int(index) + 1)
+    return num_blocks
 
 
 def load_anima_model(
@@ -63,7 +85,7 @@ def load_anima_model(
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
-    # We currently support fixed DiT config for Anima models
+    # We currently support fixed DiT config for Anima models, except for the block count which follows the checkpoint
     dit_config = {
         "max_img_h": 512,
         "max_img_w": 512,
@@ -96,6 +118,11 @@ def load_anima_model(
         "attn_mode": attn_mode,
         "split_attn": split_attn,
     }
+    num_blocks = get_anima_num_blocks(dit_path)
+    if num_blocks > 0:
+        dit_config["num_blocks"] = num_blocks
+    logger.info(f"Anima DiT blocks: {num_blocks or 28}")
+
     with init_empty_weights():
         model = anima_models.Anima(**dit_config)
         if dit_weight_dtype is not None:
