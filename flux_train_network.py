@@ -417,7 +417,8 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         model_pred, weighting = flux_train_utils.apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas)
 
         # flow matching loss: this is different from SD3
-        target = noise - latents
+        # sigma_scaled turns the model output into an estimate of the latents, so the target must be the latents
+        target = latents if args.model_prediction_type == "sigma_scaled" else noise - latents
 
         # differential output preservation
         if "custom_attributes" in batch:
