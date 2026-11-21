@@ -164,7 +164,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Model Options [Required] / モデル関連 [必須]
 
 * `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[Required]**
-  - Path to the Anima DiT model `.safetensors` file. The model config (channels, blocks, heads) is auto-detected from the state dict. ComfyUI format with `net.` prefix is supported.
+  - Path to the Anima DiT model `.safetensors` file. The number of Transformer blocks is inferred from the checkpoint, so variants which differ from Anima-Preview (28 blocks) only in the number of blocks, such as the community Anima-2.9B (40 blocks), can be loaded as well (these variants are not tested regularly). The other model settings are fixed. ComfyUI format with `net.` or `model.diffusion_model.` prefix is supported.
 * `--qwen3="<path to Qwen3-0.6B model>"` **[Required]**
   - Path to the Qwen3-0.6B text encoder. Can be a HuggingFace model directory or a single `.safetensors` file. The text encoder is always frozen during training.
 * `--vae="<path to Qwen-Image VAE model>"` **[Required]**
@@ -209,9 +209,9 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>`
-  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum values depend on model size:
+  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. The maximum is the number of blocks of the model minus 2:
     - 28-block model: max **26** (Anima-Preview)
-    - 36-block model: max **34**
+    - 40-block model: max **38** (e.g. Anima-2.9B)
   - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
     - 20-block model: max **18**
   - Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
@@ -246,7 +246,7 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 
 #### モデル関連 [必須]
 
-* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。モデルの設定はstate dictから自動検出されます。`net.`プレフィックス付きのComfyUIフォーマットもサポートしています。
+* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。Transformerブロック数はチェックポイントから推定されるため、Anima-Preview（28ブロック）とブロック数だけが異なる派生モデル（コミュニティ製のAnima-2.9B、40ブロックなど）も読み込めます（これらの派生モデルは定期的なテストの対象外です）。それ以外のモデル設定は固定です。`net.`または`model.diffusion_model.`プレフィックス付きのComfyUIフォーマットもサポートしています。
 * `--qwen3="<path to Qwen3-0.6B model>"` **[必須]** - Qwen3-0.6Bテキストエンコーダーのパスを指定します。HuggingFaceモデルディレクトリまたは単体の`.safetensors`ファイルが使用できます。
 * `--vae="<path to Qwen-Image VAE model>"` **[必須]** - Qwen-Image VAEモデルのパスを指定します。
 
