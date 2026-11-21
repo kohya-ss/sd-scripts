@@ -358,6 +358,8 @@ def get_device_properties(device=None):
 original_torch_xpu_get_device_index = torch.xpu._get_device_index
 @wraps(torch.cuda._get_device_index)
 def get_device_index(device: torch.device, *args, **kwargs):
+    if device is None or torch.device(device).index is None:
+        return torch.xpu.current_device()
     if check_cuda(device):
         return original_torch_xpu_get_device_index(return_xpu(device), *args, **kwargs)
     else:
@@ -383,18 +385,17 @@ class torch_Generator(original_torch_Generator):
         else:
             return super().__new__(cls, device)
 
-# Wrap the generic Stream constructor to translate CUDA devices to XPU.
 original_torch_Stream = torch.Stream
 class torch_Stream(original_torch_Stream):
-    def __new__(cls, device=None, *args, **kwargs):
+    def __new__(cls, device=None, priority: int = 0, **kwargs):
         if check_cuda(device):
             device = return_xpu(device)
-        return super().__new__(cls, device, *args, **kwargs)
+        return super().__new__(cls, device=device, priority=priority, **kwargs)
 
 
 original_torch_xpu_Stream = torch.xpu.Stream
 class torch_xpu_Stream(original_torch_xpu_Stream):
-    def __new__(cls, device=None, priority=0, **kwargs):
+    def __new__(cls, device=None, priority: int = 0, **kwargs):
         if check_cuda(device):
             device = return_xpu(device)
         return super().__new__(cls, device=device, priority=priority, **kwargs)
