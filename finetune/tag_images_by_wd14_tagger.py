@@ -102,6 +102,29 @@ def collate_fn_no_op(batch):
     return batch
 
 
+def process_tag_replacement(tags: list[str], tag_replacements_arg: str) -> list[str]:
+    """Replace tags in place (and return the list), e.g. `source1,target1;source2,target2`."""
+    # escape , and ; in tag_replacement: wd14 tag names may contain , and ;,
+    # so user must be specified them like `aa\,bb,AA\,BB;cc\;dd,CC\;DD` which means
+    # `aa,bb` is replaced with `AA,BB` and `cc;dd` is replaced with `CC;DD`
+    escaped_tag_replacements = tag_replacements_arg.replace("\\,", "@@@@").replace("\\;", "####")
+    tag_replacements = escaped_tag_replacements.split(";")
+
+    for tag_replacement in tag_replacements:
+        source_target = tag_replacement.split(",")  # source, target
+        assert (
+            len(source_target) == 2
+        ), f"tag replacement must be in the format of `source,target` / タグの置換は `置換元,置換先` の形式で指定してください: {tag_replacements_arg}"
+
+        source, target = [tag.replace("@@@@", ",").replace("####", ";") for tag in source_target]
+        logger.info(f"replacing tag: {source} -> {target}")
+
+        if source in tags:
+            tags[tags.index(source)] = target
+
+    return tags
+
+
 def main(args):
     # model location is model_dir + repo_id
     # given repo_id may be "namespace/repo_name" or "namespace/repo_name/subdir"
@@ -238,27 +261,6 @@ def main(args):
 
     def remove_underscore(tags):
         return [tag.replace("_", " ") if len(tag) > 3 else tag for tag in tags]
-
-    def process_tag_replacement(tags: list[str], tag_replacements_arg: str) -> list[str]:
-        # escape , and ; in tag_replacement: wd14 tag names may contain , and ;,
-        # so user must be specified them like `aa\,bb,AA\,BB;cc\;dd,CC\;DD` which means
-        # `aa,bb` is replaced with `AA,BB` and `cc;dd` is replaced with `CC;DD`
-        escaped_tag_replacements = tag_replacements_arg.replace("\\,", "@@@@").replace("\\;", "####")
-        tag_replacements = escaped_tag_replacements.split(";")
-
-        for tag_replacements_arg in tag_replacements:
-            tags = tag_replacements_arg.split(",")  # source, target
-            assert (
-                len(tags) == 2
-            ), f"tag replacement must be in the format of `source,target` / タグの置換は `置換元,置換先` の形式で指定してください: {args.tag_replacement}"
-
-            source, target = [tag.replace("@@@@", ",").replace("####", ";") for tag in tags]
-            logger.info(f"replacing tag: {source} -> {target}")
-
-            if source in tags:
-                tags[tags.index(source)] = target
-
-        return tags
 
     if default_format:
         with open(os.path.join(model_location, CSV_FILE), "r", encoding="utf-8") as f:
