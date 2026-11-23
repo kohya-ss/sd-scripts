@@ -1918,6 +1918,8 @@ class NetworkTrainer:
                         )
                     progress_bar.unpause()
 
+                    clean_memory_on_device(accelerator.device)
+
                     # 指定ステップごとにモデルを保存
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
                         accelerator.wait_for_everyone()
@@ -2104,6 +2106,8 @@ class NetworkTrainer:
             progress_bar.unpause()
             optimizer_train_fn()
             run_controller.on_epoch_end(global_step=global_step, average_loss=loss_recorder.moving_average)
+
+            clean_memory_on_device(accelerator.device)
 
             # end of epoch
 
