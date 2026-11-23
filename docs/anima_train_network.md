@@ -345,6 +345,15 @@ Example to additionally exclude MLP layers:
 --network_args "exclude_patterns=['.*mlp.*']"
 ```
 
+To opt in to the AdaLN modulation projections while keeping the usual LoRA targets:
+```bash
+--network_args "include_patterns=['.*adaln_modulation_.*']" "verbose=True"
+```
+This overrides the default exclusion for the modulation projections in self-attention,
+cross-attention, and MLP blocks. It leaves the selection of other layers unchanged.
+Check the module names printed by `verbose=True` before training. To give these
+projections a separate rank or learning rate, use the same pattern in the settings below.
+
 ### 5.2. Regex-based Rank and Learning Rate Control / 正規表現によるランク・学習率の制御
 
 You can specify different ranks (network_dim) and learning rates for modules matching specific regex patterns:
@@ -403,6 +412,13 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 * `include_patterns` - これらのパターンにマッチするモジュールを強制的に含める（除外を上書き）。
 
 パターンは`re.fullmatch()`を使用して完全なモジュール名に対してマッチングされます。
+
+通常のLoRA対象を維持したままAdaLNの変調用射影層を追加する例：
+```bash
+--network_args "include_patterns=['.*adaln_modulation_.*']" "verbose=True"
+```
+Self-attention、Cross-attention、MLPの変調用射影層がデフォルトの除外対象から外れます。他の層の選択は変わりません。
+学習前に`verbose=True`で出力されるモジュール名を確認してください。これらの射影層に個別のランクや学習率を設定する場合は、次節の設定に同じパターンを指定します。
 
 ### 5.2. 正規表現によるランク・学習率の制御
 
