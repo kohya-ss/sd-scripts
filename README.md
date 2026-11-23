@@ -47,6 +47,9 @@ If you find this project helpful, please consider supporting its development via
 
 ### Change History
 
+- **Version 0.13.1 (2026-11-23):**
+    - Fixed a bug in single-process multi-GPU training (`--replica_devices`): when the number of batches per epoch was not a multiple of the number of GPUs, the GPUs did not run at the same time in some epochs (every other epoch with 2 GPUs), and those epochs were up to about two times slower. Only the speed was affected; the training results are not. [PR #2508](https://github.com/kohya-ss/sd-scripts/pull/2508)
+
 - **Version 0.13.0 (2026-11-21):**
     - Added `--run_control` (experimental) to the LoRA training scripts. A running training can be observed and operated from outside, by scripts and AI agents. See the [documentation](./docs/run_control.md) for details. [PR #2494](https://github.com/kohya-ss/sd-scripts/pull/2494) [PR #2495](https://github.com/kohya-ss/sd-scripts/pull/2495) [PR #2496](https://github.com/kohya-ss/sd-scripts/pull/2496) [PR #2497](https://github.com/kohya-ss/sd-scripts/pull/2497) [PR #2498](https://github.com/kohya-ss/sd-scripts/pull/2498) [PR #2499](https://github.com/kohya-ss/sd-scripts/pull/2499) [PR #2500](https://github.com/kohya-ss/sd-scripts/pull/2500) [PR #2501](https://github.com/kohya-ss/sd-scripts/pull/2501)
         - The state of the running training is written to plain JSON files in `<output_dir>/<output_name>_run`, so scripts and AI agents can observe the training without parsing the TensorBoard event files.

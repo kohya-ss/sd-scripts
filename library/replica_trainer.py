@@ -562,6 +562,11 @@ class ReplicaTrainerMixin:
             if self._replica_timing is not None:
                 self._replica_timing.add(sync_join=t1 - t0, sync_reduce=time.perf_counter() - t1)
         self._replica_optimizer_steps += 1
+        # Start the next round from the head of the schedule (replicas first). accelerate restarts its accumulation count
+        # at the end of the data loader, so after a partial round (number of batches per epoch not a multiple of the
+        # round length) a running counter would be out of phase for the whole next epoch: the master micro-step would
+        # come first and the replica one would be dispatched right before the sync, i.e. the devices would run in turn.
+        self._replica_micro_step = 0
         if self._replica_timing is not None and self._replica_optimizer_steps % 10 == 0:
             logger.info(f"replica timing (mean s over the last 10 steps): {self._replica_timing.summary()}")
 

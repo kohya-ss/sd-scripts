@@ -50,6 +50,9 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **Version 0.13.1 (2026-11-23):**
+    - 1 プロセスでのマルチ GPU 学習（`--replica_devices`）の不具合を修正しました。1 エポックのバッチ数が GPU 数の倍数でない場合に、一部のエポック（2 GPU では 1 エポックおき）で GPU が同時に動作せず、そのエポックの学習が最大で約 2 倍遅くなっていました。影響は速度のみで、学習結果には影響しません。[PR #2508](https://github.com/kohya-ss/sd-scripts/pull/2508)
+
 - **Version 0.13.0 (2026-11-21):**
     - LoRA 学習スクリプトに `--run_control`（実験的機能）を追加しました。実行中の学習を、スクリプトや AI エージェントから観測・操作できます。詳細は[ドキュメント](./docs/run_control.md)をご覧ください。[PR #2494](https://github.com/kohya-ss/sd-scripts/pull/2494) [PR #2495](https://github.com/kohya-ss/sd-scripts/pull/2495) [PR #2496](https://github.com/kohya-ss/sd-scripts/pull/2496) [PR #2497](https://github.com/kohya-ss/sd-scripts/pull/2497) [PR #2498](https://github.com/kohya-ss/sd-scripts/pull/2498) [PR #2499](https://github.com/kohya-ss/sd-scripts/pull/2499) [PR #2500](https://github.com/kohya-ss/sd-scripts/pull/2500) [PR #2501](https://github.com/kohya-ss/sd-scripts/pull/2501)
         - 実行中の学習の状態を、`<output_dir>/<output_name>_run` に通常の JSON ファイルとして書き出します。TensorBoard のイベントファイルを解析しなくても、スクリプトや AI エージェントから学習を観測できます。
