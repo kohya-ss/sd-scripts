@@ -51,7 +51,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 ### 更新履歴
 
 - **Version 0.13.1 (2026-11-23):**
-    - 同じ学習の複数の LoRA チェックポイントを指数移動平均で 1 つの LoRA にまとめる `networks/lora_post_hoc_ema.py`（Post-Hoc EMA）を追加しました（Musubi Tuner からの移植）。学習終盤に保存したチェックポイントを平均することで重みの揺れが減り、最後のチェックポイントより安定した結果になることがあります。詳細は[ドキュメント](./docs/lora_post_hoc_ema.md)をご覧ください。
+    - 同じ学習の複数の LoRA チェックポイントを指数移動平均で 1 つの LoRA にまとめる `networks/lora_post_hoc_ema.py`（Post-Hoc EMA）を追加しました（Musubi Tuner からの移植）。学習終盤に保存したチェックポイントを平均することで重みの揺れが減り、最後のチェックポイントより安定した結果になることがあります。詳細は[ドキュメント](./docs/lora_post_hoc_ema.md)をご覧ください。[PR #2510](https://github.com/kohya-ss/sd-scripts/pull/2510)
     - 1 プロセスでのマルチ GPU 学習（`--replica_devices`）の不具合を修正しました。1 エポックのバッチ数が GPU 数の倍数でない場合に、一部のエポック（2 GPU では 1 エポックおき）で GPU が同時に動作せず、そのエポックの学習が最大で約 2 倍遅くなっていました。影響は速度のみで、学習結果には影響しません。[PR #2508](https://github.com/kohya-ss/sd-scripts/pull/2508)
 
 - **Version 0.13.0 (2026-11-21):**
