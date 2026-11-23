@@ -1263,7 +1263,7 @@ if __name__ == "__main__":
 
     optimizer = transformers.optimization.Adafactor(unet.parameters(), relative_step=True)  # working at 22.2GB with torch2
 
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     logger.info("start training")
     steps = 10
@@ -1279,7 +1279,7 @@ if __name__ == "__main__":
         ctx = torch.randn(batch_size, 77, 2048).cuda()
         y = torch.randn(batch_size, ADM_IN_CHANNELS).cuda()
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast("cuda", enabled=True):
             output = unet(x, t, ctx, y)
             target = torch.randn_like(output)
             loss = torch.nn.functional.mse_loss(output, target)

@@ -415,7 +415,7 @@ if __name__ == "__main__":
 
     optimizer = bitsandbytes.adam.Adam8bit(control_net.prepare_optimizer_params(), 1e-3)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     logger.info("start training")
     steps = 10
@@ -431,7 +431,7 @@ if __name__ == "__main__":
         ctx = torch.randn(batch_size, 77, 2048).cuda()
         y = torch.randn(batch_size, sdxl_original_unet.ADM_IN_CHANNELS).cuda()
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast("cuda", enabled=True):
             control_net.set_cond_image(conditioning_image)
 
             output = unet(x, t, ctx, y)
