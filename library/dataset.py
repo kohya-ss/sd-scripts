@@ -501,6 +501,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.image_data: Dict[str, ImageInfo] = {}
         self.image_to_subset: Dict[str, Union[DreamBoothSubset, FineTuningSubset]] = {}
+        self.dataset_index: Optional[int] = None  # index in the DatasetGroup, set by the group
 
         # True if any image has multiple caption candidates (enable_multiline_caption with separator lines).
         # Text encoder outputs cannot be cached in that case because one candidate is chosen randomly at each step.
@@ -544,6 +545,13 @@ class BaseDataset(torch.utils.data.Dataset):
         ), f"max_bucket_reso must be equal or greater than resolution / max_bucket_resoは最大解像度より小さくできません。解像度を小さくするかmin_bucket_resoを大きくしてください"
 
         return min_bucket_reso, max_bucket_reso
+
+    def get_subset_index(self, subset) -> Optional[int]:
+        # by identity: subsets with the same settings are different subsets
+        for i, s in enumerate(self.subsets):
+            if s is subset:
+                return i
+        return None
 
     def set_seed(self, seed):
         self.seed = seed
@@ -1172,10 +1180,12 @@ class BaseDataset(torch.utils.data.Dataset):
         custom_attributes = []
         masks = []
         masked_images = []
+        subset_indices = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
             subset = self.image_to_subset[image_key]
+            subset_indices.append((self.dataset_index, self.get_subset_index(subset)))
 
             custom_attributes.append(subset.custom_attributes)
 
@@ -1419,8 +1429,10 @@ class BaseDataset(torch.utils.data.Dataset):
 
         example["network_multipliers"] = torch.FloatTensor([self.network_multiplier] * len(captions))
 
-        if self.debug_dataset:
-            example["image_keys"] = bucket[image_index : image_index + self.batch_size]
+        # for debug_dataset and the per-sample loss log of run control
+        example["image_keys"] = bucket[image_index : image_index + bucket_batch_size]
+        # (index of the dataset in the group, index of the subset in the dataset), the same order as `ss_datasets` in the metadata
+        example["subset_indices"] = subset_indices
         return example
 
     @staticmethod
@@ -1464,7 +1476,8 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         # simply concat together
         # TODO: handling image_data key duplication among dataset
         #   In practical, this is not the big issue because image_data is accessed from outside of dataset only for debug_dataset.
-        for dataset in datasets:
+        for i, dataset in enumerate(datasets):
+            dataset.dataset_index = i
             self.image_data.update(dataset.image_data)
             self.num_train_images += dataset.num_train_images
             self.num_reg_images += dataset.num_reg_images

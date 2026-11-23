@@ -39,6 +39,7 @@ import library.logging_util as logging_util
 import library.loss as loss_util
 import library.checkpoint_io as checkpoint_io
 import library.sampling as sampling
+import library.run_control as run_control
 import library.config_util as config_util
 from library.config_util import (
     ConfigSanitizer,
@@ -67,6 +68,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.run_controller = run_control.RunController(None)  # disabled until train() creates the real one
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -229,6 +231,66 @@ class NetworkTrainer:
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizers, text_encoder, unet):
         sampling.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizers[0], text_encoder, unet)
+
+    # region pause (run control)
+
+    def verify_pause_supported(self, args: argparse.Namespace, accelerator: Accelerator) -> None:
+        """Raises ValueError with the reason if the training cannot be paused in this configuration."""
+        if getattr(args, "deepspeed", False):
+            raise ValueError("pause is not supported with DeepSpeed")
+        if getattr(self, "is_swapping_blocks", False) and getattr(args, "block_swap_h2d_only", False):
+            # the H2D-only offloader places the resident blocks on the device only once, and keeps the CPU masters of the
+            # streamed weights by itself. moving the model as a whole breaks it
+            raise ValueError("pause is not supported with --block_swap_h2d_only yet")
+
+    def get_reason_to_keep_models_on_device_for_pause(self, args: argparse.Namespace) -> Optional[str]:
+        """Returns the reason if the training can be paused but the models cannot be moved to CPU, otherwise None.
+
+        The training then only waits: the VRAM is not freed.
+        """
+        if getattr(self, "_replicas", None):
+            # the replicas have their own models on the other devices. the threads of the replicas are idle when the
+            # commands are executed (after `all_reduce_network` and the optimizer step), so waiting is safe
+            return "the models stay on the devices in replica training (--replica_devices)"
+        return None
+
+    def offload_models_for_pause(self, args: argparse.Namespace, accelerator: Accelerator, unet, text_encoders, vae) -> list:
+        """Move the base models from the accelerator device to CPU to free the VRAM while the training is paused.
+
+        Returns the information for `restore_models_after_pause`. The network (LoRA) and the state of the optimizer are
+        small compared with the base models and stay on the device.
+        """
+        restore_info = []
+        unet_model = accelerator.unwrap_model(unet)
+        if getattr(self, "is_swapping_blocks", False):
+            # a part of the blocks is on the device. the device placement is restored by the methods for block swap
+            unet_model.to("cpu")
+            restore_info.append(("block_swap", unet_model, accelerator.device))
+            models = []
+        else:
+            models = [unet_model]
+        models += [accelerator.unwrap_model(t_enc) for t_enc in text_encoders if t_enc is not None]
+        if vae is not None:
+            models.append(vae)
+
+        for model in models:
+            param = next(model.parameters(), None)
+            if param is None or param.device.type not in ("cuda", "xpu", "mps"):
+                continue  # already on CPU (or not a real device)
+            device = param.device
+            model.to("cpu")
+            restore_info.append(("to", model, device))
+        return restore_info
+
+    def restore_models_after_pause(self, args: argparse.Namespace, accelerator: Accelerator, restore_info: list) -> None:
+        for kind, model, device in restore_info:
+            if kind == "block_swap":
+                model.move_to_device_except_swap_blocks(device)
+                model.prepare_block_swap_before_forward()
+            else:
+                model.to(device)
+
+    # endregion
 
     # region SD/SDXL
 
@@ -555,6 +617,8 @@ class NetworkTrainer:
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
         loss = loss.mean(dim=list(range(1, loss.ndim)))  # mean over all dims except batch
+        if is_train:
+            self.run_controller.record_sample_losses(batch, timesteps, loss)  # before loss_weights and post_process_loss
 
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
         loss = loss * loss_weights
@@ -974,8 +1038,10 @@ class NetworkTrainer:
         metadata_to_save.update(sai_metadata)
 
         unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+        self.run_controller.record_checkpoint(ckpt_file, step=steps)
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
+        return ckpt_file
 
     def _remove_model(self, *, args: argparse.Namespace, accelerator: Accelerator, old_ckpt_name: str):
         old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
@@ -1495,6 +1561,26 @@ class NetworkTrainer:
             use_dreambooth_method=use_dreambooth_method,
         )
 
+        # observation of the training from outside. no-op unless --run_control is specified
+        self.run_controller = run_control.create_run_controller(args, is_main_process)
+        if self.run_controller.enabled:
+            manifest = run_control.build_manifest(
+                args,
+                self._metadata,
+                training={
+                    "max_train_steps": args.max_train_steps,
+                    "num_train_epochs": num_train_epochs,
+                    "num_batches_per_epoch": len(train_dataloader),
+                    "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                    "num_processes": accelerator.num_processes,
+                },
+            )
+            self.run_controller.start(manifest, max_train_steps=args.max_train_steps, num_train_epochs=num_train_epochs)
+        run_controller = self.run_controller
+        if accelerator.num_processes > 1:
+            # the commands would have to be synchronized between the processes
+            run_controller.disable_commands("commands are not supported in multi-process training")
+
         # calculate steps to skip when resuming or starting from a specific step
         initial_step = 0
         if args.initial_epoch is not None or args.initial_step is not None:
@@ -1572,7 +1658,8 @@ class NetworkTrainer:
 
         # For --sample_at_first
         optimizer_eval_fn()
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        with run_controller.watch_samples(step=global_step):
+            self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
@@ -1641,9 +1728,119 @@ class NetworkTrainer:
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
 
+        # commands from outside (run control). They are executed after an optimizer step, in the eval mode of the optimizer.
+        # `global_step` and `epoch` are the values at that time.
+        def command_sample(command: dict) -> dict:
+            # check everything before the sampling starts: an error in the middle of the sampling cannot be recovered
+            try:
+                prompts = sampling.build_forced_prompts(
+                    args, command.get("prompts"), command.get("indices"), command.get("overrides")
+                )
+                cached_te_outputs = getattr(self, "sample_prompts_te_outputs", None)
+                if command.get("te_outputs") is not None:
+                    # text encoder outputs of the prompts, encoded outside. they stay registered until the training ends
+                    te_outputs_path = run_controller.resolve_command_data_path(command["te_outputs"])
+                    try:
+                        if not cached_te_outputs:
+                            raise ValueError(
+                                "text encoder outputs can be sent only when those of the prompt file are cached"
+                                " (--cache_text_encoder_outputs and --sample_prompts)"
+                            )
+                        te_outputs = sampling.load_prompt_te_outputs(te_outputs_path)
+                        sampling.verify_prompt_te_outputs(te_outputs, next(iter(cached_te_outputs.values())))
+                        for text, tensors in te_outputs.items():
+                            cached_te_outputs.setdefault(text, tensors)
+                    finally:
+                        if os.path.isfile(te_outputs_path):
+                            os.remove(te_outputs_path)
+                if cached_te_outputs is not None:
+                    sampling.verify_forced_prompts_are_cached(prompts, cached_te_outputs)
+            except (ValueError, OSError) as e:
+                raise run_control.CommandError(str(e))
+            with sampling.force_sample_prompts(prompts), sampling.collect_saved_samples() as saved:
+                self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+            progress_bar.unpause()
+            run_controller.record_samples(saved, step=global_step)
+            if len(saved) == 0:
+                raise run_control.CommandError("no image was generated. see the log of the training")
+            result = {"files": [os.path.abspath(path) for path in saved]}
+            if len(saved) < len(prompts):
+                result["warning"] = f"only {len(saved)} of {len(prompts)} images were generated. see the log of the training"
+            return result
+
+        def command_save(command: dict) -> dict:
+            ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+            ckpt_file = self._save_model(
+                args=args,
+                accelerator=accelerator,
+                save_dtype=save_dtype,
+                ckpt_name=ckpt_name,
+                unwrapped_nw=accelerator.unwrap_model(network),
+                steps=global_step,
+                epoch_no=epoch,
+            )
+            return {"path": os.path.abspath(ckpt_file)}
+
+        def command_save_state(command: dict) -> dict:
+            state_dir = checkpoint_io.save_state_stepwise(args, accelerator, global_step)
+            run_controller.record_state(state_dir, step=global_step)
+            return {"path": os.path.abspath(state_dir)}
+
+        def command_stop(command: dict) -> dict:
+            # the checkpoint and the state have the name of the step, so that they are not taken as the final ones
+            result = {}
+            if command.get("save", True):
+                result["checkpoint"] = command_save(command)["path"]
+            if command.get("save_state", True):
+                result["state"] = command_save_state(command)["path"]
+            run_controller.request_stop()
+            return result
+
+        pause_restore_info = []
+
+        def command_pause(command: dict) -> dict:
+            nonlocal pause_restore_info
+            if run_controller.paused:
+                raise run_control.CommandError("the training is already paused")
+            try:
+                self.verify_pause_supported(args, accelerator)
+            except ValueError as e:
+                raise run_control.CommandError(str(e))
+            vram_before = run_controller.current_vram()
+            keep_reason = self.get_reason_to_keep_models_on_device_for_pause(args)
+            if keep_reason is None:
+                pause_restore_info = self.offload_models_for_pause(args, accelerator, unet, text_encoders, vae)
+            else:
+                pause_restore_info = []  # only wait
+            clean_memory_on_device(accelerator.device)
+            run_controller.set_paused(True, step=global_step)
+            result = {"vram_before": vram_before, "vram_after": run_controller.current_vram()}
+            if keep_reason is not None:
+                result["warning"] = f"the training is paused, but the VRAM is not freed: {keep_reason}"
+            return result
+
+        def command_resume(command: dict) -> dict:
+            nonlocal pause_restore_info
+            if not run_controller.paused:
+                raise run_control.CommandError("the training is not paused")
+            self.restore_models_after_pause(args, accelerator, pause_restore_info)
+            pause_restore_info = []
+            paused_sec = run_controller.set_paused(False, step=global_step)
+            return {"paused_sec": paused_sec}
+
+        command_handlers = {
+            "sample": command_sample,
+            "save": command_save,
+            "save_state": command_save_state,
+            "stop": command_stop,
+            "pause": command_pause,
+            "resume": command_resume,
+        }
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
+            run_controller.on_epoch_start(epoch=epoch + 1)
 
             self._metadata["ss_epoch"] = str(epoch + 1)
 
@@ -1660,6 +1857,7 @@ class NetworkTrainer:
                 if initial_step > 0:
                     initial_step -= 1
                     continue
+                run_controller.on_batch_fetched(batch, global_step=global_step)
 
                 with accelerator.accumulate(training_model):
                     on_step_start_for_network(text_encoder, unet)
@@ -1729,9 +1927,10 @@ class NetworkTrainer:
                     global_step += 1
 
                     optimizer_eval_fn()
-                    self.sample_images(
-                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
-                    )
+                    with run_controller.watch_samples(step=global_step):
+                        self.sample_images(
+                            accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                        )
                     progress_bar.unpause()
 
                     # 指定ステップごとにモデルを保存
@@ -1750,12 +1949,19 @@ class NetworkTrainer:
                             )
 
                             if args.save_state:
-                                checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step)
+                                state_dir = checkpoint_io.save_and_remove_state_stepwise(args, accelerator, global_step)
+                                run_controller.record_state(state_dir, step=global_step)
 
                             remove_step_no = checkpoint_io.get_remove_step_no(args, global_step)
                             if remove_step_no is not None:
                                 remove_ckpt_name = checkpoint_io.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
+
+                    run_controller.process_commands(command_handlers, step=global_step)
+                    if run_controller.paused:
+                        # the models are offloaded by the pause command. wait for the resume (or stop) command
+                        run_controller.wait_while_paused(command_handlers, step=global_step)
+                        progress_bar.unpause()
                     optimizer_train_fn()
 
                 current_loss = loss.detach().item()
@@ -1764,8 +1970,9 @@ class NetworkTrainer:
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
-                if is_tracking:
-                    logs = self.generate_step_logs(
+                step_logs = None
+                if is_tracking or run_controller.enabled:
+                    step_logs = self.generate_step_logs(
                         args,
                         current_loss,
                         avr_loss,
@@ -1778,7 +1985,8 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
-                    self.step_logging(accelerator, logs, global_step, epoch + 1)
+                    if is_tracking:
+                        self.step_logging(accelerator, step_logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
                 # for example, if validate_every_n_steps=100, validate at step 100, 200, 300, ...
@@ -1821,8 +2029,13 @@ class NetworkTrainer:
                     accelerator.unwrap_model(network).train()
                     progress_bar.unpause()
 
-                if global_step >= args.max_train_steps:
+                run_controller.on_step_end(global_step=global_step, loss=current_loss, average_loss=avr_loss, logs=step_logs)
+
+                if global_step >= args.max_train_steps or run_controller.stop_requested:
                     break
+
+            if run_controller.stop_requested:
+                break  # skip the validation, the saving and the sampling at the end of the epoch
 
             # EPOCH VALIDATION
             should_validate_epoch = (
@@ -1896,13 +2109,25 @@ class NetworkTrainer:
                         self._remove_model(args=args, accelerator=accelerator, old_ckpt_name=remove_ckpt_name)
 
                     if args.save_state:
-                        checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
+                        state_dir = checkpoint_io.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
+                        run_controller.record_state(state_dir, step=global_step)
 
-            self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+            with run_controller.watch_samples(step=global_step):
+                self.sample_images(
+                    accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                )
             progress_bar.unpause()
             optimizer_train_fn()
+            run_controller.on_epoch_end(global_step=global_step, average_loss=loss_recorder.moving_average)
 
             # end of epoch
+
+        if run_controller.stop_requested:
+            # stopped by a command. the model and the state were saved by the command with the name of the step
+            accelerator.end_training()
+            run_controller.finish("stopped")
+            logger.info(f"training is stopped by a command at step {global_step}")
+            return
 
         # metadata["ss_epoch"] = str(num_train_epochs)
         self._metadata["ss_training_finished_at"] = str(time.time())
@@ -1914,7 +2139,8 @@ class NetworkTrainer:
         optimizer_eval_fn()
 
         if is_main_process and (args.save_state or args.save_state_on_train_end):
-            checkpoint_io.save_state_on_train_end(args, accelerator)
+            state_dir = checkpoint_io.save_state_on_train_end(args, accelerator)
+            run_controller.record_state(state_dir, step=global_step)
 
         if is_main_process:
             ckpt_name = checkpoint_io.get_last_ckpt_name(args, "." + args.save_model_as)
@@ -1931,6 +2157,8 @@ class NetworkTrainer:
 
             logger.info("model saved.")
 
+        run_controller.finish()
+
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -1945,6 +2173,7 @@ def setup_parser() -> argparse.ArgumentParser:
     args_util.add_optimizer_arguments(parser)
     config_util.add_config_arguments(parser)
     custom_train_functions.add_custom_train_arguments(parser)
+    run_control.add_run_control_arguments(parser)
 
     parser.add_argument(
         "--cpu_offload_checkpointing",

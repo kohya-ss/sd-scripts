@@ -50,7 +50,26 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
-- **次のリリースに含まれる予定の更新:** 次のリリースに含まれる予定の主な変更点は以下の通りです。リリース前の変更点は予告なく変更される可能性があります。
+- **Version 0.13.1 (2026-11-23):**
+    - 同じ学習の複数の LoRA チェックポイントを指数移動平均で 1 つの LoRA にまとめる `networks/lora_post_hoc_ema.py`（Post-Hoc EMA）を追加しました（Musubi Tuner からの移植）。学習終盤に保存したチェックポイントを平均することで重みの揺れが減り、最後のチェックポイントより安定した結果になることがあります。詳細は[ドキュメント](./docs/lora_post_hoc_ema.md)をご覧ください。[PR #2510](https://github.com/kohya-ss/sd-scripts/pull/2510)
+    - 1 プロセスでのマルチ GPU 学習（`--replica_devices`）の不具合を修正しました。1 エポックのバッチ数が GPU 数の倍数でない場合に、一部のエポック（2 GPU では 1 エポックおき）で GPU が同時に動作せず、そのエポックの学習が最大で約 2 倍遅くなっていました。影響は速度のみで、学習結果には影響しません。[PR #2508](https://github.com/kohya-ss/sd-scripts/pull/2508)
+
+- **Version 0.13.0 (2026-11-21):**
+    - LoRA 学習スクリプトに `--run_control`（実験的機能）を追加しました。実行中の学習を、スクリプトや AI エージェントから観測・操作できます。詳細は[ドキュメント](./docs/run_control.md)をご覧ください。[PR #2494](https://github.com/kohya-ss/sd-scripts/pull/2494) [PR #2495](https://github.com/kohya-ss/sd-scripts/pull/2495) [PR #2496](https://github.com/kohya-ss/sd-scripts/pull/2496) [PR #2497](https://github.com/kohya-ss/sd-scripts/pull/2497) [PR #2498](https://github.com/kohya-ss/sd-scripts/pull/2498) [PR #2499](https://github.com/kohya-ss/sd-scripts/pull/2499) [PR #2500](https://github.com/kohya-ss/sd-scripts/pull/2500) [PR #2501](https://github.com/kohya-ss/sd-scripts/pull/2501)
+        - 実行中の学習の状態を、`<output_dir>/<output_name>_run` に通常の JSON ファイルとして書き出します。TensorBoard のイベントファイルを解析しなくても、スクリプトや AI エージェントから学習を観測できます。
+            - `manifest.json`: 解決済みの引数、データセットの集計、実行環境。
+            - `status.json`: 現在のステップ、loss、学習率、速度、ETA、VRAM、最後の出力。
+            - `events.jsonl`: チェックポイント、state、サンプル画像、異常、終了時の状態とエラー。
+            - `loss.jsonl`: 学習した各サンプルの loss と、その画像、timestep、解像度。
+        - `tools/analyze_run_loss.py` はサンプル単位の loss を timestep 別、解像度別、画像別に集計するもので、うまく学習できていない画像（画像とキャプションの不一致など）を探すのに役立ちます。
+        - 実行中の学習はコマンドも受け付け、定期実行のタイミングを待たずに操作できます。コマンドは `tools/run_control_cli.py`（または JSON ファイルを書く任意のプログラム）から送ります。
+            - `sample`: 現在の重みでサンプル画像を生成します（プロンプトファイルのプロンプト、Text Encoder がメモリにあれば新しいプロンプトも可）。
+            - `save` / `save_state`: モデルや state を保存します。
+            - `stop`: それらを保存してから学習を停止します。
+            - `pause` / `resume`: VRAM をしばらく空けるために学習を一時停止します（ベースモデルを CPU に移して戻すもので、プロセスは残ります）。レプリカ学習（`--replica_devices`）では、`pause` は学習を止めるだけで、モデルは各デバイスに残り VRAM は解放されません。
+        - プロンプトファイルで `--s 0`（ステップ数 0）を指定したプロンプトは *予備プロンプト* になります。定期的なサンプル生成では飛ばされますが、Text Encoder の出力は開始時にキャッシュされるため、Text Encoder をメモリに残さない構成でも随時生成できます（`sample --index`）。
+        - Anima と MOSS-Image では、`tools/run_control_sample_prompt.py` により、Text Encoder をメモリに残さない構成でも新しいプロンプトのサンプル画像を生成できます。スクリプト自身のプロセスで Text Encoder を動かしてプロンプトをエンコードし（デフォルトは CPU。ここでのエラーは学習に影響しません）、その出力を学習側に送ります。
+        - 学習の起動と見守りを AI コーディングエージェントに任せる場合のために、手順と注意点をまとめた[エージェント向けガイド](./docs/agent_guide.md)（英語）も用意しました。エージェントに読ませてください。
     - MOSS-Image と Anima の学習に `--gradient_checkpointing_skip_blocks`（部分的な gradient checkpointing）を追加しました。末尾の N 個の transformer ブロックは backward で再計算せず activation を保持するため、余っている VRAM を速度に変換できます。VRAM 使用量とステップ時間は N に対して線形に変化します（デフォルトの `0` は従来どおりの動作）。最近の大きなモデルでは batch size を増やしてもスループットはほとんど向上しないため、24GB〜48GB の GPU で余った VRAM の使い道としてはこちらの方が有利なことが多いです。MOSS-Image の LoRA 学習（約 1MP、batch size 1、bf16）の実測では、`0` で 13.5GB / 1.29 s/step、`42`（全ブロック）で 55GB / 0.93 s/step、1 ブロックあたり約 1GB と 8.6 ms でした。`--compile`（ConvRot INT8）では 1 ブロックあたりの VRAM が約 0.6GB に下がります。Anima では `0` で 6.5GB / 0.85 s/step、`28` で 19.9GB / 0.53 s/step でした。表は [MOSS-Image](./docs/moss_image_train_network.md#71-vram-usage-optimization--vram-使用量の最適化) と [Anima](./docs/anima_train_network.md#71-vram-usage-optimization--vram使用量の最適化) のドキュメントをご覧ください。[PR #2485](https://github.com/kohya-ss/sd-scripts/pull/2485)
     - Anima と MOSS-Image の LoRA 学習に、1 プロセスでのマルチ GPU 学習（`--replica_devices`、実験的機能）を追加しました。DDP を使わず、1 つの Python プロセスがマスターと追加 GPU ごとのレプリカを駆動します。`accelerate launch --multi_gpu`、`torchrun`、NCCL / gloo が不要なため、Windows でもマルチ GPU の LoRA 学習ができます。`--cache_latents`、`--cache_text_encoder_outputs`、`--network_train_unet_only` が必須で、`train_batch_size` は DDP と同様にデバイスごとの値です。詳細は[ドキュメント](./docs/replica_training.md)をご覧ください。
         - 開発者向け: `train_network.py` の `NetworkTrainer.create_network`（引数からのネットワーク生成）と `NetworkTrainer.forward_backward`（1 micro-step）がオーバーライド可能なメソッドとして追加されました。レプリカ学習（`library/replica_trainer.py`）はモデルごとの trainer クラスの前に合成される mixin です。
@@ -58,6 +77,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
     - MOSS-Image に `--text_encoder_blocks_to_swap` を追加しました。テキストエンコーダーの 32 層のうち指定した数の層を GPU に常駐させず CPU からストリーミングするため、VRAM 8GB の GPU でもテキストエンコーダー出力をキャッシュできます（ピークは bf16 で `28` なら約 5GB、`32` なら約 3.5GB、ConvRot INT8 で `32` なら約 2.2GB）。学習スクリプトと `tools/cache_text_encoder_outputs.py` で使用できます。[PR #2478](https://github.com/kohya-ss/sd-scripts/pull/2478) dskjal 氏に感謝します。[PR #2483](https://github.com/kohya-ss/sd-scripts/pull/2483)
         - 層のストリーミングには `--block_swap_h2d_only` と同じ H2D-only オフローダーを使います（このオプションの指定は不要です。重みは CPU に置いたまま、現在の層の実行中に次の層を先読みします）。このオフローダーは、Qwen3.5-9B の linear / full attention 層のように形の異なるブロックにも対応しました。
     - `networks/resize_lora.py` に `--svd_method qr` を追加しました。`lora_up @ lora_down` をマージせずに QR 分解で LoRA の重みの厳密な SVD を計算するため、大幅に高速で（SDXL の LoRA で 100 倍以上）、`svd_lowrank` のようなランダム性もありません。`--new_rank` が元の rank より大きい場合は `--new_rank` までパディングします。デフォルトの `merged` は従来の動作です。[PR #2482](https://github.com/kohya-ss/sd-scripts/pull/2482) woct0rdho 氏に感謝します。[PR #2484](https://github.com/kohya-ss/sd-scripts/pull/2484)
+    - Anima で、DiT のブロック数をチェックポイントから推定するようになりました。コミュニティ製の [Anima-2.9B](https://huggingface.co/Gazingstars123/Anima-2.9B)（40 ブロック）のように、Anima-Preview とブロック数だけが異なる派生モデルを LoRA 学習と推論に使用できます。これらの派生モデルは定期的なテストの対象外である点にご注意ください。[PR #2418](https://github.com/kohya-ss/sd-scripts/pull/2418) gazingstars123 氏に感謝します。[PR #2486](https://github.com/kohya-ss/sd-scripts/pull/2486) davrens101 氏に感謝します。[PR #2502](https://github.com/kohya-ss/sd-scripts/pull/2502)
 
 - **Version 0.12.3 (2026-10-26):**
     - FLUX.1、Anima、HunyuanImage-2.1、MOSS-Image の学習に `--timestep_sampling truncated_logit_normal` を追加しました。離散的な学習グリッド上の logit-normal 分布（`--logit_mean` / `--logit_std`）を `--timestep_cutoff`（デフォルト 0.95）で切り詰めてリスケールし、`--timestep_uniform_ratio`（デフォルト 0.01）の割合で一様サンプルを混ぜます。`--logit_mean -1.09 --logit_std 0.95 --discrete_flow_shift 1.0` と組み合わせると、MOSS-Image の事前学習のタイムステップスケジュールを正確に再現します（これまでは切り詰めと一様サンプルは再現していませんでした）。[PR #2471](https://github.com/kohya-ss/sd-scripts/pull/2471)
@@ -164,6 +184,9 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
 * [インペインティング学習](./docs/inpainting_training.md)
 * [1プロセスでのマルチGPU学習（レプリカ学習）](./docs/replica_training.md)
+* [LoRAのPost-Hoc EMAマージ](./docs/lora_post_hoc_ema.md)
+* [実行中の学習の観測と操作（Run Control）](./docs/run_control.md)
+* [学習を運用する AI エージェント向けガイド](./docs/agent_guide.md)（英語。学習の起動と見守りを AI コーディングエージェントに任せるときに読ませてください）
 
 ### その他のドキュメント
 

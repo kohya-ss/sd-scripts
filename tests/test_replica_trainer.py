@@ -400,6 +400,26 @@ def test_partial_round_at_end_of_dataloader():
 
 
 @cuda_only
+def test_round_restarts_with_the_replica_after_a_partial_round():
+    # an odd number of batches per epoch: the last round of the epoch has the replica micro-step only. The next round
+    # must start with the replica again, otherwise the master runs first and the devices work in turn for the whole epoch
+    args = toy_args(replica_devices="0", gradient_accumulation_steps=1)  # GA' = 2 micro-steps: replica then master
+    trainer, accelerator, unet, network, tes = setup_toy(args)
+    replica = trainer._replicas[0]
+
+    fb(trainer, args, accelerator, make_batch(1), unet, network, tes)  # replica; end of the data loader forces the sync
+    trainer.all_reduce_network(accelerator, network)
+    dispatched = replica.last_future
+
+    loss = fb(trainer, args, accelerator, make_batch(2), unet, network, tes)  # first micro-step of the next epoch
+    assert replica.last_future is not dispatched  # went to the replica
+    assert not loss.requires_grad
+    loss = fb(trainer, args, accelerator, make_batch(3), unet, network, tes)
+    assert loss.requires_grad  # master
+    trainer.all_reduce_network(accelerator, network)
+
+
+@cuda_only
 def test_serial_warmup_returns_current_loss():
     args = toy_args(replica_devices="0", gradient_accumulation_steps=1, replica_warmup_steps=1)
     trainer, accelerator, unet, network, tes = setup_toy(args)

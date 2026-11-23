@@ -140,6 +140,8 @@ If loss becomes NaN, ensure you are using PyTorch version 2.5 or higher.
 
 **Note:** `--vae_chunk_size`, `--vae_disable_cache`, and `--qwen_image_vae_2d` are custom options in this repository to reduce memory usage (and, for `--qwen_image_vae_2d`, also speed up) the Qwen-Image VAE.
 
+**Note for Windows:** With the default `--max_data_loader_n_workers` (8), the DataLoader worker processes are re-created at every epoch on Windows, which can make the training several times slower (the effect is large with small datasets). Specify a small number of workers together with `--persistent_data_loader_workers`, e.g. `--max_data_loader_n_workers 2 --persistent_data_loader_workers` (more workers do not make it faster). Note that `--persistent_data_loader_workers` cannot be combined with `--max_data_loader_n_workers 0`.
+
 <details>
 <summary>日本語</summary>
 
@@ -155,6 +157,8 @@ lossがNaNになる場合は、PyTorchのバージョンが2.5以上であるこ
 
 注意: `--vae_chunk_size`、`--vae_disable_cache`、`--qwen_image_vae_2d`は当リポジトリ独自のオプションで、Qwen-Image VAEのメモリ使用量を削減するために使用します（`--qwen_image_vae_2d`は高速化も兼ねます）。
 
+Windows での注意: `--max_data_loader_n_workers` のデフォルト（8）のままだと、Windows では DataLoader のワーカープロセスがエポックごとに再生成され、学習が数倍遅くなることがあります（データセットが小さいほど影響が大きい）。`--max_data_loader_n_workers 2 --persistent_data_loader_workers` のように、少ないワーカー数と `--persistent_data_loader_workers` を併せて指定してください（ワーカーを増やしても速くはなりません）。`--persistent_data_loader_workers` は `--max_data_loader_n_workers 0` とは併用できません。
+
 </details>
 
 ### 4.1. Explanation of Key Options / 主要なコマンドライン引数の解説
@@ -164,7 +168,7 @@ Besides the arguments explained in the [train_network.py guide](train_network.md
 #### Model Options [Required] / モデル関連 [必須]
 
 * `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[Required]**
-  - Path to the Anima DiT model `.safetensors` file. The model config (channels, blocks, heads) is auto-detected from the state dict. ComfyUI format with `net.` prefix is supported.
+  - Path to the Anima DiT model `.safetensors` file. The number of Transformer blocks is inferred from the checkpoint, so variants which differ from Anima-Preview (28 blocks) only in the number of blocks, such as the community Anima-2.9B (40 blocks), can be loaded as well (these variants are not tested regularly). The other model settings are fixed. ComfyUI format with `net.` or `model.diffusion_model.` prefix is supported.
 * `--qwen3="<path to Qwen3-0.6B model>"` **[Required]**
   - Path to the Qwen3-0.6B text encoder. Can be a HuggingFace model directory or a single `.safetensors` file. The text encoder is always frozen during training.
 * `--vae="<path to Qwen-Image VAE model>"` **[Required]**
@@ -209,9 +213,9 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 #### Memory and Speed / メモリ・速度関連
 
 * `--blocks_to_swap=<integer>`
-  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. Maximum values depend on model size:
+  - Number of Transformer blocks to swap between CPU and GPU. More blocks reduce VRAM but slow training. The maximum is the number of blocks of the model minus 2:
     - 28-block model: max **26** (Anima-Preview)
-    - 36-block model: max **34**
+    - 40-block model: max **38** (e.g. Anima-2.9B)
   - `--block_swap_h2d_only` enables the faster H2D-only block swap for LoRA training (requires `--gradient_checkpointing`). See [Block Swap](./block_swap.md).
     - 20-block model: max **18**
   - Cannot be used with `--cpu_offload_checkpointing` or `--unsloth_offload_checkpointing`.
@@ -246,7 +250,7 @@ For LoRA training, use `network_reg_lrs` in `--network_args` instead. See [Secti
 
 #### モデル関連 [必須]
 
-* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。モデルの設定はstate dictから自動検出されます。`net.`プレフィックス付きのComfyUIフォーマットもサポートしています。
+* `--pretrained_model_name_or_path="<path to Anima DiT model>"` **[必須]** - Anima DiTモデルの`.safetensors`ファイルのパスを指定します。Transformerブロック数はチェックポイントから推定されるため、Anima-Preview（28ブロック）とブロック数だけが異なる派生モデル（コミュニティ製のAnima-2.9B、40ブロックなど）も読み込めます（これらの派生モデルは定期的なテストの対象外です）。それ以外のモデル設定は固定です。`net.`または`model.diffusion_model.`プレフィックス付きのComfyUIフォーマットもサポートしています。
 * `--qwen3="<path to Qwen3-0.6B model>"` **[必須]** - Qwen3-0.6Bテキストエンコーダーのパスを指定します。HuggingFaceモデルディレクトリまたは単体の`.safetensors`ファイルが使用できます。
 * `--vae="<path to Qwen-Image VAE model>"` **[必須]** - Qwen-Image VAEモデルのパスを指定します。
 
@@ -341,6 +345,15 @@ Example to additionally exclude MLP layers:
 --network_args "exclude_patterns=['.*mlp.*']"
 ```
 
+To opt in to the AdaLN modulation projections while keeping the usual LoRA targets:
+```bash
+--network_args "include_patterns=['.*adaln_modulation_.*']" "verbose=True"
+```
+This overrides the default exclusion for the modulation projections in self-attention,
+cross-attention, and MLP blocks. It leaves the selection of other layers unchanged.
+Check the module names printed by `verbose=True` before training. To give these
+projections a separate rank or learning rate, use the same pattern in the settings below.
+
 ### 5.2. Regex-based Rank and Learning Rate Control / 正規表現によるランク・学習率の制御
 
 You can specify different ranks (network_dim) and learning rates for modules matching specific regex patterns:
@@ -399,6 +412,13 @@ In preliminary tests, lowering the learning rate for the LLM Adapter seems to im
 * `include_patterns` - これらのパターンにマッチするモジュールを強制的に含める（除外を上書き）。
 
 パターンは`re.fullmatch()`を使用して完全なモジュール名に対してマッチングされます。
+
+通常のLoRA対象を維持したままAdaLNの変調用射影層を追加する例：
+```bash
+--network_args "include_patterns=['.*adaln_modulation_.*']" "verbose=True"
+```
+Self-attention、Cross-attention、MLPの変調用射影層がデフォルトの除外対象から外れます。他の層の選択は変わりません。
+学習前に`verbose=True`で出力されるモジュール名を確認してください。これらの射影層に個別のランクや学習率を設定する場合は、次節の設定に同じパターンを指定します。
 
 ### 5.2. 正規表現によるランク・学習率の制御
 

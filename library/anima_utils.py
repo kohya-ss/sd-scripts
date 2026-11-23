@@ -63,7 +63,8 @@ def load_anima_model(
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
-    # We currently support fixed DiT config for Anima models
+    # We currently support fixed DiT config for Anima models, except for the block count which follows the checkpoint
+    # (e.g. 28 blocks for Anima-Preview, 40 blocks for the community Anima-2.9B)
     dit_config = {
         "max_img_h": 512,
         "max_img_w": 512,
@@ -82,7 +83,6 @@ def load_anima_model(
         "max_fps": 30,
         "use_adaln_lora": True,
         "adaln_lora_dim": 256,
-        "num_blocks": 28,
         "num_heads": 16,
         "extra_per_block_abs_pos_emb": False,
         "rope_h_extrapolation_ratio": 4.0,
@@ -96,11 +96,6 @@ def load_anima_model(
         "attn_mode": attn_mode,
         "split_attn": split_attn,
     }
-    with init_empty_weights():
-        model = anima_models.Anima(**dit_config)
-        if dit_weight_dtype is not None:
-            model.to(dit_weight_dtype)
-
     # load model weights with dynamic fp8 optimization and LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
 
@@ -127,6 +122,18 @@ def load_anima_model(
         exclude_keys=FP8_OPTIMIZATION_EXCLUDE_KEYS,
         weight_transform_hooks=rename_hooks,
     )
+
+    # infer the block count from the (renamed) keys: "blocks.<index>.xxx"
+    num_blocks = max((int(key.split(".")[1]) for key in sd.keys() if key.startswith("blocks.")), default=-1) + 1
+    if num_blocks == 0:
+        raise RuntimeError(f"No DiT blocks found in checkpoint: {dit_path}")
+    logger.info(f"Anima DiT blocks: {num_blocks}")
+    dit_config["num_blocks"] = num_blocks
+
+    with init_empty_weights():
+        model = anima_models.Anima(**dit_config)
+        if dit_weight_dtype is not None:
+            model.to(dit_weight_dtype)
 
     if fp8_scaled:
         apply_fp8_monkey_patch(model, sd, use_scaled_mm=False)

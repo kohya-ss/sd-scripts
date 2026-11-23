@@ -1,5 +1,7 @@
 This file provides the overview and guidance for developers working with the codebase, including setup instructions, architecture details, and common commands.
 
+If the task is to **run** a training for the user (start it, watch it, report on it) rather than to change the code, read `docs/agent_guide.md` first. It is not needed for development work.
+
 ## Project Architecture
 
 ### Core Training Framework
@@ -27,8 +29,9 @@ The shared training utilities (formerly a single large `train_util.py`) are spli
 | `library/checkpoint_io.py` | Save / rotate checkpoints and train state (`save_sd_model_on_*`, filename templates) |
 | `library/loss.py` | Per-step loss building blocks: timestep sampling, noise, `conditional_loss` |
 | `library/hidden_states.py` | Text encoder hidden-state extraction (`get_hidden_states`, `get_hidden_states_sdxl`) |
-| `library/sampling.py` | Sample image generation during training (`sample_images`, prompt parsing) |
+| `library/sampling.py` | Sample image generation during training (`sample_images`, prompt parsing). Helpers shared by the sampling functions of all models: `should_sample_images`, `get_sample_prompts`, `notify_sample_saved`, and forced sampling (`force_sample_prompts`) |
 | `library/logging_util.py` | `init_trackers` (TensorBoard / W&B), `LossRecorder` |
+| `library/run_control.py` | `RunController` for `--run_control`: writes `manifest.json` / `status.json` / `events.jsonl` / `loss.jsonl` (per-sample loss) to `<output_dir>/<output_name>_run` so the training can be observed from outside, and executes command files put into `commands/` (sample / save / save_state / stop / pause / resume; the handlers are in the training script). Training loops call its hooks at step / epoch boundaries. See `docs/run_control.md` |
 | `library/train_util.py` | **Backward-compatibility shim only.** Re-exports the names above for external forks; do not add code here |
 
 Import conventions:
@@ -102,6 +105,9 @@ Located in `tools/` directory:
 - `tools/merge_lora.py`: Merge LoRA weights into base models
 - `tools/cache_latents.py`: Pre-cache VAE latents for faster training
 - `tools/cache_text_encoder_outputs.py`: Pre-cache text encoder outputs
+- `tools/analyze_run_loss.py`: Summarize the per-sample loss log of `--run_control` (standard library only)
+- `tools/run_control_cli.py`: Send commands (sample / save / save_state / stop / pause / resume) to a training running with `--run_control` (standard library only)
+- `tools/run_control_sample_prompt.py`: Encode new prompts with the text encoder in its own process and send the outputs with a `sample` command, for a training which does not keep the text encoder in memory (Anima / MOSS-Image; needs the training environment). The file format and its verification are in `library/sampling.py` (`save_prompt_te_outputs` / `load_prompt_te_outputs` / `verify_prompt_te_outputs`)
 
 ## Development Notes
 
