@@ -1,6 +1,7 @@
 # Anima Model Architecture
 # Original code: NVIDIA CORPORATION & AFFILIATES, licensed under Apache-2.0
 
+import contextlib
 import math
 from typing import Any, Optional, Tuple, Union
 
@@ -605,6 +606,17 @@ class PatchEmbed(nn.Module):
 
 
 # Final Layer
+def _adaln_autocast(device_type: str, use_fp32: bool):
+    """Context for the AdaLN modulation layers: float32 autocast when ``use_fp32`` (fp16), otherwise no change.
+
+    ``torch.autocast(..., enabled=False)`` must not be used for the latter: it turns off the autocast of the caller, and
+    the layers then run with the dtypes as they are. A LoRA on the modulation layers (float32 weights, bf16 input) fails.
+    """
+    if use_fp32:
+        return torch.autocast(device_type=device_type, dtype=torch.float32)
+    return contextlib.nullcontext()
+
+
 class FinalLayer(nn.Module):
     """Final layer with AdaLN modulation + unpatchify."""
 
@@ -656,7 +668,7 @@ class FinalLayer(nn.Module):
         use_fp32: bool = False,
     ):
         # Compute AdaLN modulation parameters (in float32 when fp16 to avoid overflow in Linear layers)
-        with torch.autocast(device_type=x_B_T_H_W_D.device.type, dtype=torch.float32, enabled=use_fp32):
+        with _adaln_autocast(x_B_T_H_W_D.device.type, use_fp32):
             if self.use_adaln_lora:
                 assert adaln_lora_B_T_3D is not None
                 shift_B_T_D, scale_B_T_D = (
@@ -791,7 +803,7 @@ class Block(nn.Module):
             x_B_T_H_W_D = x_B_T_H_W_D + extra_per_block_pos_emb
 
         # Compute AdaLN modulation parameters (in float32 when fp16 to avoid overflow in Linear layers)
-        with torch.autocast(device_type=x_B_T_H_W_D.device.type, dtype=torch.float32, enabled=use_fp32):
+        with _adaln_autocast(x_B_T_H_W_D.device.type, use_fp32):
             if self.use_adaln_lora:
                 shift_self_attn_B_T_D, scale_self_attn_B_T_D, gate_self_attn_B_T_D = (
                     self.adaln_modulation_self_attn(emb_B_T_D) + adaln_lora_B_T_3D

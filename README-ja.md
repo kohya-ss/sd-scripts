@@ -50,6 +50,10 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 
 ### 更新履歴
 
+- **Version 0.13.1 (2026-11-23):**
+    - 同じ学習の複数の LoRA チェックポイントを指数移動平均で 1 つの LoRA にまとめる `networks/lora_post_hoc_ema.py`（Post-Hoc EMA）を追加しました（Musubi Tuner からの移植）。学習終盤に保存したチェックポイントを平均することで重みの揺れが減り、最後のチェックポイントより安定した結果になることがあります。詳細は[ドキュメント](./docs/lora_post_hoc_ema.md)をご覧ください。[PR #2510](https://github.com/kohya-ss/sd-scripts/pull/2510)
+    - 1 プロセスでのマルチ GPU 学習（`--replica_devices`）の不具合を修正しました。1 エポックのバッチ数が GPU 数の倍数でない場合に、一部のエポック（2 GPU では 1 エポックおき）で GPU が同時に動作せず、そのエポックの学習が最大で約 2 倍遅くなっていました。影響は速度のみで、学習結果には影響しません。[PR #2508](https://github.com/kohya-ss/sd-scripts/pull/2508)
+
 - **Version 0.13.0 (2026-11-21):**
     - LoRA 学習スクリプトに `--run_control`（実験的機能）を追加しました。実行中の学習を、スクリプトや AI エージェントから観測・操作できます。詳細は[ドキュメント](./docs/run_control.md)をご覧ください。[PR #2494](https://github.com/kohya-ss/sd-scripts/pull/2494) [PR #2495](https://github.com/kohya-ss/sd-scripts/pull/2495) [PR #2496](https://github.com/kohya-ss/sd-scripts/pull/2496) [PR #2497](https://github.com/kohya-ss/sd-scripts/pull/2497) [PR #2498](https://github.com/kohya-ss/sd-scripts/pull/2498) [PR #2499](https://github.com/kohya-ss/sd-scripts/pull/2499) [PR #2500](https://github.com/kohya-ss/sd-scripts/pull/2500) [PR #2501](https://github.com/kohya-ss/sd-scripts/pull/2501)
         - 実行中の学習の状態を、`<output_dir>/<output_name>_run` に通常の JSON ファイルとして書き出します。TensorBoard のイベントファイルを解析しなくても、スクリプトや AI エージェントから学習を観測できます。
@@ -180,6 +184,7 @@ Stable Diffusion等の画像生成モデルの学習、モデルによる画像�
 * [マスク損失学習](./docs/masked_loss_README-ja.md) / [英語版](./docs/masked_loss_README.md)
 * [インペインティング学習](./docs/inpainting_training.md)
 * [1プロセスでのマルチGPU学習（レプリカ学習）](./docs/replica_training.md)
+* [LoRAのPost-Hoc EMAマージ](./docs/lora_post_hoc_ema.md)
 * [実行中の学習の観測と操作（Run Control）](./docs/run_control.md)
 * [学習を運用する AI エージェント向けガイド](./docs/agent_guide.md)（英語。学習の起動と見守りを AI コーディングエージェントに任せるときに読ませてください）
 
