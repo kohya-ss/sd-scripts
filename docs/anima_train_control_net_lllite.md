@@ -12,6 +12,8 @@ The current implementation is the **v2 architecture**, which extends the origina
 * atomic `target_layers` specifiers, including a new **`mlp_fc1_pre`** target that injects LLLite into the MLP block,
 * an optional **ASPP** (Atrous Spatial Pyramid Pooling) tail in `conditioning1`, switchable via `--lllite_use_aspp`.
 
+**v2.1** additionally offers an optional **latent conditioning input** (`--lllite_cond_input latent`): the control image is VAE-encoded and the resulting 16ch latent is fed to `conditioning1` instead of raw pixels, so the pretrained VAE encoder does the heavy feature extraction (see Section 8). The weight format and `lllite.version` are unchanged (`"2"`); pixel-space weights keep working exactly as before.
+
 > **Status:** experimental. Currently supports image generation only (`T=1`). `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing`, `--deepspeed`, and `--fused_backward_pass` are not yet supported and the training script will assert if any of them is enabled.
 
 An experimental ComfyUI ControlNet-LLLite node for Anima is also available [here](https://github.com/kohya-ss/ComfyUI-Anima-LLLite).
@@ -30,6 +32,8 @@ ControlNet-LLLite は SDXL 向けに導入された LoRA ライクな軽量条�
 * モジュール毎の **depth embedding**（zero-init bias）を shared `cond_emb` に加算し、層別性の必要度を観察するプローブとして利用しています。
 * `target_layers` を atomic specifier 形式でも指定できるよう拡張し、新しく **`mlp_fc1_pre`**（MLP ブロックへの注入）を追加しました。
 * `conditioning1` 末尾に **ASPP** (Atrous Spatial Pyramid Pooling) を任意で挿入できる `--lllite_use_aspp` を追加しました。
+
+**v2.1** ではさらに、制御画像を VAE で encode した 16ch latent を（pixel の代わりに）`conditioning1` に入力する **latent 条件入力**（`--lllite_cond_input latent`）を選べるようになりました。学習済み VAE encoder に特徴抽出の大半を担わせる狙いです（第 8 節）。重みフォーマットと `lllite.version`（`"2"`）は据え置きで、pixel 空間の既存重みはこれまで通り動作します。
 
 > **ステータス:** 実験的実装です。現状は画像生成（`T=1`）のみ対応しています。`--blocks_to_swap` / `--cpu_offload_checkpointing` / `--unsloth_offload_checkpointing` / `--deepspeed` / `--fused_backward_pass` には未対応で、指定すると学習スクリプトが assert で停止します。
 
@@ -182,6 +186,9 @@ The following options are unique to this script. Anima-related arguments (`--qwe
   * Atomic specifiers can be freely combined: e.g. `self_attn_q_pre,mlp_fc1_pre` injects into Q + MLP fc1, `self_attn_q_pre,self_attn_kv_pre,mlp_fc1_pre` covers self-attn QKV + MLP. The resolved canonical atomic set is also written to the weights metadata (see Section 5).
   * `cross_attn.{k,v}_proj` and any `output_proj` are always skipped (the former is incompatible with the conditioning sequence shape; the latter is reserved for future post-projection variants).
 
+* `--lllite_cond_input={pixel,latent}` (default `pixel`)
+  * Input space of the control image. `pixel` (default, v2) feeds the image directly to the stride-16 `conditioning1` stem. `latent` (v2.1) VAE-encodes the control image and feeds the 16ch latent to a dedicated latent stem instead. See Section 8 for details and trade-offs.
+
 * `--lllite_dropout=<float>` (default `None`)
   * Dropout applied to the LLLite mid output (post-FiLM, post-SiLU) during training.
 
@@ -216,6 +223,7 @@ The following options are unique to this script. Anima-related arguments (`--qwe
     * `self_attn_qkv_cross_q` ≡ `self_attn_q_pre,self_attn_kv_pre,cross_attn_q_pre`。
   * atomic specifier は自由に組合せ可能です。例: `self_attn_q_pre,mlp_fc1_pre` は Q + MLP fc1 への注入、`self_attn_q_pre,self_attn_kv_pre,mlp_fc1_pre` は self-attn QKV + MLP 。解決後の canonical atomic 列は重みのメタデータにも記録されます（第 5 節参照）。
   * `cross_attn.{k,v}_proj` と `output_proj` は常時スキップされます（前者は context 側との shape 不整合、後者は将来の post-projection 系拡張のために予約）。
+* `--lllite_cond_input={pixel,latent}`（デフォルト `pixel`）— 制御画像の入力空間。`pixel`（既定、v2）は画像をそのまま stride-16 の `conditioning1` stem に入力します。`latent`（v2.1）は制御画像を VAE で encode し、16ch latent を専用の latent stem に入力します。詳細と長短は第 8 節を参照してください。
 * `--lllite_dropout=<float>`（デフォルト `None`）— LLLite の mid 出力（FiLM 適用後 SiLU 後）に対する学習時 dropout。
 * `--lllite_multiplier=<float>`（デフォルト `1.0`）— 学習中の LLLite 出力倍率。サンプル画像生成時にも、prompt 行で `--am` による上書きが無ければこの値が使われます。**`0.0` を指定すると学習時にも LLLite が完全 bypass され grad が乗らず学習が壊れる**ため、グローバルなデフォルトには `0` を使わないでください（観察用途であれば prompt 行で `--am 0` を指定する方法を推奨。第 4 節参照）。
 * `--network_weights=<path>` — 続きから学習する場合の LLLite 重み（`.safetensors`）のパス。`strict=False` でロードします。`--lllite_target_layers` と保存時の値が一致しているか確認してください（現状自動チェックはしていません）。
@@ -313,10 +321,18 @@ If `--cn` is omitted (or the file does not exist), the prompt is rendered with t
 The saved `.safetensors` contains only the LLLite-side parameters. On disk the per-module keys use a **named-key format**: each module's tensors are prefixed with its `lllite_name` (e.g. `lllite_dit_blocks_0_self_attn_q_proj`), so a single weight file uniquely identifies which DiT block / Linear each module targets. The internal `state_dict` keys (`lllite_modules.{i}.*` and the stacked `depth_embeds`) are rewritten at save time, and any file that still contains `lllite_modules.*` keys is rejected by `load_lllite_weights` as a legacy format. The on-disk layout is as follows (`{j}` indexes the ResBlock, and `{name}` stands for an `lllite_name` such as `lllite_dit_blocks_0_self_attn_q_proj`):
 
 ```
-# conditioning1 trunk (Conv stride-4 ×2 with an intermediate Conv stride-1)
+# conditioning1 stem, pixel mode (Conv stride-4 ×2 with an intermediate Conv stride-1)
 lllite_conditioning1.conv1.{weight,bias},  lllite_conditioning1.norm1.{weight,bias}
 lllite_conditioning1.conv2.{weight,bias},  lllite_conditioning1.norm2.{weight,bias}
 lllite_conditioning1.conv3.{weight,bias},  lllite_conditioning1.norm3.{weight,bias}
+
+# conditioning1 stem, latent mode (--lllite_cond_input latent) — replaces conv1..3 above
+lllite_conditioning1.lat_conv1.{weight,bias}, lllite_conditioning1.lat_norm1.{weight,bias}
+lllite_conditioning1.lat_conv2.{weight,bias}, lllite_conditioning1.lat_norm2.{weight,bias}
+# (latent mode + inpainting only) mask conv pyramid 1 -> 4 -> 8 -> 16ch
+lllite_conditioning1.mask_conv1.{weight,bias}
+lllite_conditioning1.mask_conv2.{weight,bias}
+lllite_conditioning1.mask_conv3.{weight,bias}
 
 # (optional) ResBlocks at trunk width
 lllite_conditioning1.resblocks.{j}.norm1.{weight,bias}, lllite_conditioning1.resblocks.{j}.conv1.{weight,bias}
@@ -352,10 +368,11 @@ The metadata records `modelspec.architecture = "anima-preview/control-net-lllite
 | `lllite.mlp_dim` | per-module MLP / FiLM hidden dim |
 | `lllite.target_layers` | the user-supplied `--lllite_target_layers` string verbatim |
 | `lllite.target_atomics` | resolved canonical atomic specifier list (comma-separated) |
-| `lllite.cond_in_channels` | conditioning1 input channel count (`"3"` standard, `"4"` inpaint) |
+| `lllite.cond_input_space` | `"pixel"` (v2 default) / `"latent"` (v2.1). Absent in older files → treated as `"pixel"` |
+| `lllite.cond_in_channels` | conditioning1 input channel count in **pixel semantics** (`"3"` standard, `"4"` inpaint) — in latent mode the actual stem input is 16 / 32ch |
 | `lllite.inpaint_masked_input` | `"true"` if RGB was masked before concat at train time (inpaint only) |
 
-The inference script (Section 6) reads these back, so you normally do not need to specify the architecture options on the command line again. Currently the inference script **requires** the metadata to reconstruct the architecture: state-dict-only auto-detection (e.g. for hand-edited weight files) is not implemented.
+The inference script (Section 6) reads these back, so you normally do not need to specify the architecture options on the command line again. Because the pixel and latent stems use disjoint key names, loading a pixel-space weight file into a latent-mode model (or vice versa) fails immediately with a `cond input space mismatch` error instead of silently leaving the stem at its random initialization. Currently the inference script **requires** the metadata to reconstruct the architecture: state-dict-only auto-detection (e.g. for hand-edited weight files) is not implemented.
 
 Save cadence options (`--save_every_n_epochs`, `--save_every_n_steps`, `--save_state`, `--save_last_n_epochs`, `--save_last_n_steps`, ...) work the same as in standard training scripts.
 
@@ -365,10 +382,18 @@ Save cadence options (`--save_every_n_epochs`, `--save_every_n_steps`, `--save_s
 保存される `.safetensors` には LLLite 側のパラメータのみが含まれます。ディスク上のモジュール毎キーは **named-key 形式** で、各モジュールのテンソルにそのモジュールの `lllite_name`（例：`lllite_dit_blocks_0_self_attn_q_proj`）が prefix として付きます。これにより重みファイル単独で「どの DiT block のどの Linear 用か」が一意に判別できます。内部 `state_dict` のキー（`lllite_modules.{i}.*` および stack された `depth_embeds`）は保存時に書き換えられ、`lllite_modules.*` キーを含むファイルは `load_lllite_weights` で legacy フォーマットとして reject されます。ディスク上の構造は以下の通りです（`{j}` は ResBlock の index、`{name}` は `lllite_dit_blocks_0_self_attn_q_proj` のような `lllite_name`）：
 
 ```
-# conditioning1 trunk (stride-4 Conv ×2、その間に stride-1 Conv)
+# conditioning1 stem・pixel モード (stride-4 Conv ×2、その間に stride-1 Conv)
 lllite_conditioning1.conv1.{weight,bias},  lllite_conditioning1.norm1.{weight,bias}
 lllite_conditioning1.conv2.{weight,bias},  lllite_conditioning1.norm2.{weight,bias}
 lllite_conditioning1.conv3.{weight,bias},  lllite_conditioning1.norm3.{weight,bias}
+
+# conditioning1 stem・latent モード (--lllite_cond_input latent) — 上記 conv1..3 の代わりに保存される
+lllite_conditioning1.lat_conv1.{weight,bias}, lllite_conditioning1.lat_norm1.{weight,bias}
+lllite_conditioning1.lat_conv2.{weight,bias}, lllite_conditioning1.lat_norm2.{weight,bias}
+# (latent モード + inpainting のときのみ) mask conv pyramid 1 -> 4 -> 8 -> 16ch
+lllite_conditioning1.mask_conv1.{weight,bias}
+lllite_conditioning1.mask_conv2.{weight,bias}
+lllite_conditioning1.mask_conv3.{weight,bias}
 
 # (オプション) trunk 幅で動作する ResBlock
 lllite_conditioning1.resblocks.{j}.norm1.{weight,bias}, lllite_conditioning1.resblocks.{j}.conv1.{weight,bias}
@@ -404,10 +429,11 @@ lllite_conditioning1.out_norm.{weight,bias}
 | `lllite.mlp_dim` | LLLite モジュール毎の MLP / FiLM 中間次元 |
 | `lllite.target_layers` | ユーザが指定した `--lllite_target_layers` 文字列をそのまま記録 |
 | `lllite.target_atomics` | 解決後の canonical atomic specifier 列（カンマ区切り） |
-| `lllite.cond_in_channels` | conditioning1 入力チャネル数（`"3"` 通常、`"4"` inpainting） |
+| `lllite.cond_input_space` | `"pixel"`（v2 既定）/ `"latent"`（v2.1）。旧ファイルでキーが無い場合は `"pixel"` 扱い |
+| `lllite.cond_in_channels` | conditioning1 入力チャネル数（**pixel 意味論**で `"3"` 通常、`"4"` inpainting）。latent モードでは stem の実入力は 16 / 32ch |
 | `lllite.inpaint_masked_input` | 学習時 RGB を mask 域で 0 化してから concat したか（inpaint 専用、`"true"`/`"false"`） |
 
-これらは推論スクリプト（第 6 節）で自動的に読み出されるため、通常はコマンドラインで再指定する必要はありません。現在の推論スクリプトはアーキテクチャ復元に**メタデータが必須**で、state_dict 単独からの自動判定（手編集された重みファイル等）には対応していません。
+これらは推論スクリプト（第 6 節）で自動的に読み出されるため、通常はコマンドラインで再指定する必要はありません。pixel と latent の stem はキー名が分離されているため、pixel 重みを latent モードのモデルに（またはその逆で）読ませようとすると、初期値のまま黙って動くのではなく `cond input space mismatch` エラーで即座に失敗します。現在の推論スクリプトはアーキテクチャ復元に**メタデータが必須**で、state_dict 単独からの自動判定（手編集された重みファイル等）には対応していません。
 
 保存頻度の各オプション（`--save_every_n_epochs`、`--save_every_n_steps`、`--save_state`、`--save_last_n_epochs`、`--save_last_n_steps` など）は通常の学習スクリプトと同様に使えます。
 
@@ -461,7 +487,9 @@ a dog --w 1024 --h 1024 --d 0 --cn lineart_b.png
 * `--lllite_weights <path>` **[required, unless `--latent_path` is given]** — trained LLLite weights.
 * `--control_image <path>` — global control image. Required for single-prompt mode; optional in `--from_file` / `--interactive` mode if every prompt provides `--cn`.
 * `--lllite_multiplier <float>` (default `1.0`) — global LLLite multiplier.
-* `--lllite_cond_emb_dim`, `--lllite_cond_dim`, `--lllite_cond_resblocks`, `--lllite_mlp_dim`, `--lllite_target_layers`, `--lllite_use_aspp` — manual overrides. Normally unnecessary because the values are read from the weights metadata. `--lllite_use_aspp` takes the literal strings `true` / `false`.
+* `--lllite_cond_emb_dim`, `--lllite_cond_dim`, `--lllite_cond_resblocks`, `--lllite_mlp_dim`, `--lllite_target_layers`, `--lllite_use_aspp`, `--lllite_cond_input` — manual overrides. Normally unnecessary because the values are read from the weights metadata. `--lllite_use_aspp` takes the literal strings `true` / `false`; `--lllite_cond_input` takes `pixel` / `latent`.
+
+When the weights were trained with `--lllite_cond_input latent`, the inference script loads the VAE a second time (kept on CPU between prompts) to encode the control image, so `--vae` must be given as usual.
 
 CFG inference (cond / uncond passes) is handled by simply broadcasting the same `cond_emb` to both passes, so control is applied symmetrically.
 
@@ -478,7 +506,8 @@ CFG inference (cond / uncond passes) is handled by simply broadcasting the same 
   * `--lllite_weights <path>` **[必須、ただし `--latent_path` 指定時を除く]** — 学習済み LLLite 重み。
   * `--control_image <path>` — グローバル control 画像。単発推論では必須。`--from_file` / `--interactive` で全プロンプトが `--cn` を持つ場合は省略可。
   * `--lllite_multiplier <float>`（デフォルト `1.0`）— グローバル LLLite 倍率。
-  * `--lllite_cond_emb_dim` / `--lllite_cond_dim` / `--lllite_cond_resblocks` / `--lllite_mlp_dim` / `--lllite_target_layers` / `--lllite_use_aspp` — 通常はメタデータから自動読み込みされるため指定不要。手動上書きが必要な場合のみ指定します。`--lllite_use_aspp` は `true` / `false` の文字列リテラルで指定します。
+  * `--lllite_cond_emb_dim` / `--lllite_cond_dim` / `--lllite_cond_resblocks` / `--lllite_mlp_dim` / `--lllite_target_layers` / `--lllite_use_aspp` / `--lllite_cond_input` — 通常はメタデータから自動読み込みされるため指定不要。手動上書きが必要な場合のみ指定します。`--lllite_use_aspp` は `true` / `false`、`--lllite_cond_input` は `pixel` / `latent` の文字列リテラルで指定します。
+  * `--lllite_cond_input latent` で学習した重みの場合、control 画像の encode 用に VAE をもう一度ロードします（プロンプト間は CPU に退避）。`--vae` は通常通り指定してください。
 
 CFG 推論（cond / uncond の 2 pass）は両 pass に同じ `cond_emb` を配布する形になっており、control は両側に対称に作用します。
 
@@ -491,6 +520,8 @@ CFG 推論（cond / uncond の 2 pass）は両 pass に同じ `cond_emb` を配�
 When `--lllite_cond_in_channels=4` is passed, the LLLite `conditioning1` trunk accepts a 4-channel input instead of the default 3 channels: `[R, G, B, mask]`. The training script generates a fresh random mask per sample at every step (via `library.mask_generator.random_mask`) and concatenates it with the conditioning RGB image. At inference time you pass the control image and the mask separately (the script concatenates them internally).
 
 The default 3-channel behavior (no mask, generic ControlNet usage) is unchanged. The same code path is intentionally generic so that future 4-channel conditioning (e.g. user-supplied control masks for lighting / region control) can reuse the same trunk; for the initial release only inpainting is wired up.
+
+This section describes the pixel path. Inpainting also works with `--lllite_cond_input latent`, where the mask takes a separate route — see Section 8.1.
 
 ### 7.1. Mask Convention / マスク規約
 
@@ -615,9 +646,118 @@ python anima_minimal_inference_control_net_lllite.py \
 
 </details>
 
-## 8. Tips & Limitations / 補足と制限
+## 8. Latent Conditioning Input (v2.1) / 条件画像の latent 入力 (v2.1)
 
-* **Resolution alignment.** The conditioning encoder uses fixed stride 16, so `cond_image` HW must equal `latent HW × 8` (i.e. the original training image size) (the latent is patchified with patch size=2, so stride is 8*2=16). The DataLoader for the ControlNet dataset already resizes the conditioning image to match the training image, so in practice you only need to make sure the control image you pass at inference time matches the requested `--image_size`.
+> **Status:** experimental. Optional; the default remains the v2 pixel path and existing weights are unaffected.
+
+With `--lllite_cond_input latent`, the control image is **VAE-encoded** before it reaches `conditioning1`, and the resulting normalized 16ch latent (the very representation the DiT's `x_embedder` consumes) is fed to a dedicated latent stem instead of the stride-16 pixel stem:
+
+```
+pixel  (default): cond image (B,3,H,W)  -> Conv4x4 s4 -> Conv3x3 s1 -> Conv4x4 s4  -> (B,cond_dim,H/16,W/16)
+latent          : cond image (B,3,H,W)  -> VAE encode -> (B,16,H/8,W/8)
+                                        -> Conv3x3 s1 -> Conv2x2 s2               -> (B,cond_dim,H/16,W/16)
+```
+
+The motivation is leverage: `conditioning1` is computed once per step and shared by every LLLite module, so improving it benefits all of them. In pixel mode that feature extractor is trained from scratch on a few thousand pairs; in latent mode the pretrained VAE encoder (a deep ResBlock network) does the bulk of the work for free, and the stem only has to map an already-rich representation into the trunk. FLUX.1 Canny/Depth (Control LoRA) and SD3.5 ControlNet use VAE-encoded control images the same way, including for near-binary signals like canny.
+
+Practical notes:
+
+* The latent stem reaches the token grid exactly: the latent is `H/8`, the stride-2 conv halves it to `H/16`, which is the DiT token resolution (VAE /8 × patch /2).
+* Since the VAE carries most of the feature extraction, `--lllite_cond_resblocks 1` is expected to be enough — this is worth checking against your pixel-mode baseline before spending capacity there.
+* The control image is encoded **on the fly every step** (under `no_grad`, outside autocast). Caching cond latents to disk is not implemented yet. In latent mode the VAE therefore stays resident on the GPU even with `--cache_latents`, which costs a little VRAM.
+* Sparse control signals (lineart, stick-figure poses) are somewhat out of the VAE's reconstruction domain. A cheap sanity check before a long run is to VAE encode→decode a few of your control images and look at the result.
+* This is orthogonal to `--lllite_target_layers`, `--lllite_use_aspp`, ResBlock count and multiplier — combine freely.
+
+### 8.1. Inpainting in Latent Mode / latent モードでの inpainting
+
+A mask cannot be pushed through the VAE, so in latent mode (`--lllite_cond_in_channels 4`) it takes a separate route: it is passed at **pixel resolution** as its own tensor and downsampled to latent resolution by a small learnable conv pyramid inside `conditioning1`, then concatenated with the cond latent:
+
+```
+mask (B,1,H,W) in {-1,1}
+  -> Conv 2x2 s2 -> SiLU      (B, 4, H/2, W/2)   2x2-scale detail
+  -> Conv 3x3 s2 -> SiLU      (B, 8, H/4, W/4)   4x4 scale
+  -> Conv 3x3 s2 (linear)     (B,16, H/8, W/8)   8x8 scale
+concat with the cond latent -> (B,32,H/8,W/8) -> latent stem
+```
+
+The pyramid has no normalization between stages on purpose: GroupNorm removes the per-map mean/scale, which for a mostly-uniform mask would erase how much of the image is masked (in the limit, a fully-masked and a fully-unmasked image would produce the same features). The SiLU nonlinearity is what keeps the three stages from collapsing into a single linear map. Total cost is ~1.5K parameters.
+
+Channel balance is 16 (latent) + 16 (mask), and the effective receptive field of the pyramid (~14×14 px) slightly overlaps neighboring 8×8 cells, so boundaries that straddle two latent pixels stay continuous. Each token still sees the mask of exactly the 16×16 pixel patch it represents, matching the per-token mask visibility of the pixel path — the v2 property of clean, blend-free mask boundaries is the requirement this design is built around, and is worth verifying visually when you compare the two modes.
+
+`--lllite_inpaint_masked_input` keeps its meaning: the RGB is zeroed inside the mask region **in pixel space, before** the VAE encode. Mask convention, dataset setup (`conditioning_data_dir` = `image_dir`), random-mask generation and the `--mk` prompt-line flag are all unchanged from Section 7.
+
+Example:
+
+```bash
+accelerate launch --num_cpu_threads_per_process 1 anima_train_control_net_lllite.py \
+  --pretrained_model_name_or_path="<path to Anima DiT model>" \
+  --qwen3="<path to Qwen3-0.6B model or directory>" \
+  --vae="<path to Qwen-Image VAE model>" \
+  --dataset_config="my_anima_lllite.toml" \
+  --output_dir="<output directory>" --output_name="my_anima_lllite_latent" \
+  --save_model_as=safetensors \
+  --lllite_cond_input=latent \
+  --cond_emb_dim=32 --lllite_mlp_dim=64 --lllite_cond_dim=64 \
+  --lllite_cond_resblocks=1 --lllite_target_layers=self_attn_q \
+  --learning_rate=1e-4 --optimizer_type="AdamW8bit" --lr_scheduler="constant" \
+  --timestep_sampling="shift" --discrete_flow_shift=3.0 \
+  --max_train_epochs=10 --save_every_n_epochs=1 \
+  --mixed_precision="bf16" --gradient_checkpointing \
+  --cache_latents --cache_text_encoder_outputs \
+  --vae_chunk_size=64 --vae_disable_cache
+```
+
+### 8.2. Limitations / 制限
+
+* Cond latents are not cached to disk; they are re-encoded every step.
+* In latent mode `--lllite_cond_in_channels` must be `3` or `4` (the generic `cond_in_channels` path of Section 7 is pixel-mode only).
+* Pixel-mode and latent-mode weights are not interchangeable; the loader rejects a mix-up explicitly (Section 5).
+* Whether latent conditioning actually beats the pixel stem for a given control signal is an open question — A/B it against a pixel-mode run with the same data and hyperparameters.
+
+<details>
+<summary>日本語</summary>
+
+`--lllite_cond_input latent` を指定すると、制御画像を **VAE で encode** してから `conditioning1` に入力します。入力されるのは DiT の `x_embedder` が消費するのと同じ正規化済み 16ch latent で、stride-16 の pixel stem の代わりに専用の latent stem を通ります。
+
+```
+pixel（既定）: cond 画像 (B,3,H,W) -> Conv4x4 s4 -> Conv3x3 s1 -> Conv4x4 s4 -> (B,cond_dim,H/16,W/16)
+latent       : cond 画像 (B,3,H,W) -> VAE encode -> (B,16,H/8,W/8)
+                                   -> Conv3x3 s1 -> Conv2x2 s2              -> (B,cond_dim,H/16,W/16)
+```
+
+狙いはレバレッジです。`conditioning1` は 1 step に 1 回だけ計算され全 LLLite モジュールに共有されるため、ここを強化すると全モジュールに効きます。pixel モードではこの特徴抽出器を数千ペアでスクラッチ学習していますが、latent モードでは学習済み VAE encoder（各スケールに ResBlock を持つ深いネット）が追加学習パラメータなしでその大半を担い、stem は「すでにリッチな表現を trunk に写す」だけで済みます。FLUX.1 Canny/Depth (Control LoRA) や SD3.5 ControlNet も同じ方式で、canny のようなニアバイナリ画像でも成立することは実証済みです。
+
+補足:
+
+* latent (`H/8`) を stride 2 で落とすと `H/16` = DiT の token 解像度（VAE /8 × patch /2）にちょうど一致します。
+* 特徴抽出の大半を VAE が担うため `--lllite_cond_resblocks 1` で足りる見込みです。pixel モードのベースラインと比較して確認する価値があります。
+* 制御画像は**毎ステップ on-the-fly で encode** します（`no_grad`、autocast の外）。cond latent のディスクキャッシュは未実装です。このため latent モードでは `--cache_latents` 指定時も VAE を GPU に常駐させます（その分 VRAM を消費します）。
+* 線画やポーズ棒人間のようなスパースな制御信号は VAE の再構成ドメインからやや外れます。長時間の学習前に、手持ちの制御画像を VAE で encode→decode して目視確認しておくと安価な事前検証になります。
+* `--lllite_target_layers` / `--lllite_use_aspp` / ResBlock 段数 / multiplier とは直交します。自由に組み合わせられます。
+
+**latent モードでの inpainting**: mask は VAE に通せないため別経路になります。mask は **pixel 解像度のまま別テンソル**で渡し、`conditioning1` 内部の小さな学習可能 conv pyramid で latent 解像度に落としてから cond latent と concat します。
+
+```
+mask (B,1,H,W) {-1,1}
+  -> Conv 2x2 s2 -> SiLU      (B, 4, H/2, W/2)   2x2 の微細パターン担当
+  -> Conv 3x3 s2 -> SiLU      (B, 8, H/4, W/4)   4x4 スケール担当
+  -> Conv 3x3 s2 (linear)     (B,16, H/8, W/8)   8x8 スケール担当
+cond latent と concat -> (B,32,H/8,W/8) -> latent stem
+```
+
+段間に正規化を置いていないのは意図的です。GroupNorm は特徴マップ全体の平均・スケールを除去するため、ほぼ一様な mask では「どれだけの面積がマスクされているか」の情報が失われます（極端には全面マスクと全面非マスクが同じ特徴になります）。3 段が単一の線形写像に縮退するのを防ぐ役割は SiLU が担っています。総パラメータは約 1.5K です。
+
+チャネル配分は latent 16 + mask 16 で対称、pyramid の実効受容野（約 14×14 px）は隣接 8×8 セルに少しはみ出すため、latent 1 画素をまたぐ境界の連続性も拾えます。1 token が担当する 16×16 pixel patch の mask 情報にアクセスできる点は pixel パスと同じです。v2 の「mask 境界のアーティファクトが皆無」という性質を維持することが本設計の必須要件なので、2 モードを比較する際は境界品質を目視で確認してください。
+
+`--lllite_inpaint_masked_input` の意味は変わりません（RGB の mask 域を **pixel 空間で、VAE encode の前に** 0 化します）。マスク規約、データセット設定（`conditioning_data_dir` = `image_dir`）、ランダム mask 生成、prompt 行の `--mk` はすべて第 7 節のままです。
+
+**制限**: cond latent のディスクキャッシュは未対応（毎ステップ再 encode）。latent モードの `--lllite_cond_in_channels` は `3` / `4` のみ（第 7 節の generic な `cond_in_channels` 拡張は pixel モード専用）。pixel 重みと latent 重みは互換性がなく、取り違えは明示的に reject されます（第 5 節）。制御信号ごとに latent が pixel より本当に有利かは未検証なので、同一データ・同一ハイパラでの A/B 比較を推奨します。
+
+</details>
+
+## 9. Tips & Limitations / 補足と制限
+
+* **Resolution alignment.** The conditioning encoder uses fixed stride 16, so `cond_image` HW must equal `latent HW × 8` (i.e. the original training image size) (the latent is patchified with patch size=2, so stride is 8*2=16). In latent mode (Section 8) the control image is still supplied at the original image size; the VAE /8 plus the stem's stride-2 conv give the same total stride of 16. The DataLoader for the ControlNet dataset already resizes the conditioning image to match the training image, so in practice you only need to make sure the control image you pass at inference time matches the requested `--image_size`.
 * **`T=1` only.** Video-style multi-frame inputs are not supported — the wrapper asserts `T==1` at forward time.
 * **Bucket size.** The training script enforces a bucket resolution step of 16 (Qwen-Image VAE /8 × patch /2).
 * **Memory.** `--blocks_to_swap`, `--cpu_offload_checkpointing`, `--unsloth_offload_checkpointing` are not yet supported. If VRAM is tight, prefer `--full_bf16`, smaller `--lllite_mlp_dim`, lower `--cond_emb_dim`, and `--gradient_checkpointing`.
@@ -628,7 +768,7 @@ python anima_minimal_inference_control_net_lllite.py \
 <details>
 <summary>日本語</summary>
 
-* **解像度の整合性.** `conditioning1` の stride は 16 固定なので、`cond_image` の縦横は `latent HW × 8`（つまり元の学習画像サイズ）に一致している必要があります（latent はモデル内で patch size=2 で patchfy されるため、stride は 8*2=16 となる）。ControlNet 形式のデータローダ側で conditioning 画像は教師画像と同じサイズにリサイズされるため、実用上は推論時に渡す control 画像のサイズを `--image_size` と合わせれば OK です。
+* **解像度の整合性.** `conditioning1` の stride は 16 固定なので、`cond_image` の縦横は `latent HW × 8`（つまり元の学習画像サイズ）に一致している必要があります（latent はモデル内で patch size=2 で patchfy されるため、stride は 8*2=16 となる）。latent モード（第 8 節）でも制御画像は元画像サイズのまま渡します（VAE の /8 と stem の stride-2 conv で合計 stride は同じく 16）。ControlNet 形式のデータローダ側で conditioning 画像は教師画像と同じサイズにリサイズされるため、実用上は推論時に渡す control 画像のサイズを `--image_size` と合わせれば OK です。
 * **`T=1` のみ.** 動画的な多フレーム入力はサポートしていません（wrapper の forward 冒頭で assert）。
 * **bucket サイズ.** 学習スクリプトは bucket 解像度ステップを 16（Qwen-Image VAE /8 × patch /2）として検証します。
 * **メモリ.** `--blocks_to_swap`、`--cpu_offload_checkpointing`、`--unsloth_offload_checkpointing` は未対応です。VRAM が厳しい場合は `--full_bf16`、`--lllite_mlp_dim` を下げる、`--cond_emb_dim` を下げる、`--gradient_checkpointing` を有効にする、などで対応してください。

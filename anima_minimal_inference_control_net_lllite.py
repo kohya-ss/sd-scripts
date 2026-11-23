@@ -43,7 +43,13 @@ from PIL import Image
 from safetensors import safe_open
 
 import anima_minimal_inference as ami
-from networks.control_net_lllite_anima import ControlNetLLLiteDiT, load_lllite_weights
+from library import anima_train_utils
+from networks.control_net_lllite_anima import (
+    COND_INPUT_SPACES,
+    ControlNetLLLiteDiT,
+    build_cond_tensors,
+    load_lllite_weights,
+)
 from library.utils import setup_logging
 
 setup_logging()
@@ -89,19 +95,20 @@ def _load_mask_image(
     return t.to(device=device, dtype=dtype)
 
 
-def _build_inpaint_cond_image(
-    rgb: torch.Tensor, mask: torch.Tensor, masked_input: bool
-) -> torch.Tensor:
-    """rgb: (B, 3, H, W) in [-1, 1], mask: (B, 1, H, W) in {0, 1}. Return (B, 4, H, W).
+# VAE used to encode the control image in latent cond mode. Loaded lazily and kept on CPU
+# between prompts (mirrors how anima_minimal_inference handles the decode VAE).
+_cond_vae = None
 
-    The mask channel is normalized to [-1, 1] (= (mask - 0.5) * 2) to match the RGB range.
-    """
-    if masked_input:
-        keep = (mask < 0.5).to(rgb.dtype)
-        rgb = rgb * keep
-    # mask channel: {0, 1} -> {-1, 1}. matches transforms.Normalize([0.5], [0.5])
-    mask_pm1 = mask.to(rgb.dtype) * 2.0 - 1.0
-    return torch.cat([rgb, mask_pm1], dim=1)
+
+def _get_cond_vae(args):
+    global _cond_vae
+    if _cond_vae is None:
+        logger.info("Loading VAE for LLLite cond encoding (latent cond input space)...")
+        _cond_vae = anima_train_utils.load_qwen_image_vae(args, device="cpu", disable_mmap=True)
+        _cond_vae.to(torch.bfloat16)
+        _cond_vae.eval()
+        _cond_vae.requires_grad_(False)
+    return _cond_vae
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +213,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lllite_inpaint_masked_input", type=str, default=None, choices=["true", "false"],
         help="override inpaint_masked_input from weights metadata (true/false)",
+    )
+    parser.add_argument(
+        "--lllite_cond_input", type=str, default=None, choices=list(COND_INPUT_SPACES),
+        help="override cond_input_space from weights metadata (pixel/latent)",
     )
 
     args = parser.parse_args()
@@ -333,6 +344,12 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         inpaint_masked_input = (
             meta.get("lllite.inpaint_masked_input", "false").lower() == "true"
         )
+    # cond 入力空間 (v2.1). メタデータ欠落時は pixel (旧重み互換)
+    cond_input_space = (
+        args.lllite_cond_input
+        if args.lllite_cond_input is not None
+        else meta.get("lllite.cond_input_space", "pixel")
+    )
     version = meta.get("lllite.version", "?")
     inpaint_log = (
         f", inpaint=on(masked_input={inpaint_masked_input})" if cond_in_channels == 4 else ""
@@ -341,6 +358,7 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         f"LLLite config (v{version}): cond_emb_dim={cond_emb_dim}, mlp_dim={mlp_dim}, "
         f"target_layers={target_layers}, cond_dim={cond_dim}, cond_resblocks={cond_resblocks}, "
         f"use_aspp={use_aspp}{(' dilations=' + str(list(aspp_dilations))) if use_aspp else ''}, "
+        f"cond_input={cond_input_space}, "
         f"cond_in_channels={cond_in_channels}{inpaint_log}, multiplier={args.lllite_multiplier}"
     )
 
@@ -356,6 +374,7 @@ def load_dit_model(args, device, dit_weight_dtype=None):
         aspp_dilations=aspp_dilations,
         cond_in_channels=cond_in_channels,
         inpaint_masked_input=inpaint_masked_input,
+        cond_input_space=cond_input_space,
     )
     load_lllite_weights(lllite, args.lllite_weights, strict=False)
     lllite.apply_to()
@@ -390,13 +409,14 @@ def generate_body(
             "control_image is not set. Specify --control_image globally, "
             "or --cn per prompt in --from_file mode."
         )
-    cond_image = _load_control_image(ci_path, height, width, device, torch.bfloat16)
-    logger.info(f"Loaded control image: {ci_path} -> {tuple(cond_image.shape)}")
+    rgb = _load_control_image(ci_path, height, width, device, torch.bfloat16)
+    logger.info(f"Loaded control image: {ci_path} -> {tuple(rgb.shape)}")
 
     if not hasattr(anima, "lllite"):
         raise RuntimeError("DiT has no .lllite attribute; load_dit_model patch was not applied")
 
-    # inpainting (4ch): require a mask image; concat to cond_image as 4th channel
+    # inpainting (4ch): require a mask image
+    mask = None
     if anima.lllite.cond_in_channels == 4:
         mk_path = getattr(args, "mask_image", None)
         if mk_path is None:
@@ -405,17 +425,35 @@ def generate_body(
                 "Specify --mask_image globally, or --mk per prompt in --from_file mode."
             )
         mask = _load_mask_image(mk_path, height, width, device, torch.bfloat16)
-        cond_image = _build_inpaint_cond_image(
-            cond_image, mask, anima.lllite.inpaint_masked_input
-        )
         logger.info(
-            f"Loaded mask image: {mk_path} -> 4ch cond_image {tuple(cond_image.shape)}"
-            f" (masked_input={anima.lllite.inpaint_masked_input})"
+            f"Loaded mask image: {mk_path} (masked_input={anima.lllite.inpaint_masked_input})"
         )
+
+    # latent cond mode: VAE-encode the control image (kept on CPU between prompts)
+    is_latent = anima.lllite.cond_input_space == "latent"
+    cond_vae = _get_cond_vae(args) if is_latent else None
+    if cond_vae is not None:
+        cond_vae.to(device)
+    try:
+        cond_image, cond_mask = build_cond_tensors(
+            rgb,
+            mask,
+            cond_input_space=anima.lllite.cond_input_space,
+            cond_in_channels=anima.lllite.cond_in_channels,
+            inpaint_masked_input=anima.lllite.inpaint_masked_input,
+            vae=cond_vae,
+        )
+    finally:
+        if cond_vae is not None:
+            cond_vae.to("cpu")
+    logger.info(
+        f"LLLite cond ({anima.lllite.cond_input_space}): cond_image={tuple(cond_image.shape)}"
+        + (f", cond_mask={tuple(cond_mask.shape)}" if cond_mask is not None else "")
+    )
 
     # honor per-prompt override of multiplier
     anima.lllite.set_multiplier(args.lllite_multiplier)
-    anima.lllite.set_cond_image(cond_image)
+    anima.lllite.set_cond_image(cond_image, cond_mask)
 
     try:
         return _original_generate_body(args, anima, context, context_null, device, seed)
