@@ -402,6 +402,7 @@ class ReplicaTrainerMixin:
 
         from library import accelerator_setup
 
+        accelerator_setup.limit_vram(args, self.replica_devices)  # --vram_limit_fraction: the master is limited already
         weight_dtype, _ = accelerator_setup.prepare_dtype(args)
         network_module = importlib.import_module(args.network_module)
         for i, device in enumerate(self.replica_devices):

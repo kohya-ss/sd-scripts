@@ -1,6 +1,6 @@
 import functools
 import gc
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 import torch
 
@@ -68,6 +68,45 @@ def synchronize_device(device: Optional[Union[str, torch.device]]):
         torch.xpu.synchronize()
     elif device.type == "mps":
         torch.mps.synchronize()
+
+
+def set_vram_limit_fraction(fraction: Optional[float], devices: Sequence[Union[str, torch.device]]) -> list[str]:
+    r"""
+    Limits the VRAM which this process can reserve on each of `devices` to `fraction` of the total memory of the device
+    (`--vram_limit_fraction`). Devices other than CUDA are ignored. Returns the limited devices such as `["cuda:0"]`,
+    an empty list if nothing is done.
+
+    Only the devices used for the training should be given: setting the limit creates a CUDA context on the device,
+    which takes some VRAM.
+
+    The caching allocator of PyTorch keeps the freed blocks, and a block is reused only for a request of the same size
+    or smaller. When the input shapes vary (multi-resolution training with batch size 1, captions of different
+    lengths), the cache therefore grows to much more than the memory in use. With the limit, PyTorch frees the cached
+    blocks and retries when a new allocation would exceed it, instead of asking the driver for more. Without the
+    limit, the NVIDIA driver on Windows (system memory fallback, the default) puts the excess on the shared memory,
+    which makes the training slower.
+
+    If the training needs more than the limit even after the cache is freed, it stops with an out of memory error.
+    """
+    if fraction is None:
+        return []
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(
+            f"vram_limit_fraction must be greater than 0 and not greater than 1: {fraction}"
+            f" / vram_limit_fractionは0より大きく1以下の値を指定してください: {fraction}"
+        )
+    if not HAS_CUDA:
+        return []
+
+    limited = []
+    for device in devices:
+        device = torch.device(device)
+        if device.type != "cuda":
+            continue
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        torch.cuda.set_per_process_memory_fraction(fraction, index)
+        limited.append(f"cuda:{index}")
+    return limited
 
 
 def get_device_descriptions() -> list[dict]:
