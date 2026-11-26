@@ -20,6 +20,7 @@ from accelerate import Accelerator, DistributedDataParallelKwargs, InitProcessGr
 from packaging.version import Version
 
 import library.deepspeed_utils as deepspeed_utils
+import library.device_utils as device_utils
 from library.utils import setup_logging
 
 setup_logging()
@@ -152,7 +153,21 @@ def prepare_accelerator(args: argparse.Namespace):
         deepspeed_plugin=deepspeed_plugin,
     )
     print("accelerator device:", accelerator.device)
+
+    limit_vram(args, [accelerator.device])
     return accelerator
+
+
+def limit_vram(args: argparse.Namespace, devices: list):
+    """Apply `--vram_limit_fraction` to the devices used for the training (see `device_utils.set_vram_limit_fraction`)."""
+    # scripts which do not have the training arguments (e.g. caching tools) do not have this option
+    vram_limit_fraction = getattr(args, "vram_limit_fraction", None)
+    limited_devices = device_utils.set_vram_limit_fraction(vram_limit_fraction, devices)
+    if limited_devices:
+        logger.info(
+            f"VRAM is limited to {vram_limit_fraction:.0%} of the total memory on {', '.join(limited_devices)}"
+            f" / VRAMを全容量の{vram_limit_fraction:.0%}までに制限します: {', '.join(limited_devices)}"
+        )
 
 
 def prepare_dtype(args: argparse.Namespace):

@@ -558,6 +558,17 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="disable low VRAM optimization. e.g. do not clear CUDA cache after each latent caching (for machines which have bigger VRAM) "
         + "/ VRAMが少ない環境向け最適化を無効にする。たとえば各latentのキャッシュ後のCUDAキャッシュクリアを行わない等（VRAMが多い環境向け）",
     )
+    parser.add_argument(
+        "--vram_limit_fraction",
+        type=float,
+        default=None,
+        help="limit the VRAM which this process can reserve to this fraction of the total memory of each CUDA device (e.g. 0.95)."
+        " PyTorch frees its cached memory instead of exceeding the limit, which avoids the slowdown by the shared memory on Windows."
+        " The training stops with an out of memory error if it really needs more than the limit. default is None (no limit)"
+        " / このプロセスが確保できるVRAMを、各CUDAデバイスの全容量に対するこの割合までに制限する（例: 0.95）。"
+        "PyTorchは制限を超える代わりにキャッシュ済みメモリを解放するため、Windowsで共有メモリにあふれて遅くなるのを避けられる。"
+        "実際に必要な量が制限を超える場合は out of memory エラーで停止する。デフォルトはNone（制限なし）",
+    )
 
     parser.add_argument(
         "--sample_every_n_steps",

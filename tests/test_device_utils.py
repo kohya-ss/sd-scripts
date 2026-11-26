@@ -52,6 +52,37 @@ def test_backend_without_memory_functions(no_devices, monkeypatch):
     assert device_utils.get_device_descriptions() == []
 
 
+def test_set_vram_limit_fraction(no_devices, monkeypatch):
+    calls = []
+    backend = types.SimpleNamespace(current_device=lambda: 1, set_per_process_memory_fraction=lambda f, i: calls.append((f, i)))
+    monkeypatch.setattr(device_utils.torch, "cuda", backend)
+    devices = [device_utils.torch.device("cuda:0"), "cuda:2"]
+
+    # not specified, or no CUDA device: nothing is done
+    monkeypatch.setattr(device_utils, "HAS_CUDA", True)
+    assert device_utils.set_vram_limit_fraction(None, devices) == []
+    monkeypatch.setattr(device_utils, "HAS_CUDA", False)
+    assert device_utils.set_vram_limit_fraction(0.95, devices) == []
+    assert calls == []
+
+    # only the given CUDA devices are limited
+    monkeypatch.setattr(device_utils, "HAS_CUDA", True)
+    assert device_utils.set_vram_limit_fraction(0.95, devices) == ["cuda:0", "cuda:2"]
+    assert calls == [(0.95, 0), (0.95, 2)]
+    assert device_utils.set_vram_limit_fraction(1.0, ["cpu", "mps"]) == []
+
+    # "cuda" without an index is the current device
+    assert device_utils.set_vram_limit_fraction(1.0, ["cuda"]) == ["cuda:1"]
+    assert calls[-1] == (1.0, 1)
+
+
+@pytest.mark.parametrize("fraction", [0.0, -0.5, 1.01, 95])
+def test_set_vram_limit_fraction_invalid(no_devices, fraction):
+    # the value is checked even without a CUDA device
+    with pytest.raises(ValueError):
+        device_utils.set_vram_limit_fraction(fraction, ["cuda:0"])
+
+
 def test_mps(no_devices, monkeypatch):
     mps = types.SimpleNamespace(
         current_allocated_memory=lambda: 10, driver_allocated_memory=lambda: 20, recommended_max_memory=lambda: 1000

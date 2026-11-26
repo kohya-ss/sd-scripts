@@ -158,6 +158,12 @@ The prompt weighting such as `( )` and `[ ]` are working for SD/SDXL models, not
 *   `--max_token_length=N` (`75`, `150`, `225`): Maximum token length processed by Text Encoders. For SDXL, typically `75` (default), `150`, or `225`. Longer lengths can handle more complex prompts but increase VRAM usage.
 *   `--clip_skip=N`: Uses the output from N layers skipped from the final layer of Text Encoders. **Not typically used for SDXL**.
 *   `--lowram` / `--highvram`: Options for memory usage optimization. `--lowram` is for environments like Colab where RAM < VRAM, `--highvram` is for environments with ample VRAM.
+*   `--vram_limit_fraction=F` (e.g. `0.95`): Limits the VRAM which the training process can reserve to this fraction of the total memory of each GPU used for the training. The default is no limit.
+    *   PyTorch keeps the memory it has freed in a cache, and a cached block is reused only for a request of the same size or smaller. When the size of the inputs changes from step to step (many resolutions with batch size 1, captions of different lengths), the cache can grow to much more than the memory actually in use (about 1.7 times in a LoRA training of MOSS-Image without gradient checkpointing). On Windows, with the default setting of the NVIDIA driver (system memory fallback), the excess goes to the shared GPU memory and the training gets slower.
+    *   With this option, PyTorch frees the cache and retries instead of exceeding the limit. This happens only a few times, and the speed does not change.
+    *   Consider this option when the shared GPU memory is used in the Task Manager while the training fits in the VRAM. `0.95` is a good starting point; use a smaller value such as `0.9` if the GPU is also used for the display or by other applications.
+    *   If the training really needs more memory than the limit, it stops with an out of memory error instead of running slowly on the shared memory.
+    *   The effect is small with `--gradient_checkpointing`, because the cache grows much less.
 *   `--persistent_data_loader_workers` / `--max_data_loader_n_workers=N`: Settings for DataLoader worker processes. Affects wait time between epochs and memory usage.
 *   `--config_file="<config file>"` / `--output_config`: Options to use/output a `.toml` file instead of command line arguments.
 *   **Accelerate/DeepSpeed related:** (`--ddp_timeout`, `--ddp_gradient_as_bucket_view`, `--ddp_static_graph`): Detailed settings for distributed training. Accelerate settings (`accelerate config`) are usually sufficient. DeepSpeed requires separate configuration.
@@ -481,6 +487,13 @@ masterpiece, best quality, 1boy, in business suit, standing at street, looking b
     *   Text Encoderの最終層からN層スキップした層の出力を使用します。SDXLでは**通常使用しません**。
 *   `--lowram` / `--highvram`
     *   メモリ使用量の最適化に関するオプション。`--lowram`はColabなどRAM < VRAM環境向け、`--highvram`はVRAM潤沢な環境向け。
+*   `--vram_limit_fraction=F`（例: `0.95`）
+    *   学習プロセスが確保できるVRAMを、学習に使う各GPUの全容量に対するこの割合までに制限します。デフォルトは制限なしです。
+    *   PyTorchは解放したメモリをキャッシュとして保持し、キャッシュ済みのブロックは同じサイズかそれより小さい要求にしか再利用されません。入力のサイズがステップごとに変わる学習（バッチサイズ1で解像度の種類が多い、キャプションの長さがばらつく等）では、キャッシュが実際の使用量を大きく超えて膨らむことがあります（gradient checkpointingなしのMOSS-ImageのLoRA学習で約1.7倍）。Windowsでは、NVIDIAドライバのデフォルト設定（システムメモリフォールバック）の場合、超過分が共有GPUメモリにあふれて学習が遅くなります。
+    *   このオプションを指定すると、PyTorchは制限を超える代わりにキャッシュを解放して再試行します。これが起きるのは数回だけで、速度は変わりません。
+    *   学習に必要な量はVRAMに収まっているのに、タスクマネージャーで共有GPUメモリが使われている場合に指定を検討してください。まずは`0.95`を、GPUを画面出力や他のアプリケーションでも使っている場合は`0.9`など小さめの値を指定してください。
+    *   実際に必要なメモリが制限を超える場合は、共有メモリを使って遅く動く代わりに、out of memoryエラーで停止します。
+    *   `--gradient_checkpointing`を使う場合はキャッシュがあまり膨らまないため、効果は小さくなります。
 *   `--persistent_data_loader_workers` / `--max_data_loader_n_workers=N`
     *   DataLoaderのワーカプロセスに関する設定。エポック間の待ち時間やメモリ使用量に影響します。
 *   `--config_file="<設定ファイル>"` / `--output_config`
