@@ -279,6 +279,8 @@ class FineTuningDataset(BaseDataset):
             self.validate_caption_candidates(subset, captions)
 
             # TODO do not record tag freq when no tag
-            self.set_tag_frequency(os.path.basename(subset.metadata_file), tags_list)
+            self.set_tag_frequency(
+                os.path.basename(subset.metadata_file), tags_list, subset.caption_separator, subset.keep_tokens_separator
+            )
             subset.img_count = len(metadata)
             self.subsets.append(subset)

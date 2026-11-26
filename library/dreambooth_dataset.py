@@ -259,7 +259,9 @@ class DreamBoothDataset(BaseDataset):
             # validate separator lines of multi-line captions (raises ValueError if invalid)
             self.validate_caption_candidates(subset, captions)
 
-            self.set_tag_frequency(os.path.basename(subset.image_dir), captions)  # タグ頻度を記録
+            self.set_tag_frequency(
+                os.path.basename(subset.image_dir), captions, subset.caption_separator, subset.keep_tokens_separator
+            )  # タグ頻度を記録
 
             if missing_captions:
                 number_of_missing_captions = len(missing_captions)
